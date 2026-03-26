@@ -1,0 +1,101 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${RULEMIND_API_ORIGIN:-http://localhost:8080}
+        NEXT_PUBLIC_RULEMIND_DEV_API_KEY: ${RULEMIND_DEV_API_KEY:-rm_live_devlocaltenantkey000000000000}
+    ports:
+      - "${RULEMIND_WEB_PORT:-3000}:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${RULEMIND_API_ORIGIN:-http://localhost:8080}
+      NEXT_PUBLIC_RULEMIND_DEV_API_KEY: ${RULEMIND_DEV_API_KEY:-rm_live_devlocaltenantkey000000000000}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/python-executor/Dockerfile
+    ports:
+      - "${RULEMIND_API_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgresql://rulemind:rulemind@db:5432/rulemind
+      RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
+      RULEMIND_ADMIN_JWT_SECRET: ${RULEMIND_ADMIN_JWT_SECRET:-rulemind-admin-dev-secret}
+      REDIS_URL: redis://redis:6379/0
+      PYTHON_SANDBOX_TIMEOUT: 2000
+      PYTHON_SANDBOX_MEMORY: 128
+      CORS_ORIGINS: ${RULEMIND_WEB_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/python-executor/Dockerfile
+    command: ["python3", "-m", "app.worker"]
+    environment:
+      DATABASE_URL: postgresql://rulemind:rulemind@db:5432/rulemind
+      RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
+      RULEMIND_ADMIN_JWT_SECRET: ${RULEMIND_ADMIN_JWT_SECRET:-rulemind-admin-dev-secret}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os, sys, time; path = '/tmp/rulemind-worker.ready'; sys.exit(0 if os.path.exists(path) and time.time() - os.path.getmtime(path) < 90 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: rulemind
+      POSTGRES_USER: rulemind
+      POSTGRES_PASSWORD: rulemind
+    ports:
+      - "${RULEMIND_DB_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rulemind"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${RULEMIND_REDIS_PORT:-6380}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:

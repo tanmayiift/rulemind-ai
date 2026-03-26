@@ -1,0 +1,80 @@
+plugins {
+    id("com.android.library")
+    kotlin("android")
+    `maven-publish`
+}
+
+android {
+    namespace = "com.rulemind.android"
+    compileSdk = 34
+
+    defaultConfig {
+        minSdk = 24
+        consumerProguardFiles("consumer-rules.pro")
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "consumer-rules.pro",
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+        }
+    }
+}
+
+dependencies {
+    implementation(project(":rulemind-core"))
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("release") {
+            groupId = "com.rulemind"
+            artifactId = "rulemind-android"
+            version = project.version.toString()
+            afterEvaluate {
+                from(components["release"])
+            }
+            pom {
+                name.set("RuleMind Android SDK")
+                description.set("RuleMind mobile decisioning SDK for Android.")
+                url.set("https://github.com/rulemind-ai/rulemind")
+                licenses {
+                    license {
+                        name.set("Apache-2.0")
+                        url.set("https://www.apache.org/licenses/LICENSE-2.0")
+                    }
+                }
+                developers {
+                    developer {
+                        id.set("rulemind")
+                        name.set("RuleMind")
+                    }
+                }
+                scm {
+                    url.set("https://github.com/rulemind-ai/rulemind")
+                }
+            }
+        }
+    }
+}

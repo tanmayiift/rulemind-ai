@@ -1,0 +1,27 @@
+{
+  "name": "rulemind-ai",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "build": "pnpm --filter @rulemind/web build && pnpm --filter @rulemind/python-executor build",
+    "dev": "pnpm --parallel --filter @rulemind/web --filter @rulemind/python-executor dev",
+    "lint": "pnpm -r lint",
+    "start": "pnpm --filter @rulemind/python-executor start",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "typecheck": "pnpm -r typecheck",
+    "migrate": "pnpm --filter @rulemind/python-executor migrate",
+    "openapi": "pnpm --filter @rulemind/python-executor openapi",
+    "qa:manifest": "python3 qa/extract-workbook.py",
+    "qa:no-demo-data": "node --import tsx qa/no-demo-data.ts",
+    "qa:run": "node --import tsx qa/run-automated-suite.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

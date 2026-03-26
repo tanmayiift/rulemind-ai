@@ -1,0 +1,31 @@
+{
+  "name": "@rulemind/web",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev -p 3000",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "start": "next start -p 3000",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@rulemind/shared": "workspace:*",
+    "@rulemind/widget": "workspace:*",
+    "@tanstack/react-query": "^5.64.2",
+    "lucide-react": "^1.7.0",
+    "next": "14.2.25",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

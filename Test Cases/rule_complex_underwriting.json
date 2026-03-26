@@ -1,0 +1,129 @@
+{
+  "nodes": [
+    {
+      "id": "t1",
+      "type": "trigger",
+      "label": "On Application",
+      "x": 30,
+      "y": 150,
+      "config": { "event": "on_application_submit" }
+    },
+    {
+      "id": "a1",
+      "type": "and",
+      "label": "AND",
+      "x": 220,
+      "y": 150,
+      "config": {}
+    },
+    {
+      "id": "c1",
+      "type": "score",
+      "label": "Credit Score",
+      "x": 440,
+      "y": 40,
+      "config": {
+        "fieldType": "number",
+        "field": "credit_score",
+        "operator": "between",
+        "value": "650",
+        "value2": "850"
+      }
+    },
+    {
+      "id": "c2",
+      "type": "condition",
+      "label": "Income Check",
+      "x": 440,
+      "y": 110,
+      "config": {
+        "fieldType": "number",
+        "field": "annual_income",
+        "operator": ">",
+        "value": "50000"
+      }
+    },
+    {
+      "id": "c3",
+      "type": "condition",
+      "label": "Employment",
+      "x": 440,
+      "y": 180,
+      "config": {
+        "fieldType": "string",
+        "field": "employment_status",
+        "operator": "in",
+        "value": "employed, self_employed"
+      }
+    },
+    {
+      "id": "n1",
+      "type": "not",
+      "label": "NOT",
+      "x": 440,
+      "y": 260,
+      "config": {}
+    },
+    {
+      "id": "c4",
+      "type": "condition",
+      "label": "Bankruptcy Flag",
+      "x": 640,
+      "y": 260,
+      "config": {
+        "fieldType": "string",
+        "field": "has_bankruptcy",
+        "operator": "exists",
+        "value": ""
+      }
+    },
+    {
+      "id": "c5",
+      "type": "condition",
+      "label": "DTI Ratio",
+      "x": 440,
+      "y": 340,
+      "config": {
+        "fieldType": "number",
+        "field": "debt_to_income",
+        "operator": "<=",
+        "value": "0.43"
+      }
+    },
+    {
+      "id": "out1",
+      "type": "approve",
+      "label": "Approve",
+      "x": 720,
+      "y": 80,
+      "config": { "reason": "All underwriting criteria met" }
+    },
+    {
+      "id": "out2",
+      "type": "review",
+      "label": "Manual Review",
+      "x": 720,
+      "y": 180,
+      "config": { "reason": "Borderline — needs human review" }
+    },
+    {
+      "id": "out3",
+      "type": "reject",
+      "label": "Reject",
+      "x": 720,
+      "y": 280,
+      "config": { "reason": "Failed underwriting" }
+    }
+  ],
+  "connections": [
+    { "from": "t1", "to": "a1" },
+    { "from": "a1", "to": "c1" },
+    { "from": "a1", "to": "c2" },
+    { "from": "a1", "to": "c3" },
+    { "from": "a1", "to": "n1" },
+    { "from": "n1", "to": "c4" },
+    { "from": "a1", "to": "c5" }
+  ],
+  "expression": "WHEN on_application_submit {\n  AND (\n    credit_score BETWEEN 650 AND 850,\n    annual_income > 50000,\n    employment_status IN (employed, self_employed),\n    NOT (\n      has_bankruptcy EXISTS\n    ),\n    debt_to_income <= 0.43\n  )\n}\n=> APPROVE \"All underwriting criteria met\"",
+  "exportedAt": "2026-03-25T00:00:00.000Z"
+}

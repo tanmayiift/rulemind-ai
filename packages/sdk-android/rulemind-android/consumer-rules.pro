@@ -1,0 +1,5 @@
+-keep class com.rulemind.android.RuleMind { *; }
+-keep class com.rulemind.android.BundleManager { *; }
+-keep class com.rulemind.android.NetworkClient { *; }
+-keep class com.rulemind.android.CryptoManager { *; }
+-keep class com.rulemind.core.models.** { *; }

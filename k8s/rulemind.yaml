@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rulemind-config
+data:
+  DATABASE_ADAPTER: postgres
+  REDIS_URL: redis://rulemind-redis:6379
+  AUTH_MODE: none
+  CORS_ORIGINS: http://rulemind-web
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rulemind-secrets
+type: Opaque
+stringData:
+  DATABASE_URL: postgresql://rulemind:rulemind@rulemind-postgres:5432/rulemind
+  PYTHON_EXECUTOR_SECRET: change-me
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rulemind-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rulemind-api
+  template:
+    metadata:
+      labels:
+        app: rulemind-api
+    spec:
+      containers:
+        - name: api
+          image: your-registry/rulemind-api:latest
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: rulemind-config
+            - secretRef:
+                name: rulemind-secrets
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rulemind-api
+spec:
+  selector:
+    app: rulemind-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rulemind-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rulemind-api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

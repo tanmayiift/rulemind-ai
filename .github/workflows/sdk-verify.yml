@@ -1,0 +1,67 @@
+name: sdk-verify
+
+on:
+  push:
+    branches: ["main", "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/sdk-android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Compile Kotlin
+        run: ./gradlew --no-daemon --stacktrace :rulemind-core:compileKotlin
+
+      - name: Run Android unit tests
+        run: ./gradlew --no-daemon --stacktrace :rulemind-core:test
+
+      - name: Build Android release AAR
+        run: ./gradlew --no-daemon --stacktrace :rulemind-android:assembleRelease
+
+      - name: Verify Maven publishing config
+        run: ./gradlew --no-daemon --stacktrace :rulemind-android:publishToMavenLocal
+
+  flutter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/sdk-flutter
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Analyze Dart code
+        run: dart analyze
+
+      - name: Run Flutter tests
+        run: flutter test
+
+      - name: Verify pub publish readiness
+        run: dart pub publish --dry-run

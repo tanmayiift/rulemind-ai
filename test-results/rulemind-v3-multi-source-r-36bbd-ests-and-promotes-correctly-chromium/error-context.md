@@ -1,0 +1,101 @@
+# Page snapshot
+
+```yaml
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - complementary [ref=e3]:
+      - generic [ref=e4]:
+        - button "✕" [ref=e5] [cursor=pointer]
+        - generic [ref=e6]: RuleMind
+      - navigation [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]: Build
+          - link "◫ Dashboard" [ref=e10] [cursor=pointer]:
+            - /url: /
+            - generic [ref=e11]: ◫
+            - text: Dashboard
+          - link "⬡ Connectors" [ref=e12] [cursor=pointer]:
+            - /url: /connectors
+            - generic [ref=e13]: ⬡
+            - text: Connectors
+          - link "ƒ Variables" [ref=e14] [cursor=pointer]:
+            - /url: /variables
+            - generic [ref=e15]: ƒ
+            - text: Variables
+          - link "⧖ Rules" [ref=e16] [cursor=pointer]:
+            - /url: /rules
+            - generic [ref=e17]: ⧖
+            - text: Rules
+          - link "▤ Scorecards" [ref=e18] [cursor=pointer]:
+            - /url: /scorecards
+            - generic [ref=e19]: ▤
+            - text: Scorecards
+          - link "◈ Policies" [ref=e20] [cursor=pointer]:
+            - /url: /policies
+            - generic [ref=e21]: ◈
+            - text: Policies
+        - generic [ref=e22]:
+          - generic [ref=e23]: Operate
+          - link "⚗ Test Console" [ref=e24] [cursor=pointer]:
+            - /url: /test-console
+            - generic [ref=e25]: ⚗
+            - text: Test Console
+          - link "▶ Deploy" [ref=e26] [cursor=pointer]:
+            - /url: /deploy
+            - generic [ref=e27]: ▶
+            - text: Deploy
+          - link "↗ Exports" [ref=e28] [cursor=pointer]:
+            - /url: /exports
+            - generic [ref=e29]: ↗
+            - text: Exports
+        - generic [ref=e30]:
+          - generic [ref=e31]: System
+          - link "⚙ Settings" [ref=e32] [cursor=pointer]:
+            - /url: /settings
+            - generic [ref=e33]: ⚙
+            - text: Settings
+    - generic [ref=e34]:
+      - banner [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]: Rules
+          - generic [ref=e38]: Click-to-build multi-source decision logic. · API http://127.0.0.1:8100
+        - generic [ref=e39]:
+          - generic [ref=e40]:
+            - button "DEV" [ref=e41] [cursor=pointer]
+            - button "UAT" [ref=e42] [cursor=pointer]
+            - button "PROD" [ref=e43] [cursor=pointer]
+          - button "☾ Dark" [ref=e44] [cursor=pointer]
+          - generic [ref=e45]: RM
+      - main [ref=e46]:
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - button "Builder" [ref=e50] [cursor=pointer]
+            - button "Saved Rules" [ref=e51] [cursor=pointer]
+            - button "Test Console" [ref=e52] [cursor=pointer]
+          - generic [ref=e53]:
+            - generic [ref=e55]:
+              - heading "Saved Rule Test" [level=2] [ref=e56]
+              - paragraph [ref=e57]: Execute a persisted rule against the active connector samples.
+            - generic [ref=e58]:
+              - combobox [ref=e59]:
+                - option "Select a rule"
+                - option "Composite Source Gate 1774502453389"
+                - option "Composite Source Gate 1774502961386" [selected]
+              - button "▶ Execute" [ref=e60] [cursor=pointer]
+            - generic [ref=e61]:
+              - generic [ref=e63]: reject
+              - generic [ref=e64]:
+                - generic [ref=e65]:
+                  - generic [ref=e66]: ✓
+                  - generic [ref=e67]: 🏦
+                  - generic [ref=e68]: "Bureau Score: 760 >= 700"
+                - generic [ref=e69]:
+                  - generic [ref=e70]: ✓
+                  - generic [ref=e71]: 📄
+                  - generic [ref=e72]: "Avg Balance: 45200 >= 20000"
+                - generic [ref=e73]:
+                  - generic [ref=e74]: ✕
+                  - generic [ref=e75]: 📱
+                  - generic [ref=e76]: "Device Risk: 0 == 0"
+  - alert [ref=e77]
+```

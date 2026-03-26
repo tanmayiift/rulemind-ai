@@ -1,0 +1,120 @@
+{
+  "generatedAt": "2026-03-25T13:33:17.299Z",
+  "workbook": {
+    "operators": {
+      "total": 53,
+      "passed": 53,
+      "failed": 0
+    },
+    "topology": {
+      "total": 24,
+      "passed": 24,
+      "failed": 0
+    }
+  },
+  "runtime": {
+    "health": {
+      "status": "ok",
+      "service": "rulemind-api",
+      "timestamp": "2026-03-25T13:33:16.901Z"
+    },
+    "readiness": {
+      "status": "ready",
+      "checks": {
+        "database": true,
+        "redis": true
+      }
+    },
+    "createRuleStatus": 201,
+    "evaluation": {
+      "outcome": "approve",
+      "passed": true,
+      "conditionResults": {
+        "c1": {
+          "nodeId": "c1",
+          "nodeLabel": "Score",
+          "type": "condition",
+          "pass": true,
+          "field": "score",
+          "operator": ">=",
+          "expected": "700",
+          "actual": 750
+        }
+      },
+      "variableResults": {},
+      "explanationTree": [
+        {
+          "nodeId": "c1",
+          "nodeType": "condition",
+          "label": "Score",
+          "pass": true,
+          "detail": "score >=",
+          "children": [
+            {
+              "nodeId": "a1",
+              "nodeType": "approve",
+              "label": "Approve",
+              "pass": true,
+              "children": [],
+              "reachedOutcomes": [
+                {
+                  "type": "approve",
+                  "nodeId": "a1"
+                }
+              ]
+            }
+          ],
+          "reachedOutcomes": [
+            {
+              "type": "approve",
+              "nodeId": "a1"
+            }
+          ]
+        }
+      ],
+      "executionTimeMs": 0.253,
+      "traceId": "tr_qa_runtime",
+      "version": 1,
+      "reachedOutcomes": [
+        {
+          "type": "approve",
+          "nodeId": "a1"
+        }
+      ]
+    },
+    "metricsChecks": {
+      "statusCode": 200,
+      "hasNames": true
+    },
+    "auditTraceCheck": true,
+    "apikeyChecks": {
+      "readWithValidKey": true,
+      "viewerCreateForbidden": true,
+      "invalidKeyRejected": true,
+      "expiredKeyRejected": true
+    },
+    "jwtChecks": {
+      "noHeaderRejected": true,
+      "viewerReadAllowed": true,
+      "viewerCreateForbidden": true,
+      "adminCreateAllowed": true
+    }
+  },
+  "pythonSdk": {
+    "status": 0,
+    "stdout": "RuleEngineClient",
+    "stderr": "",
+    "pass": true
+  },
+  "packageContracts": {
+    "sdkAliasPackage": true,
+    "uiAliasPackage": true,
+    "widgetHasThemeProp": true,
+    "jsSdkClassName": true
+  },
+  "coverageNotes": [
+    "Operator matrix and logic/topology workbook rows are executed automatically from the extracted workbook manifest.",
+    "REST, auth, health, metrics, audit, and package-alias checks run through Fastify inject because this sandbox forbids local port binding.",
+    "Browser-only UI sheets, Docker/Kubernetes runtime startup, live JS SDK over HTTP, and workbook XLSX write-back remain outside direct automation in this sandbox."
+  ]
+}
