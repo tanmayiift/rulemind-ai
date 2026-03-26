@@ -23,4 +23,5 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
-      - run: docker build -t rulemind-ai:${{ github.sha }} .
+      - run: docker build -t rulemind-web:${{ github.sha }} -f apps/web/Dockerfile .
+      - run: docker build -t rulemind-python-executor:${{ github.sha }} -f apps/python-executor/Dockerfile .
