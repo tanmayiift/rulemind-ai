@@ -1,11 +1,12 @@
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createHmac, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../apps/api/src/server";
 
 const envSnapshot = { ...process.env };
-const runtimeRoot = "/Users/tanmaykumar/Downloads/RuleMind.AI/.runtime";
+const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".runtime");
 
 async function buildTestApp(overrides: Record<string, string>) {
   process.env = {

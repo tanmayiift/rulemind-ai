@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { evaluateRule, validateRuleDefinition } from "../packages/rule-engine/src";
 import type {
   EvaluationResult,
@@ -46,7 +47,7 @@ export interface WorkbookAutomationResult {
   summary: WorkbookAutomationSummary;
 }
 
-const defaultRootDir = "/Users/tanmaykumar/Downloads/RuleMind.AI";
+const defaultRootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function loadManifest(rootDir = defaultRootDir): WorkbookManifest {
   return JSON.parse(readFileSync(join(rootDir, "qa", "results", "workbook-manifest.json"), "utf8")) as WorkbookManifest;
