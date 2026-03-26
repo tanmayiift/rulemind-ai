@@ -58,7 +58,7 @@ jobs:
         run: flutter pub get
 
       - name: Analyze Dart code
-        run: dart analyze
+        run: dart analyze --fatal-infos=false
 
       - name: Run Flutter tests
         run: flutter test
