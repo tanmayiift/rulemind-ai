@@ -1,9 +1,8 @@
-import "dart:convert";
-import "dart:typed_data";
+import 'dart:convert';
 
-import "package:crypto/crypto.dart";
+import 'package:crypto/crypto.dart';
 
-import "models.dart";
+import 'models.dart';
 
 class CryptoManager {
   CryptoManager(this.config);
@@ -13,7 +12,7 @@ class CryptoManager {
   String publicKeyBase64() {
     // Client-side RSA generation is deferred to platform-specific keystore setup in the host app.
     // The SDK exposes a stable method so the calling application can inject the generated public key.
-    return config.serverPublicKeyPem ?? "";
+    return config.serverPublicKeyPem ?? '';
   }
 
   Future<String> decryptBundle(BundleEnvelope envelope) async {
