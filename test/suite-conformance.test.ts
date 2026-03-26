@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../apps/api/src/server";
 import { evaluateRule, generateExpression, validateRuleDefinition } from "../packages/rule-engine/src";
 import type { RuleDefinition } from "../packages/shared/src";
 
-const root = "/Users/tanmaykumar/Downloads/RuleMind.AI";
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const loadFixture = <T>(name: string) =>
   JSON.parse(readFileSync(join(root, "Test Cases", name), "utf8")) as T;
 
