@@ -1,30 +1,30 @@
-import "models.dart";
+import 'models.dart';
 
 class VariableVm {
   dynamic evaluate(CompiledVariable variable, Map<String, dynamic> payload, Map<String, dynamic> variables) {
     final registers = <String, dynamic>{
-      "payload": payload,
-      "variables": variables,
-      "context": variables,
-      "source": payload[variable.sourceId] is Map<String, dynamic> ? payload[variable.sourceId] : payload,
+      'payload': payload,
+      'variables': variables,
+      'context': variables,
+      'source': payload[variable.sourceId] is Map<String, dynamic> ? payload[variable.sourceId] : payload,
     };
 
     for (final instruction in variable.instructions) {
       final op = instruction.op.toLowerCase();
       final target = instruction.target;
       switch (op) {
-        case "literal":
+        case 'literal':
           if (target != null) {
             registers[target] = instruction.value;
           }
           break;
-        case "get":
+        case 'get':
           if (target != null) {
-            final source = _resolveRegister(instruction.source, registers) ?? registers["source"];
+            final source = _resolveRegister(instruction.source, registers) ?? registers['source'];
             registers[target] = _resolvePath(source, instruction.path ?? instruction.key) ?? instruction.defaultValue;
           }
           break;
-        case "filter":
+        case 'filter':
           if (target != null) {
             final source = _asList(_resolveRegister(instruction.source, registers));
             registers[target] = source
@@ -37,10 +37,10 @@ class VariableVm {
                 .toList();
           }
           break;
-        case "find":
+        case 'find':
           if (target != null) {
             final source = _asList(_resolveRegister(instruction.source, registers));
-            registers[target] = source.cast<dynamic?>().firstWhere(
+            registers[target] = source.cast<dynamic>().firstWhere(
                   (item) => _evaluatePredicate(
                     item,
                     instruction.predicatePath ?? instruction.path,
@@ -51,23 +51,26 @@ class VariableVm {
                 );
           }
           break;
-        case "sum":
+        case 'sum':
           if (target != null) {
             registers[target] = _extractNumericValues(instruction, registers).fold<double>(0, (sum, value) => sum + value);
           }
           break;
-        case "count":
+        case 'count':
           if (target != null) {
             final value = _resolveRegister(instruction.source, registers);
-            registers[target] = switch (value) {
-              List<dynamic> => value.length,
-              Map<String, dynamic> => value.length,
-              null => 0,
-              _ => 1,
-            };
+            if (value is List) {
+              registers[target] = value.length;
+            } else if (value is Map) {
+              registers[target] = value.length;
+            } else if (value == null) {
+              registers[target] = 0;
+            } else {
+              registers[target] = 1;
+            }
           }
           break;
-        case "count_where":
+        case 'count_where':
           if (target != null) {
             final source = _asList(_resolveRegister(instruction.source, registers));
             registers[target] = source
@@ -80,22 +83,22 @@ class VariableVm {
                 .length;
           }
           break;
-        case "max":
+        case 'max':
           if (target != null) {
             final values = _extractNumericValues(instruction, registers);
             registers[target] = values.isEmpty ? 0.0 : values.reduce((left, right) => left > right ? left : right);
           }
           break;
-        case "min":
+        case 'min':
           if (target != null) {
             final values = _extractNumericValues(instruction, registers);
             registers[target] = values.isEmpty ? 0.0 : values.reduce((left, right) => left < right ? left : right);
           }
           break;
-        case "divide":
-        case "multiply":
-        case "add":
-        case "subtract":
+        case 'divide':
+        case 'multiply':
+        case 'add':
+        case 'subtract':
           if (target != null) {
             final left = _numeric(_resolveOperand(instruction.left, registers, instruction.values.isNotEmpty ? instruction.values.first : null));
             final right = _numeric(
@@ -106,28 +109,28 @@ class VariableVm {
               ),
             );
             registers[target] = switch (op) {
-              "divide" => right == 0 ? 0.0 : left / right,
-              "multiply" => left * right,
-              "subtract" => left - right,
+              'divide' => right == 0 ? 0.0 : left / right,
+              'multiply' => left * right,
+              'subtract' => left - right,
               _ => left + right,
             };
           }
           break;
-        case "cast":
+        case 'cast':
           if (target != null) {
             registers[target] = _castValue(_resolveRegister(instruction.source, registers), instruction.type);
           }
           break;
-        case "compare":
+        case 'compare':
           if (target != null) {
             registers[target] = _compare(
               _resolveOperand(instruction.left, registers, null),
-              instruction.predicateOperator ?? instruction.type ?? "==",
+              instruction.predicateOperator ?? instruction.type ?? '==',
               _resolveOperand(instruction.right, registers, instruction.value),
             );
           }
           break;
-        case "if":
+        case 'if':
           if (target != null) {
             final condition = _resolveRegister(instruction.source, registers);
             final branch = condition is bool ? condition : _numeric(condition) != 0;
@@ -136,7 +139,7 @@ class VariableVm {
                 : _resolveOperand(instruction.elseSource, registers, instruction.elseValue);
           }
           break;
-        case "return":
+        case 'return':
           return _resolveOperand(instruction.source ?? target, registers, instruction.value);
       }
     }
@@ -150,7 +153,7 @@ class VariableVm {
     if (registers.containsKey(name)) {
       return registers[name];
     }
-    return _resolvePath(registers["source"], name) ?? _resolvePath(registers["payload"], name) ?? _resolvePath(registers["variables"], name);
+    return _resolvePath(registers['source'], name) ?? _resolvePath(registers['payload'], name) ?? _resolvePath(registers['variables'], name);
   }
 
   dynamic _resolveOperand(String? name, Map<String, dynamic> registers, dynamic fallback) => _resolveRegister(name, registers) ?? fallback;
@@ -186,16 +189,16 @@ class VariableVm {
     if (root == null || rawPath == null || rawPath.isEmpty) {
       return root;
     }
-    final path = rawPath.startsWith(r"$.") ? rawPath.substring(2) : rawPath;
+    final path = rawPath.startsWith(r'$.') ? rawPath.substring(2) : rawPath;
     if (path.isEmpty) {
       return root;
     }
     dynamic current = root;
-    for (final segment in path.split(".")) {
+    for (final segment in path.split('.')) {
       if (current == null) {
         return null;
       }
-      final match = RegExp(r"([A-Za-z0-9_\-]+)(\[(\-?\d+)\])?").firstMatch(segment);
+      final match = RegExp(r'([A-Za-z0-9_\-]+)(\[(\-?\d+)\])?').firstMatch(segment);
       if (match == null) {
         return null;
       }
@@ -217,24 +220,24 @@ class VariableVm {
 
   bool _evaluatePredicate(dynamic item, String? path, String? operator, dynamic expected) {
     final actual = path == null || path.isEmpty ? item : _resolvePath(item, path);
-    return _compare(actual, operator ?? "==", expected);
+    return _compare(actual, operator ?? '==', expected);
   }
 
   bool _compare(dynamic actual, String operator, dynamic expected) {
     switch (operator) {
-      case ">":
+      case '>':
         return _numeric(actual) > _numeric(expected);
-      case ">=":
+      case '>=':
         return _numeric(actual) >= _numeric(expected);
-      case "<":
+      case '<':
         return _numeric(actual) < _numeric(expected);
-      case "<=":
+      case '<=':
         return _numeric(actual) <= _numeric(expected);
-      case "!=":
+      case '!=':
         return _normalize(actual) != _normalize(expected);
-      case "in":
+      case 'in':
         return _asList(expected).map(_normalize).contains(_normalize(actual));
-      case "not_in":
+      case 'not_in':
         return !_asList(expected).map(_normalize).contains(_normalize(actual));
       default:
         return _normalize(actual) == _normalize(expected);
@@ -242,16 +245,16 @@ class VariableVm {
   }
 
   dynamic _castValue(dynamic value, String? type) {
-    switch ((type ?? "string").toLowerCase()) {
-      case "int":
-      case "integer":
+    switch ((type ?? 'string').toLowerCase()) {
+      case 'int':
+      case 'integer':
         return _numeric(value).toInt();
-      case "float":
-      case "double":
-      case "number":
+      case 'float':
+      case 'double':
+      case 'number':
         return _numeric(value);
-      case "bool":
-      case "boolean":
+      case 'bool':
+      case 'boolean':
         if (value is bool) {
           return value;
         }
@@ -259,10 +262,10 @@ class VariableVm {
           return value != 0;
         }
         if (value is String) {
-          return value.toLowerCase() == "true" || value == "1";
+          return value.toLowerCase() == 'true' || value == '1';
         }
         return value != null;
-      case "list":
+      case 'list':
         return _asList(value);
       default:
         return value?.toString();

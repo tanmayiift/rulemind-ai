@@ -1,5 +1,12 @@
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  errors:
+    prefer_final_fields: ignore
+    prefer_single_quotes: ignore
+    unnecessary_library_name: ignore
+    unnecessary_question_mark: ignore
+
 linter:
   rules:
-    prefer_single_quotes: true
+    prefer_single_quotes: false
