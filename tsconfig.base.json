@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "declaration": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@rulemind/shared": [
+        "packages/shared/src/index.ts"
+      ],
+      "@rulemind/rule-engine": [
+        "packages/rule-engine/src/index.ts"
+      ],
+      "@rulemind/sdk-js": [
+        "packages/sdk-js/src/index.ts"
+      ],
+      "@rulemind/sdk": [
+        "packages/sdk/src/index.ts"
+      ],
+      "@rulemind/widget": [
+        "packages/widget/src/index.ts"
+      ],
+      "@rulemind/ui": [
+        "packages/ui/src/index.ts"
+      ]
+    }
+  }
+}

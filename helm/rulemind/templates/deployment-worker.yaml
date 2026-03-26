@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rulemind-worker
+spec:
+  replicas: {{ .Values.replicaCount.worker }}
+  selector:
+    matchLabels:
+      app: rulemind-worker
+  template:
+    metadata:
+      labels:
+        app: rulemind-worker
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag }}"
+          imagePullPolicy: {{ .Values.image.worker.pullPolicy }}
+          command: ["python3", "-m", "app.worker"]
+          envFrom:
+            - configMapRef:
+                name: rulemind-config
+            - secretRef:
+                name: rulemind-secrets
+          resources:
+{{ toYaml .Values.resources.worker | indent 12 }}

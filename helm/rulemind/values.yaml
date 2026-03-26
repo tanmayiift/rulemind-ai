@@ -1,0 +1,54 @@
+namespace: default
+
+image:
+  web:
+    repository: rulemind/web
+    tag: latest
+    pullPolicy: IfNotPresent
+  api:
+    repository: rulemind/api
+    tag: latest
+    pullPolicy: IfNotPresent
+  worker:
+    repository: rulemind/worker
+    tag: latest
+    pullPolicy: IfNotPresent
+
+replicaCount:
+  web: 2
+  api: 3
+  worker: 2
+
+service:
+  web:
+    type: ClusterIP
+    port: 3000
+  api:
+    type: ClusterIP
+    port: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: rulemind.local
+  tlsSecretName: rulemind-tls
+
+env:
+  databaseUrl: postgresql://rulemind:rulemind@postgres:5432/rulemind
+  redisUrl: redis://redis:6379/0
+  configKey: rulemind-dev-master-key
+  adminJwtSecret: rulemind-admin-dev-secret
+
+resources:
+  api: {}
+  web: {}
+  worker: {}
+
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  cpuUtilization: 70
+
+pdb:
+  minAvailable: 2

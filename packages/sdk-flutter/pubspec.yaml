@@ -1,0 +1,23 @@
+name: rulemind
+description: RuleMind decisioning and workflow-aware SDK for Flutter
+version: 4.1.0-beta.1
+homepage: https://github.com/rulemind-ai/rulemind
+repository: https://github.com/rulemind-ai/rulemind
+issue_tracker: https://github.com/rulemind-ai/rulemind/issues
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.16.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  crypto: ^3.0.3
+  flutter_secure_storage: ^9.2.2
+  hive: ^2.2.3
+  http: ^1.2.1
+  pointycastle: ^3.7.4
+  workmanager: ^0.5.2
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  build_runner: ^2.4.8

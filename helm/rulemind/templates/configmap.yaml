@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rulemind-config
+data:
+  DATABASE_URL: {{ .Values.env.databaseUrl | quote }}
+  REDIS_URL: {{ .Values.env.redisUrl | quote }}

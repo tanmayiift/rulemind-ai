@@ -1,0 +1,16 @@
+{
+  "name": "@rulemind/python-executor",
+  "private": true,
+  "version": "3.0.0",
+  "scripts": {
+    "build": "python3 -m py_compile app/*.py && echo python-build-ok",
+    "dev": "python3 -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8080",
+    "lint": "python3 -m py_compile app/*.py && echo python-lint-ok",
+    "migrate": "alembic -c ../../alembic.ini upgrade head",
+    "openapi": "python3 -c \"from app.main import app; import json, pathlib; pathlib.Path('openapi.json').write_text(json.dumps(app.openapi(), indent=2)); print('python-openapi-ok')\"",
+    "start": "python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8080",
+    "test": "python3 -m unittest discover -s tests -p 'test_*.py'",
+    "typecheck": "python3 -m py_compile app/*.py && echo python-typecheck-ok",
+    "worker": "python3 -m app.worker"
+  }
+}

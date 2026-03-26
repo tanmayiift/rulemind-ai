@@ -1,0 +1,1777 @@
+import copy
+import asyncio
+import os
+import time
+import uuid
+from typing import Any, Dict, List, Optional
+
+from fastapi import BackgroundTasks, Body, Cookie, FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from pydantic import BaseModel, ConfigDict, Field
+
+from .auth import JWT_COOKIE_NAME, bcrypt_verify, create_admin_jwt, decode_admin_jwt
+from .analytics import decision_analytics, experiment_analytics, latency_analytics, sdk_analytics
+from .compiler import BundleCompilationError, NoProductionAssetsError, compile_bundle, render_bundle_response
+from .context import get_current_tenant_id
+from .executor import ExecutionContext, PolicyExecutor
+from .logic import (
+    execute_policy,
+    flatten_tree_to_nodes,
+    export_bundle,
+    find_by_id,
+    generate_rule_expression_definition,
+    now_iso,
+    redact_payload,
+    evaluate_rule_definition,
+    evaluate_rule_nodes,
+    evaluate_scorecard,
+    nodes_to_tree,
+    slugify,
+)
+from .middleware import TenantContextMiddleware, admin_cookie_secure
+from .reviews import submit_review_decision
+from .runtime import is_local_dev, redis_client
+from .sandbox import execute_variable
+from .scheduler import execute_cron_policy, init_scheduler
+from .storage import Storage
+from .webhooks import trigger_webhook
+
+
+def parse_origins() -> List[str]:
+    raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    if "*" in origins:
+        return ["*"]
+    expanded = set(origins)
+    for item in list(origins):
+        if "localhost" in item:
+            expanded.add(item.replace("localhost", "127.0.0.1"))
+        if "127.0.0.1" in item:
+            expanded.add(item.replace("127.0.0.1", "localhost"))
+    return sorted(expanded)
+
+
+storage = Storage()
+
+
+def current_storage() -> Storage:
+    return storage
+
+
+app = FastAPI(title="RuleMind V4 API", version="4.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=parse_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(TenantContextMiddleware, storage=current_storage)
+
+
+DECISIONS_TOTAL = Counter("rulemind_decisions_total", "RuleMind decisions", ["outcome", "source"])
+DECISION_LATENCY = Histogram("rulemind_decision_latency_seconds", "RuleMind decision latency", ["source"])
+BUNDLE_SYNCS_TOTAL = Counter("rulemind_bundle_syncs_total", "RuleMind bundle syncs", ["status"])
+EVENTS_INGESTED_TOTAL = Counter("rulemind_events_ingested_total", "RuleMind SDK events ingested")
+
+
+ALLOWED_NODE_TYPES = {"condition", "and", "or", "approve", "review", "reject"}
+ALLOWED_OPERATORS = {">=", "<=", "==", ">", "<", "!="}
+PROMOTION_FLOW = {"dev": "uat", "uat": "prod"}
+
+
+class ConnectorUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+    schema_paths: Optional[List[str]] = None
+    sample_payload: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+    config: Optional[Dict[str, Any]] = None
+
+
+class TestPayloadRequest(BaseModel):
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PromoteRequest(BaseModel):
+    promoted_by: str = "system"
+    reason: str = "Manual promotion"
+
+
+class VariableUpsertRequest(BaseModel):
+    name: str
+    category: str
+    source_id: str
+    code: str
+    description: Optional[str] = None
+    status: str = "dev"
+
+
+class VariableDraftTestRequest(BaseModel):
+    source_id: str
+    code: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RuleNodeModel(BaseModel):
+    id: str
+    type: str
+    variable: Optional[str] = None
+    operator: Optional[str] = None
+    value: Optional[str] = None
+    label: Optional[str] = None
+
+
+class RuleUpsertRequest(BaseModel):
+    name: str
+    nodes: List[RuleNodeModel] = Field(default_factory=list)
+    tree: Optional[Dict[str, Any]] = None
+    ruleFormat: str = "v1"
+    status: str = "dev"
+
+
+class ScorecardRangeModel(BaseModel):
+    min: float
+    max: float
+    points: int
+
+
+class ScorecardBinModel(BaseModel):
+    variable_id: str
+    ranges: List[ScorecardRangeModel]
+
+
+class ScorecardUpsertRequest(BaseModel):
+    name: str
+    base_score: int = 300
+    max_score: int = 900
+    bins: List[ScorecardBinModel]
+    status: str = "dev"
+
+
+class PolicyStepModel(BaseModel):
+    type: str
+    ref_id: Optional[str] = None
+    ref: Optional[str] = None
+    id: Optional[str] = None
+    name: Optional[str] = None
+    label: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+
+
+class PolicyUpsertRequest(BaseModel):
+    name: str
+    steps: List[PolicyStepModel]
+    trigger: Optional[Dict[str, Any]] = None
+    defaultOutcome: Optional[str] = None
+    status: str = "dev"
+
+
+class DecideRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    policy_id: str = Field(alias="policyId")
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchSimulationRequest(BaseModel):
+    targetType: str
+    targetId: Optional[str] = None
+    payloads: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class DeployItemModel(BaseModel):
+    entity_type: str
+    entity_id: str
+    promoted_by: str = "system"
+    reason: str = "Batch promotion"
+
+
+class DeployPromoteRequest(BaseModel):
+    items: List[DeployItemModel]
+
+
+class ImportRequest(BaseModel):
+    connectors: List[Dict[str, Any]] = Field(default_factory=list)
+    variables: List[Dict[str, Any]] = Field(default_factory=list)
+    rules: List[Dict[str, Any]] = Field(default_factory=list)
+    scorecards: List[Dict[str, Any]] = Field(default_factory=list)
+    policies: List[Dict[str, Any]] = Field(default_factory=list)
+    settings: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SettingsRequest(BaseModel):
+    api_base_url: Optional[str] = None
+    auth_config: Optional[Dict[str, Any]] = None
+    engine_config: Optional[Dict[str, Any]] = None
+    source_defaults: Optional[Dict[str, Any]] = None
+    audit_retention_days: Optional[int] = None
+    theme_mode: Optional[str] = None
+
+
+class TenantCreateRequest(BaseModel):
+    name: str
+    plan: str = "standard"
+    config: Dict[str, Any] = Field(default_factory=dict)
+    is_active: bool = True
+
+
+class TenantUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    plan: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+
+
+class AdminLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class ExperimentUpsertRequest(BaseModel):
+    id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    status: str = "draft"
+    variants: List[Dict[str, Any]] = Field(default_factory=list)
+    hash_key: str = "user_id"
+    target_policy_id: Optional[str] = None
+
+
+class ExperimentStatusRequest(BaseModel):
+    status: str
+
+
+class SdkDecideRequest(BaseModel):
+    policyId: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    userId: Optional[str] = None
+    requestId: Optional[str] = None
+    sdkVersion: Optional[str] = None
+
+
+class SdkEventsRequest(BaseModel):
+    events: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class WebhookUpsertRequest(BaseModel):
+    policy_id: str
+    is_active: bool = True
+    secret: Optional[str] = None
+    payload_mapping: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ScheduleUpsertRequest(BaseModel):
+    policy_id: str
+    cron_expression: str
+    is_active: bool = True
+    payload_source: Dict[str, Any] = Field(default_factory=dict)
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewDecisionRequest(BaseModel):
+    decision: str
+    reviewer_id: str
+    response: Dict[str, Any] = Field(default_factory=dict)
+
+
+def current_connectors() -> Dict[str, Dict[str, Any]]:
+    return {item["id"]: item for item in storage.list_connectors()}
+
+
+def current_variables() -> List[Dict[str, Any]]:
+    return storage.list_variables()
+
+
+def current_variable_map() -> Dict[str, Dict[str, Any]]:
+    return {item["id"]: item for item in current_variables()}
+
+
+def current_rule_map() -> Dict[str, Dict[str, Any]]:
+    return {item["id"]: item for item in storage.list_rules()}
+
+
+def current_scorecard_map() -> Dict[str, Dict[str, Any]]:
+    return {item["id"]: item for item in storage.list_scorecards()}
+
+
+def current_policy_map() -> Dict[str, Dict[str, Any]]:
+    return {item["id"]: item for item in storage.list_policies()}
+
+
+def ensure_exists(entity: Optional[Dict[str, Any]], label: str, entity_id: str) -> Dict[str, Any]:
+    if not entity:
+        raise HTTPException(status_code=404, detail="{0} '{1}' not found.".format(label, entity_id))
+    return entity
+
+
+def next_status(status: str) -> str:
+    if status not in PROMOTION_FLOW:
+        raise HTTPException(status_code=409, detail="Item is already in PROD.")
+    return PROMOTION_FLOW[status]
+
+
+def promotion_ready(entity: Dict[str, Any]) -> bool:
+    result = entity.get("last_test_result")
+    if not result:
+        return False
+    if isinstance(result, dict):
+        if "passed" in result:
+            return bool(result.get("passed"))
+        return result.get("error") in (None, "")
+    return False
+
+
+def ensure_promotable(entity: Dict[str, Any]) -> None:
+    if not promotion_ready(entity):
+        raise HTTPException(status_code=409, detail="Latest test must pass before promotion.")
+
+
+def make_id(name: str, existing: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+    base = slugify(name) or "item"
+    existing_map = existing or {}
+    if base not in existing_map:
+        return base
+    index = 2
+    while "{0}_{1}".format(base, index) in existing_map:
+        index += 1
+    return "{0}_{1}".format(base, index)
+
+
+def connector_payload(source_id: str, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    connectors = current_connectors()
+    connector = connectors.get(source_id, {})
+    if not payload:
+        return copy.deepcopy(connector.get("sample_payload", {}))
+    if source_id in payload and isinstance(payload[source_id], dict):
+        return payload[source_id]
+    return payload
+
+
+def payload_map(payload: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    connectors = current_connectors()
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for connector_id, connector in connectors.items():
+        normalized[connector_id] = copy.deepcopy(connector.get("sample_payload", {}))
+
+    if not payload:
+        return normalized
+
+    for key, value in payload.items():
+        if key in connectors and isinstance(value, dict):
+            normalized[key] = value
+    if not any(key in connectors for key in payload.keys()):
+        normalized["custom"] = payload
+    return normalized
+
+
+def engine_limits() -> Dict[str, int]:
+    settings = storage.get_settings().get("engine_config", {})
+    timeout_ms = int(settings.get("timeout_ms", os.getenv("PYTHON_SANDBOX_TIMEOUT", "2000")))
+    memory_mb = int(settings.get("memory_mb", os.getenv("PYTHON_SANDBOX_MEMORY", "128")))
+    return {"timeout_ms": timeout_ms, "memory_mb": memory_mb}
+
+
+def compute_variable_values(
+    payloads: Dict[str, Dict[str, Any]],
+    variables: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    variable_list = variables if variables is not None else current_variables()
+    connectors = current_connectors()
+    limits = engine_limits()
+    computed_values: Dict[str, Any] = {}
+    results: List[Dict[str, Any]] = []
+
+    for variable in variable_list:
+        source_payload = payloads.get(variable["source_id"], {})
+        execution = execute_variable(
+            variable["code"],
+            source_payload,
+            computed_values,
+            timeout_ms=limits["timeout_ms"],
+            memory_mb=limits["memory_mb"],
+        )
+        computed_values[variable["id"]] = execution.get("value")
+        results.append(
+            {
+                "id": variable["id"],
+                "name": variable["name"],
+                "category": variable["category"],
+                "source_id": variable["source_id"],
+                "source_name": connectors.get(variable["source_id"], {}).get("name"),
+                "source_icon": connectors.get(variable["source_id"], {}).get("icon"),
+                "source_active": connectors.get(variable["source_id"], {}).get("is_active", False),
+                "value": execution.get("value"),
+                "error": execution.get("error"),
+                "latency_ms": execution.get("latency_ms"),
+                "variable_name": execution.get("variable_name"),
+                "passed": execution.get("error") in (None, ""),
+            }
+        )
+    return {"values": computed_values, "results": results}
+
+
+def validate_rule_nodes(nodes: List[Dict[str, Any]]) -> None:
+    if not nodes:
+        raise HTTPException(status_code=422, detail="Rules require at least one node.")
+
+    variable_map = current_variable_map()
+    outcome_count = 0
+    for node in nodes:
+        node_type = node.get("type")
+        if node_type not in ALLOWED_NODE_TYPES:
+            raise HTTPException(status_code=422, detail="Unsupported node type: {0}".format(node_type))
+        if node_type == "condition":
+            if not node.get("variable") or node.get("variable") not in variable_map:
+                raise HTTPException(status_code=422, detail="Condition nodes require a valid variable.")
+            if node.get("operator") not in ALLOWED_OPERATORS:
+                raise HTTPException(status_code=422, detail="Unsupported operator: {0}".format(node.get("operator")))
+        if node_type in {"approve", "review", "reject"}:
+            outcome_count += 1
+    if outcome_count == 0:
+        raise HTTPException(status_code=422, detail="Rules require an outcome node.")
+
+
+def validate_rule_tree(tree: Dict[str, Any], depth: int = 0) -> None:
+    variable_map = current_variable_map()
+    node_type = tree.get("type")
+    if depth > 3:
+        raise HTTPException(status_code=422, detail="Rules may only nest groups three levels deep.")
+    if node_type == "condition":
+        if not tree.get("variable") or tree.get("variable") not in variable_map:
+            raise HTTPException(status_code=422, detail="Condition nodes require a valid variable.")
+        if tree.get("operator") not in ALLOWED_OPERATORS:
+            raise HTTPException(status_code=422, detail="Unsupported operator: {0}".format(tree.get("operator")))
+        return
+    if node_type == "not":
+        child = tree.get("child")
+        if not isinstance(child, dict):
+            raise HTTPException(status_code=422, detail="NOT nodes require a child rule node.")
+        validate_rule_tree(child, depth + 1)
+        return
+    if node_type == "group":
+        logic = str(tree.get("logic", "AND")).upper()
+        if logic not in {"AND", "OR"}:
+            raise HTTPException(status_code=422, detail="Group logic must be AND or OR.")
+        children = tree.get("children") or []
+        if not children:
+            raise HTTPException(status_code=422, detail="Rule groups require one or more child nodes.")
+        for child in children:
+            if not isinstance(child, dict):
+                raise HTTPException(status_code=422, detail="Invalid child node in rule tree.")
+            validate_rule_tree(child, depth + 1)
+        if tree.get("onPass") not in {"approve", "review", "reject"}:
+            raise HTTPException(status_code=422, detail="Rule tree onPass must be approve, review, or reject.")
+        if tree.get("onFail") not in {"approve", "review", "reject"}:
+            raise HTTPException(status_code=422, detail="Rule tree onFail must be approve, review, or reject.")
+        return
+    raise HTTPException(status_code=422, detail="Unsupported rule tree node type: {0}".format(node_type))
+
+
+def normalize_rule_payload(request: RuleUpsertRequest) -> Dict[str, Any]:
+    nodes = [item.model_dump() for item in request.nodes]
+    rule_format = request.ruleFormat if request.ruleFormat in {"v1", "v2"} else ("v2" if request.tree else "v1")
+    tree = copy.deepcopy(request.tree) if request.tree else None
+    if tree:
+        validate_rule_tree(tree)
+        if not nodes:
+            nodes = flatten_tree_to_nodes(tree)
+        rule_format = "v2"
+    else:
+        validate_rule_nodes(nodes)
+        tree = nodes_to_tree(nodes)
+        rule_format = "v1"
+    return {"nodes": nodes, "tree": tree, "rule_format": rule_format}
+
+
+def validate_scorecard_bins(bins: List[Dict[str, Any]]) -> None:
+    variable_map = current_variable_map()
+    if not bins:
+        raise HTTPException(status_code=422, detail="Scorecards require at least one variable bin.")
+    for factor in bins:
+        variable_id = factor.get("variable_id")
+        if variable_id not in variable_map:
+            raise HTTPException(status_code=422, detail="Unknown variable in scorecard: {0}".format(variable_id))
+        if not factor.get("ranges"):
+            raise HTTPException(status_code=422, detail="Scorecard bins require one or more ranges.")
+
+
+def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
+    rules_map = current_rule_map()
+    scorecards_map = current_scorecard_map()
+    connectors = current_connectors()
+    if not steps:
+        raise HTTPException(status_code=422, detail="Policies require at least one step.")
+    for step in steps:
+        step_type = step.get("type")
+        ref_id = step.get("ref_id") or step.get("ref")
+        if step_type == "connector" and ref_id not in connectors:
+            raise HTTPException(status_code=422, detail="Unknown connector in policy: {0}".format(ref_id))
+        if step_type == "rule" and ref_id not in rules_map:
+            raise HTTPException(status_code=422, detail="Unknown rule in policy: {0}".format(ref_id))
+        if step_type == "scorecard" and ref_id not in scorecards_map:
+            raise HTTPException(status_code=422, detail="Unknown scorecard in policy: {0}".format(ref_id))
+        if step_type not in {"connector", "rule", "scorecard", "outcome", "transform", "action", "review_gate"}:
+            raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
+
+
+def record_error(scope: str, stage: str, message: str, entity_type: Optional[str] = None, entity_id: Optional[str] = None, details: Optional[Dict[str, Any]] = None) -> None:
+    storage.add_error_event(
+        {
+            "scope": scope,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "stage": stage,
+            "message": message,
+            "details": details or {},
+            "created_at": now_iso(),
+        }
+    )
+
+
+def test_variable_entity(variable: Dict[str, Any], payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    source_payload = connector_payload(variable["source_id"], payload)
+    limits = engine_limits()
+    started = time.perf_counter()
+    execution = execute_variable(
+        variable["code"],
+        source_payload,
+        {},
+        timeout_ms=limits["timeout_ms"],
+        memory_mb=limits["memory_mb"],
+    )
+    latency_ms = round((time.perf_counter() - started) * 1000, 3)
+    last_test_result = {
+        "value": execution.get("value"),
+        "error": execution.get("error"),
+        "latency_ms": latency_ms,
+        "tested_at": now_iso(),
+        "passed": execution.get("error") in (None, ""),
+    }
+    updated = storage.update_variable(variable["id"], {"last_test_result": last_test_result}, bump_version=False)
+    return {"variable": updated or variable, "result": last_test_result}
+
+
+def test_rule_entity(rule: Dict[str, Any], payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    payloads = payload_map(payload)
+    variable_lookup = current_variable_map()
+    started = time.perf_counter()
+    variable_results = compute_variable_values(payloads)
+    evaluation = evaluate_rule_definition(rule, variable_results["values"], variable_lookup)
+    latency_ms = round((time.perf_counter() - started) * 1000, 3)
+    last_test_result = {
+        "passed": evaluation["passed"],
+        "outcome": evaluation["outcome"],
+        "conditions": evaluation["conditions"],
+        "groupResults": evaluation.get("groupResults", []),
+        "latency_ms": latency_ms,
+        "tested_at": now_iso(),
+    }
+    updated = storage.update_rule(
+        rule["id"],
+        {
+            "expression": generate_rule_expression_definition(rule, variable_lookup),
+            "last_test_result": last_test_result,
+        },
+        bump_version=False,
+    )
+    return {
+        "rule": updated or rule,
+        "expression": generate_rule_expression_definition(rule, variable_lookup),
+        "variable_results": variable_results["results"],
+        "values": variable_results["values"],
+        "result": last_test_result,
+    }
+
+
+def test_scorecard_entity(scorecard: Dict[str, Any], payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    payloads = payload_map(payload)
+    variable_lookup = current_variable_map()
+    started = time.perf_counter()
+    variable_results = compute_variable_values(payloads)
+    evaluation = evaluate_scorecard(scorecard, variable_results["values"], variable_lookup)
+    latency_ms = round((time.perf_counter() - started) * 1000, 3)
+    last_test_result = {
+        "passed": True,
+        "score": evaluation["score"],
+        "latency_ms": latency_ms,
+        "tested_at": now_iso(),
+    }
+    updated = storage.update_scorecard(scorecard["id"], {"last_test_result": last_test_result}, bump_version=False)
+    return {"scorecard": updated or scorecard, "variable_results": variable_results["results"], "result": evaluation}
+
+
+def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]], log_decision: bool = False) -> Dict[str, Any]:
+    started = time.perf_counter()
+    executor = workflow_executor()
+    ctx = asyncio.run(executor.execute(policy=policy, payload=payload or {}, tenant_id=active_tenant_id(), source="test_console"))
+    latency_ms = round((time.perf_counter() - started) * 1000, 3)
+    variable_lookup = current_variable_map()
+    connectors = current_connectors()
+    variable_results = [
+        {
+            "id": variable_id,
+            "name": variable_lookup.get(variable_id, {}).get("name", variable_id),
+            "category": variable_lookup.get(variable_id, {}).get("category"),
+            "source_id": variable_lookup.get(variable_id, {}).get("source_id"),
+            "source_name": connectors.get(variable_lookup.get(variable_id, {}).get("source_id", ""), {}).get("name"),
+            "source_icon": connectors.get(variable_lookup.get(variable_id, {}).get("source_id", ""), {}).get("icon"),
+            "source_active": connectors.get(variable_lookup.get(variable_id, {}).get("source_id", ""), {}).get("is_active", False),
+            "value": value,
+            "error": None,
+            "latency_ms": 0,
+            "variable_name": variable_lookup.get(variable_id, {}).get("name", variable_id),
+            "passed": True,
+        }
+        for variable_id, value in ctx.variables.items()
+    ]
+    scorecard_result = next(iter(ctx.scorecard_results.values()), None)
+    outcome = {
+        "policy_id": policy.get("id"),
+        "outcome": ctx.outcome if ctx.outcome != "pending" else policy.get("defaultOutcome", "review"),
+        "scorecard_result": scorecard_result,
+        "trace": copy.deepcopy(ctx.step_trace),
+        "status": ctx.status,
+        "execution_id": ctx.execution_id,
+    }
+    last_test_result = {
+        "passed": outcome["outcome"] in {"approve", "review", "reject"},
+        "outcome": outcome["outcome"],
+        "latency_ms": latency_ms,
+        "tested_at": now_iso(),
+    }
+    updated = storage.update_policy(policy["id"], {"last_test_result": last_test_result}, bump_version=False)
+    if log_decision:
+        storage.add_decision(
+            {
+                "id": str(uuid.uuid4()),
+                "policy_id": policy["id"],
+                "payload": redact_payload(ctx.payload),
+                "computed_variables": ctx.variables,
+                "rule_results": copy.deepcopy(ctx.rule_results),
+                "scorecard_result": scorecard_result,
+                "trace": copy.deepcopy(ctx.step_trace),
+                "outcome": outcome["outcome"],
+                "latency_ms": int(latency_ms),
+                "created_at": now_iso(),
+            }
+        )
+    return {
+        "policy": updated or policy,
+        "variable_results": variable_results,
+        "values": ctx.variables,
+        "result": outcome,
+        "latency_ms": latency_ms,
+    }
+
+
+def promote_entity(entity_type: str, entity_id: str, promoted_by: str, reason: str) -> Dict[str, Any]:
+    update_map = {
+        "variable": (storage.get_variable, storage.update_variable),
+        "rule": (storage.get_rule, storage.update_rule),
+        "scorecard": (storage.get_scorecard, storage.update_scorecard),
+        "policy": (storage.get_policy, storage.update_policy),
+    }
+    if entity_type not in update_map:
+        raise HTTPException(status_code=422, detail="Unsupported entity type for promotion.")
+    getter, updater = update_map[entity_type]
+    entity = ensure_exists(getter(entity_id), entity_type, entity_id)
+    ensure_promotable(entity)
+    target_status = next_status(entity["status"])
+    updated = updater(entity_id, {"status": target_status}, bump_version=False)
+    storage.add_promotion(entity_type, entity_id, entity["status"], target_status, promoted_by, reason)
+    return ensure_exists(updated, entity_type, entity_id)
+
+
+def require_platform_admin(admin_token: Optional[str]) -> Dict[str, Any]:
+    if not admin_token:
+        raise HTTPException(status_code=401, detail="Admin authentication required.")
+    try:
+        payload = decode_admin_jwt(admin_token)
+    except Exception as error:  # pragma: no cover - defensive auth guard
+        raise HTTPException(status_code=401, detail="Invalid admin session.") from error
+    user = storage.get_platform_admin_user(str(payload.get("sub", "")))
+    if not user or not user.get("is_active", False):
+        raise HTTPException(status_code=401, detail="Admin session expired.")
+    return user
+
+
+def workflow_executor() -> PolicyExecutor:
+    return PolicyExecutor(storage)
+
+
+def maybe_compile_bundle(tenant_id: str, background_tasks: Optional[BackgroundTasks] = None, force: bool = False) -> None:
+    if not storage.mark_bundle_compile_queued(tenant_id, force=force):
+        return
+
+    def _compile() -> None:
+        try:
+            compile_bundle(storage, tenant_id, force=True)
+        except NoProductionAssetsError:
+            return
+        except BundleCompilationError as error:
+            storage.add_error_event(
+                {
+                    "tenant_id": tenant_id,
+                    "scope": "bundle",
+                    "entity_type": "bundle",
+                    "entity_id": error.entity_id,
+                    "stage": "compile",
+                    "message": str(error),
+                    "details": {"entity_type": error.entity_type, "entity_id": error.entity_id},
+                },
+                tenant_id=tenant_id,
+            )
+        except Exception as error:
+            storage.add_error_event(
+                {
+                    "tenant_id": tenant_id,
+                    "scope": "bundle",
+                    "entity_type": "bundle",
+                    "entity_id": None,
+                    "stage": "compile",
+                    "message": str(error),
+                    "details": {},
+                },
+                tenant_id=tenant_id,
+            )
+
+    if background_tasks is not None:
+        background_tasks.add_task(_compile)
+    else:
+        _compile()
+
+
+def active_tenant_id(request: Optional[Request] = None) -> str:
+    if request is not None and getattr(request.state, "tenant_id", None):
+        return str(request.state.tenant_id)
+    if get_current_tenant_id():
+        return str(get_current_tenant_id())
+    return str(storage.default_tenant_id or "")
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    if not (is_local_dev() or os.getenv("RULEMIND_RUN_API_SCHEDULER") == "1"):
+        return
+    try:
+        init_scheduler(storage)
+    except Exception:
+        # Scheduler failures should not block local development or tests.
+        return
+
+
+@app.get("/health")
+@app.get("/api/v1/health")
+def health() -> Dict[str, str]:
+    try:
+        with storage.connect():
+            db_status = "ok"
+    except Exception:
+        db_status = "error"
+    try:
+        client = redis_client()
+        redis_status = "ok" if client is not None and client.ping() else "error"
+    except Exception:
+        redis_status = "error"
+    overall = "ok" if db_status == "ok" and redis_status == "ok" else "degraded"
+    return {"status": overall, "db": db_status, "redis": redis_status, "version": "4.0.0"}
+
+
+@app.get("/ready")
+def ready() -> Dict[str, bool]:
+    try:
+        with storage.connect():
+            client = redis_client()
+            return {"ready": bool(client is not None and client.ping())}
+    except Exception:
+        return {"ready": False}
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.post("/api/admin/v1/auth/login")
+def admin_login(request: AdminLoginRequest, response: Response) -> Dict[str, Any]:
+    user = storage.get_platform_admin_user_by_email(request.email)
+    if not user or not user.get("is_active") or not bcrypt_verify(request.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    token = create_admin_jwt(user["id"], user["email"])
+    response.set_cookie(
+        JWT_COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=admin_cookie_secure(),
+        samesite="lax",
+        path="/",
+        max_age=60 * 60 * 12,
+    )
+    return {"user": {key: value for key, value in user.items() if key != "password_hash"}}
+
+
+@app.get("/api/admin/v1/auth/me")
+def admin_me(admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
+    return {"user": require_platform_admin(admin_token)}
+
+
+@app.post("/api/admin/v1/auth/logout")
+def admin_logout(response: Response) -> Dict[str, bool]:
+    response.delete_cookie(JWT_COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/admin/v1/tenants")
+def admin_list_tenants(admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> List[Dict[str, Any]]:
+    require_platform_admin(admin_token)
+    return storage.list_tenants()
+
+
+@app.post("/api/admin/v1/tenants")
+def admin_create_tenant(request: TenantCreateRequest, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
+    require_platform_admin(admin_token)
+    return storage.create_tenant(request.name, plan=request.plan, config=request.config, is_active=request.is_active)
+
+
+@app.get("/api/admin/v1/tenants/{tenant_id}")
+def admin_get_tenant(tenant_id: str, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
+    require_platform_admin(admin_token)
+    tenant = storage.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+    return tenant
+
+
+@app.patch("/api/admin/v1/tenants/{tenant_id}")
+def admin_update_tenant(tenant_id: str, request: TenantUpdateRequest, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
+    require_platform_admin(admin_token)
+    tenant = storage.update_tenant(tenant_id, request.model_dump(exclude_none=True))
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+    return tenant
+
+
+@app.post("/api/admin/v1/tenants/{tenant_id}/keys")
+def admin_create_tenant_key(tenant_id: str, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
+    require_platform_admin(admin_token)
+    try:
+        return storage.generate_api_key_for_tenant(tenant_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/admin/v1/tenants/{tenant_id}/keys")
+def admin_list_tenant_keys(tenant_id: str, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> List[Dict[str, Any]]:
+    require_platform_admin(admin_token)
+    return storage.list_api_keys(tenant_id)
+
+
+@app.delete("/api/admin/v1/tenants/{tenant_id}/keys/{kid}")
+def admin_revoke_tenant_key(tenant_id: str, kid: str, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, bool]:
+    require_platform_admin(admin_token)
+    if not storage.revoke_api_key(tenant_id, kid):
+        raise HTTPException(status_code=404, detail="API key not found.")
+    return {"revoked": True}
+
+
+@app.get("/api/v1/connectors")
+def list_connectors() -> List[Dict[str, Any]]:
+    return storage.list_connectors()
+
+
+@app.put("/api/v1/connectors/{connector_id}")
+def update_connector(connector_id: str, request: ConnectorUpdateRequest) -> Dict[str, Any]:
+    connector = ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
+    updated = storage.update_connector(
+        connector_id,
+        {
+            "name": request.name or connector["name"],
+            "icon": request.icon or connector["icon"],
+            "color": request.color or connector["color"],
+            "description": request.description if request.description is not None else connector.get("description"),
+            "schema_paths": request.schema_paths or connector.get("schema_paths", []),
+            "sample_payload": request.sample_payload if request.sample_payload is not None else connector.get("sample_payload", {}),
+            "is_active": connector["is_active"] if request.is_active is None else request.is_active,
+            "config": request.config if request.config is not None else connector.get("config", {}),
+        },
+    )
+    return ensure_exists(updated, "connector", connector_id)
+
+
+@app.post("/api/v1/connectors/{connector_id}/test")
+def test_connector(connector_id: str) -> Dict[str, Any]:
+    connector = ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
+    return {
+        "connector_id": connector["id"],
+        "passed": True,
+        "schema_paths": connector["schema_paths"],
+        "sample_payload": connector["sample_payload"],
+        "config_summary": {
+            "auth_type": connector.get("config", {}).get("auth_type", "api_key"),
+            "base_url": connector.get("config", {}).get("base_url", ""),
+            "has_webhook": bool(connector.get("config", {}).get("webhook_url")),
+        },
+    }
+
+
+@app.get("/api/v1/variables")
+def list_variables(
+    source: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None),
+) -> List[Dict[str, Any]]:
+    return storage.list_variables(source_id=source, status=status, category=category)
+
+
+@app.post("/api/v1/variables")
+def create_variable(request: VariableUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+    connectors = current_connectors()
+    if request.source_id not in connectors:
+        raise HTTPException(status_code=422, detail="Unknown source connector.")
+    variable_id = make_id(request.name, current_variable_map())
+    created = storage.create_variable(
+        {
+            "id": variable_id,
+            "name": request.name,
+            "category": request.category,
+            "source_id": request.source_id,
+            "code": request.code,
+            "description": request.description,
+            "status": request.status,
+            "last_test_result": None,
+            "version": 1,
+        }
+    )
+    if created["status"] == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return created
+
+
+@app.put("/api/v1/variables/{variable_id}")
+def update_variable(
+    variable_id: str,
+    request: VariableUpsertRequest,
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
+    existing = ensure_exists(storage.get_variable(variable_id), "variable", variable_id)
+    updated = storage.update_variable(
+        variable_id,
+        {
+            "name": request.name,
+            "category": request.category,
+            "source_id": request.source_id,
+            "code": request.code,
+            "description": request.description,
+            "status": request.status,
+        },
+    )
+    if existing["status"] == "prod" or request.status == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return ensure_exists(updated, "variable", variable_id)
+
+
+@app.delete("/api/v1/variables/{variable_id}")
+def delete_variable(variable_id: str) -> Dict[str, Any]:
+    variable = ensure_exists(storage.get_variable(variable_id), "variable", variable_id)
+    if variable["status"] != "dev":
+        raise HTTPException(status_code=409, detail="Only DEV variables can be deleted.")
+    return storage.delete_variable(variable_id) or variable
+
+
+@app.post("/api/v1/variables/{variable_id}/test")
+def test_variable(variable_id: str, request: TestPayloadRequest = Body(default=TestPayloadRequest())) -> Dict[str, Any]:
+    variable = ensure_exists(storage.get_variable(variable_id), "variable", variable_id)
+    result = test_variable_entity(variable, request.payload)
+    if result["result"].get("error"):
+        record_error("variables", "test", result["result"]["error"], "variable", variable_id, {"payload": request.payload})
+    return result
+
+
+@app.post("/api/v1/variables/test-draft")
+def test_variable_draft(request: VariableDraftTestRequest) -> Dict[str, Any]:
+    connectors = current_connectors()
+    if request.source_id not in connectors:
+      raise HTTPException(status_code=422, detail="Unknown source connector.")
+    limits = engine_limits()
+    execution = execute_variable(
+        request.code,
+        connector_payload(request.source_id, request.payload),
+        {},
+        timeout_ms=limits["timeout_ms"],
+        memory_mb=limits["memory_mb"],
+    )
+    result = {
+        "result": {
+            "value": execution.get("value"),
+            "error": execution.get("error"),
+            "latency_ms": execution.get("latency_ms"),
+            "passed": execution.get("error") in (None, ""),
+            "tested_at": now_iso(),
+        }
+    }
+    if result["result"]["error"]:
+        record_error("variables", "draft_test", result["result"]["error"], "variable", None, {"source_id": request.source_id})
+    return result
+
+
+@app.post("/api/v1/variables/{variable_id}/promote")
+def promote_variable(
+    variable_id: str,
+    request: PromoteRequest,
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
+    promoted = promote_entity("variable", variable_id, request.promoted_by, request.reason)
+    if promoted["status"] == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return promoted
+
+
+@app.get("/api/v1/variables/{variable_id}/history")
+def variable_history(variable_id: str) -> List[Dict[str, Any]]:
+    return storage.get_history("variable", variable_id)
+
+
+@app.get("/api/v1/variables/graph")
+def variable_graph() -> Dict[str, Any]:
+    variables = storage.list_variables()
+    rules = storage.list_rules()
+    scorecards = storage.list_scorecards()
+    policies = storage.list_policies()
+    nodes = []
+    edges = []
+    for variable in variables:
+        nodes.append({"id": variable["id"], "type": "variable", "label": variable["name"], "status": variable["status"]})
+    for rule in rules:
+        nodes.append({"id": rule["id"], "type": "rule", "label": rule["name"], "status": rule["status"]})
+        referenced = {node.get("variable") for node in rule.get("nodes", []) if node.get("type") == "condition" and node.get("variable")}
+        for variable_id in referenced:
+            edges.append({"from": variable_id, "to": rule["id"], "relation": "used_by_rule"})
+    for scorecard in scorecards:
+        nodes.append({"id": scorecard["id"], "type": "scorecard", "label": scorecard["name"], "status": scorecard["status"]})
+        for factor in scorecard.get("bins", []):
+            edges.append({"from": factor.get("variable_id"), "to": scorecard["id"], "relation": "used_by_scorecard"})
+    for policy in policies:
+        nodes.append({"id": policy["id"], "type": "policy", "label": policy["name"], "status": policy["status"]})
+        for step in policy.get("steps", []):
+            if step.get("type") in {"rule", "scorecard"}:
+                edges.append({"from": step.get("ref_id"), "to": policy["id"], "relation": "used_by_policy"})
+    return {"nodes": nodes, "edges": edges}
+
+
+@app.get("/api/v1/rules")
+def list_rules(status: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
+    return storage.list_rules(status=status)
+
+
+@app.post("/api/v1/rules")
+def create_rule(request: RuleUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+    normalized = normalize_rule_payload(request)
+    rule_id = make_id(request.name, current_rule_map())
+    created = storage.create_rule(
+        {
+            "id": rule_id,
+            "name": request.name,
+            "nodes": normalized["nodes"],
+            "tree": normalized["tree"],
+            "rule_format": normalized["rule_format"],
+            "expression": generate_rule_expression_definition(normalized, current_variable_map()),
+            "status": request.status,
+            "last_test_result": None,
+            "version": 1,
+        }
+    )
+    if created["status"] == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return created
+
+
+@app.put("/api/v1/rules/{rule_id}")
+def update_rule(
+    rule_id: str,
+    request: RuleUpsertRequest,
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
+    normalized = normalize_rule_payload(request)
+    existing = ensure_exists(storage.get_rule(rule_id), "rule", rule_id)
+    updated = storage.update_rule(
+        rule_id,
+        {
+            "name": request.name,
+            "nodes": normalized["nodes"],
+            "tree": normalized["tree"],
+            "rule_format": normalized["rule_format"],
+            "expression": generate_rule_expression_definition(normalized, current_variable_map()),
+            "status": request.status,
+        },
+    )
+    if existing["status"] == "prod" or request.status == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return ensure_exists(updated, "rule", rule_id)
+
+
+@app.delete("/api/v1/rules/{rule_id}")
+def delete_rule(rule_id: str) -> Dict[str, Any]:
+    rule = ensure_exists(storage.get_rule(rule_id), "rule", rule_id)
+    if rule["status"] != "dev":
+        raise HTTPException(status_code=409, detail="Only DEV rules can be deleted.")
+    return storage.delete_rule(rule_id) or rule
+
+
+@app.post("/api/v1/rules/{rule_id}/test")
+@app.post("/api/v1/test/rule/{rule_id}")
+def test_rule(rule_id: str, request: TestPayloadRequest = Body(default=TestPayloadRequest())) -> Dict[str, Any]:
+    rule = ensure_exists(storage.get_rule(rule_id), "rule", rule_id)
+    result = test_rule_entity(rule, request.payload)
+    if not result["result"].get("passed"):
+        record_error("rules", "test", "Rule test did not pass.", "rule", rule_id, {"outcome": result["result"]})
+    return result
+
+
+@app.post("/api/v1/rules/{rule_id}/promote")
+def promote_rule(
+    rule_id: str,
+    request: PromoteRequest,
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
+    promoted = promote_entity("rule", rule_id, request.promoted_by, request.reason)
+    if promoted["status"] == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return promoted
+
+
+@app.get("/api/v1/scorecards")
+def list_scorecards(status: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
+    return storage.list_scorecards(status=status)
+
+
+@app.post("/api/v1/scorecards")
+def create_scorecard(request: ScorecardUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+    bins = [item.model_dump() for item in request.bins]
+    validate_scorecard_bins(bins)
+    scorecard_id = make_id(request.name, current_scorecard_map())
+    created = storage.create_scorecard(
+        {
+            "id": scorecard_id,
+            "name": request.name,
+            "base_score": request.base_score,
+            "max_score": request.max_score,
+            "bins": bins,
+            "status": request.status,
+            "last_test_result": None,
+            "version": 1,
+        }
+    )
+    if created["status"] == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return created
+
+
+@app.put("/api/v1/scorecards/{scorecard_id}")
+def update_scorecard(
+    scorecard_id: str,
+    request: ScorecardUpsertRequest,
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
+    bins = [item.model_dump() for item in request.bins]
+    validate_scorecard_bins(bins)
+    existing = ensure_exists(storage.get_scorecard(scorecard_id), "scorecard", scorecard_id)
+    updated = storage.update_scorecard(
+        scorecard_id,
+        {
+            "name": request.name,
+            "base_score": request.base_score,
+            "max_score": request.max_score,
+            "bins": bins,
+            "status": request.status,
+        },
+    )
+    if existing["status"] == "prod" or request.status == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return ensure_exists(updated, "scorecard", scorecard_id)
+
+
+@app.post("/api/v1/scorecards/{scorecard_id}/test")
+def test_scorecard(scorecard_id: str, request: TestPayloadRequest = Body(default=TestPayloadRequest())) -> Dict[str, Any]:
+    scorecard = ensure_exists(storage.get_scorecard(scorecard_id), "scorecard", scorecard_id)
+    return test_scorecard_entity(scorecard, request.payload)
+
+
+@app.post("/api/v1/scorecards/{scorecard_id}/promote")
+def promote_scorecard(
+    scorecard_id: str,
+    request: PromoteRequest,
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
+    promoted = promote_entity("scorecard", scorecard_id, request.promoted_by, request.reason)
+    if promoted["status"] == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return promoted
+
+
+@app.get("/api/v1/policies")
+def list_policies(status: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
+    return storage.list_policies(status=status)
+
+
+@app.post("/api/v1/policies")
+def create_policy(request: PolicyUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+    steps = [item.model_dump() for item in request.steps]
+    validate_policy_steps(steps)
+    policy_id = make_id(request.name, current_policy_map())
+    created = storage.create_policy(
+        {
+            "id": policy_id,
+            "name": request.name,
+            "trigger": request.trigger,
+            "steps": steps,
+            "defaultOutcome": request.defaultOutcome,
+            "status": request.status,
+            "last_test_result": None,
+            "version": 1,
+        }
+    )
+    if created["status"] == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return created
+
+
+@app.put("/api/v1/policies/{policy_id}")
+def update_policy(
+    policy_id: str,
+    request: PolicyUpsertRequest,
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
+    steps = [item.model_dump() for item in request.steps]
+    validate_policy_steps(steps)
+    existing = ensure_exists(storage.get_policy(policy_id), "policy", policy_id)
+    updated = storage.update_policy(
+        policy_id,
+        {
+            "name": request.name,
+            "trigger": request.trigger,
+            "steps": steps,
+            "defaultOutcome": request.defaultOutcome,
+            "status": request.status,
+        },
+    )
+    if existing["status"] == "prod" or request.status == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return ensure_exists(updated, "policy", policy_id)
+
+
+@app.post("/api/v1/policies/{policy_id}/execute")
+@app.post("/api/v1/test/policy/{policy_id}")
+def execute_policy_endpoint(policy_id: str, request: TestPayloadRequest = Body(default=TestPayloadRequest())) -> Dict[str, Any]:
+    policy = ensure_exists(storage.get_policy(policy_id), "policy", policy_id)
+    result = test_policy_entity(policy, request.payload)
+    if result["result"].get("outcome") == "reject":
+        record_error("policies", "execute", "Policy execution rejected on sample payload.", "policy", policy_id, {"trace": result["result"].get("trace", [])})
+    return result
+
+
+@app.post("/api/v1/policies/{policy_id}/promote")
+def promote_policy(
+    policy_id: str,
+    request: PromoteRequest,
+    background_tasks: BackgroundTasks = None,
+) -> Dict[str, Any]:
+    promoted = promote_entity("policy", policy_id, request.promoted_by, request.reason)
+    if promoted["status"] == "prod":
+        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
+    return promoted
+
+
+@app.post("/api/v1/test/variables")
+def batch_test_variables(request: TestPayloadRequest = Body(default=TestPayloadRequest())) -> Dict[str, Any]:
+    payloads = payload_map(request.payload)
+    results = []
+    pass_count = 0
+    for variable in storage.list_variables():
+        outcome = test_variable_entity(variable, payloads)
+        result = {
+            "id": outcome["variable"]["id"],
+            "name": outcome["variable"]["name"],
+            "status": outcome["variable"]["status"],
+            "category": outcome["variable"]["category"],
+            "source_id": outcome["variable"]["source_id"],
+            "source_icon": current_connectors().get(outcome["variable"]["source_id"], {}).get("icon"),
+            "computed_value": outcome["result"]["value"],
+            "latency_ms": outcome["result"]["latency_ms"],
+            "passed": outcome["result"]["passed"],
+            "badge": "PASS" if outcome["result"]["passed"] else "SIM",
+            "error": outcome["result"]["error"],
+        }
+        pass_count += 1 if result["passed"] else 0
+        results.append(result)
+    return {"results": results, "summary": "{0}/{1} passed".format(pass_count, len(results))}
+
+
+@app.post("/api/v1/test/batch")
+def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
+    rows = []
+    for index, payload in enumerate(request.payloads):
+        if request.targetType == "variables":
+            result = batch_test_variables(TestPayloadRequest(payload=payload))
+        elif request.targetType == "rule":
+            if not request.targetId:
+                raise HTTPException(status_code=422, detail="targetId is required for rule batch simulation.")
+            result = test_rule(request.targetId, TestPayloadRequest(payload=payload))
+        elif request.targetType == "policy":
+            if not request.targetId:
+                raise HTTPException(status_code=422, detail="targetId is required for policy batch simulation.")
+            result = execute_policy_endpoint(request.targetId, TestPayloadRequest(payload=payload))
+        elif request.targetType == "decide":
+            if not request.targetId:
+                raise HTTPException(status_code=422, detail="targetId is required for decision batch simulation.")
+            result = decide(DecideRequest(policy_id=request.targetId, payload=payload))
+        else:
+            raise HTTPException(status_code=422, detail="Unsupported batch targetType.")
+        rows.append({"index": index, "payload": payload, "result": result})
+    return {"targetType": request.targetType, "targetId": request.targetId, "rows": rows, "count": len(rows)}
+
+
+@app.post("/api/v1/decide")
+def decide(request: DecideRequest) -> Dict[str, Any]:
+    policy = ensure_exists(storage.get_policy(request.policy_id), "policy", request.policy_id)
+    outcome = test_policy_entity(policy, request.payload, log_decision=True)
+    if outcome["result"]["outcome"] == "reject":
+        record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {"trace": outcome["result"].get("trace", [])})
+    return {
+        "policy_id": policy["id"],
+        "outcome": outcome["result"]["outcome"],
+        "score": outcome["result"].get("scorecard_result", {}).get("score") if outcome["result"].get("scorecard_result") else None,
+        "variables": outcome["values"],
+        "rule_results": [item for item in outcome["result"]["trace"] if item.get("step", {}).get("type") == "rule"],
+        "scorecard_result": outcome["result"].get("scorecard_result"),
+        "trace": outcome["result"]["trace"],
+        "latency_ms": outcome["latency_ms"],
+    }
+
+
+@app.post("/api/v1/decide/batch")
+def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
+    if not request.targetId:
+        raise HTTPException(status_code=422, detail="targetId is required for decision batches.")
+    rows = []
+    for index, payload in enumerate(request.payloads):
+        rows.append({"index": index, "result": decide(DecideRequest(policy_id=request.targetId, payload=payload))})
+    return {"targetType": "decide", "targetId": request.targetId, "rows": rows, "count": len(rows)}
+
+
+@app.get("/api/v1/deploy/status")
+def deploy_status() -> Dict[str, Any]:
+    return {
+        "dev": {
+            "variables": storage.list_variables(status="dev"),
+            "rules": storage.list_rules(status="dev"),
+            "scorecards": storage.list_scorecards(status="dev"),
+            "policies": storage.list_policies(status="dev"),
+        },
+        "uat": {
+            "variables": storage.list_variables(status="uat"),
+            "rules": storage.list_rules(status="uat"),
+            "scorecards": storage.list_scorecards(status="uat"),
+            "policies": storage.list_policies(status="uat"),
+        },
+        "prod": {
+            "variables": storage.list_variables(status="prod"),
+            "rules": storage.list_rules(status="prod"),
+            "scorecards": storage.list_scorecards(status="prod"),
+            "policies": storage.list_policies(status="prod"),
+        },
+    }
+
+
+@app.post("/api/v1/deploy/promote")
+def deploy_promote(request: DeployPromoteRequest) -> Dict[str, Any]:
+    promoted = []
+    for item in request.items:
+        promoted.append(promote_entity(item.entity_type, item.entity_id, item.promoted_by, item.reason))
+    return {"promoted": promoted, "history": storage.list_promotions()[: len(promoted)]}
+
+
+@app.get("/api/v1/export")
+def export_config(format: str = Query(default="json")) -> PlainTextResponse:
+    config = storage.export_config()
+    content = export_bundle(config, format)
+    extension = "py" if format == "python" else format
+    media_type = {
+        "json": "application/json",
+        "yaml": "application/x-yaml",
+        "python": "text/x-python",
+    }.get(format, "text/plain")
+    return PlainTextResponse(
+        content,
+        media_type=media_type,
+        headers={"Content-Disposition": 'attachment; filename="rulemind-export.{0}"'.format(extension)},
+    )
+
+
+@app.post("/api/v1/import")
+def import_config(request: ImportRequest) -> Dict[str, Any]:
+    try:
+        storage.replace_all(request.model_dump())
+        return {"imported": True, "counts": {key: len(value) if isinstance(value, list) else 1 for key, value in request.model_dump().items()}}
+    except Exception as error:
+        record_error("imports", "replace_all", str(error), None, None, {"keys": sorted(request.model_dump().keys())})
+        raise
+
+
+@app.get("/api/v1/audit/decisions")
+def audit_decisions() -> List[Dict[str, Any]]:
+    return storage.list_decisions()
+
+
+@app.get("/api/v1/audit/promotions")
+def audit_promotions() -> List[Dict[str, Any]]:
+    return storage.list_promotions()
+
+
+@app.get("/api/v1/audit/errors")
+def audit_errors() -> List[Dict[str, Any]]:
+    return storage.list_error_events()
+
+
+@app.get("/api/v1/settings")
+def get_settings() -> Dict[str, Any]:
+    return storage.get_settings()
+
+
+@app.put("/api/v1/settings")
+def update_settings(request: SettingsRequest) -> Dict[str, Any]:
+    return storage.update_settings(request.model_dump())
+
+
+@app.get("/api/v1/bootstrap")
+def bootstrap() -> Dict[str, Any]:
+    return {
+        "connectors": storage.list_connectors(),
+        "variables": storage.list_variables(),
+        "rules": storage.list_rules(),
+        "scorecards": storage.list_scorecards(),
+        "policies": storage.list_policies(),
+        "settings": storage.get_settings(),
+        "promotions": storage.list_promotions(),
+    }
+
+
+@app.get("/api/v1/experiments")
+def list_experiments() -> List[Dict[str, Any]]:
+    return storage.list_experiments()
+
+
+@app.post("/api/v1/experiments")
+def create_experiment(request: ExperimentUpsertRequest) -> Dict[str, Any]:
+    experiment_id = request.id or make_id(request.name, {item["id"]: item for item in storage.list_experiments()})
+    return storage.create_or_update_experiment({**request.model_dump(), "id": experiment_id})
+
+
+@app.put("/api/v1/experiments/{experiment_id}")
+def update_experiment(experiment_id: str, request: ExperimentUpsertRequest) -> Dict[str, Any]:
+    existing = storage.get_experiment(experiment_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+    return storage.create_or_update_experiment({**existing, **request.model_dump(exclude_none=True), "id": experiment_id})
+
+
+@app.patch("/api/v1/experiments/{experiment_id}/status")
+def update_experiment_status(experiment_id: str, request: ExperimentStatusRequest) -> Dict[str, Any]:
+    existing = storage.get_experiment(experiment_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+    return storage.create_or_update_experiment({**existing, "status": request.status, "id": experiment_id})
+
+
+@app.delete("/api/v1/experiments/{experiment_id}")
+def delete_experiment(experiment_id: str) -> Dict[str, bool]:
+    existing = storage.get_experiment(experiment_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+    if existing["status"] != "draft":
+        raise HTTPException(status_code=409, detail="Only draft experiments can be deleted.")
+    storage.delete_experiment(experiment_id)
+    return {"deleted": True}
+
+
+@app.get("/api/v1/experiments/{experiment_id}/results")
+@app.get("/api/v1/analytics/experiments/{experiment_id}")
+def experiment_results(experiment_id: str) -> Dict[str, Any]:
+    try:
+        return experiment_analytics(storage, active_tenant_id(), experiment_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/v1/analytics/decisions")
+def analytics_decisions() -> Dict[str, Any]:
+    return decision_analytics(storage, active_tenant_id())
+
+
+@app.get("/api/v1/analytics/latency")
+def analytics_latency() -> Dict[str, Any]:
+    return latency_analytics(storage, active_tenant_id())
+
+
+@app.get("/api/v1/analytics/sdk")
+def analytics_sdk() -> Dict[str, Any]:
+    return sdk_analytics(storage, active_tenant_id())
+
+
+@app.get("/sdk/v1/health")
+def sdk_health(request: Request) -> Dict[str, Any]:
+    latest = storage.latest_bundle(tenant_id=active_tenant_id(request))
+    return {"status": "ok", "latestBundleVersion": latest["version"] if latest else 0}
+
+
+@app.get("/sdk/v1/bundle")
+def sdk_bundle(request: Request) -> Response:
+    tenant_id = active_tenant_id(request)
+    latest = storage.latest_bundle(tenant_id=tenant_id)
+    if latest is None:
+        try:
+            latest = compile_bundle(storage, tenant_id, client_public_key=request.headers.get("x-client-public-key"), force=True)
+        except NoProductionAssetsError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except BundleCompilationError as error:
+            storage.add_error_event(
+                {
+                    "tenant_id": tenant_id,
+                    "scope": "bundle",
+                    "entity_type": "bundle",
+                    "entity_id": error.entity_id,
+                    "stage": "compile",
+                    "message": str(error),
+                    "details": {"entity_type": error.entity_type, "entity_id": error.entity_id},
+                },
+                tenant_id=tenant_id,
+            )
+            raise HTTPException(status_code=500, detail=str(error)) from error
+        except Exception as error:
+            storage.add_error_event(
+                {
+                    "tenant_id": tenant_id,
+                    "scope": "bundle",
+                    "entity_type": "bundle",
+                    "stage": "compile",
+                    "message": str(error),
+                    "details": {},
+                },
+                tenant_id=tenant_id,
+            )
+            raise
+    current_version = int(request.headers.get("x-bundle-version", "0") or "0")
+    if int(latest["version"]) == current_version:
+        BUNDLE_SYNCS_TOTAL.labels(status="not_modified").inc()
+        return Response(status_code=304)
+    content = latest["content"]
+    response_payload = render_bundle_response(content, request.headers.get("x-client-public-key"))
+    BUNDLE_SYNCS_TOTAL.labels(status="success").inc()
+    return Response(content=json_dumps(response_payload), media_type="application/json")
+
+
+@app.post("/sdk/v1/decide")
+def sdk_decide(request: SdkDecideRequest) -> Dict[str, Any]:
+    policy = ensure_exists(storage.get_policy(request.policyId), "policy", request.policyId)
+    started = time.perf_counter()
+    ctx = asyncio.run(
+        workflow_executor().execute(
+            policy=policy,
+            payload=request.payload,
+            tenant_id=active_tenant_id(),
+            user_id=request.userId,
+            source="sdk_server",
+            sdk_version=request.sdkVersion,
+        )
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    DECISIONS_TOTAL.labels(outcome=ctx.outcome, source="sdk_server").inc()
+    DECISION_LATENCY.labels(source="sdk_server").observe(max(latency_ms, 1) / 1000)
+    return {
+        "outcome": ctx.outcome,
+        "score": next(iter(ctx.scorecard_results.values()), {}).get("score") if ctx.scorecard_results else None,
+        "variables": ctx.variables,
+        "ruleResults": ctx.rule_results,
+        "experiment": {"id": ctx.experiment_id, "variant": ctx.experiment_variant} if ctx.experiment_variant else None,
+        "latencyMs": latency_ms,
+        "requestId": request.requestId,
+        "serverOnlyStepsSkipped": [],
+    }
+
+
+@app.post("/sdk/v1/events")
+def sdk_events(request: SdkEventsRequest) -> Dict[str, int]:
+    count = storage.add_sdk_events(request.events)
+    EVENTS_INGESTED_TOTAL.inc(count)
+    return {"received": count, "processed": count}
+
+
+@app.get("/api/v1/webhooks")
+def list_webhooks() -> List[Dict[str, Any]]:
+    return storage.list_webhooks()
+
+
+@app.post("/api/v1/webhooks")
+def create_webhook(request: WebhookUpsertRequest) -> Dict[str, Any]:
+    endpoint_id = "wh_" + uuid.uuid4().hex[:12]
+    return storage.create_webhook(
+        {
+            "id": endpoint_id,
+            "policy_id": request.policy_id,
+            "endpoint_path": "/api/v1/webhooks/{0}".format(endpoint_id),
+            "is_active": request.is_active,
+            "secret_hash": request.secret,
+            "payload_mapping": request.payload_mapping,
+        }
+    )
+
+
+@app.put("/api/v1/webhooks/{webhook_id}")
+def update_webhook(webhook_id: str, request: WebhookUpsertRequest) -> Dict[str, Any]:
+    updated = storage.update_webhook(
+        webhook_id,
+        {
+            "policy_id": request.policy_id,
+            "is_active": request.is_active,
+            "secret_hash": request.secret,
+            "payload_mapping": request.payload_mapping,
+        },
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    return updated
+
+
+@app.delete("/api/v1/webhooks/{webhook_id}")
+def delete_webhook(webhook_id: str) -> Dict[str, bool]:
+    updated = storage.update_webhook(webhook_id, {"is_active": False})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    return {"deactivated": True}
+
+
+@app.get("/api/v1/webhooks/{webhook_id}/test")
+def test_webhook(webhook_id: str) -> Dict[str, str]:
+    webhook = storage.get_webhook(webhook_id)
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    return {
+        "url": webhook["endpoint_path"],
+        "curl": "curl -X POST http://localhost:8080{0} -H 'Content-Type: application/json' -d '{{}}'".format(webhook["endpoint_path"]),
+    }
+
+
+@app.post("/api/v1/webhooks/{webhook_id}")
+async def webhook_trigger(webhook_id: str, request: Request) -> Dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from error
+    try:
+        return await trigger_webhook(storage, webhook_id, body, signature=request.headers.get("x-webhook-signature"))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+
+
+@app.get("/api/v1/schedules")
+def list_schedules() -> List[Dict[str, Any]]:
+    return storage.list_schedules()
+
+
+@app.post("/api/v1/schedules")
+def create_schedule(request: ScheduleUpsertRequest) -> Dict[str, Any]:
+    return storage.create_schedule(request.model_dump())
+
+
+@app.put("/api/v1/schedules/{schedule_id}")
+def update_schedule(schedule_id: str, request: ScheduleUpsertRequest) -> Dict[str, Any]:
+    updated = storage.update_schedule(schedule_id, request.model_dump())
+    if not updated:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return updated
+
+
+@app.delete("/api/v1/schedules/{schedule_id}")
+def delete_schedule(schedule_id: str) -> Dict[str, bool]:
+    updated = storage.update_schedule(schedule_id, {"is_active": False})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return {"deactivated": True}
+
+
+@app.post("/api/v1/schedules/{schedule_id}/run-now")
+def run_schedule_now(schedule_id: str) -> Dict[str, Any]:
+    schedule = storage.get_schedule(schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    result = asyncio.run(execute_cron_policy(storage, schedule))
+    return result
+
+
+@app.get("/api/v1/schedules/{schedule_id}/history")
+def schedule_history(schedule_id: str) -> List[Dict[str, Any]]:
+    return [
+        event
+        for event in storage.list_audit_events(event_type="cron_executed")
+        if event.get("metadata", {}).get("schedule_id") == schedule_id
+    ]
+
+
+@app.get("/api/v1/reviews")
+def list_reviews(queue: Optional[str] = Query(default=None), status: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
+    return storage.list_review_tasks(queue=queue, status=status)
+
+
+@app.get("/api/v1/reviews/stats")
+def review_stats() -> Dict[str, Any]:
+    tasks = storage.list_review_tasks()
+    pending = [task for task in tasks if task["status"] == "pending"]
+    reviewed = [task for task in tasks if task["status"] in {"approved", "rejected", "timed_out"}]
+    return {"pending": len(pending), "reviewed": len(reviewed), "queues": {queue: len([task for task in tasks if task["queue"] == queue]) for queue in {task["queue"] for task in tasks}}}
+
+
+@app.get("/api/v1/reviews/{task_id}")
+def get_review(task_id: str) -> Dict[str, Any]:
+    task = storage.get_review_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Review task not found.")
+    return task
+
+
+@app.post("/api/v1/reviews/{task_id}/decide")
+def decide_review(task_id: str, request: ReviewDecisionRequest) -> Dict[str, Any]:
+    try:
+        result = submit_review_decision(storage, task_id, request.response, request.reviewer_id, request.decision)
+    except ValueError as error:
+        detail = str(error)
+        status_code = 422 if detail.startswith("Missing required field") else 404
+        raise HTTPException(status_code=status_code, detail=detail) from error
+    return {"executionId": result["execution"]["execution_id"], "outcome": result["execution"]["outcome"], "status": result["execution"]["status"]}
+
+
+@app.post("/api/v1/reviews/{task_id}/escalate")
+def escalate_review(task_id: str, request: ReviewDecisionRequest) -> Dict[str, Any]:
+    task = storage.get_review_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Review task not found.")
+    updated = storage.update_review_task(task_id, {"status": "escalated", "reviewer_response": request.response, "reviewed_by": request.reviewer_id})
+    return updated or task
+
+
+@app.post("/api/v1/executions/{execution_id}/resume")
+def resume_execution(execution_id: str) -> Dict[str, Any]:
+    execution = storage.get_workflow_execution(execution_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found.")
+    ctx = ExecutionContext.from_dict(execution["context"])
+    policy = storage.get_policy(ctx.policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found.")
+    result = asyncio.run(workflow_executor().execute(policy=policy, payload=ctx.payload, tenant_id=ctx.tenant_id, resume_from=ctx, source="api"))
+    return {"executionId": result.execution_id, "outcome": result.outcome, "status": result.status}

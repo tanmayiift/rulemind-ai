@@ -1,0 +1,32 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "condition",
+      "label": "Credit Score Check",
+      "x": 120,
+      "y": 100,
+      "config": {
+        "fieldType": "number",
+        "field": "credit_score",
+        "operator": ">=",
+        "value": "700"
+      }
+    },
+    {
+      "id": "n2",
+      "type": "approve",
+      "label": "Approve",
+      "x": 400,
+      "y": 100,
+      "config": {
+        "reason": "Credit score meets threshold"
+      }
+    }
+  ],
+  "connections": [
+    { "from": "n1", "to": "n2" }
+  ],
+  "expression": "credit_score >= 700\n=> APPROVE \"Credit score meets threshold\"",
+  "exportedAt": "2026-03-25T00:00:00.000Z"
+}

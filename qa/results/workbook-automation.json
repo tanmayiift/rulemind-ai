@@ -1,0 +1,633 @@
+{
+  "generatedAt": "2026-03-25T13:33:16.193Z",
+  "operatorResults": [
+    {
+      "id": "OP-001",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"credit_score\":700}"
+    },
+    {
+      "id": "OP-002",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"credit_score\":701}"
+    },
+    {
+      "id": "OP-003",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"status\":\"approved\"}"
+    },
+    {
+      "id": "OP-004",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"status\":\"Approved\"}"
+    },
+    {
+      "id": "OP-005",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"status\":\"approved \"}"
+    },
+    {
+      "id": "OP-006",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"is_verified\":true}"
+    },
+    {
+      "id": "OP-007",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"is_verified\":false}"
+    },
+    {
+      "id": "OP-008",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"amount\":0}"
+    },
+    {
+      "id": "OP-009",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"code\":\"\"}"
+    },
+    {
+      "id": "OP-010",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"country\":\"UK\"}"
+    },
+    {
+      "id": "OP-011",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"country\":\"US\"}"
+    },
+    {
+      "id": "OP-012",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"score\":1}"
+    },
+    {
+      "id": "OP-013",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"income\":75000}"
+    },
+    {
+      "id": "OP-014",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"income\":50000}"
+    },
+    {
+      "id": "OP-015",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"income\":49999}"
+    },
+    {
+      "id": "OP-016",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"balance\":-1}"
+    },
+    {
+      "id": "OP-017",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"ratio\":0.51}"
+    },
+    {
+      "id": "OP-018",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"ratio\":0.5}"
+    },
+    {
+      "id": "OP-019",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"credit_score\":700}"
+    },
+    {
+      "id": "OP-020",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"credit_score\":699}"
+    },
+    {
+      "id": "OP-021",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"credit_score\":800}"
+    },
+    {
+      "id": "OP-022",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"dti\":0.35}"
+    },
+    {
+      "id": "OP-023",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"dti\":0.43}"
+    },
+    {
+      "id": "OP-024",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"dti\":0.5}"
+    },
+    {
+      "id": "OP-025",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"ltv\":0.8}"
+    },
+    {
+      "id": "OP-026",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"ltv\":0.81}"
+    },
+    {
+      "id": "OP-027",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"credit_score\":700}"
+    },
+    {
+      "id": "OP-028",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"credit_score\":650}"
+    },
+    {
+      "id": "OP-029",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"credit_score\":750}"
+    },
+    {
+      "id": "OP-030",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"credit_score\":649}"
+    },
+    {
+      "id": "OP-031",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"credit_score\":751}"
+    },
+    {
+      "id": "OP-032",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"credit_score\":700}"
+    },
+    {
+      "id": "OP-033",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"state\":\"NY\"}"
+    },
+    {
+      "id": "OP-034",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"state\":\"FL\"}"
+    },
+    {
+      "id": "OP-035",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"state\":\"ny\"}"
+    },
+    {
+      "id": "OP-036",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"tier\":2}"
+    },
+    {
+      "id": "OP-037",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"country\":\"US\"}"
+    },
+    {
+      "id": "OP-038",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"country\":\"IR\"}"
+    },
+    {
+      "id": "OP-039",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"email\":\"user@example.com\"}"
+    },
+    {
+      "id": "OP-040",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"email\":\"invalid-email\"}"
+    },
+    {
+      "id": "OP-041",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"phone\":\"+1234567890\"}"
+    },
+    {
+      "id": "OP-042",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"code\":\"anything\"}"
+    },
+    {
+      "id": "OP-043",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"ssn\":\"123-45-6789\"}"
+    },
+    {
+      "id": "OP-044",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"ssn\":\"\"}"
+    },
+    {
+      "id": "OP-045",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input=\"(omitted)\""
+    },
+    {
+      "id": "OP-046",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input=\"(omitted)\""
+    },
+    {
+      "id": "OP-047",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"bankruptcy\":\"yes\"}"
+    },
+    {
+      "id": "OP-048",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"bankruptcy\":\"\"}"
+    },
+    {
+      "id": "OP-049",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"score\":700}"
+    },
+    {
+      "id": "OP-050",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"amount\":null}"
+    },
+    {
+      "id": "OP-051",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"val\":0}"
+    },
+    {
+      "id": "OP-052",
+      "sheet": "1. Operator Tests",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "pass": true,
+      "detail": "outcome=reject; input={\"pct\":null}"
+    },
+    {
+      "id": "OP-053",
+      "sheet": "1. Operator Tests",
+      "expected": "PASS",
+      "actual": "PASS",
+      "pass": true,
+      "detail": "outcome=approve; input={\"count\":1000000}"
+    }
+  ],
+  "topologyResults": [
+    {
+      "id": "LT-001",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true
+    },
+    {
+      "id": "LT-002",
+      "sheet": "2. Logic & Topology",
+      "expected": "reject / FALSE",
+      "actual": "reject / FALSE",
+      "pass": true,
+      "detail": "2 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-003",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-004",
+      "sheet": "2. Logic & Topology",
+      "expected": "reject / FALSE",
+      "actual": "reject / FALSE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-005",
+      "sheet": "2. Logic & Topology",
+      "expected": "reject / FALSE",
+      "actual": "reject / FALSE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-006",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-007",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-008",
+      "sheet": "2. Logic & Topology",
+      "expected": "reject / FALSE",
+      "actual": "reject / FALSE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-009",
+      "sheet": "2. Logic & Topology",
+      "expected": "reject / FALSE",
+      "actual": "reject / FALSE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-010",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-011",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-012",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-013",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-014",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-015",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-016",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-017",
+      "sheet": "2. Logic & Topology",
+      "expected": "reject / FALSE",
+      "actual": "reject / FALSE",
+      "pass": true,
+      "detail": "2 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-018",
+      "sheet": "2. Logic & Topology",
+      "expected": "reject / FALSE",
+      "actual": "reject / FALSE",
+      "pass": true,
+      "detail": "2 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-019",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-020",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve (with warning) / TRUE",
+      "actual": "approve (with warning)",
+      "pass": true,
+      "detail": "disconnected warning present"
+    },
+    {
+      "id": "LT-021",
+      "sheet": "2. Logic & Topology",
+      "expected": "VALIDATION ERROR / N/A",
+      "actual": "VALIDATION ERROR",
+      "pass": true,
+      "detail": "Circular reference detected.; 1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-022",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true,
+      "detail": "1 disconnected node(s) detected."
+    },
+    {
+      "id": "LT-023",
+      "sheet": "2. Logic & Topology",
+      "expected": "reject / FALSE",
+      "actual": "reject",
+      "pass": true,
+      "detail": "\"score\" not provided"
+    },
+    {
+      "id": "LT-024",
+      "sheet": "2. Logic & Topology",
+      "expected": "approve / TRUE",
+      "actual": "approve / TRUE",
+      "pass": true
+    }
+  ],
+  "summary": {
+    "operators": {
+      "total": 53,
+      "passed": 53,
+      "failed": 0
+    },
+    "topology": {
+      "total": 24,
+      "passed": 24,
+      "failed": 0
+    }
+  }
+}

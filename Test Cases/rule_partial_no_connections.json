@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "condition",
+      "label": "Orphan Condition",
+      "x": 200,
+      "y": 100,
+      "config": {
+        "fieldType": "number",
+        "field": "score",
+        "operator": ">=",
+        "value": "500"
+      }
+    }
+  ]
+}
