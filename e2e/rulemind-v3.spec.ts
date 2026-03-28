@@ -10,20 +10,20 @@ test("theme toggle switches the full shell and persists after reload", async ({ 
   const editor = page.getByTestId("variable-code");
   const topbar = page.getByTestId("topbar-root");
 
-  await expect(page.getByTestId("theme-toggle")).toHaveText("☾ Dark");
+  await expect(page.getByTestId("theme-toggle")).toHaveText("Dark");
   await expect(sidebar).toHaveCSS("background-color", "rgb(240, 241, 244)");
   await expect(topbar).toHaveCSS("background-color", "rgb(255, 255, 255)");
   await expect(editor).toHaveCSS("background-color", "rgb(245, 246, 248)");
 
   await page.getByTestId("theme-toggle").click();
 
-  await expect(page.getByTestId("theme-toggle")).toHaveText("☀ Light");
+  await expect(page.getByTestId("theme-toggle")).toHaveText("Light");
   await expect(sidebar).toHaveCSS("background-color", "rgb(9, 11, 16)");
   await expect(topbar).toHaveCSS("background-color", "rgb(18, 21, 30)");
   await expect(editor).toHaveCSS("background-color", "rgb(9, 11, 16)");
 
   await page.reload();
-  await expect(page.getByTestId("theme-toggle")).toHaveText("☀ Light");
+  await expect(page.getByTestId("theme-toggle")).toHaveText("Light");
   await expect(sidebar).toHaveCSS("background-color", "rgb(9, 11, 16)");
 });
 

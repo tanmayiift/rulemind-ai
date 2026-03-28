@@ -40,8 +40,14 @@ export default function AdminLoginPage() {
           <div style={{ fontSize: 12, color: theme.muted }}>Platform admin login for tenant lifecycle and API key management.</div>
         </div>
         {error ? <div style={{ padding: 12, borderRadius: 12, background: theme.dangerBg, color: theme.danger }}>{error}</div> : null}
-        <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" style={adminInput(theme)} />
-        <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" style={adminInput(theme)} />
+        <label style={{ display: "grid", gap: 4 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: theme.muted }}>Email</span>
+          <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" style={adminInput(theme)} />
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: theme.muted }}>Password</span>
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" style={adminInput(theme)} />
+        </label>
         <button type="submit" style={{ border: "none", background: theme.accent, color: theme.inverseText, borderRadius: 12, padding: "12px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer" }}>
           Sign in
         </button>
