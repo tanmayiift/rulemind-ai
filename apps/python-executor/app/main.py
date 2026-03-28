@@ -380,38 +380,60 @@ def compute_variable_values(
     payloads: Dict[str, Dict[str, Any]],
     variables: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     variable_list = variables if variables is not None else current_variables()
     connectors = current_connectors()
     limits = engine_limits()
     computed_values: Dict[str, Any] = {}
     results: List[Dict[str, Any]] = []
 
+    # Group variables by source so independent sources execute in parallel
+    source_groups: Dict[str, List[Dict[str, Any]]] = {}
     for variable in variable_list:
-        source_payload = payloads.get(variable["source_id"], {})
-        execution = execute_variable(
-            variable["code"],
-            source_payload,
-            computed_values,
-            timeout_ms=limits["timeout_ms"],
-            memory_mb=limits["memory_mb"],
-        )
-        computed_values[variable["id"]] = execution.get("value")
-        results.append(
-            {
-                "id": variable["id"],
-                "name": variable["name"],
-                "category": variable["category"],
-                "source_id": variable["source_id"],
-                "source_name": connectors.get(variable["source_id"], {}).get("name"),
-                "source_icon": connectors.get(variable["source_id"], {}).get("icon"),
-                "source_active": connectors.get(variable["source_id"], {}).get("is_active", False),
-                "value": execution.get("value"),
-                "error": execution.get("error"),
-                "latency_ms": execution.get("latency_ms"),
-                "variable_name": execution.get("variable_name"),
-                "passed": execution.get("error") in (None, ""),
-            }
-        )
+        source_groups.setdefault(variable["source_id"], []).append(variable)
+
+    def _execute_group(group_variables: List[Dict[str, Any]]) -> List[tuple]:
+        group_computed: Dict[str, Any] = {}
+        group_results = []
+        for variable in group_variables:
+            source_payload = payloads.get(variable["source_id"], {})
+            execution = execute_variable(
+                variable["code"],
+                source_payload,
+                group_computed,
+                timeout_ms=limits["timeout_ms"],
+                memory_mb=limits["memory_mb"],
+            )
+            group_computed[variable["id"]] = execution.get("value")
+            group_results.append((variable, execution, dict(group_computed)))
+        return group_results
+
+    with ThreadPoolExecutor(max_workers=min(len(source_groups), 8)) as executor:
+        futures = {
+            executor.submit(_execute_group, group_vars): source_id
+            for source_id, group_vars in source_groups.items()
+        }
+        for future in as_completed(futures):
+            for variable, execution, group_computed in future.result():
+                computed_values[variable["id"]] = execution.get("value")
+                results.append(
+                    {
+                        "id": variable["id"],
+                        "name": variable["name"],
+                        "category": variable["category"],
+                        "source_id": variable["source_id"],
+                        "source_name": connectors.get(variable["source_id"], {}).get("name"),
+                        "source_icon": connectors.get(variable["source_id"], {}).get("icon"),
+                        "source_active": connectors.get(variable["source_id"], {}).get("is_active", False),
+                        "value": execution.get("value"),
+                        "error": execution.get("error"),
+                        "latency_ms": execution.get("latency_ms"),
+                        "variable_name": execution.get("variable_name"),
+                        "passed": execution.get("error") in (None, ""),
+                    }
+                )
+    computed_values.update({r["id"]: r["value"] for r in results})
     return {"values": computed_values, "results": results}
 
 

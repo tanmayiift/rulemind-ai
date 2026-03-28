@@ -1,8 +1,11 @@
 import ast
+import hashlib
 import inspect
 import json
 import multiprocessing
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, Optional
 
 
@@ -34,6 +37,22 @@ SAFE_BUILTINS = {
     "zip": zip,
 }
 
+# Cache for validated+compiled code to avoid re-parsing on every call
+_validated_code_cache: Dict[str, bool] = {}
+_compiled_code_cache: Dict[str, Any] = {}
+
+# Pre-warmed process pool (lazy-initialized)
+_pool: Optional[ProcessPoolExecutor] = None
+_POOL_SIZE = int(os.getenv("SANDBOX_POOL_SIZE", "4"))
+
+
+def _get_pool() -> ProcessPoolExecutor:
+    global _pool
+    if _pool is None:
+        mp_context = multiprocessing.get_context("spawn")
+        _pool = ProcessPoolExecutor(max_workers=_POOL_SIZE, mp_context=mp_context)
+    return _pool
+
 
 def variable(func=None, **metadata):
     def decorator(inner):
@@ -48,6 +67,10 @@ def variable(func=None, **metadata):
 
 
 def validate_source(source: str) -> None:
+    code_hash = hashlib.md5(source.encode()).hexdigest()
+    if code_hash in _validated_code_cache:
+        return
+
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -59,6 +82,8 @@ def validate_source(source: str) -> None:
             raise ValueError("Blocked symbol detected: {0}".format(node.id))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"open", "eval", "exec"}:
             raise ValueError("Blocked call detected: {0}".format(node.func.id))
+
+    _validated_code_cache[code_hash] = True
 
 
 def restricted_import(name, globals=None, locals=None, fromlist=(), level=0):  # pylint: disable=redefined-builtin
@@ -83,7 +108,8 @@ def resolve_callable(namespace: Dict[str, Any]):
     return fallbacks[0]
 
 
-def _execute_worker(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any], queue, timeout_ms: int, memory_mb: int):
+def _execute_in_process(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any], timeout_ms: int, memory_mb: int) -> Dict[str, Any]:
+    """Execute variable code in a pool worker process with sandboxing."""
     started = time.perf_counter()
     try:
         try:
@@ -109,29 +135,61 @@ def _execute_worker(code: str, payload: Dict[str, Any], variables_map: Dict[str,
         else:
             result = function(payload, variables_map)
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
-        queue.put({"value": result, "error": None, "latency_ms": latency_ms, "variable_name": function.__name__})
-    except Exception as exc:  # pragma: no cover - returned through queue
+        return {"value": result, "error": None, "latency_ms": latency_ms, "variable_name": function.__name__}
+    except Exception as exc:
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
-        queue.put({"value": None, "error": str(exc), "latency_ms": latency_ms, "variable_name": None})
+        return {"value": None, "error": str(exc), "latency_ms": latency_ms, "variable_name": None}
+
+
+def _execute_inline(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any]) -> Dict[str, Any]:
+    """Fast in-process execution for pre-validated code (no process spawn overhead)."""
+    started = time.perf_counter()
+    try:
+        validate_source(code)
+        namespace = {
+            "__builtins__": dict(SAFE_BUILTINS, __import__=restricted_import),
+            "variable": variable,
+            "json": json,
+        }
+        exec(code, namespace, namespace)  # pylint: disable=exec-used
+        function = resolve_callable(namespace)
+        signature = inspect.signature(function)
+        parameter_count = len(signature.parameters)
+        if parameter_count >= 3:
+            result = function(payload, variables_map, {"connectors": {}})
+        else:
+            result = function(payload, variables_map)
+        latency_ms = round((time.perf_counter() - started) * 1000, 3)
+        return {"value": result, "error": None, "latency_ms": latency_ms, "variable_name": function.__name__}
+    except Exception as exc:
+        latency_ms = round((time.perf_counter() - started) * 1000, 3)
+        return {"value": None, "error": str(exc), "latency_ms": latency_ms, "variable_name": None}
 
 
 def execute_variable(code: str, payload: Dict[str, Any], variables_map: Optional[Dict[str, Any]] = None, timeout_ms: int = MAX_EXECUTION_MS, memory_mb: int = MAX_MEMORY_MB) -> Dict[str, Any]:
     context = variables_map or {}
-    mp_context = multiprocessing.get_context("spawn")
-    queue = mp_context.Queue()
-    process = mp_context.Process(
-        target=_execute_worker,
-        args=(code, payload, context, queue, timeout_ms, memory_mb),
-    )
-    process.start()
-    process.join(max(float(timeout_ms) / 1000.0, 0.1))
+    timeout_seconds = max(float(timeout_ms) / 1000.0, 0.1)
 
-    if process.is_alive():
-        process.terminate()
-        process.join()
+    # Fast path: execute inline in the current process when sandbox isolation
+    # is not strictly required (e.g. dev/test mode). The code is still validated
+    # against the AST allowlist, but avoids ~200-500ms process spawn overhead.
+    if os.getenv("SANDBOX_MODE", "pool") == "inline":
+        return _execute_inline(code, payload, context)
+
+    # Production path: submit to pre-warmed process pool instead of spawning
+    # a fresh process per call. This amortizes the ~500ms spawn cost across
+    # all requests and allows concurrent variable execution.
+    pool = _get_pool()
+    try:
+        future = pool.submit(_execute_in_process, code, payload, context, timeout_ms, memory_mb)
+        return future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError:
         return {"value": None, "error": "Variable execution timed out.", "latency_ms": float(timeout_ms), "variable_name": None}
+    except Exception as exc:
+        return {"value": None, "error": str(exc), "latency_ms": 0.0, "variable_name": None}
 
-    if queue.empty():
-        return {"value": None, "error": "Variable execution failed.", "latency_ms": 0.0, "variable_name": None}
 
-    return queue.get()
+# Legacy API preserved for backward compatibility
+def _execute_worker(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any], queue, timeout_ms: int, memory_mb: int):
+    result = _execute_in_process(code, payload, variables_map, timeout_ms, memory_mb)
+    queue.put(result)

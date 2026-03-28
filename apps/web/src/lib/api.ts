@@ -6,18 +6,24 @@ export async function apiJson<T>(
   init: RequestInit = {},
   apiKey = ""
 ): Promise<T> {
-  const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}${path}`, {
-    ...init,
-    headers: {
-      ...(init.body ? { "content-type": "application/json" } : {}),
-      ...(apiKey ? { "x-api-key": apiKey } : {}),
-      ...(init.headers ?? {}),
-    },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}${path}`, {
+      ...init,
+      headers: {
+        ...(init.body ? { "content-type": "application/json" } : {}),
+        ...(apiKey ? { "x-api-key": apiKey } : {}),
+        ...(init.headers ?? {}),
+      },
+      cache: "no-store",
+    });
+  } catch {
+    throw new Error(`Unable to reach the API server at ${apiBaseUrl}. Check that the backend is running and the URL is correct.`);
+  }
 
   if (!response.ok) {
-    throw new Error(await response.text());
+    const body = await response.text().catch(() => "");
+    throw new Error(body || `Request failed with status ${response.status}`);
   }
 
   return response.json() as Promise<T>;
@@ -29,17 +35,23 @@ export async function apiText(
   init: RequestInit = {},
   apiKey = ""
 ): Promise<{ text: string; response: Response }> {
-  const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}${path}`, {
-    ...init,
-    headers: {
-      ...(apiKey ? { "x-api-key": apiKey } : {}),
-      ...(init.headers ?? {}),
-    },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}${path}`, {
+      ...init,
+      headers: {
+        ...(apiKey ? { "x-api-key": apiKey } : {}),
+        ...(init.headers ?? {}),
+      },
+      cache: "no-store",
+    });
+  } catch {
+    throw new Error(`Unable to reach the API server at ${apiBaseUrl}. Check that the backend is running and the URL is correct.`);
+  }
 
   if (!response.ok) {
-    throw new Error(await response.text());
+    const body = await response.text().catch(() => "");
+    throw new Error(body || `Request failed with status ${response.status}`);
   }
 
   return { text: await response.text(), response };

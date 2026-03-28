@@ -28,6 +28,9 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         self.storage = storage
 
     async def dispatch(self, request: Request, call_next: Callable):
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         path = request.url.path
         if path in EXEMPT_PATHS or path.startswith("/api/admin/v1/auth"):
             return await call_next(request)

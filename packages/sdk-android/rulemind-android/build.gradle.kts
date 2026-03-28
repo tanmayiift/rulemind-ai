@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.rulemind.android"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 24
@@ -39,7 +39,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":rulemind-core"))
+    api(project(":rulemind-core"))
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.core:core-ktx:1.15.0")
