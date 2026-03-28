@@ -89,7 +89,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       style={{
         minHeight: "100vh",
         display: "grid",
-        gridTemplateColumns: `${sidebarOpen ? 224 : 64}px 1fr`,
+        gridTemplateColumns: `${sidebarOpen ? 224 : 64}px minmax(0, 1fr)`,
         background: theme.bg,
         color: theme.text,
         transition: "grid-template-columns 0.2s ease",
@@ -119,6 +119,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             type="button"
             onClick={toggleSidebar}
             data-testid="sidebar-toggle"
+            aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
             style={{
               border: "none",
               background: "transparent",
@@ -250,6 +251,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               type="button"
               data-testid="theme-toggle"
               onClick={toggleThemeMode}
+              aria-label="Toggle dark mode"
               style={{
                 background: theme.hover,
                 border: "1px solid " + theme.border,
@@ -275,7 +277,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 borderRadius: "50%",
                 display: "grid",
                 placeItems: "center",
-                background: "linear-gradient(135deg,#3b82f6,#7c3aed)",
+                background: themeMode === "dark" ? "linear-gradient(135deg,#60a5fa,#a78bfa)" : "linear-gradient(135deg,#3b82f6,#7c3aed)",
                 color: theme.inverseText,
                 fontSize: 12,
                 fontWeight: 700,

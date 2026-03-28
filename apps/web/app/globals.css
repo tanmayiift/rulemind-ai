@@ -98,3 +98,15 @@ select:focus-visible {
 *::-webkit-scrollbar-track {
   background: transparent;
 }
+
+@media (max-width: 768px) {
+  body {
+    overflow: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  body {
+    font-size: 14px;
+  }
+}
