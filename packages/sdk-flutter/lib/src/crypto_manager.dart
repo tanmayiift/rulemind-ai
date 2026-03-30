@@ -94,12 +94,12 @@ class RSAKeyParser {
     final parser = asn1.ASN1Parser(bytes);
     final topLevelSeq = parser.nextObject() as asn1.ASN1Sequence;
 
-    final publicKeyBitString = topLevelSeq.elements![1] as asn1.ASN1BitString;
-    final publicKeyAsn = asn1.ASN1Parser(publicKeyBitString.valueBytes!);
+    final publicKeyBitString = topLevelSeq.elements[1] as asn1.ASN1BitString;
+    final publicKeyAsn = asn1.ASN1Parser(publicKeyBitString.valueBytes());
     final publicKeySeq = publicKeyAsn.nextObject() as asn1.ASN1Sequence;
 
-    final modulus = (publicKeySeq.elements![0] as asn1.ASN1Integer).integer!;
-    final exponent = (publicKeySeq.elements![1] as asn1.ASN1Integer).integer!;
+    final modulus = (publicKeySeq.elements[0] as asn1.ASN1Integer).value;
+    final exponent = (publicKeySeq.elements[1] as asn1.ASN1Integer).value;
 
     return RSAPublicKey(modulus, exponent);
   }
