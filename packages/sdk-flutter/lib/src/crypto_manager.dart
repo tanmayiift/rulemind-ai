@@ -98,8 +98,8 @@ class RSAKeyParser {
     final publicKeyAsn = asn1.ASN1Parser(publicKeyBitString.valueBytes());
     final publicKeySeq = publicKeyAsn.nextObject() as asn1.ASN1Sequence;
 
-    final modulus = (publicKeySeq.elements[0] as asn1.ASN1Integer).value;
-    final exponent = (publicKeySeq.elements[1] as asn1.ASN1Integer).value;
+    final modulus = (publicKeySeq.elements[0] as asn1.ASN1Integer).valueAsBigInteger;
+    final exponent = (publicKeySeq.elements[1] as asn1.ASN1Integer).valueAsBigInteger;
 
     return RSAPublicKey(modulus, exponent);
   }
