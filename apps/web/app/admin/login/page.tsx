@@ -10,8 +10,8 @@ export default function AdminLoginPage() {
   const themeMode = useRuleMindStore((state) => state.themeMode);
   const apiBaseUrl = useRuleMindStore((state) => state.apiBaseUrl);
   const theme = THEMES[themeMode];
-  const [email, setEmail] = React.useState("admin@rulemind.local");
-  const [password, setPassword] = React.useState("rulemind-admin");
+  const [email, setEmail] = React.useState("");
+  const [password, setPassword] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
 
   return (

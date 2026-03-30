@@ -15,7 +15,7 @@ COPY packages/sdk/package.json packages/sdk/package.json
 COPY packages/sdk-js/package.json packages/sdk-js/package.json
 COPY packages/ui/package.json packages/ui/package.json
 COPY packages/widget/package.json packages/widget/package.json
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
 COPY . .
@@ -30,4 +30,4 @@ COPY --from=build /app/apps/web/.next ./apps/web/.next
 COPY --from=build /app/packages ./packages
 COPY .env.example ./apps/web/next.config.js ./apps/web/package.json ./apps/api/package.json ./package.json ./
 EXPOSE 3000 8080
-CMD ["node", "--import", "tsx", "apps/api/src/server.ts"]
+CMD ["node", "apps/web/node_modules/.bin/next", "start", "-p", "3000"]

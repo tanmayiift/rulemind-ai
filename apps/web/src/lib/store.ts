@@ -31,7 +31,7 @@ export const useRuleMindStore = create<RuleMindUiState>()(
   persist(
     (set, get) => ({
       apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080",
-      apiKey: process.env.NEXT_PUBLIC_RULEMIND_DEV_API_KEY ?? "rm_live_devlocaltenantkey000000000000",
+      apiKey: process.env.NEXT_PUBLIC_RULEMIND_DEV_API_KEY ?? "",
       environment: "dev",
       themeMode: "light",
       sidebarOpen: true,

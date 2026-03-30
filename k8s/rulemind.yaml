@@ -5,7 +5,7 @@ metadata:
 data:
   DATABASE_ADAPTER: postgres
   REDIS_URL: redis://rulemind-redis:6379
-  AUTH_MODE: none
+  AUTH_MODE: apikey
   CORS_ORIGINS: http://rulemind-web
 ---
 apiVersion: v1
@@ -14,8 +14,8 @@ metadata:
   name: rulemind-secrets
 type: Opaque
 stringData:
-  DATABASE_URL: postgresql://rulemind:rulemind@rulemind-postgres:5432/rulemind
-  PYTHON_EXECUTOR_SECRET: change-me
+  DATABASE_URL: ""      # REQUIRED: postgresql://user:pass@host:5432/dbname
+  PYTHON_EXECUTOR_SECRET: ""  # REQUIRED: set a strong secret
 ---
 apiVersion: apps/v1
 kind: Deployment

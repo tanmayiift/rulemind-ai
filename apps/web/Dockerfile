@@ -4,7 +4,7 @@ WORKDIR /workspace
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
-ARG NEXT_PUBLIC_RULEMIND_DEV_API_KEY=rm_live_devlocaltenantkey000000000000
+ARG NEXT_PUBLIC_RULEMIND_DEV_API_KEY=
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_RULEMIND_DEV_API_KEY=$NEXT_PUBLIC_RULEMIND_DEV_API_KEY
 
@@ -19,7 +19,7 @@ COPY packages/ui/package.json packages/ui/package.json
 COPY packages/sdk/package.json packages/sdk/package.json
 COPY packages/sdk-js/package.json packages/sdk-js/package.json
 
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 COPY . .
 

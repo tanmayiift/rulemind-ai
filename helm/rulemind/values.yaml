@@ -34,10 +34,10 @@ ingress:
   tlsSecretName: rulemind-tls
 
 env:
-  databaseUrl: postgresql://rulemind:rulemind@postgres:5432/rulemind
-  redisUrl: redis://redis:6379/0
-  configKey: rulemind-dev-master-key
-  adminJwtSecret: rulemind-admin-dev-secret
+  databaseUrl: ""          # REQUIRED: postgresql://user:pass@host:5432/dbname
+  redisUrl: ""             # REQUIRED: redis://host:6379/0
+  configKey: ""            # REQUIRED: Fernet encryption key for config secrets
+  adminJwtSecret: ""       # REQUIRED: JWT signing secret for admin sessions
 
 resources:
   api: {}
