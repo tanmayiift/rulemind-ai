@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:asn1lib/asn1lib.dart' as asn1;
 import 'package:crypto/crypto.dart';
 import 'package:pointycastle/export.dart';
 
@@ -90,15 +91,15 @@ class CryptoManager {
 
 class RSAKeyParser {
   RSAPublicKey parse(Uint8List bytes) {
-    final asn1Parser = ASN1Parser(bytes);
-    final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
+    final parser = asn1.ASN1Parser(bytes);
+    final topLevelSeq = parser.nextObject() as asn1.ASN1Sequence;
 
-    final publicKeyBitString = topLevelSeq.elements![1] as ASN1BitString;
-    final publicKeyAsn = ASN1Parser(publicKeyBitString.valueBytes!);
-    final publicKeySeq = publicKeyAsn.nextObject() as ASN1Sequence;
+    final publicKeyBitString = topLevelSeq.elements![1] as asn1.ASN1BitString;
+    final publicKeyAsn = asn1.ASN1Parser(publicKeyBitString.valueBytes!);
+    final publicKeySeq = publicKeyAsn.nextObject() as asn1.ASN1Sequence;
 
-    final modulus = (publicKeySeq.elements![0] as ASN1Integer).integer!;
-    final exponent = (publicKeySeq.elements![1] as ASN1Integer).integer!;
+    final modulus = (publicKeySeq.elements![0] as asn1.ASN1Integer).integer!;
+    final exponent = (publicKeySeq.elements![1] as asn1.ASN1Integer).integer!;
 
     return RSAPublicKey(modulus, exponent);
   }
