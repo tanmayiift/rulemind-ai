@@ -50,13 +50,13 @@ export default function SchedulesPage() {
   return (
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
       <div style={{ display: "grid", gap: 4 }}>
-        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Scheduled Jobs</h1>
-        <div style={{ fontSize: 12, color: theme.muted }}>Cron-driven batch execution across tenant policies.</div>
+        <h1 style={{ margin: 0, fontSize: "var(--rm-fs-hero)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>Scheduled Jobs</h1>
+        <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted }}>Cron-driven batch execution across tenant policies.</div>
       </div>
       {error ? <div style={{ padding: 12, borderRadius: 12, background: theme.dangerBg, color: theme.danger }}>{error}</div> : null}
       <div style={{ display: "grid", gap: 12 }}>
         {schedules.length === 0 ? (
-          <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 14, padding: 16, color: theme.dim, fontSize: 12 }}>
+          <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 14, padding: 16, color: theme.dim, fontSize: "var(--rm-fs-body)" }}>
             No schedules configured yet.
           </div>
         ) : null}
@@ -64,21 +64,21 @@ export default function SchedulesPage() {
           <div key={schedule.id} style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 14, padding: 16, display: "grid", gap: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 800 }}>{schedule.policy_id}</div>
-                <div style={{ fontSize: 12, color: theme.muted }}>{schedule.cron_expression}</div>
+                <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{schedule.policy_id}</div>
+                <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted }}>{schedule.cron_expression}</div>
               </div>
-              <div style={{ fontSize: 11, color: schedule.is_active ? theme.success : theme.dim, fontWeight: 800 }}>
+              <div style={{ fontSize: "var(--rm-fs-small)", color: schedule.is_active ? theme.success : theme.dim, fontWeight: "var(--rm-fw-bold)" as unknown as number }}>
                 {schedule.is_active ? "ACTIVE" : "PAUSED"}
               </div>
             </div>
-            <div style={{ fontSize: 12, color: theme.muted }}>
+            <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted }}>
               Last run: {schedule.last_run_at ?? "never"} · Source: {String(schedule.payload_source?.type ?? "static_json")}
             </div>
-            <pre style={{ margin: 0, padding: 12, borderRadius: 12, background: theme.editor, color: theme.codeText, fontSize: 11, fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap" }}>
+            <pre style={{ margin: 0, padding: 12, borderRadius: 12, background: theme.editor, color: theme.codeText, fontSize: "var(--rm-fs-code)", fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap" }}>
               {JSON.stringify(schedule.config ?? {}, null, 2)}
             </pre>
             <div>
-              <button type="button" onClick={() => void runNow(schedule.id)} style={{ border: "1px solid " + theme.border, background: theme.accentBg, color: theme.accent, borderRadius: 10, padding: "10px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+              <button type="button" onClick={() => void runNow(schedule.id)} style={{ border: "1px solid " + theme.border, background: theme.accentBg, color: theme.accent, borderRadius: 10, padding: "10px 14px", fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-semibold)" as unknown as number, cursor: "pointer" }}>
                 Run now
               </button>
             </div>
