@@ -229,9 +229,9 @@ function StatCard(props: { label: string; value: string; hint: string; accent: s
         cursor: props.onClick ? "pointer" : "default",
       }}
     >
-      <span style={{ fontSize: 10, color: theme.muted, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase" }}>{props.label}</span>
-      <span style={{ fontSize: 26, color: props.accent, fontWeight: 900 }}>{props.value}</span>
-      <span style={{ fontSize: 11, color: theme.dim }}>{props.hint}</span>
+      <span style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted, fontWeight: "var(--rm-fw-semibold)" as unknown as number, letterSpacing: 0.4, textTransform: "uppercase" }}>{props.label}</span>
+      <span style={{ fontSize: "var(--rm-fs-hero)", color: props.accent, fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{props.value}</span>
+      <span style={{ fontSize: "var(--rm-fs-small)", color: theme.dim }}>{props.hint}</span>
     </button>
   );
 }
@@ -267,8 +267,8 @@ function Button(props: {
         borderRadius: 8,
         padding: props.small ? "6px 10px" : "8px 14px",
         fontFamily: "inherit",
-        fontSize: props.small ? 11 : 12,
-        fontWeight: 800,
+        fontSize: props.small ? "var(--rm-fs-small)" : "var(--rm-fs-body)",
+        fontWeight: "var(--rm-fw-bold)" as unknown as number,
         cursor: props.disabled ? "not-allowed" : "pointer",
         opacity: props.disabled ? 0.45 : 1,
         whiteSpace: "nowrap",
@@ -292,8 +292,8 @@ function StatusBadge(props: { status: string; testId?: string }) {
         borderRadius: 999,
         background: style.bg,
         color: style.fg,
-        fontSize: 10,
-        fontWeight: 800,
+        fontSize: "var(--rm-fs-caption)",
+        fontWeight: "var(--rm-fw-bold)" as unknown as number,
         textTransform: "uppercase",
         letterSpacing: 0.6,
       }}
@@ -368,8 +368,8 @@ function SectionHeader(props: { title: string; subtitle?: string; actions?: Reac
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
       <div>
-        <h2 style={{ margin: 0, color: theme.text, fontSize: 20, fontWeight: 900 }}>{props.title}</h2>
-        {props.subtitle ? <p style={{ margin: "6px 0 0", color: theme.muted, fontSize: 12 }}>{props.subtitle}</p> : null}
+        <h2 style={{ margin: 0, color: theme.text, fontSize: "var(--rm-fs-title)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{props.title}</h2>
+        {props.subtitle ? <p style={{ margin: "6px 0 0", color: theme.muted, fontSize: "var(--rm-fs-body)" }}>{props.subtitle}</p> : null}
       </div>
       {props.actions}
     </div>
@@ -380,7 +380,7 @@ function InfoBanner(props: { message: string; toneKey?: "accent" | "warning" | "
   const theme = useTheme();
   const variant = tone(theme, props.toneKey ?? "accent");
   return (
-    <div style={{ marginBottom: 16, padding: "10px 12px", borderRadius: 10, background: variant.bg, color: variant.fg, fontSize: 12, fontWeight: 700 }}>
+    <div style={{ marginBottom: 16, padding: "10px 12px", borderRadius: 10, background: variant.bg, color: variant.fg, fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-semibold)" as unknown as number }}>
       {props.message}
     </div>
   );
@@ -390,9 +390,9 @@ function EmptyState(props: { icon: React.ReactNode; title: string; description: 
   const theme = useTheme();
   return (
     <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 36, textAlign: "center" }}>
-      <div style={{ fontSize: 28, marginBottom: 6, display: "grid", placeItems: "center", color: theme.dim }}>{props.icon}</div>
-      <div style={{ fontSize: 14, fontWeight: 800, color: theme.text }}>{props.title}</div>
-      <div style={{ fontSize: 12, color: theme.muted, marginTop: 6 }}>{props.description}</div>
+      <div style={{ fontSize: "var(--rm-fs-hero)", marginBottom: 6, display: "grid", placeItems: "center", color: theme.dim }}>{props.icon}</div>
+      <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>{props.title}</div>
+      <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted, marginTop: 6 }}>{props.description}</div>
     </div>
   );
 }
@@ -400,32 +400,33 @@ function EmptyState(props: { icon: React.ReactNode; title: string; description: 
 function DashboardPage(props: { data: BootstrapPayload }) {
   const theme = useTheme();
   const router = useRouter();
+  const isMobile = useRuleMindStore((state) => state.isMobile);
   const activeSources = props.data.connectors.filter((connector) => connector.is_active).length;
   const prodVariables = props.data.variables.filter((variable) => variable.status === "prod").length;
   const prodRules = props.data.rules.filter((rule) => rule.status === "prod").length;
 
   return (
-    <div style={{ padding: 20 }}>
+    <div style={{ padding: isMobile ? 12 : 20 }}>
       <SectionHeader title={PAGE_META.dashboard.title} subtitle={PAGE_META.dashboard.subtitle} />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginBottom: 18 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(4, minmax(0, 1fr))", gap: 12, marginBottom: 18 }}>
         <StatCard label="Sources" value={activeSources + "/" + props.data.connectors.length} hint="Active / total connectors" accent={theme.accent} onClick={() => router.push("/connectors")} />
         <StatCard label="Variables" value={String(props.data.variables.length)} hint={prodVariables + " in PROD"} accent={theme.purple} onClick={() => router.push("/variables")} />
         <StatCard label="Rules" value={String(props.data.rules.length)} hint={prodRules + " in PROD"} accent={theme.warning} onClick={() => router.push("/rules")} />
         <StatCard label="Policies" value={String(props.data.policies.length)} hint="Decision flows configured" accent={theme.success} onClick={() => router.push("/policies")} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.2fr 1fr", gap: 14 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text, marginBottom: 12 }}>Connected Sources</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, marginBottom: 12 }}>Connected Sources</div>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 8 }}>
             {props.data.connectors.map((connector) => (
               <div key={connector.id} style={{ background: theme.hover, borderRadius: 10, padding: 10, opacity: connector.is_active ? 1 : 0.5 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <ConnectorIcon connectorId={connector.id} color={connector.color} size={18} />
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: theme.text }}>{connector.name}</div>
-                      <div style={{ fontSize: 10, color: theme.muted }}>{connector.schema_paths.length} fields</div>
+                      <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-semibold)" as unknown as number, color: theme.text }}>{connector.name}</div>
+                      <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted }}>{connector.schema_paths.length} fields</div>
                     </div>
                   </div>
                   <StatusBadge status={connector.is_active ? "prod" : "uat"} />
@@ -436,7 +437,7 @@ function DashboardPage(props: { data: BootstrapPayload }) {
         </div>
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text, marginBottom: 12 }}>Decision Flow</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, marginBottom: 12 }}>Decision Flow</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             {["Ingest", "Variables", "Rules", "Score", "Policy", "Decision"].map((item, index, list) => (
               <React.Fragment key={item}>
@@ -447,8 +448,8 @@ function DashboardPage(props: { data: BootstrapPayload }) {
                     background:
                       index < 3 ? theme.successBg : index < 5 ? theme.warningBg : theme.accentBg,
                     color: index < 3 ? theme.success : index < 5 ? theme.warning : theme.accent,
-                    fontSize: 11,
-                    fontWeight: 800,
+                    fontSize: "var(--rm-fs-small)",
+                    fontWeight: "var(--rm-fw-bold)" as unknown as number,
                   }}
                 >
                   {item}
@@ -457,7 +458,7 @@ function DashboardPage(props: { data: BootstrapPayload }) {
               </React.Fragment>
             ))}
           </div>
-          <div style={{ marginTop: 14, fontSize: 12, color: theme.muted, lineHeight: 1.6 }}>
+          <div style={{ marginTop: 14, fontSize: "var(--rm-fs-body)", color: theme.muted, lineHeight: 1.6 }}>
             Multi-source decisions combine bureau, bank, GST, device, KYC, and custom payloads through Python variables, click-built rules, scorecards, and policies.
           </div>
         </div>
@@ -468,7 +469,7 @@ function DashboardPage(props: { data: BootstrapPayload }) {
 
 function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, isMobile } = useRuleMindStore();
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [configDrafts, setConfigDrafts] = React.useState<Record<string, Record<string, unknown>>>({});
@@ -533,7 +534,7 @@ function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => void; on
     <div style={{ padding: 20 }}>
       <SectionHeader title={PAGE_META.connectors.title} subtitle={PAGE_META.connectors.subtitle} />
       <div style={{ display: "grid", gap: 16 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 12 }}>
         {props.data.connectors.map((connector) => (
           <div key={connector.id} style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
             <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -551,8 +552,8 @@ function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => void; on
                   <ConnectorIcon connectorId={connector.id} color={connector.color} size={18} />
                 </div>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>{connector.name}</div>
-                  <div style={{ fontSize: 11, color: theme.muted }}>{connector.description}</div>
+                  <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>{connector.name}</div>
+                  <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{connector.description}</div>
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -594,22 +595,22 @@ function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => void; on
               {expandedId === connector.id ? (
                 <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
                   <div style={{ background: theme.accentBg, color: theme.text, borderRadius: 10, padding: 10 }}>
-                    <div style={{ fontSize: 10, fontWeight: 900, marginBottom: 6, color: theme.accent }}>SCHEMA PATHS</div>
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: theme.muted, lineHeight: 1.6 }}>
+                    <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, marginBottom: 6, color: theme.accent }}>SCHEMA PATHS</div>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-code)", color: theme.muted, lineHeight: 1.6 }}>
                       {connector.schema_paths.map((path) => (
                         <div key={path}>payload.{path}</div>
                       ))}
                     </div>
                   </div>
                   <div style={{ background: theme.hover, borderRadius: 10, padding: 10 }}>
-                    <div style={{ fontSize: 10, fontWeight: 900, marginBottom: 6, color: theme.muted }}>SAMPLE JSON</div>
-                    <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)", fontSize: 11, color: theme.codeText, background: theme.editor, border: "1px solid " + theme.border, borderRadius: 10, padding: 10, maxHeight: 180, overflow: "auto" }}>
+                    <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, marginBottom: 6, color: theme.muted }}>SAMPLE JSON</div>
+                    <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-code)", color: theme.codeText, background: theme.editor, border: "1px solid " + theme.border, borderRadius: 10, padding: 10, maxHeight: 180, overflow: "auto" }}>
                       {JSON.stringify(connector.sample_payload, null, 2)}
                     </pre>
                   </div>
                   <div style={{ background: theme.cardAlt, border: "1px solid " + theme.border, borderRadius: 10, padding: 12, display: "grid", gap: 10 }}>
-                    <div style={{ fontSize: 10, fontWeight: 900, color: theme.muted }}>CONNECTOR CONFIG</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                    <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.muted }}>CONNECTOR CONFIG</div>
+                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                       <InlineSelect
                         value={String(configDrafts[connector.id]?.auth_type ?? "api_key")}
                         onChange={(event) =>
@@ -722,8 +723,8 @@ function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => void; on
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
           <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Webhook registrations</div>
-              <div style={{ fontSize: 11, color: theme.muted }}>External trigger URLs that can start policies without an API key.</div>
+              <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Webhook registrations</div>
+              <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>External trigger URLs that can start policies without an API key.</div>
             </div>
             <Button
               small
@@ -747,14 +748,14 @@ function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => void; on
             </Button>
           </div>
           <div style={{ display: "grid", gap: 10, padding: 12 }}>
-            {webhooks.length === 0 ? <div style={{ fontSize: 12, color: theme.dim }}>No webhooks configured yet.</div> : null}
+            {webhooks.length === 0 ? <div style={{ fontSize: "var(--rm-fs-body)", color: theme.dim }}>No webhooks configured yet.</div> : null}
             {webhooks.map((webhook) => (
               <div key={String(webhook.id)} style={{ background: theme.hover, borderRadius: 12, padding: 12, display: "grid", gap: 6 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: theme.text }}>{String(webhook.id)}</div>
-                  <div style={{ fontSize: 11, color: webhook.is_active ? theme.success : theme.dim, fontWeight: 800 }}>{webhook.is_active ? "ACTIVE" : "OFF"}</div>
+                  <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>{String(webhook.id)}</div>
+                  <div style={{ fontSize: "var(--rm-fs-small)", color: webhook.is_active ? theme.success : theme.dim, fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{webhook.is_active ? "ACTIVE" : "OFF"}</div>
                 </div>
-                <div style={{ fontSize: 11, color: theme.muted }}>{String(webhook.policy_id)} · {String(webhook.endpoint_path)}</div>
+                <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{String(webhook.policy_id)} · {String(webhook.endpoint_path)}</div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <Button
                     small
@@ -796,13 +797,14 @@ function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => void; on
 
 function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment, activeConnectorFilter, setActiveConnectorFilter } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, activeConnectorFilter, setActiveConnectorFilter, isMobile } = useRuleMindStore();
+  const [mobileTab, setMobileTab] = React.useState<"list" | "editor">("list");
   const filteredVariables = useFilteredVariables(props.data.variables, props.data.connectors);
   const activeConnectors = React.useMemo(
     () => props.data.connectors.filter((connector) => connector.is_active),
     [props.data.connectors]
   );
-  const defaultSourceId = activeConnectors[0]?.id ?? "custom";
+  const defaultSourceId = activeConnectors.find((c) => c.id === "bureau")?.id ?? activeConnectors[0]?.id ?? "custom";
   const templates = props.data.variables;
   const connectorMap = React.useMemo(
     () => Object.fromEntries(props.data.connectors.map((connector) => [connector.id, connector])),
@@ -814,7 +816,8 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
   const [name, setName] = React.useState("");
   const [category, setCategory] = React.useState("Custom");
   const [sourceId, setSourceId] = React.useState(defaultSourceId);
-  const [code, setCode] = React.useState('@variable(source="custom")\ndef my_variable(payload, variables, apis):\n    return 0\n');
+  const makeTemplate = (sid: string) => `@variable(source="${sid}")\ndef my_variable(payload, variables, apis):\n    return 0\n`;
+  const [code, setCode] = React.useState(makeTemplate(defaultSourceId));
   const [description, setDescription] = React.useState("");
   const [testResult, setTestResult] = React.useState<VariableRecord["last_test_result"] | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -844,7 +847,7 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
     setName("");
     setCategory("Custom");
     setSourceId(defaultSourceId);
-    setCode('@variable(source="custom")\ndef my_variable(payload, variables, apis):\n    return 0\n');
+    setCode(makeTemplate(defaultSourceId));
     setDescription("");
     setTestResult(null);
   }, [defaultSourceId, draftMode, props.data.variables, selectedId]);
@@ -994,13 +997,19 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
   }, [apiBaseUrl, apiKey, props, selectedVariableLocked]);
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 120px)" }}>
-      <div style={{ width: 270, borderRight: "1px solid " + theme.border, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+    <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", height: isMobile ? "auto" : "calc(100vh - 120px)" }}>
+      {isMobile && (
+        <div style={{ display: "flex", borderBottom: "1px solid " + theme.border }}>
+          <button type="button" onClick={() => setMobileTab("list")} style={{ flex: 1, padding: "12px", background: mobileTab === "list" ? theme.accentBg : "transparent", color: mobileTab === "list" ? theme.accent : theme.muted, border: "none", fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, cursor: "pointer" }}>Variables</button>
+          <button type="button" onClick={() => setMobileTab("editor")} style={{ flex: 1, padding: "12px", background: mobileTab === "editor" ? theme.accentBg : "transparent", color: mobileTab === "editor" ? theme.accent : theme.muted, border: "none", fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, cursor: "pointer" }}>Editor</button>
+        </div>
+      )}
+      {(!isMobile || mobileTab === "list") && <div style={{ width: isMobile ? "100%" : 270, borderRight: isMobile ? "none" : "1px solid " + theme.border, display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ padding: 14, borderBottom: "1px solid " + theme.border }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 900, color: theme.text }}>Variables</div>
-              <div style={{ fontSize: 11, color: theme.muted }}>Status filter: {environment.toUpperCase()}</div>
+              <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Variables</div>
+              <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>Status filter: {environment.toUpperCase()}</div>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               <Button small variant="ghost" onClick={() => setShowTemplates((value) => !value)} testId="variable-templates-toggle">
@@ -1017,10 +1026,11 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
                     setName("");
                     setCategory("Custom");
                     setSourceId(defaultSourceId);
-                    setCode('@variable(source="custom")\ndef my_variable(payload, variables, apis):\n    return 0\n');
+                    setCode(makeTemplate(defaultSourceId));
                     setDescription("");
                     setTestResult(null);
                   });
+                  if (isMobile) setMobileTab("editor");
                 }}
               >
                 + New
@@ -1032,14 +1042,14 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
               type="button"
               onClick={() => setActiveConnectorFilter("all")}
               style={{
-                padding: "4px 8px",
+                padding: isMobile ? "8px 12px" : "4px 8px",
                 borderRadius: 999,
                 border: "none",
                 background: activeConnectorFilter === "all" ? theme.accentBg : "transparent",
                 color: activeConnectorFilter === "all" ? theme.accent : theme.dim,
                 cursor: "pointer",
-                fontSize: 10,
-                fontWeight: 800,
+                fontSize: "var(--rm-fs-caption)",
+                fontWeight: "var(--rm-fw-bold)" as unknown as number,
               }}
             >
               All
@@ -1051,14 +1061,14 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
                 onClick={() => setActiveConnectorFilter(connector.id)}
                 data-testid={"variable-filter-" + connector.id}
                 style={{
-                  padding: "4px 8px",
+                  padding: isMobile ? "8px 12px" : "4px 8px",
                   borderRadius: 999,
                   border: "none",
                   background: activeConnectorFilter === connector.id ? connector.color + "22" : "transparent",
                   color: activeConnectorFilter === connector.id ? connector.color : theme.dim,
                   cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 800,
+                  fontSize: "var(--rm-fs-body)",
+                  fontWeight: "var(--rm-fw-bold)" as unknown as number,
                 }}
               >
                 <ConnectorIcon connectorId={connector.id} color={activeConnectorFilter === connector.id ? connector.color : theme.dim} size={12} />
@@ -1071,7 +1081,7 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
                 .filter((connector) => connector.id !== "custom" && connector.is_active)
                 .map((connector) => (
                   <div key={connector.id} style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 9, fontWeight: 900, color: theme.dim, letterSpacing: 1.1, textTransform: "uppercase", marginBottom: 4 }}>
+                    <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.dim, letterSpacing: 1.1, textTransform: "uppercase", marginBottom: 4 }}>
                       {connector.name}
                     </div>
                     {templates
@@ -1105,8 +1115,8 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
                             cursor: "pointer",
                           }}
                         >
-                          <div style={{ fontSize: 11, fontWeight: 700 }}>{template.name}</div>
-                          <div style={{ fontSize: 10, color: theme.muted }}>{template.description}</div>
+                          <div style={{ fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-semibold)" as unknown as number }}>{template.name}</div>
+                          <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted }}>{template.description}</div>
                         </button>
                       ))}
                   </div>
@@ -1117,11 +1127,11 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
 
         <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
           {groupedVariables.length === 0 ? (
-            <div style={{ fontSize: 12, color: theme.dim, textAlign: "center", padding: 16 }}>No variables in {environment.toUpperCase()}.</div>
+            <div style={{ fontSize: "var(--rm-fs-body)", color: theme.dim, textAlign: "center", padding: 16 }}>No variables in {environment.toUpperCase()}.</div>
           ) : (
             groupedVariables.map((group) => (
               <div key={group.categoryName} style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 9, fontWeight: 900, color: theme.dim, letterSpacing: 1.2, textTransform: "uppercase", padding: "0 8px 6px" }}>
+                <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.dim, letterSpacing: 1.2, textTransform: "uppercase", padding: "0 8px 6px" }}>
                   {group.categoryName}
                 </div>
                 {group.items.map((variable) => {
@@ -1136,6 +1146,7 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
                           setDraftMode(false);
                           setSelectedId(variable.id);
                         });
+                        if (isMobile) setMobileTab("editor");
                       }}
                       style={{
                         width: "100%",
@@ -1154,11 +1165,11 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
                       }}
                     >
                       <div style={{ display: "grid", gap: 2 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        <div style={{ fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-semibold)" as unknown as number, display: "inline-flex", alignItems: "center", gap: 6 }}>
                           <ConnectorIcon connectorId={variable.source_id} color={source?.color} size={13} />
                           <span>{variable.name}</span>
                         </div>
-                        <div style={{ fontSize: 10, color: theme.muted }}>
+                        <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted }}>
                           {variable.description || variable.id}
                           {!source?.is_active ? " · source inactive" : ""}
                         </div>
@@ -1171,10 +1182,10 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
             ))
           )}
         </div>
-      </div>
+      </div>}
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: 16, borderBottom: "1px solid " + theme.border, display: "grid", gap: 12 }}>
+      {(!isMobile || mobileTab === "editor") && <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: isMobile ? 12 : 16, borderBottom: "1px solid " + theme.border, display: "grid", gap: 12 }}>
           <SectionHeader
             title={PAGE_META.variables.title}
             subtitle={PAGE_META.variables.subtitle}
@@ -1205,7 +1216,7 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
             }
           />
 
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.2fr 0.8fr 0.8fr", gap: 10 }}>
             <InlineInput
               value={name}
               onChange={(event) => {
@@ -1218,8 +1229,12 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
             <InlineSelect
               value={sourceId}
               onChange={(event) => {
+                const newSourceId = event.target.value;
                 beginDraft();
-                setSourceId(event.target.value);
+                setSourceId(newSourceId);
+                if (code === makeTemplate(sourceId)) {
+                  setCode(makeTemplate(newSourceId));
+                }
               }}
               data-testid="variable-source"
             >
@@ -1250,9 +1265,9 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
           />
         </div>
 
-        <div style={{ flex: 1, display: "grid", gridTemplateRows: "1fr auto auto", gap: 12, padding: 16, overflow: "auto" }}>
+        <div style={{ flex: 1, display: "grid", gridTemplateRows: "1fr auto auto", gap: 12, padding: isMobile ? 12 : 16, overflow: "auto" }}>
           <div>
-            <div style={{ fontSize: 10, fontWeight: 900, color: theme.dim, letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 6 }}>
+            <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.dim, letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 6 }}>
               Python · {connectorMap[sourceId]?.name ?? sourceId}
             </div>
             <InlineTextarea
@@ -1268,35 +1283,35 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
             />
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
             <div style={{ background: theme.hover, borderRadius: 12, padding: 12 }}>
-              <div style={{ fontSize: 10, fontWeight: 900, color: theme.dim, marginBottom: 8 }}>INPUT PREVIEW</div>
-              <pre data-testid="variable-input-preview" style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 11, color: theme.muted, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto" }}>
+              <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.dim, marginBottom: 8 }}>INPUT PREVIEW</div>
+              <pre data-testid="variable-input-preview" style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-code)", color: theme.muted, whiteSpace: "pre-wrap", maxHeight: 320, overflow: "auto" }}>
                 {JSON.stringify(connectorMap[sourceId]?.sample_payload ?? {}, null, 2)}
               </pre>
             </div>
             <div style={{ background: testResult?.passed ? theme.successBg : theme.hover, borderRadius: 12, padding: 12 }}>
-              <div style={{ fontSize: 10, fontWeight: 900, color: theme.dim, marginBottom: 8 }}>OUTPUT</div>
+              <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.dim, marginBottom: 8 }}>OUTPUT</div>
               {testResult ? (
                 <div data-testid="variable-output">
-                  <div style={{ fontSize: 24, fontWeight: 900, color: testResult.error ? theme.danger : theme.success }}>
+                  <div style={{ fontSize: "var(--rm-fs-hero)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: testResult.error ? theme.danger : theme.success }}>
                     {testResult.error ? "Error" : String(testResult.value)}
                   </div>
-                  <div style={{ fontSize: 11, color: testResult.error ? theme.danger : theme.muted, marginTop: 6 }}>
+                  <div style={{ fontSize: "var(--rm-fs-small)", color: testResult.error ? theme.danger : theme.muted, marginTop: 6 }}>
                     {testResult.error ?? "Latency: " + testResult.latency_ms + " ms"}
                   </div>
                 </div>
               ) : (
-                <div style={{ fontSize: 12, color: theme.dim }}>Run Test on Sample to see the computed value.</div>
+                <div style={{ fontSize: "var(--rm-fs-body)", color: theme.dim }}>Run Test on Sample to see the computed value.</div>
               )}
             </div>
           </div>
 
           <div style={{ background: (connectorMap[sourceId]?.color ?? theme.accent) + "14", borderRadius: 12, padding: 12, border: "1px solid " + (connectorMap[sourceId]?.color ?? theme.accent) + "26" }}>
-            <div style={{ fontSize: 10, fontWeight: 900, color: connectorMap[sourceId]?.color ?? theme.accent, marginBottom: 8 }}>
+            <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: connectorMap[sourceId]?.color ?? theme.accent, marginBottom: 8 }}>
               SCHEMA HINTS · {connectorMap[sourceId]?.name ?? sourceId}
             </div>
-            <div data-testid="variable-schema-hints" style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: theme.muted, lineHeight: 1.7 }}>
+            <div data-testid="variable-schema-hints" style={{ fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-code)", color: theme.muted, lineHeight: 1.7 }}>
               {(connectorMap[sourceId]?.schema_paths ?? []).map((fieldPath) => (
                 <div key={fieldPath}>payload.{fieldPath}</div>
               ))}
@@ -1305,12 +1320,12 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
           {showGraph && selectedVariableLocked && graph ? (
             <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div style={{ fontSize: 10, fontWeight: 900, color: theme.text }}>DEPENDENCY GRAPH</div>
+                <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>DEPENDENCY GRAPH</div>
                 <Button small variant="ghost" onClick={() => setShowGraph(false)}>
                   Hide
                 </Button>
               </div>
-              <div style={{ fontSize: 11, color: theme.muted, lineHeight: 1.7 }}>
+              <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted, lineHeight: 1.7 }}>
                 {graph.edges.filter((edge) => edge.from === selectedVariableLocked.id).length === 0 ? (
                   <div>No downstream rules, scorecards, or policies reference this variable yet.</div>
                 ) : (
@@ -1329,7 +1344,7 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
             </div>
           ) : null}
         </div>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -1787,7 +1802,7 @@ function AdvancedRuleTreeEditor(props: {
     return (
       <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 12, display: "grid", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 900, color: theme.accent, letterSpacing: 0.7 }}>CONDITION</div>
+          <div style={{ fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.accent, letterSpacing: 0.7 }}>CONDITION</div>
           <div style={{ display: "flex", gap: 6 }}>
             {props.onMoveUp ? (
               <button type="button" onClick={props.onMoveUp} style={actionButtonStyle}>
@@ -1831,7 +1846,7 @@ function AdvancedRuleTreeEditor(props: {
           </InlineSelect>
           <InlineInput value={String(props.node.value ?? "")} onChange={(event) => props.onChange({ ...props.node, value: event.target.value })} placeholder="Value" style={{ width: 140 }} />
         </div>
-        <div style={{ fontSize: 11, color: theme.muted, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <ConnectorIcon connectorId={connector?.id ?? "custom"} color={connector?.color} size={13} />
           <span>{connector?.name ?? "No source selected"}</span>
         </div>
@@ -1843,7 +1858,7 @@ function AdvancedRuleTreeEditor(props: {
     return (
       <div style={{ background: theme.cardAlt, border: "1px solid " + theme.border, borderRadius: 12, padding: 12, display: "grid", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 900, color: theme.warning }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.warning }}>
             <CircleSlash size={14} />
             <span>NOT</span>
           </div>
@@ -1891,7 +1906,7 @@ function AdvancedRuleTreeEditor(props: {
     <div style={{ background: props.isRoot ? theme.card : theme.cardAlt, border: "1px solid " + theme.border, borderRadius: 12, padding: 12, display: "grid", gap: 12 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 900, color: theme.success }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.success }}>
             <GitBranch size={14} />
             <span>{props.isRoot ? "ROOT GROUP" : "GROUP"}</span>
           </div>
@@ -1992,7 +2007,7 @@ function AdvancedRuleTreeEditor(props: {
 
 function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, isMobile } = useRuleMindStore();
   const connectorMap = React.useMemo(
     () => Object.fromEntries(props.data.connectors.map((connector) => [connector.id, connector])),
     [props.data.connectors]
@@ -2175,8 +2190,8 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
               borderBottom: tab === item.id ? "2px solid " + theme.accent : "2px solid transparent",
               color: tab === item.id ? theme.accent : theme.muted,
               padding: "12px 0",
-              fontSize: 12,
-              fontWeight: 800,
+              fontSize: "var(--rm-fs-body)",
+              fontWeight: "var(--rm-fw-bold)" as unknown as number,
               cursor: "pointer",
             }}
           >
@@ -2190,7 +2205,7 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
           <div style={{ padding: 16, borderBottom: "1px solid " + theme.border, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <InlineInput value={ruleName} onChange={(event) => setRuleName(event.target.value)} style={{ minWidth: 220 }} data-testid="rule-name" />
-              <span style={{ fontSize: 11, color: theme.muted }}>{activeNodeCount} nodes</span>
+              <span style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{activeNodeCount} nodes</span>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <div style={{ display: "inline-flex", gap: 6, background: theme.hover, padding: 4, borderRadius: 10 }}>
@@ -2204,8 +2219,8 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
                     padding: "6px 10px",
                     borderRadius: 8,
                     cursor: "pointer",
-                    fontSize: 11,
-                    fontWeight: 800,
+                    fontSize: "var(--rm-fs-small)",
+                    fontWeight: "var(--rm-fw-bold)" as unknown as number,
                   }}
                 >
                   Simple
@@ -2220,8 +2235,8 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
                     padding: "6px 10px",
                     borderRadius: 8,
                     cursor: "pointer",
-                    fontSize: 11,
-                    fontWeight: 800,
+                    fontSize: "var(--rm-fs-small)",
+                    fontWeight: "var(--rm-fw-bold)" as unknown as number,
                   }}
                 >
                   Advanced
@@ -2266,8 +2281,8 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
                       color: palette.fg,
                       borderRadius: 10,
                       padding: "6px 10px",
-                      fontSize: 11,
-                      fontWeight: 800,
+                      fontSize: "var(--rm-fs-small)",
+                      fontWeight: "var(--rm-fw-bold)" as unknown as number,
                       cursor: "pointer",
                     }}
                   >
@@ -2280,7 +2295,7 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
               })
             ) : (
               <>
-                <div style={{ fontSize: 11, color: theme.muted }}>
+                <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>
                   Nested groups support <strong style={{ color: theme.text }}>AND</strong>, <strong style={{ color: theme.text }}>OR</strong>, and <strong style={{ color: theme.text }}>NOT</strong> with a max depth of 3.
                 </div>
                 <Button small variant="ghost" onClick={() => setRuleTree(createTreeGroup(activeVariables[0]))}>
@@ -2308,7 +2323,7 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
                         <div key={node.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           {index > 0 ? <div style={{ width: 18, height: 2, background: theme.border }} /> : null}
                           <div style={{ flex: 1, background: theme.card, border: "1px solid " + palette.fg + "30", borderRadius: 12, padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
-                            <div style={{ width: 28, height: 28, borderRadius: 8, background: palette.bg, color: palette.fg, display: "grid", placeItems: "center", fontWeight: 900 }}>
+                            <div style={{ width: 28, height: 28, borderRadius: 8, background: palette.bg, color: palette.fg, display: "grid", placeItems: "center", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>
                               <spec.icon size={15} color={palette.fg} strokeWidth={2} />
                             </div>
                             {node.type === "condition" ? (
@@ -2344,12 +2359,12 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
                                 />
                               </div>
                             ) : (
-                              <div style={{ fontSize: 12, fontWeight: 800, color: palette.fg, flex: 1 }}>{spec.label}</div>
+                              <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: palette.fg, flex: 1 }}>{spec.label}</div>
                             )}
                             <button
                               type="button"
                               onClick={() => setNodes((items) => items.filter((item) => item.id !== node.id))}
-                              style={{ border: "none", background: "transparent", color: theme.dim, cursor: "pointer", fontSize: 14 }}
+                              style={{ border: "none", background: "transparent", color: theme.dim, cursor: "pointer", fontSize: "var(--rm-fs-heading)" }}
                             >
                               <Trash2 size={14} />
                             </button>
@@ -2373,20 +2388,20 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
           </div>
 
           <div style={{ padding: "12px 16px", borderTop: "1px solid " + theme.border }}>
-            <div style={{ fontSize: 10, fontWeight: 900, color: theme.dim, marginBottom: 6, letterSpacing: 1.2, textTransform: "uppercase" }}>Expression</div>
-            <div data-testid="rule-expression" style={{ background: theme.hover, borderRadius: 10, padding: "10px 12px", fontFamily: "var(--font-mono)", color: theme.accent, fontSize: 12 }}>
+            <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.dim, marginBottom: 6, letterSpacing: 1.2, textTransform: "uppercase" }}>Expression</div>
+            <div data-testid="rule-expression" style={{ background: theme.hover, borderRadius: 10, padding: "10px 12px", fontFamily: "var(--font-mono)", color: theme.accent, fontSize: "var(--rm-fs-body)" }}>
               {expressionPreview}
             </div>
           </div>
 
           {inlineTest ? (
             <div style={{ padding: "12px 16px", borderTop: "1px solid " + theme.border, background: inlineTest.passed ? theme.successBg : theme.dangerBg }}>
-              <div data-testid="rule-inline-outcome" style={{ fontSize: 12, fontWeight: 900, color: inlineTest.passed ? theme.success : theme.danger, textTransform: "uppercase", marginBottom: 8 }}>
+              <div data-testid="rule-inline-outcome" style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: inlineTest.passed ? theme.success : theme.danger, textTransform: "uppercase", marginBottom: 8 }}>
                 {inlineTest.outcome}
               </div>
               <div style={{ display: "grid", gap: 4 }}>
                 {inlineTest.conditions.map((condition) => (
-                  <div key={condition.variable_id + condition.threshold} style={{ fontSize: 11, color: condition.passed ? theme.success : theme.danger }}>
+                  <div key={condition.variable_id + condition.threshold} style={{ fontSize: "var(--rm-fs-small)", color: condition.passed ? theme.success : theme.danger }}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                       {condition.passed ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
                       <span>
@@ -2399,7 +2414,7 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
               {inlineTest.groupResults?.length ? (
                 <div style={{ marginTop: 10, display: "grid", gap: 4 }}>
                   {inlineTest.groupResults.map((group) => (
-                    <div key={String(group.id) + group.logic} style={{ fontSize: 11, color: group.passed ? theme.success : theme.danger }}>
+                    <div key={String(group.id) + group.logic} style={{ fontSize: "var(--rm-fs-small)", color: group.passed ? theme.success : theme.danger }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                         {group.passed ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
                         <span>{group.logic} group · {group.childCount} child node(s)</span>
@@ -2417,7 +2432,7 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
         <div style={{ padding: 20, overflow: "auto", display: "grid", gap: 10 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <InlineInput value={savedSearch} onChange={(event) => setSavedSearch(event.target.value)} placeholder="Search rules or source names" style={{ maxWidth: 320 }} />
-            <div style={{ fontSize: 11, color: theme.muted }}>{filteredSavedRules.length} shown</div>
+            <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{filteredSavedRules.length} shown</div>
           </div>
           {filteredSavedRules.length === 0 ? (
             <EmptyState icon={<Layers size={28} />} title="No saved rules" description={"Create and save a rule in " + environment.toUpperCase() + " to manage it here."} />
@@ -2429,18 +2444,18 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
               return (
                 <div key={rule.id} style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "flex", justifyContent: "space-between", gap: 12 }}>
                   <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: theme.text, display: "inline-flex", gap: 8, alignItems: "center" }}>
+                    <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, display: "inline-flex", gap: 8, alignItems: "center" }}>
                       <span>{rule.name}</span>
-                      <span style={{ fontSize: 10, color: theme.dim, textTransform: "uppercase" }}>{rule.rule_format ?? "v1"}</span>
+                      <span style={{ fontSize: "var(--rm-fs-caption)", color: theme.dim, textTransform: "uppercase" }}>{rule.rule_format ?? "v1"}</span>
                     </div>
-                    <div style={{ fontSize: 11, color: theme.muted }}>{rule.tree ? countRuleTreeNodes(rule.tree) : rule.nodes.length} nodes</div>
+                    <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{rule.tree ? countRuleTreeNodes(rule.tree) : rule.nodes.length} nodes</div>
                     <div style={{ display: "flex", gap: 6 }}>
                       {usedSourceIds.map((sourceId) => (
                         <ConnectorIcon key={String(sourceId)} connectorId={String(sourceId)} color={connectorMap[String(sourceId)]?.color} size={14} />
                       ))}
                     </div>
                     {!rule.last_test_result?.passed ? (
-                      <div style={{ fontSize: 11, color: theme.warning }}>Latest test must pass before promotion.</div>
+                      <div style={{ fontSize: "var(--rm-fs-small)", color: theme.warning }}>Latest test must pass before promotion.</div>
                     ) : null}
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -2486,13 +2501,13 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
           {ruleTestResult ? (
             <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
               <div style={{ padding: 14, background: ruleTestResult.result.passed ? theme.successBg : theme.dangerBg }}>
-                <div data-testid="rule-saved-outcome" style={{ fontSize: 13, fontWeight: 900, color: ruleTestResult.result.passed ? theme.success : theme.danger, textTransform: "uppercase" }}>
+                <div data-testid="rule-saved-outcome" style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: ruleTestResult.result.passed ? theme.success : theme.danger, textTransform: "uppercase" }}>
                   {ruleTestResult.result.outcome}
                 </div>
               </div>
               <div style={{ padding: 14, display: "grid", gap: 8 }}>
                 {ruleTestResult.result.conditions.map((condition) => (
-                  <div key={condition.variable_id + condition.threshold} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: theme.text }}>
+                  <div key={condition.variable_id + condition.threshold} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "var(--rm-fs-body)", color: theme.text }}>
                     <span style={{ color: condition.passed ? theme.success : theme.danger }}>{condition.passed ? <CheckCircle2 size={14} /> : <XCircle size={14} />}</span>
                     <ConnectorIcon connectorId={condition.source_id ?? "custom"} color={connectorMap[condition.source_id ?? ""]?.color} size={12} />
                     <span>
@@ -2503,7 +2518,7 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
                 {ruleTestResult.result.groupResults?.length ? (
                   <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
                     {ruleTestResult.result.groupResults.map((group) => (
-                      <div key={String(group.id) + group.logic} style={{ fontSize: 11, color: group.passed ? theme.success : theme.danger }}>
+                      <div key={String(group.id) + group.logic} style={{ fontSize: "var(--rm-fs-small)", color: group.passed ? theme.success : theme.danger }}>
                         {group.logic} group · {group.passed ? "PASS" : "FAIL"} · {group.childCount} child node(s)
                       </div>
                     ))}
@@ -2522,7 +2537,7 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
 
 function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, isMobile } = useRuleMindStore();
   const connectorMap = React.useMemo(
     () => Object.fromEntries(props.data.connectors.map((connector) => [connector.id, connector])),
     [props.data.connectors]
@@ -2642,7 +2657,7 @@ function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => void; on
         }
       />
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 220px 220px 180px", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 220px 220px 180px", gap: 10 }}>
         <InlineSelect value={selectedId ?? ""} onChange={(event) => setSelectedId(event.target.value || null)} data-testid="scorecard-select">
           <option value="">New scorecard</option>
           {environmentScorecards.map((scorecard) => (
@@ -2653,14 +2668,14 @@ function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => void; on
         </InlineSelect>
         <InlineInput value={scorecardName} onChange={(event) => setScorecardName(event.target.value)} placeholder="Scorecard name" />
         <InlineInput type="number" value={String(baseScore)} onChange={(event) => setBaseScore(Number(event.target.value || 0))} placeholder="Base score" />
-        <div style={{ alignSelf: "center", justifySelf: "end", fontSize: 28, fontWeight: 900, color: theme.success }} data-testid="scorecard-live-score">
+        <div style={{ alignSelf: "center", justifySelf: "end", fontSize: "var(--rm-fs-hero)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.success }} data-testid="scorecard-live-score">
           {testResult?.score ?? baseScore}
         </div>
       </div>
 
       <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
         <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Score bins</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Score bins</div>
           <Button
             small
             onClick={() =>
@@ -2696,7 +2711,7 @@ function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => void; on
                       </option>
                     ))}
                   </InlineSelect>
-                  <div style={{ fontSize: 12, color: theme.muted }}>
+                  <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted }}>
                     {variable ? connectorMap[variable.source_id]?.name + " · " + variable.category : ""}
                   </div>
                   <Button small variant="danger" onClick={() => setBins((items) => items.filter((_, itemIndex) => itemIndex !== index))}>
@@ -2720,7 +2735,7 @@ function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => void; on
                           <InlineInput type="number" value={String(range.max)} onChange={(event) => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.map((candidate, candidateIndex) => candidateIndex === rangeIndex ? { ...candidate, max: Number(event.target.value || 0) } : candidate) } : item))} style={{ width: 80 }} />
                           <InlineInput type="number" value={String(range.points)} onChange={(event) => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.map((candidate, candidateIndex) => candidateIndex === rangeIndex ? { ...candidate, points: Number(event.target.value || 0) } : candidate) } : item))} style={{ width: 90 }} />
                         </div>
-                        <div style={{ fontSize: 11, fontWeight: 800, color: active ? palette.fg : theme.muted }}>
+                        <div style={{ fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: active ? palette.fg : theme.muted }}>
                           {range.min}–{range.max}: {range.points > 0 ? "+" : ""}{range.points}
                         </div>
                       </div>
@@ -2741,7 +2756,7 @@ function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => void; on
 
 function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, isMobile } = useRuleMindStore();
   const connectorMap = React.useMemo(
     () => Object.fromEntries(props.data.connectors.map((connector) => [connector.id, connector])),
     [props.data.connectors]
@@ -2843,7 +2858,7 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
         }
       />
 
-      <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "280px 1fr", gap: 12 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 12, display: "grid", gap: 10 }}>
           <InlineSelect value={selectedId ?? ""} onChange={(event) => setSelectedId(event.target.value || null)} data-testid="policy-select">
             <option value="">New policy</option>
@@ -2880,10 +2895,10 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
         </div>
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 16, display: "grid", gap: 14 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Visual pipeline</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Visual pipeline</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }} data-testid="policy-pipeline">
             {steps.length === 0 ? (
-              <div style={{ fontSize: 12, color: theme.dim }}>No policy steps yet.</div>
+              <div style={{ fontSize: "var(--rm-fs-body)", color: theme.dim }}>No policy steps yet.</div>
             ) : (
               steps.map((step, index) => {
                 const isConnector = step.type === "connector";
@@ -2899,7 +2914,7 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
                   <React.Fragment key={index}>
                     <div style={{ background: isConnector ? theme.accentBg : step.type === "rule" ? theme.successBg : step.type === "scorecard" ? theme.warningBg : step.type === "action" ? theme.purpleBg : theme.hover, color: isConnector ? theme.accent : step.type === "rule" ? theme.success : step.type === "scorecard" ? theme.warning : step.type === "action" ? theme.purple : theme.text, borderRadius: 12, padding: 10, display: "grid", gap: 8, minWidth: 220 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                        <strong style={{ fontSize: 12 }}>{step.type.toUpperCase()}</strong>
+                        <strong style={{ fontSize: "var(--rm-fs-body)" }}>{step.type.toUpperCase()}</strong>
                         <div style={{ display: "flex", gap: 4 }}>
                           <button type="button" onClick={() => setSteps((items) => items.map((item, itemIndex) => itemIndex === index - 1 ? items[index] : itemIndex === index ? items[index - 1] : item))} disabled={index === 0} style={{ border: "none", background: "transparent", color: theme.dim, cursor: index === 0 ? "not-allowed" : "pointer" }}><ArrowUp size={13} /></button>
                           <button type="button" onClick={() => setSteps((items) => items.map((item, itemIndex) => itemIndex === index ? items[index + 1] : itemIndex === index + 1 ? items[index] : item))} disabled={index === steps.length - 1} style={{ border: "none", background: "transparent", color: theme.dim, cursor: index === steps.length - 1 ? "not-allowed" : "pointer" }}><ArrowDown size={13} /></button>
@@ -2951,7 +2966,7 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
                               const parsed = JSON.parse(event.target.value);
                               setSteps((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, config: { ...(item.config ?? {}), mapping: parsed } } : item));
                             } catch {}
-                          }} style={{ minHeight: 100, borderRadius: 10, border: "1px solid " + theme.border, background: theme.editor, color: theme.codeText, padding: 10, fontSize: 11, fontFamily: "var(--font-mono)" }} />
+                          }} style={{ minHeight: 100, borderRadius: 10, border: "1px solid " + theme.border, background: theme.editor, color: theme.codeText, padding: 10, fontSize: "var(--rm-fs-small)", fontFamily: "var(--font-mono)" }} />
                         </div>
                       ) : null}
                       {step.type === "action" ? (
@@ -2970,7 +2985,7 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
                               const parsed = JSON.parse(event.target.value);
                               setSteps((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, config: { ...(item.config ?? {}), bodyTemplate: parsed } } : item));
                             } catch {}
-                          }} style={{ minHeight: 110, borderRadius: 10, border: "1px solid " + theme.border, background: theme.editor, color: theme.codeText, padding: 10, fontSize: 11, fontFamily: "var(--font-mono)" }} />
+                          }} style={{ minHeight: 110, borderRadius: 10, border: "1px solid " + theme.border, background: theme.editor, color: theme.codeText, padding: 10, fontSize: "var(--rm-fs-small)", fontFamily: "var(--font-mono)" }} />
                         </div>
                       ) : null}
                       {step.type === "review_gate" ? (
@@ -2985,7 +3000,7 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
                           </InlineSelect>
                         </div>
                       ) : null}
-                      <div style={{ fontSize: 11, color: theme.muted, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted, display: "inline-flex", alignItems: "center", gap: 6 }}>
                         {isConnector ? <ConnectorIcon connectorId={stepRef} color={connectorMap[stepRef]?.color} size={12} /> : null}
                         <span>{label}</span>
                       </div>
@@ -2999,14 +3014,14 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
 
           {execution ? (
             <div style={{ background: theme.hover, borderRadius: 12, padding: 14 }}>
-              <div data-testid="policy-outcome" style={{ fontSize: 12, fontWeight: 900, color: execution.result.outcome === "approve" ? theme.success : execution.result.outcome === "review" ? theme.warning : theme.danger, textTransform: "uppercase", marginBottom: 10 }}>
+              <div data-testid="policy-outcome" style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: execution.result.outcome === "approve" ? theme.success : execution.result.outcome === "review" ? theme.warning : theme.danger, textTransform: "uppercase", marginBottom: 10 }}>
                 {execution.result.outcome}
               </div>
               <div style={{ display: "grid", gap: 8 }}>
                 {execution.result.trace.map((entry, index) => (
                   <div key={index} style={{ background: theme.card, borderRadius: 10, padding: 10, border: "1px solid " + theme.border }}>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: theme.text }}>{String(entry.type).toUpperCase()} · {String(entry.label ?? entry.ref_id ?? "")}</div>
-                    <pre style={{ margin: "6px 0 0", fontFamily: "var(--font-mono)", fontSize: 10, color: theme.muted, whiteSpace: "pre-wrap" }}>{JSON.stringify(entry, null, 2)}</pre>
+                    <div style={{ fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>{String(entry.type).toUpperCase()} · {String(entry.label ?? entry.ref_id ?? "")}</div>
+                    <pre style={{ margin: "6px 0 0", fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-caption)", color: theme.muted, whiteSpace: "pre-wrap" }}>{JSON.stringify(entry, null, 2)}</pre>
                   </div>
                 ))}
               </div>
@@ -3020,7 +3035,7 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
 
 function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, isMobile } = useRuleMindStore();
   const environmentRules = props.data.rules.filter((rule) => rule.status === environment);
   const environmentPolicies = props.data.policies.filter((policy) => policy.status === environment);
   const [variableResults, setVariableResults] = React.useState<VariableBatchTestResponse | null>(null);
@@ -3136,8 +3151,8 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
 
       <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
         <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, display: "flex", justifyContent: "space-between" }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Variable suite</div>
-          <div style={{ fontSize: 11, color: theme.success, fontWeight: 800 }}>{variableResults?.summary ?? "Not run yet"}</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Variable suite</div>
+          <div style={{ fontSize: "var(--rm-fs-small)", color: theme.success, fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{variableResults?.summary ?? "Not run yet"}</div>
         </div>
         {!variableResults ? (
           <div style={{ padding: 22 }}>
@@ -3148,14 +3163,14 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
             {variableResults.results.map((result) => (
               <div key={result.id} style={{ padding: "10px 14px", borderTop: "1px solid " + theme.border, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
                 <div style={{ display: "grid", gap: 3 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: theme.text, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-semibold)" as unknown as number, color: theme.text, display: "inline-flex", alignItems: "center", gap: 6 }}>
                     <ConnectorIcon connectorId={result.source_id} color={props.data.connectors.find((connector) => connector.id === result.source_id)?.color} size={14} />
                     <span>{result.name}</span>
                   </div>
-                  <div style={{ fontSize: 10, color: theme.muted }}>{result.category} · {result.source_id}</div>
+                  <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted }}>{result.category} · {result.source_id}</div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 800, color: result.passed ? theme.success : theme.warning }}>{String(result.computed_value)}</span>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: result.passed ? theme.success : theme.warning }}>{String(result.computed_value)}</span>
                   <StatusBadge status={result.passed ? "prod" : "uat"} />
                 </div>
               </div>
@@ -3164,9 +3179,9 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
         )}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Rule tester</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Rule tester</div>
           <div style={{ display: "flex", gap: 8 }}>
             <InlineSelect value={ruleId} onChange={(event) => setRuleId(event.target.value)} style={{ flex: 1 }}>
               {environmentRules.map((rule) => (
@@ -3179,9 +3194,9 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
           </div>
           {ruleResult ? (
             <div style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontSize: 12, fontWeight: 800, color: ruleResult.result.passed ? theme.success : theme.danger, textTransform: "uppercase" }}>{ruleResult.result.outcome}</div>
+              <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: ruleResult.result.passed ? theme.success : theme.danger, textTransform: "uppercase" }}>{ruleResult.result.outcome}</div>
               {ruleResult.result.conditions.map((condition) => (
-                <div key={condition.variable_id + condition.threshold} style={{ fontSize: 11, color: theme.text }}>
+                <div key={condition.variable_id + condition.threshold} style={{ fontSize: "var(--rm-fs-small)", color: theme.text }}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                     {condition.passed ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
                     <span>
@@ -3195,7 +3210,7 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
         </div>
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Policy trace</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Policy trace</div>
           <div style={{ display: "flex", gap: 8 }}>
             <InlineSelect value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ flex: 1 }}>
               {environmentPolicies.map((policy) => (
@@ -3208,11 +3223,11 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
           </div>
           {policyResult ? (
             <div style={{ display: "grid", gap: 6 }}>
-              <div data-testid="policy-console-outcome" style={{ fontSize: 12, fontWeight: 800, color: policyResult.result.outcome === "approve" ? theme.success : policyResult.result.outcome === "review" ? theme.warning : theme.danger, textTransform: "uppercase" }}>
+              <div data-testid="policy-console-outcome" style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: policyResult.result.outcome === "approve" ? theme.success : policyResult.result.outcome === "review" ? theme.warning : theme.danger, textTransform: "uppercase" }}>
                 {policyResult.result.outcome}
               </div>
               {policyResult.result.trace.map((entry, index) => (
-                <div key={index} style={{ fontSize: 11, color: theme.text }}>
+                <div key={index} style={{ fontSize: "var(--rm-fs-small)", color: theme.text }}>
                   {String(entry.type).toUpperCase()} · {String(entry.label ?? entry.ref_id ?? "")}
                 </div>
               ))}
@@ -3221,9 +3236,9 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Batch simulation</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Batch simulation</div>
           <div style={{ display: "flex", gap: 8 }}>
             <InlineSelect value={batchTargetType} onChange={(event) => setBatchTargetType(event.target.value as "rule" | "policy" | "decide")} style={{ width: 140 }}>
               <option value="rule">Rule</option>
@@ -3251,14 +3266,14 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
           <InlineTextarea code value={batchPayloadText} onChange={(event) => setBatchPayloadText(event.target.value)} rows={10} />
           <Button onClick={runBatchSimulation} disabled={busy}>Run batch</Button>
           {batchResult ? (
-            <pre style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 11, color: theme.muted, whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
+            <pre style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-small)", color: theme.muted, whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
               {JSON.stringify(batchResult, null, 2)}
             </pre>
           ) : null}
         </div>
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Decision API simulation</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Decision API simulation</div>
           <InlineSelect value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ maxWidth: 280 }}>
             {environmentPolicies.map((policy) => (
               <option key={policy.id} value={policy.id}>
@@ -3269,7 +3284,7 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
           <InlineTextarea code value={apiPayloadText} onChange={(event) => setApiPayloadText(event.target.value)} rows={10} />
           <Button onClick={runApiSimulation} disabled={busy || !policyId}>POST /api/v1/decide</Button>
           {apiResult ? (
-            <pre style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 11, color: theme.muted, whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
+            <pre style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-small)", color: theme.muted, whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
               {JSON.stringify(apiResult, null, 2)}
             </pre>
           ) : null}
@@ -3281,7 +3296,7 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
 
 function AuditPage(props: { onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, isMobile } = useRuleMindStore();
   const [tab, setTab] = React.useState<"decisions" | "promotions" | "errors">("decisions");
   const [decisions, setDecisions] = React.useState<Array<Record<string, unknown>>>([]);
   const [promotions, setPromotions] = React.useState<PromotionRecord[]>([]);
@@ -3323,14 +3338,14 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
           </Button>
         ))}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.9fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.1fr 0.9fr", gap: 16 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
-          <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: 13, fontWeight: 800, color: theme.text }}>
+          <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>
             {tab === "decisions" ? "Recent decisions" : tab === "promotions" ? "Recent promotions" : "Recent operational errors"}
           </div>
           <div style={{ display: "grid" }}>
             {rows.length === 0 ? (
-              <div style={{ padding: 18, fontSize: 12, color: theme.dim }}>No audit events yet.</div>
+              <div style={{ padding: 18, fontSize: "var(--rm-fs-body)", color: theme.dim }}>No audit events yet.</div>
             ) : (
               rows.map((row, index) => {
                 const record = row as Record<string, unknown>;
@@ -3351,14 +3366,14 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
                       gap: 4,
                     }}
                   >
-                    <div style={{ fontSize: 12, fontWeight: 700 }}>
+                    <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-semibold)" as unknown as number }}>
                       {tab === "decisions"
                         ? `${String(record.policy_id ?? "policy")} → ${String(record.outcome ?? "")}`
                         : tab === "promotions"
                           ? `${String(record.entity_type ?? "")} · ${String(record.entity_id ?? "")}`
                           : `${String(record.scope ?? "")} · ${String(record.message ?? "")}`}
                     </div>
-                    <div style={{ fontSize: 11, color: theme.muted }}>
+                    <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>
                       {String(record.created_at ?? "")}
                     </div>
                   </button>
@@ -3369,31 +3384,31 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
         </div>
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
-          <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: 13, fontWeight: 800, color: theme.text }}>Detail drawer</div>
+          <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Detail drawer</div>
           {!selected ? (
-            <div style={{ padding: 18, fontSize: 12, color: theme.dim }}>Select an audit row to inspect payload, trace, and metadata.</div>
+            <div style={{ padding: 18, fontSize: "var(--rm-fs-body)", color: theme.dim }}>Select an audit row to inspect payload, trace, and metadata.</div>
           ) : (
             <div style={{ display: "grid", gap: 12, padding: 14, maxHeight: 520, overflow: "auto" }}>
               {Array.isArray((selected as { trace?: unknown[] }).trace) ? (
                 <div style={{ display: "grid", gap: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: theme.text }}>Execution Trace</div>
+                  <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Execution Trace</div>
                   {(selected as { trace?: ExecutionTraceStepRecord[] }).trace?.map((entry, index) => (
                     <div key={index} style={{ background: theme.hover, border: "1px solid " + theme.border, borderRadius: 10, padding: 10, display: "grid", gap: 4 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 800, color: theme.text }}>{index + 1}. {String(entry.step?.name ?? entry.step?.label ?? entry.type ?? entry.step?.type ?? "step")}</div>
-                        <div style={{ fontSize: 11, color: entry.error ? theme.danger : entry.skipped ? theme.warning : theme.success }}>
+                        <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>{index + 1}. {String(entry.step?.name ?? entry.step?.label ?? entry.type ?? entry.step?.type ?? "step")}</div>
+                        <div style={{ fontSize: "var(--rm-fs-small)", color: entry.error ? theme.danger : entry.skipped ? theme.warning : theme.success }}>
                           {entry.error ? "FAILED" : entry.skipped ? "SKIPPED" : "OK"}
                         </div>
                       </div>
-                      <div style={{ fontSize: 11, color: theme.muted }}>
+                      <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>
                         {String(entry.duration_ms ?? entry.result?.status ?? entry.result?.outcome ?? "")}
                       </div>
-                      <pre style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 10, color: theme.dim, whiteSpace: "pre-wrap" }}>{JSON.stringify(entry, null, 2)}</pre>
+                      <pre style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-caption)", color: theme.dim, whiteSpace: "pre-wrap" }}>{JSON.stringify(entry, null, 2)}</pre>
                     </div>
                   ))}
                 </div>
               ) : null}
-              <pre style={{ margin: 0, padding: 12, fontFamily: "var(--font-mono)", fontSize: 11, color: theme.muted, whiteSpace: "pre-wrap", background: theme.editor, borderRadius: 10 }}>
+              <pre style={{ margin: 0, padding: 12, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-small)", color: theme.muted, whiteSpace: "pre-wrap", background: theme.editor, borderRadius: 10 }}>
                 {JSON.stringify(selected, null, 2)}
               </pre>
             </div>
@@ -3406,7 +3421,7 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
 
 function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, isMobile } = useRuleMindStore();
   const [deployData, setDeployData] = React.useState<DeployStatusPayload | null>(null);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
 
@@ -3447,7 +3462,7 @@ function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNoti
   return (
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
       <SectionHeader title={PAGE_META.deploy.title} subtitle={PAGE_META.deploy.subtitle} />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 12 }}>
         {STATUS_ORDER.map((statusName) => {
           const palette = tone(theme, statusName === "dev" ? "purple" : statusName === "uat" ? "warning" : "success");
           const column = columns[statusName];
@@ -3460,22 +3475,22 @@ function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNoti
           return (
             <div key={statusName} style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
               <div style={{ padding: "12px 14px", background: palette.bg, display: "flex", justifyContent: "space-between" }}>
-                <div style={{ fontSize: 12, fontWeight: 900, color: palette.fg, textTransform: "uppercase" }}>{statusName}</div>
-                <div style={{ fontSize: 11, color: theme.muted }}>{items.length}</div>
+                <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: palette.fg, textTransform: "uppercase" }}>{statusName}</div>
+                <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{items.length}</div>
               </div>
               <div style={{ padding: 10, display: "grid", gap: 8 }}>
-                {items.length === 0 ? <div style={{ fontSize: 11, color: theme.dim }}>No items.</div> : null}
+                {items.length === 0 ? <div style={{ fontSize: "var(--rm-fs-small)", color: theme.dim }}>No items.</div> : null}
                 {items.map((item) => (
                   <div key={item.entityType + item.id} style={{ background: theme.hover, borderRadius: 10, padding: 10, display: "grid", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 800, color: theme.text }}>{item.label}</div>
+                      <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>{item.label}</div>
                       {statusName !== "prod" ? (
                         <Button small variant="success" disabled={!item.promotable || busyKey === item.entityType + ":" + item.id} onClick={() => promote(item.entityType, item.id)}>
                           Promote
                         </Button>
                       ) : null}
                     </div>
-                    <div style={{ fontSize: 10, color: theme.muted }}>{item.entityType.toUpperCase()} · {item.subtitle}</div>
+                    <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted }}>{item.entityType.toUpperCase()} · {item.subtitle}</div>
                   </div>
                 ))}
               </div>
@@ -3485,12 +3500,12 @@ function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNoti
       </div>
 
       <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
-        <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: 13, fontWeight: 800, color: theme.text }}>Promotion audit trail</div>
+        <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Promotion audit trail</div>
         {recentPromotions.length === 0 ? (
-          <div style={{ padding: 16, fontSize: 12, color: theme.dim }}>No promotions yet.</div>
+          <div style={{ padding: 16, fontSize: "var(--rm-fs-body)", color: theme.dim }}>No promotions yet.</div>
         ) : (
           recentPromotions.map((item: PromotionRecord) => (
-            <div key={item.id} style={{ padding: "10px 14px", borderTop: "1px solid " + theme.border, display: "flex", justifyContent: "space-between", gap: 12, fontSize: 11 }}>
+            <div key={item.id} style={{ padding: "10px 14px", borderTop: "1px solid " + theme.border, display: "flex", justifyContent: "space-between", gap: 12, fontSize: "var(--rm-fs-small)" }}>
               <span style={{ color: theme.text }}>{item.entity_type.toUpperCase()} · {item.entity_id}</span>
               <span style={{ color: theme.muted }}>{item.from_status.toUpperCase()} → {item.to_status.toUpperCase()} · {item.promoted_by}</span>
             </div>
@@ -3503,7 +3518,7 @@ function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNoti
 
 function ExportsPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, isMobile } = useRuleMindStore();
   const [format, setFormat] = React.useState<"json" | "yaml" | "python">("json");
   const [preview, setPreview] = React.useState("");
   const [importSummary, setImportSummary] = React.useState<string | null>(null);
@@ -3584,15 +3599,15 @@ function ExportsPage(props: { data: BootstrapPayload; refresh: () => void; onNot
       </div>
 
       <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
-        <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: 13, fontWeight: 800, color: theme.text }}>Preview</div>
-        <pre data-testid="export-preview" style={{ margin: 0, padding: 14, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)", fontSize: 11, color: theme.codeText, background: theme.editor, maxHeight: 420, overflow: "auto" }}>
+        <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Preview</div>
+        <pre data-testid="export-preview" style={{ margin: 0, padding: 14, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-small)", color: theme.codeText, background: theme.editor, maxHeight: 420, overflow: "auto" }}>
           {preview}
         </pre>
       </div>
 
       <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Import JSON</div>
-        <div style={{ fontSize: 11, color: theme.muted }}>Upload a previously exported JSON bundle to restore connectors, variables, rules, scorecards, policies, and settings.</div>
+        <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Import JSON</div>
+        <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>Upload a previously exported JSON bundle to restore connectors, variables, rules, scorecards, policies, and settings.</div>
         {importSummary ? <InfoBanner message={"Imported " + importSummary} toneKey="success" /> : null}
         <input
           type="file"
@@ -3612,7 +3627,7 @@ function ExportsPage(props: { data: BootstrapPayload; refresh: () => void; onNot
 
 function SettingsPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, themeMode, setThemeMode } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, themeMode, setThemeMode, isMobile } = useRuleMindStore();
   const [settings, setSettings] = React.useState<SettingsRecord>(props.data.settings);
   const [busy, setBusy] = React.useState(false);
 
@@ -3640,9 +3655,9 @@ function SettingsPage(props: { data: BootstrapPayload; refresh: () => void; onNo
   return (
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
       <SectionHeader title={PAGE_META.settings.title} subtitle={PAGE_META.settings.subtitle} actions={<Button variant="primary" onClick={saveSettings} disabled={busy} testId="settings-save">Save settings</Button>} />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 14 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>API</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>API</div>
           <InlineInput value={String(settings.api_base_url ?? "")} onChange={(event) => setSettings((current) => ({ ...current, api_base_url: event.target.value }))} placeholder="Base URL" />
           <InlineSelect value={String(settings.auth_config?.method ?? "none")} onChange={(event) => setSettings((current) => ({ ...current, auth_config: { ...current.auth_config, method: event.target.value } }))}>
             <option value="none">No auth</option>
@@ -3653,14 +3668,14 @@ function SettingsPage(props: { data: BootstrapPayload; refresh: () => void; onNo
         </div>
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Engine</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Engine</div>
           <InlineInput value={String(settings.engine_config?.python_version ?? "3.9")} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, python_version: event.target.value } }))} placeholder="Python version" />
           <InlineInput type="number" value={String(settings.engine_config?.timeout_ms ?? 2000)} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, timeout_ms: Number(event.target.value || 0) } }))} placeholder="Timeout ms" />
           <InlineInput type="number" value={String(settings.engine_config?.memory_mb ?? 128)} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, memory_mb: Number(event.target.value || 0) } }))} placeholder="Memory MB" />
         </div>
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Sources</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Sources</div>
           <InlineInput value={String(settings.source_defaults?.default_format ?? "json")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, default_format: event.target.value } }))} placeholder="Default format" />
           <InlineSelect value={String(settings.source_defaults?.batch_support ?? "enabled")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, batch_support: event.target.value } }))}>
             <option value="enabled">Batch enabled</option>
@@ -3670,7 +3685,7 @@ function SettingsPage(props: { data: BootstrapPayload; refresh: () => void; onNo
         </div>
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: theme.text }}>Audit</div>
+          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Audit</div>
           <InlineSelect value={String(settings.source_defaults?.logging ?? "enabled")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, logging: event.target.value } }))}>
             <option value="enabled">Logging enabled</option>
             <option value="disabled">Logging disabled</option>

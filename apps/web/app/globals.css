@@ -29,6 +29,18 @@
   --rm-sidebar-active: rgba(59, 130, 246, 0.08);
   --rm-scrollbar: #cbd5e1;
   --rm-code-text: #1e293b;
+
+  /* Typography scale */
+  --rm-fs-hero: 26px;
+  --rm-fs-title: 18px;
+  --rm-fs-heading: 13px;
+  --rm-fs-body: 12px;
+  --rm-fs-small: 11px;
+  --rm-fs-caption: 10px;
+  --rm-fs-code: 11px;
+  --rm-fw-normal: 500;
+  --rm-fw-semibold: 700;
+  --rm-fw-bold: 800;
 }
 
 * {
@@ -100,13 +112,15 @@ select:focus-visible {
 }
 
 @media (max-width: 768px) {
+  :root {
+    --rm-fs-hero: 22px;
+    --rm-fs-title: 16px;
+    --rm-fs-body: 13px;
+    --rm-fs-small: 12px;
+    --rm-fs-code: 12px;
+  }
   body {
     overflow: auto;
-  }
-}
-
-@media (max-width: 480px) {
-  body {
-    font-size: 14px;
+    -webkit-overflow-scrolling: touch;
   }
 }

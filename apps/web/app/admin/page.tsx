@@ -22,6 +22,7 @@ type KeyRecord = {
 export default function AdminHomePage() {
   const themeMode = useRuleMindStore((state) => state.themeMode);
   const apiBaseUrl = useRuleMindStore((state) => state.apiBaseUrl);
+  const isMobile = useRuleMindStore((state) => state.isMobile);
   const theme = THEMES[themeMode];
   const [tenants, setTenants] = React.useState<TenantRecord[]>([]);
   const [selectedTenant, setSelectedTenant] = React.useState<TenantRecord | null>(null);
@@ -60,18 +61,18 @@ export default function AdminHomePage() {
   }, [apiBaseUrl, selectedTenant]);
 
   return (
-    <div style={{ padding: 24, display: "grid", gap: 18 }}>
+    <div style={{ padding: isMobile ? 12 : 24, display: "grid", gap: 18 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ display: "grid", gap: 4 }}>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Platform Admin</h1>
-          <div style={{ fontSize: 12, color: theme.muted }}>Tenants, plans, status, and API keys.</div>
+          <h1 style={{ margin: 0, fontSize: "var(--rm-fs-hero)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>Platform Admin</h1>
+          <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted }}>Tenants, plans, status, and API keys.</div>
         </div>
-        <Link href="/admin/login" style={{ fontSize: 12, color: theme.accent }}>Switch account</Link>
+        <Link href="/admin/login" style={{ fontSize: "var(--rm-fs-body)", color: theme.accent }}>Switch account</Link>
       </div>
       {error ? <div style={{ padding: 12, borderRadius: 12, background: theme.dangerBg, color: theme.danger }}>{error}</div> : null}
-      <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "320px 1fr", gap: 16 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 14, overflow: "hidden" }}>
-          <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: 13, fontWeight: 800 }}>Tenants</div>
+          <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>Tenants</div>
           {tenants.map((tenant) => (
             <button
               key={tenant.id}
@@ -90,25 +91,25 @@ export default function AdminHomePage() {
                 cursor: "pointer",
               }}
             >
-              <div style={{ fontSize: 12, fontWeight: 800 }}>{tenant.name}</div>
-              <div style={{ fontSize: 11, color: theme.muted }}>{tenant.plan} · {tenant.is_active ? "active" : "disabled"}</div>
+              <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{tenant.name}</div>
+              <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{tenant.plan} · {tenant.is_active ? "active" : "disabled"}</div>
             </button>
           ))}
         </div>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 14, padding: 16, display: "grid", gap: 12 }}>
           {!selectedTenant ? (
-            <div style={{ fontSize: 12, color: theme.dim }}>Select a tenant to view keys.</div>
+            <div style={{ fontSize: "var(--rm-fs-body)", color: theme.dim }}>Select a tenant to view keys.</div>
           ) : (
             <>
               <div style={{ display: "grid", gap: 4 }}>
-                <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedTenant.name}</div>
-                <div style={{ fontSize: 12, color: theme.muted }}>{selectedTenant.id}</div>
+                <div style={{ fontSize: "var(--rm-fs-title)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{selectedTenant.name}</div>
+                <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted }}>{selectedTenant.id}</div>
               </div>
               <div style={{ display: "grid", gap: 10 }}>
                 {keys.map((key) => (
                   <div key={key.id} style={{ background: theme.hover, borderRadius: 12, padding: 12, border: "1px solid " + theme.border }}>
-                    <div style={{ fontSize: 12, fontWeight: 800 }}>{key.kid}</div>
-                    <div style={{ fontSize: 11, color: theme.muted }}>{key.masked_key}</div>
+                    <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{key.kid}</div>
+                    <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{key.masked_key}</div>
                   </div>
                 ))}
               </div>

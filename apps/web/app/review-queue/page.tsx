@@ -16,13 +16,14 @@ type ReviewTask = {
 };
 
 export default function ReviewQueuePage() {
-  const { apiBaseUrl, apiKey, themeMode } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, themeMode, isMobile } = useRuleMindStore();
   const theme = THEMES[themeMode];
   const [tasks, setTasks] = React.useState<ReviewTask[]>([]);
   const [selected, setSelected] = React.useState<ReviewTask | null>(null);
   const [notes, setNotes] = React.useState("");
   const [amount, setAmount] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
+  const [mobileTab, setMobileTab] = React.useState<"list" | "detail">("list");
 
   const load = React.useCallback(async () => {
     try {
@@ -69,21 +70,28 @@ export default function ReviewQueuePage() {
   );
 
   return (
-    <div style={{ padding: 20, display: "grid", gap: 16 }}>
+    <div style={{ padding: isMobile ? 12 : 20, display: "grid", gap: 16 }}>
       <div style={{ display: "grid", gap: 4 }}>
-        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Review Queue</h1>
-        <div style={{ fontSize: 12, color: theme.muted }}>Pending human-in-the-loop tasks with decision context and inline approval controls.</div>
+        <h1 style={{ margin: 0, fontSize: "var(--rm-fs-hero)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>Review Queue</h1>
+        <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted }}>Pending human-in-the-loop tasks with decision context and inline approval controls.</div>
       </div>
       {error ? <div style={{ padding: 12, borderRadius: 12, background: theme.dangerBg, color: theme.danger }}>{error}</div> : null}
-      <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 16 }}>
+      {isMobile && (
+        <div style={{ display: "flex", borderBottom: "1px solid " + theme.border }}>
+          <button type="button" onClick={() => setMobileTab("list")} style={{ flex: 1, padding: "12px", background: mobileTab === "list" ? theme.accentBg : "transparent", color: mobileTab === "list" ? theme.accent : theme.muted, border: "none", fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, cursor: "pointer" }}>Tasks</button>
+          <button type="button" onClick={() => setMobileTab("detail")} style={{ flex: 1, padding: "12px", background: mobileTab === "detail" ? theme.accentBg : "transparent", color: mobileTab === "detail" ? theme.accent : theme.muted, border: "none", fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, cursor: "pointer" }}>Detail</button>
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "360px 1fr", gap: 16 }}>
+        {(!isMobile || mobileTab === "list") && (
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 14, overflow: "hidden" }}>
-          <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: 13, fontWeight: 800 }}>Pending Tasks</div>
-          {tasks.length === 0 ? <div style={{ padding: 16, color: theme.dim, fontSize: 12 }}>No pending tasks.</div> : null}
+          <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>Pending Tasks</div>
+          {tasks.length === 0 ? <div style={{ padding: 16, color: theme.dim, fontSize: "var(--rm-fs-body)" }}>No pending tasks.</div> : null}
           {tasks.map((task) => (
             <button
               key={task.id}
               type="button"
-              onClick={() => setSelected(task)}
+              onClick={() => { setSelected(task); if (isMobile) setMobileTab("detail"); }}
               style={{
                 width: "100%",
                 border: "none",
@@ -97,23 +105,25 @@ export default function ReviewQueuePage() {
                 cursor: "pointer",
               }}
             >
-              <div style={{ fontSize: 12, fontWeight: 800 }}>{task.id}</div>
-              <div style={{ fontSize: 11, color: theme.muted }}>{task.policy_id} · {task.queue}</div>
-              <div style={{ fontSize: 11, color: theme.dim }}>Timeout: {task.timeout_at ?? "n/a"}</div>
+              <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{task.id}</div>
+              <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{task.policy_id} · {task.queue}</div>
+              <div style={{ fontSize: "var(--rm-fs-small)", color: theme.dim }}>Timeout: {task.timeout_at ?? "n/a"}</div>
             </button>
           ))}
         </div>
+        )}
 
+        {(!isMobile || mobileTab === "detail") && (
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 14, padding: 16, display: "grid", gap: 14 }}>
           {!selected ? (
-            <div style={{ color: theme.dim, fontSize: 12 }}>Select a review task to inspect variables, rules, and scorecards.</div>
+            <div style={{ color: theme.dim, fontSize: "var(--rm-fs-body)" }}>Select a review task to inspect variables, rules, and scorecards.</div>
           ) : (
             <>
               <div style={{ display: "grid", gap: 4 }}>
-                <div style={{ fontSize: 20, fontWeight: 800 }}>Review Task {selected.id}</div>
-                <div style={{ fontSize: 12, color: theme.muted }}>{selected.policy_id} · Queue {selected.queue}</div>
+                <div style={{ fontSize: "var(--rm-fs-title)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>Review Task {selected.id}</div>
+                <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted }}>{selected.policy_id} · Queue {selected.queue}</div>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 12 }}>
                 <Panel title="Variables" data={(selected.context_snapshot?.variables as Record<string, unknown>) ?? {}} theme={theme} />
                 <Panel title="Rule Results" data={(selected.context_snapshot?.rule_results as Record<string, unknown>) ?? {}} theme={theme} />
                 <Panel title="Scorecard" data={(selected.context_snapshot?.scorecard_results as Record<string, unknown>) ?? {}} theme={theme} />
@@ -129,6 +139,7 @@ export default function ReviewQueuePage() {
             </>
           )}
         </div>
+        )}
       </div>
     </div>
   );
@@ -137,8 +148,8 @@ export default function ReviewQueuePage() {
 function Panel(props: { title: string; data: Record<string, unknown>; theme: typeof THEMES.light }) {
   return (
     <div style={{ background: props.theme.hover, border: "1px solid " + props.theme.border, borderRadius: 12, overflow: "hidden" }}>
-      <div style={{ padding: 12, borderBottom: "1px solid " + props.theme.border, fontSize: 12, fontWeight: 800 }}>{props.title}</div>
-      <pre style={{ margin: 0, padding: 12, fontFamily: "var(--font-mono)", fontSize: 11, color: props.theme.muted, whiteSpace: "pre-wrap" }}>
+      <div style={{ padding: 12, borderBottom: "1px solid " + props.theme.border, fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{props.title}</div>
+      <pre style={{ margin: 0, padding: 12, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-code)", color: props.theme.muted, whiteSpace: "pre-wrap" }}>
         {JSON.stringify(props.data, null, 2)}
       </pre>
     </div>
@@ -153,7 +164,7 @@ function inputStyle(theme: typeof THEMES.light): React.CSSProperties {
     background: theme.input,
     color: theme.text,
     padding: "10px 12px",
-    fontSize: 12,
+    fontSize: "var(--rm-fs-body)",
   };
 }
 
@@ -164,8 +175,8 @@ function buttonStyle(theme: typeof THEMES.light, background: string, color: stri
     color,
     borderRadius: 10,
     padding: "10px 14px",
-    fontSize: 12,
-    fontWeight: 700,
+    fontSize: "var(--rm-fs-body)",
+    fontWeight: "var(--rm-fw-semibold)" as unknown as number,
     cursor: "pointer",
   };
 }

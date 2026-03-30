@@ -528,7 +528,7 @@ class Storage:
     def list_connectors(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
-            rows = session.scalars(select(Connector).where(Connector.tenant_id == resolved).order_by(Connector.name)).all()
+            rows = session.scalars(select(Connector).where(Connector.tenant_id == resolved).order_by(Connector.created_at)).all()
             return [self._connector_to_dict(row) for row in rows]
 
     def get_connector(self, connector_id: str, include_secrets: bool = False, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:

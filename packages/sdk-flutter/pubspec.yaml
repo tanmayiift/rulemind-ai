@@ -10,6 +10,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  asn1lib: ^1.5.8
   crypto: ^3.0.3
   flutter_secure_storage: ^9.2.2
   hive: ^2.2.3
