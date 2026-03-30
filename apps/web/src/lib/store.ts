@@ -13,6 +13,8 @@ interface RuleMindUiState {
   themeMode: ThemeMode;
   sidebarOpen: boolean;
   activeConnectorFilter: string;
+  isMobile: boolean;
+  mobileMenuOpen: boolean;
   setApiBaseUrl: (value: string) => void;
   setApiKey: (value: string) => void;
   setEnvironment: (value: EnvironmentName) => void;
@@ -21,6 +23,8 @@ interface RuleMindUiState {
   setSidebarOpen: (value: boolean) => void;
   toggleSidebar: () => void;
   setActiveConnectorFilter: (value: string) => void;
+  setIsMobile: (value: boolean) => void;
+  setMobileMenuOpen: (value: boolean) => void;
 }
 
 export const useRuleMindStore = create<RuleMindUiState>()(
@@ -32,6 +36,8 @@ export const useRuleMindStore = create<RuleMindUiState>()(
       themeMode: "light",
       sidebarOpen: true,
       activeConnectorFilter: "all",
+      isMobile: false,
+      mobileMenuOpen: false,
       setApiBaseUrl: (value) => set({ apiBaseUrl: value }),
       setApiKey: (value) => set({ apiKey: value }),
       setEnvironment: (value) => set({ environment: value }),
@@ -40,6 +46,8 @@ export const useRuleMindStore = create<RuleMindUiState>()(
       setSidebarOpen: (value) => set({ sidebarOpen: value }),
       toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
       setActiveConnectorFilter: (value) => set({ activeConnectorFilter: value }),
+      setIsMobile: (value) => set({ isMobile: value }),
+      setMobileMenuOpen: (value) => set({ mobileMenuOpen: value }),
     }),
     {
       name: "rulemind-v3-ui",

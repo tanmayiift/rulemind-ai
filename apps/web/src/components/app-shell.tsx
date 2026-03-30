@@ -67,6 +67,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     toggleThemeMode,
     sidebarOpen,
     toggleSidebar,
+    isMobile,
+    mobileMenuOpen,
+    setIsMobile,
+    setMobileMenuOpen,
+    setSidebarOpen,
   } = useRuleMindStore();
   const theme = THEMES[themeMode];
   const page = PAGE_COPY[pathname ?? "/"] ?? PAGE_COPY["/"];
@@ -76,6 +81,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     document.documentElement.setAttribute("style", themeStyleBlock(themeMode));
   }, [themeMode]);
 
+  React.useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const handler = (e: MediaQueryListEvent | MediaQueryList) => {
+      setIsMobile(e.matches);
+      if (e.matches) setSidebarOpen(false);
+    };
+    handler(mq);
+    mq.addEventListener("change", handler as (e: MediaQueryListEvent) => void);
+    return () => mq.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
+  }, [setIsMobile, setSidebarOpen]);
+
   if ((pathname ?? "").startsWith("/admin")) {
     return (
       <div style={{ minHeight: "100vh", background: theme.bg, color: theme.text }}>
@@ -84,145 +100,206 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
+  const sidebarVisible = isMobile ? mobileMenuOpen : true;
+  const sidebarWidth = isMobile ? 260 : sidebarOpen ? 224 : 64;
+  const showLabels = isMobile ? true : sidebarOpen;
+
   return (
     <div
       style={{
         minHeight: "100vh",
         display: "grid",
-        gridTemplateColumns: `${sidebarOpen ? 224 : 64}px minmax(0, 1fr)`,
+        gridTemplateColumns: isMobile ? "1fr" : `${sidebarOpen ? 224 : 64}px minmax(0, 1fr)`,
         background: theme.bg,
         color: theme.text,
-        transition: "grid-template-columns 0.2s ease",
+        transition: isMobile ? "none" : "grid-template-columns 0.2s ease",
       }}
     >
-      <aside
-        data-testid="sidebar-root"
-        style={{
-          background: theme.sidebar,
-          borderRight: "1px solid " + theme.border,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
-      >
+      {/* Mobile backdrop */}
+      {isMobile && mobileMenuOpen && (
         <div
+          onClick={() => setMobileMenuOpen(false)}
           style={{
-            minHeight: 56,
-            padding: sidebarOpen ? "14px 16px" : "14px 12px",
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            zIndex: 999,
+          }}
+        />
+      )}
+
+      {/* Sidebar */}
+      {sidebarVisible && (
+        <aside
+          data-testid="sidebar-root"
+          style={{
+            background: theme.sidebar,
+            borderRight: "1px solid " + theme.border,
             display: "flex",
-            alignItems: "center",
-            gap: 10,
-            borderBottom: "1px solid " + theme.border,
+            flexDirection: "column",
+            overflow: "hidden",
+            ...(isMobile
+              ? {
+                  position: "fixed",
+                  top: 0,
+                  left: 0,
+                  bottom: 0,
+                  width: sidebarWidth,
+                  zIndex: 1000,
+                  boxShadow: "4px 0 24px rgba(0,0,0,0.18)",
+                }
+              : {}),
           }}
         >
-          <button
-            type="button"
-            onClick={toggleSidebar}
-            data-testid="sidebar-toggle"
-            aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-            style={{
-              border: "none",
-              background: "transparent",
-              color: theme.sidebarGroup,
-              cursor: "pointer",
-              padding: 4,
-              borderRadius: 8,
-              display: "grid",
-              placeItems: "center",
-            }}
-          >
-            {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
-          </button>
-          {sidebarOpen ? (
-            <div style={{ display: "grid", gap: 2 }}>
-              <span style={{ fontSize: 15, fontWeight: 800, color: theme.text, letterSpacing: -0.3 }}>RuleMind</span>
-              <span style={{ fontSize: 10, color: theme.sidebarGroup }}>Enterprise decisioning</span>
-            </div>
-          ) : null}
-        </div>
-
-        <nav style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
-          {NAVIGATION.map((group) => (
-            <div key={group.group} style={{ marginBottom: 10 }}>
-              {sidebarOpen ? (
-                <div
-                  style={{
-                    padding: "8px 8px 4px",
-                    color: theme.sidebarGroup,
-                    fontSize: 10,
-                    fontWeight: 800,
-                    letterSpacing: 1.2,
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {group.group}
-                </div>
-              ) : null}
-              {group.items.map((item) => {
-                const active = pathname === item.href;
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    data-testid={"nav-" + item.label.toLowerCase().replace(/\s+/g, "-")}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: sidebarOpen ? "flex-start" : "center",
-                      gap: 10,
-                      padding: sidebarOpen ? "8px 10px" : "10px 0",
-                      marginBottom: 4,
-                      borderRadius: 10,
-                      background: active ? theme.sidebarActive : "transparent",
-                      color: active ? theme.accent : theme.sidebarText,
-                      fontSize: 12,
-                      fontWeight: active ? 700 : 500,
-                      opacity: active ? 1 : 0.82,
-                    }}
-                  >
-                    <PageIcon name={item.icon} size={16} color={active ? theme.accent : theme.sidebarText} />
-                    {sidebarOpen ? item.label : null}
-                  </Link>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
-
-        {sidebarOpen ? (
           <div
             style={{
-              padding: "12px 16px",
-              borderTop: "1px solid " + theme.border,
-              fontSize: 10,
-              color: theme.sidebarGroup,
+              minHeight: 56,
+              padding: showLabels ? "14px 16px" : "14px 12px",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              borderBottom: "1px solid " + theme.border,
             }}
           >
-            v4 enterprise shell
+            <button
+              type="button"
+              onClick={() => {
+                if (isMobile) setMobileMenuOpen(false);
+                else toggleSidebar();
+              }}
+              data-testid="sidebar-toggle"
+              aria-label={showLabels ? "Collapse sidebar" : "Expand sidebar"}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: theme.sidebarGroup,
+                cursor: "pointer",
+                padding: 4,
+                borderRadius: 8,
+                display: "grid",
+                placeItems: "center",
+              }}
+            >
+              {showLabels ? <X size={18} /> : <Menu size={18} />}
+            </button>
+            {showLabels ? (
+              <div style={{ display: "grid", gap: 2 }}>
+                <span style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, letterSpacing: -0.3 }}>RuleMind</span>
+                <span style={{ fontSize: "var(--rm-fs-caption)", color: theme.sidebarGroup }}>Enterprise decisioning</span>
+              </div>
+            ) : null}
           </div>
-        ) : null}
-      </aside>
+
+          <nav style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
+            {NAVIGATION.map((group) => (
+              <div key={group.group} style={{ marginBottom: 10 }}>
+                {showLabels ? (
+                  <div
+                    style={{
+                      padding: "8px 8px 4px",
+                      color: theme.sidebarGroup,
+                      fontSize: "var(--rm-fs-caption)",
+                      fontWeight: "var(--rm-fw-bold)" as unknown as number,
+                      letterSpacing: 1.2,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {group.group}
+                  </div>
+                ) : null}
+                {group.items.map((item) => {
+                  const active = pathname === item.href;
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      data-testid={"nav-" + item.label.toLowerCase().replace(/\s+/g, "-")}
+                      onClick={() => {
+                        if (isMobile) setMobileMenuOpen(false);
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: showLabels ? "flex-start" : "center",
+                        gap: 10,
+                        padding: isMobile ? "12px 14px" : showLabels ? "8px 10px" : "10px 0",
+                        marginBottom: 4,
+                        borderRadius: 10,
+                        background: active ? theme.sidebarActive : "transparent",
+                        color: active ? theme.accent : theme.sidebarText,
+                        fontSize: "var(--rm-fs-body)",
+                        fontWeight: active ? "var(--rm-fw-semibold)" as unknown as number : "var(--rm-fw-normal)" as unknown as number,
+                        opacity: active ? 1 : 0.82,
+                      }}
+                    >
+                      <PageIcon name={item.icon} size={16} color={active ? theme.accent : theme.sidebarText} />
+                      {showLabels ? item.label : null}
+                    </Link>
+                  );
+                })}
+              </div>
+            ))}
+          </nav>
+
+          {showLabels ? (
+            <div
+              style={{
+                padding: "12px 16px",
+                borderTop: "1px solid " + theme.border,
+                fontSize: "var(--rm-fs-caption)",
+                color: theme.sidebarGroup,
+              }}
+            >
+              v4 enterprise shell
+            </div>
+          ) : null}
+        </aside>
+      )}
 
       <div style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
         <header
           data-testid="topbar-root"
           style={{
             minHeight: 58,
-            padding: "0 18px",
+            padding: isMobile ? "0 12px" : "0 18px",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            gap: 16,
+            gap: isMobile ? 8 : 16,
             background: theme.header,
             borderBottom: "1px solid " + theme.border,
           }}
         >
-          <div style={{ display: "grid", gap: 2 }}>
-            <div style={{ fontSize: 18, fontWeight: 800, color: theme.text, letterSpacing: -0.4 }}>{page.title}</div>
-            <div style={{ fontSize: 11, color: theme.muted }}>{page.subtitle} · API {apiBaseUrl}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            {isMobile && (
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(true)}
+                aria-label="Open menu"
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: theme.text,
+                  cursor: "pointer",
+                  padding: 6,
+                  borderRadius: 8,
+                  display: "grid",
+                  placeItems: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <Menu size={20} />
+              </button>
+            )}
+            <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+              <div style={{ fontSize: "var(--rm-fs-title)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, letterSpacing: -0.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{page.title}</div>
+              {!isMobile && (
+                <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{page.subtitle} · API {apiBaseUrl}</div>
+              )}
+            </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, flexShrink: 0 }}>
             <div style={{ display: "flex", gap: 4 }}>
               {(["dev", "uat", "prod"] as const).map((item) => (
                 <button
@@ -231,13 +308,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   data-testid={"env-" + item}
                   onClick={() => setEnvironment(item)}
                   style={{
-                    padding: "5px 13px",
+                    padding: isMobile ? "8px 10px" : "5px 13px",
                     borderRadius: 7,
                     border: environment === item ? "none" : "1px solid " + theme.border,
                     background: environment === item ? ENVIRONMENT_ACCENT[item] : "transparent",
                     color: environment === item ? theme.inverseText : theme.muted,
-                    fontSize: 10,
-                    fontWeight: 800,
+                    fontSize: "var(--rm-fs-caption)",
+                    fontWeight: "var(--rm-fw-bold)" as unknown as number,
                     cursor: "pointer",
                     letterSpacing: 0.45,
                   }}
@@ -247,30 +324,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               ))}
             </div>
 
-            <button
-              type="button"
-              data-testid="theme-toggle"
-              onClick={toggleThemeMode}
-              aria-label="Toggle dark mode"
-              style={{
-                background: theme.hover,
-                border: "1px solid " + theme.border,
-                borderRadius: 8,
-                padding: "6px 11px",
-                color: theme.text,
-                fontSize: 11,
-                fontWeight: 600,
-                cursor: "pointer",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              {themeMode === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-              {themeMode === "dark" ? "Light" : "Dark"}
-            </button>
+            {!isMobile && (
+              <button
+                type="button"
+                data-testid="theme-toggle"
+                onClick={toggleThemeMode}
+                aria-label="Toggle dark mode"
+                style={{
+                  background: theme.hover,
+                  border: "1px solid " + theme.border,
+                  borderRadius: 8,
+                  padding: "6px 11px",
+                  color: theme.text,
+                  fontSize: "var(--rm-fs-small)",
+                  fontWeight: "var(--rm-fw-normal)" as unknown as number,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {themeMode === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+                {themeMode === "dark" ? "Light" : "Dark"}
+              </button>
+            )}
 
             <div
+              onClick={isMobile ? toggleThemeMode : undefined}
               style={{
                 width: 32,
                 height: 32,
@@ -279,8 +359,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 placeItems: "center",
                 background: themeMode === "dark" ? "linear-gradient(135deg,#60a5fa,#a78bfa)" : "linear-gradient(135deg,#3b82f6,#7c3aed)",
                 color: theme.inverseText,
-                fontSize: 12,
-                fontWeight: 700,
+                fontSize: "var(--rm-fs-body)",
+                fontWeight: "var(--rm-fw-semibold)" as unknown as number,
+                cursor: isMobile ? "pointer" : "default",
               }}
             >
               U
