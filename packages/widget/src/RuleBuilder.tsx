@@ -1588,7 +1588,7 @@ function RuleBuilderContent({
           <div style={{ display: "flex", gap: 3 }}>
             {[
               ["prod", "Prod"],
-              ["staging", "Staging"],
+              ["uat", "UAT"],
               ["dev", "Dev"]
             ].map(([id, label]) => (
               <button

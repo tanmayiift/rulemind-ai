@@ -212,6 +212,7 @@ class Storage:
             existing_variable = session.scalar(select(Variable).where(Variable.tenant_id == tenant.id).limit(1))
             if existing_variable:
                 self._ensure_settings(session, tenant.id)
+                self._ensure_seed_inventory(session, tenant.id)
                 return
 
             now = datetime.utcnow()
@@ -353,6 +354,10 @@ class Storage:
                 )
 
             self._ensure_settings(session, tenant.id)
+            # The session disables autoflush, so persist the freshly inserted seed
+            # entities before the inventory backfill checks query for existing rows.
+            session.flush()
+            self._ensure_seed_inventory(session, tenant.id)
 
     def _ensure_settings(self, session: Session, tenant_id: str) -> None:
         existing = session.scalar(select(Setting).where(Setting.tenant_id == tenant_id))
@@ -369,6 +374,160 @@ class Storage:
                 theme_mode=DEFAULT_SETTINGS["theme_mode"],
             )
         )
+
+    def _ensure_seed_inventory(self, session: Session, tenant_id: str) -> None:
+        now = datetime.utcnow()
+        for connector in CONNECTORS:
+            existing = session.scalar(select(Connector).where(Connector.tenant_id == tenant_id, Connector.public_id == connector["id"]))
+            if existing:
+                continue
+            session.add(
+                Connector(
+                    tenant_id=tenant_id,
+                    public_id=connector["id"],
+                    name=connector["name"],
+                    icon=connector.get("icon"),
+                    color=connector.get("color"),
+                    description=connector.get("description"),
+                    schema_fields=copy.deepcopy(connector.get("schema_paths", [])),
+                    sample_payload=copy.deepcopy(connector.get("sample_payload", {})),
+                    is_active=bool(connector.get("is_active", True)),
+                    encrypted_config=encrypt_config_payload(copy.deepcopy(connector.get("config", {}))),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        for variable in VARIABLES:
+            existing = session.scalar(select(Variable).where(Variable.tenant_id == tenant_id, Variable.public_id == variable["id"]))
+            if existing:
+                continue
+            last_test_result = {
+                "value": variable["seed_value"],
+                "error": None,
+                "latency_ms": 1.0,
+                "tested_at": now_iso(),
+                "passed": True,
+            }
+            session.add(
+                Variable(
+                    tenant_id=tenant_id,
+                    public_id=variable["id"],
+                    name=variable["name"],
+                    category=variable["category"],
+                    source_id=variable["source_id"],
+                    code=variable["code"],
+                    description=variable.get("description"),
+                    status=variable["status"],
+                    last_test_result=last_test_result,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                EntityHistory(
+                    tenant_id=tenant_id,
+                    entity_type="variable",
+                    entity_id=variable["id"],
+                    version=1,
+                    snapshot={**copy.deepcopy(variable), "last_test_result": last_test_result},
+                    created_at=now,
+                )
+            )
+
+        variable_lookup = {item["id"]: item for item in VARIABLES}
+        for rule in RULES:
+            existing = session.scalar(select(Rule).where(Rule.tenant_id == tenant_id, Rule.public_id == rule["id"]))
+            if existing:
+                continue
+            expression = generate_rule_expression_definition(rule, variable_lookup)
+            session.add(
+                Rule(
+                    tenant_id=tenant_id,
+                    public_id=rule["id"],
+                    name=rule["name"],
+                    nodes=copy.deepcopy(rule.get("nodes")),
+                    tree=copy.deepcopy(rule.get("tree")),
+                    rule_format=rule.get("rule_format", "v2" if rule.get("tree") else "v1"),
+                    expression=expression,
+                    status=rule["status"],
+                    last_test_result=None,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                EntityHistory(
+                    tenant_id=tenant_id,
+                    entity_type="rule",
+                    entity_id=rule["id"],
+                    version=1,
+                    snapshot={**copy.deepcopy(rule), "expression": expression},
+                    created_at=now,
+                )
+            )
+
+        for scorecard in SCORECARDS:
+            existing = session.scalar(select(Scorecard).where(Scorecard.tenant_id == tenant_id, Scorecard.public_id == scorecard["id"]))
+            if existing:
+                continue
+            session.add(
+                Scorecard(
+                    tenant_id=tenant_id,
+                    public_id=scorecard["id"],
+                    name=scorecard["name"],
+                    base_score=scorecard["base_score"],
+                    max_score=scorecard["max_score"],
+                    bins=copy.deepcopy(scorecard["bins"]),
+                    status=scorecard["status"],
+                    last_test_result=None,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                EntityHistory(
+                    tenant_id=tenant_id,
+                    entity_type="scorecard",
+                    entity_id=scorecard["id"],
+                    version=1,
+                    snapshot=copy.deepcopy(scorecard),
+                    created_at=now,
+                )
+            )
+
+        for policy in POLICIES:
+            existing = session.scalar(select(Policy).where(Policy.tenant_id == tenant_id, Policy.public_id == policy["id"]))
+            if existing:
+                continue
+            session.add(
+                Policy(
+                    tenant_id=tenant_id,
+                    public_id=policy["id"],
+                    name=policy["name"],
+                    trigger=copy.deepcopy(policy.get("trigger")),
+                    steps=copy.deepcopy(policy["steps"]),
+                    default_outcome=policy.get("defaultOutcome"),
+                    status=policy["status"],
+                    last_test_result=None,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                EntityHistory(
+                    tenant_id=tenant_id,
+                    entity_type="policy",
+                    entity_id=policy["id"],
+                    version=1,
+                    snapshot=copy.deepcopy(policy),
+                    created_at=now,
+                )
+            )
 
     def _connector_to_dict(self, model: Connector, include_secrets: bool = False) -> Dict[str, Any]:
         config = decrypt_config_payload(model.encrypted_config)
@@ -537,6 +696,38 @@ class Storage:
             model = session.scalar(select(Connector).where(Connector.tenant_id == resolved, Connector.public_id == connector_id))
             return self._connector_to_dict(model, include_secrets=include_secrets) if model else None
 
+    def create_connector(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        now = datetime.utcnow()
+        with self.connect() as session:
+            session.add(
+                Connector(
+                    tenant_id=resolved,
+                    public_id=payload["id"],
+                    name=payload["name"],
+                    icon=payload.get("icon"),
+                    color=payload.get("color"),
+                    description=payload.get("description"),
+                    schema_fields=copy.deepcopy(payload.get("schema_paths", [])),
+                    sample_payload=copy.deepcopy(payload.get("sample_payload", {})),
+                    is_active=bool(payload.get("is_active", True)),
+                    encrypted_config=encrypt_config_payload(copy.deepcopy(payload.get("config", {}))),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                EntityHistory(
+                    tenant_id=resolved,
+                    entity_type="connector",
+                    entity_id=payload["id"],
+                    version=1,
+                    snapshot=copy.deepcopy(payload),
+                    created_at=now,
+                )
+            )
+        return self.get_connector(payload["id"], tenant_id=resolved)
+
     def update_connector(self, connector_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
         current = self.get_connector(connector_id, include_secrets=True, tenant_id=resolved)
@@ -558,6 +749,17 @@ class Storage:
             model.encrypted_config = encrypt_config_payload(copy.deepcopy(next_value.get("config", {})))
             model.updated_at = datetime.utcnow()
         return self.get_connector(connector_id, tenant_id=resolved)
+
+    def delete_connector(self, connector_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        current = self.get_connector(connector_id, tenant_id=resolved)
+        if not current:
+            return None
+        with self.connect() as session:
+            model = session.scalar(select(Connector).where(Connector.tenant_id == resolved, Connector.public_id == connector_id))
+            if model:
+                session.delete(model)
+        return current
 
     def _query_by_public_id(self, session: Session, model_type, public_id: str, tenant_id: str):
         return session.scalar(select(model_type).where(model_type.tenant_id == tenant_id, model_type.public_id == public_id))
@@ -826,6 +1028,17 @@ class Storage:
                 )
         return self.get_scorecard(scorecard_id, tenant_id=resolved)
 
+    def delete_scorecard(self, scorecard_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        current = self.get_scorecard(scorecard_id, tenant_id=resolved)
+        if not current:
+            return None
+        with self.connect() as session:
+            model = self._query_by_public_id(session, Scorecard, scorecard_id, resolved)
+            if model:
+                session.delete(model)
+        return current
+
     def list_policies(self, status: Optional[str] = None, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
@@ -903,6 +1116,17 @@ class Storage:
                     )
                 )
         return self.get_policy(policy_id, tenant_id=resolved)
+
+    def delete_policy(self, policy_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        current = self.get_policy(policy_id, tenant_id=resolved)
+        if not current:
+            return None
+        with self.connect() as session:
+            model = self._query_by_public_id(session, Policy, policy_id, resolved)
+            if model:
+                session.delete(model)
+        return current
 
     def add_decision(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))

@@ -3,6 +3,7 @@ package com.rulemind.android
 import com.rulemind.core.models.BundleEnvelope
 import com.rulemind.core.models.BundleFetchResult
 import com.rulemind.core.models.Decision
+import com.rulemind.core.models.ReviewDecision
 import com.rulemind.core.models.RuleMindConfig
 import com.rulemind.core.models.SdkEvent
 import com.rulemind.core.models.ServerDecisionRequest
@@ -69,30 +70,116 @@ class NetworkClient(private val config: RuleMindConfig) {
             .header("X-API-Key", config.apiKey)
             .header("X-SDK-Version", config.sdkVersion)
             .build()
-        val json = JSONObject(execute(httpRequest).body?.string().orEmpty())
-        return Decision(
-            outcome = json.optString("outcome"),
-            score = json.optDouble("score").takeUnless { it.isNaN() },
-            variables = json.optJSONObject("variables")?.let { BundleParser.run { it.toMap() } } ?: emptyMap(),
-            ruleResults = json.optJSONArray("ruleResults")?.let { array ->
-                buildList {
-                    for (index in 0 until array.length()) {
-                        add((array.optJSONObject(index) ?: JSONObject()).let { BundleParser.run { it.toMap() } })
-                    }
-                }
-            } ?: emptyList(),
-            experimentId = json.optString("experimentId").ifBlank { null },
-            experimentVariant = json.optString("experimentVariant").ifBlank { null },
-            latencyMs = json.optLong("latencyMs"),
-            requestId = json.optString("requestId").ifBlank { null },
-            serverOnlyStepsSkipped = json.optJSONArray("serverOnlyStepsSkipped")?.let { array ->
-                buildList {
-                    for (index in 0 until array.length()) {
-                        add(array.optString(index))
-                    }
-                }
-            } ?: emptyList(),
-        )
+        return DecisionCodec.fromJson(JSONObject(execute(httpRequest).body?.string().orEmpty()))
+    }
+
+    fun health(): Map<String, Any?> {
+        val request = Request.Builder()
+            .url("${config.baseUrl.trimEnd('/')}/sdk/v1/health")
+            .get()
+            .header("X-API-Key", config.apiKey)
+            .header("X-SDK-Version", config.sdkVersion)
+            .build()
+        return BundleParser.run { JSONObject(execute(request).body?.string().orEmpty()).toMap() }
+    }
+
+    fun syncExecution(decision: Decision): Decision {
+        val payload = DecisionCodec.toJson(decision)
+        val request = Request.Builder()
+            .url("${config.baseUrl.trimEnd('/')}/sdk/v1/executions/sync")
+            .post(payload.toString().toRequestBody(jsonMediaType))
+            .header("X-API-Key", config.apiKey)
+            .header("X-SDK-Version", config.sdkVersion)
+            .build()
+        return DecisionCodec.fromJson(JSONObject(execute(request).body?.string().orEmpty()))
+    }
+
+    fun getExecution(executionId: String): Decision? {
+        val request = Request.Builder()
+            .url("${config.baseUrl.trimEnd('/')}/sdk/v1/executions/$executionId")
+            .get()
+            .header("X-API-Key", config.apiKey)
+            .header("X-SDK-Version", config.sdkVersion)
+            .build()
+        return runCatching { DecisionCodec.fromJson(JSONObject(execute(request).body?.string().orEmpty())) }.getOrNull()
+    }
+
+    fun resumeExecution(executionId: String, reviewDecision: ReviewDecision): Decision {
+        val payload = JSONObject()
+            .put("decision", reviewDecision.decision)
+            .put("reviewerId", reviewDecision.reviewerId)
+            .put("response", DecisionCodec.toJsonValue(reviewDecision.response))
+        val request = Request.Builder()
+            .url("${config.baseUrl.trimEnd('/')}/sdk/v1/executions/$executionId/resume")
+            .post(payload.toString().toRequestBody(jsonMediaType))
+            .header("X-API-Key", config.apiKey)
+            .header("X-SDK-Version", config.sdkVersion)
+            .build()
+        return DecisionCodec.fromJson(JSONObject(execute(request).body?.string().orEmpty()))
+    }
+
+    fun dispatchPendingOperation(operation: Map<String, Any?>): Map<String, Any?> {
+        val startedAt = System.currentTimeMillis()
+        val url = operation["url"]?.toString().orEmpty()
+        val method = operation["method"]?.toString()?.uppercase() ?: "POST"
+        if (url.startsWith("rulemind://simulate/")) {
+            return mapOf(
+                "operationId" to operation["id"],
+                "stepId" to operation["stepId"],
+                "url" to url,
+                "method" to method,
+                "requestBody" to operation["requestBody"],
+                "responseStatus" to 202,
+                "responseBody" to """{"simulated":true}""",
+                "latencyMs" to (System.currentTimeMillis() - startedAt),
+                "success" to true,
+                "status" to "delivered",
+            )
+        }
+        val headersMap = (operation["headers"] as? Map<*, *>)?.entries?.associate { it.key.toString() to (it.value?.toString() ?: "") } ?: emptyMap()
+        val requestBuilder = Request.Builder().url(url)
+        headersMap.forEach { (key, value) -> requestBuilder.header(key, value) }
+        val requestBody = operation["requestBody"]
+        val serializedBody = when (val value = DecisionCodec.toJsonValue(requestBody)) {
+            null, JSONObject.NULL -> ""
+            is JSONObject, is JSONArray -> value.toString()
+            else -> value.toString()
+        }
+        val body = serializedBody.toRequestBody(jsonMediaType)
+        val request = when (method) {
+            "GET" -> requestBuilder.get().build()
+            "PUT" -> requestBuilder.put(body).build()
+            "PATCH" -> requestBuilder.patch(body).build()
+            else -> requestBuilder.post(body).build()
+        }
+        return try {
+            val response = client.newCall(request).execute()
+            val responseBody = response.body?.string().orEmpty()
+            mapOf(
+                "operationId" to operation["id"],
+                "stepId" to operation["stepId"],
+                "url" to url,
+                "method" to method,
+                "requestBody" to requestBody,
+                "responseStatus" to response.code,
+                "responseBody" to responseBody,
+                "latencyMs" to (System.currentTimeMillis() - startedAt),
+                "success" to (response.code in 200..299),
+                "status" to if (response.code in 200..299) "delivered" else "failed",
+            )
+        } catch (error: IOException) {
+            mapOf(
+                "operationId" to operation["id"],
+                "stepId" to operation["stepId"],
+                "url" to url,
+                "method" to method,
+                "requestBody" to requestBody,
+                "latencyMs" to (System.currentTimeMillis() - startedAt),
+                "success" to false,
+                "status" to "failed",
+                "error" to error.message,
+            )
+        }
     }
 
     fun uploadEvents(events: List<SdkEvent>): Boolean {

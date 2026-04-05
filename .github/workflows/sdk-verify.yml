@@ -9,13 +9,65 @@ permissions:
   contents: read
 
 jobs:
-  android:
+  repo-validation:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/sdk-android
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/python-executor/requirements.txt
+
+      - name: Run Python backend tests
+        run: python -m unittest discover -s apps/python-executor/tests -p 'test_*.py'
+
+      - name: Run TypeScript checks
+        run: pnpm typecheck
+
+      - name: Run TypeScript tests
+        run: pnpm test
+
+      - name: Generate mobile closeout report
+        run: python qa/mobile_e2e/generate_closeout_report.py
+
+      - name: Upload closeout artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-closeout-report
+          path: |
+            qa/results/mobile-e2e-closeout.md
+            qa/results/mobile-e2e-closeout.json
+
+  android:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_SAMPLE_KEYSTORE_BASE64: ${{ secrets.ANDROID_SAMPLE_KEYSTORE_BASE64 }}
+      ANDROID_SAMPLE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_SAMPLE_KEYSTORE_PASSWORD }}
+      ANDROID_SAMPLE_KEY_ALIAS: ${{ secrets.ANDROID_SAMPLE_KEY_ALIAS }}
+      ANDROID_SAMPLE_KEY_PASSWORD: ${{ secrets.ANDROID_SAMPLE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - uses: actions/setup-java@v4
         with:
@@ -26,42 +78,143 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/python-executor/requirements.txt
+
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Compile Kotlin
-        run: ./gradlew --no-daemon --stacktrace :rulemind-core:compileKotlin
+      - name: Compile Android modules and JVM tests
+        working-directory: packages/sdk-android
+        run: ./gradlew --no-daemon --stacktrace :rulemind-core:test :sample-app:test :sample-app:assembleDebug :sample-app:assembleAndroidTest
 
-      - name: Run Android unit tests
-        run: ./gradlew --no-daemon --stacktrace :rulemind-core:test
+      - name: Start FastAPI backend
+        run: |
+          bash qa/mobile_e2e/start_fastapi.sh
+          bash qa/mobile_e2e/wait_for_health.sh
 
-      - name: Build Android release AAR
-        run: ./gradlew --no-daemon --stacktrace :rulemind-android:assembleRelease
+      - name: Run Android emulator E2E
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            cd packages/sdk-android
+            ./gradlew --no-daemon --stacktrace :sample-app:connectedDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.backendUrl=http://10.0.2.2:8080 \
+              -Pandroid.testInstrumentationRunnerArguments.adminEmail=admin@rulemind.local \
+              -Pandroid.testInstrumentationRunnerArguments.adminPassword=rulemind-admin
 
-      - name: Verify Maven publishing config
-        run: ./gradlew --no-daemon --stacktrace :rulemind-android:publishToMavenLocal
+      - name: Stop FastAPI backend
+        if: always()
+        run: bash qa/mobile_e2e/stop_fastapi.sh
+
+      - name: Build signed sample release APK
+        if: ${{ env.ANDROID_SAMPLE_KEYSTORE_BASE64 != '' && env.ANDROID_SAMPLE_KEYSTORE_PASSWORD != '' && env.ANDROID_SAMPLE_KEY_ALIAS != '' && env.ANDROID_SAMPLE_KEY_PASSWORD != '' }}
+        working-directory: packages/sdk-android
+        run: ./gradlew --no-daemon --stacktrace :sample-app:assembleRelease
+
+      - name: Generate signed APK metadata
+        if: ${{ env.ANDROID_SAMPLE_KEYSTORE_BASE64 != '' && env.ANDROID_SAMPLE_KEYSTORE_PASSWORD != '' && env.ANDROID_SAMPLE_KEY_ALIAS != '' && env.ANDROID_SAMPLE_KEY_PASSWORD != '' }}
+        run: |
+          APK_PATH="$(find packages/sdk-android/sample-app/build/outputs/apk/release -name '*.apk' | head -n 1)"
+          test -n "$APK_PATH"
+          shasum -a 256 "$APK_PATH" > packages/sdk-android/sample-app/build/outputs/apk/release/SHA256SUMS.txt
+          python - <<'PY'
+          import json
+          import pathlib
+          apk_dir = pathlib.Path("packages/sdk-android/sample-app/build/outputs/apk/release")
+          apk_path = next(apk_dir.glob("*.apk"))
+          metadata = {
+              "artifact": apk_path.name,
+              "path": str(apk_path),
+          }
+          (apk_dir / "release-metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+          PY
+
+      - name: Upload Android artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-sample-artifacts
+          path: |
+            qa/results/mobile-e2e-backend.log
+            packages/sdk-android/sample-app/build/reports
+            packages/sdk-android/sample-app/build/outputs
 
   flutter:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/sdk-flutter
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Install Flutter dependencies
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/python-executor/requirements.txt
+
+      - name: Install Flutter package dependencies
+        working-directory: packages/sdk-flutter
         run: flutter pub get
 
       - name: Analyze Dart code
+        working-directory: packages/sdk-flutter
         run: dart analyze --no-fatal-warnings
 
-      - name: Run Flutter tests
+      - name: Run Flutter package tests
+        working-directory: packages/sdk-flutter
         run: flutter test
 
+      - name: Install example app dependencies
+        working-directory: packages/sdk-flutter/example
+        run: flutter pub get
+
+      - name: Start FastAPI backend
+        run: |
+          bash qa/mobile_e2e/start_fastapi.sh
+          bash qa/mobile_e2e/wait_for_health.sh
+
+      - name: Run Flutter emulator E2E
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            cd packages/sdk-flutter/example
+            flutter test integration_test -d emulator-5554 \
+              --dart-define=RM_E2E_BASE_URL=http://10.0.2.2:8080 \
+              --dart-define=RM_E2E_ADMIN_EMAIL=admin@rulemind.local \
+              --dart-define=RM_E2E_ADMIN_PASSWORD=rulemind-admin
+
+      - name: Stop FastAPI backend
+        if: always()
+        run: bash qa/mobile_e2e/stop_fastapi.sh
+
       - name: Verify pub publish readiness
+        working-directory: packages/sdk-flutter
         run: dart pub publish --dry-run
+
+      - name: Upload Flutter artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-example-artifacts
+          path: |
+            qa/results/mobile-e2e-backend.log
+            packages/sdk-flutter/example/build

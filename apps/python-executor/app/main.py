@@ -3,6 +3,7 @@ import asyncio
 import os
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Body, Cookie, FastAPI, HTTPException, Query, Request, Response
@@ -15,6 +16,7 @@ from .auth import JWT_COOKIE_NAME, bcrypt_verify, create_admin_jwt, decode_admin
 from .analytics import decision_analytics, experiment_analytics, latency_analytics, sdk_analytics
 from .compiler import BundleCompilationError, NoProductionAssetsError, compile_bundle, render_bundle_response
 from .context import get_current_tenant_id
+from .experience_studio import ADMIN_ENTITY_SCHEMAS, build_experience_manifest
 from .executor import ExecutionContext, PolicyExecutor
 from .logic import (
     execute_policy,
@@ -27,6 +29,7 @@ from .logic import (
     evaluate_rule_definition,
     evaluate_rule_nodes,
     evaluate_scorecard,
+    json_dumps,
     nodes_to_tree,
     slugify,
 )
@@ -36,7 +39,7 @@ from .runtime import is_local_dev, redis_client
 from .sandbox import execute_variable
 from .scheduler import execute_cron_policy, init_scheduler
 from .storage import Storage
-from .webhooks import trigger_webhook
+from .webhooks import WebhookAuthenticationError, trigger_webhook
 
 
 def parse_origins() -> List[str]:
@@ -91,6 +94,17 @@ class ConnectorUpdateRequest(BaseModel):
     sample_payload: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
     config: Optional[Dict[str, Any]] = None
+
+
+class ConnectorCreateRequest(BaseModel):
+    name: str
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+    schema_paths: List[str] = Field(default_factory=list)
+    sample_payload: Dict[str, Any] = Field(default_factory=dict)
+    is_active: bool = True
+    config: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TestPayloadRequest(BaseModel):
@@ -232,6 +246,12 @@ class AdminLoginRequest(BaseModel):
     password: str
 
 
+class MobileAdminLoginRequest(BaseModel):
+    email: str
+    password: str
+    tenantId: Optional[str] = None
+
+
 class ExperimentUpsertRequest(BaseModel):
     id: Optional[str] = None
     name: str
@@ -256,6 +276,36 @@ class SdkDecideRequest(BaseModel):
 
 class SdkEventsRequest(BaseModel):
     events: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class SdkExecutionSyncRequest(BaseModel):
+    executionId: str
+    policyId: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    userId: Optional[str] = None
+    outcome: str = "pending"
+    status: str = "running"
+    variables: Dict[str, Any] = Field(default_factory=dict)
+    ruleResults: List[Dict[str, Any]] = Field(default_factory=list)
+    scorecardResults: Dict[str, Any] = Field(default_factory=dict)
+    actionResults: List[Dict[str, Any]] = Field(default_factory=list)
+    trace: List[Dict[str, Any]] = Field(default_factory=list)
+    pendingOperations: List[Dict[str, Any]] = Field(default_factory=list)
+    reviewTask: Optional[Dict[str, Any]] = None
+    experimentId: Optional[str] = None
+    experimentVariant: Optional[str] = None
+    latencyMs: int = 0
+    startedAt: Optional[str] = None
+    completedAt: Optional[str] = None
+    requestId: Optional[str] = None
+    sdkVersion: Optional[str] = None
+    source: str = "sdk_edge"
+
+
+class SdkResumeExecutionRequest(BaseModel):
+    decision: Optional[str] = None
+    reviewerId: Optional[str] = None
+    response: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WebhookUpsertRequest(BaseModel):
@@ -722,6 +772,60 @@ def require_platform_admin(admin_token: Optional[str]) -> Dict[str, Any]:
     return user
 
 
+def bearer_token(request: Request) -> Optional[str]:
+    raw = request.headers.get("authorization", "")
+    if raw.lower().startswith("bearer "):
+        return raw.split(" ", 1)[1].strip() or None
+    return None
+
+
+def require_platform_admin_request(request: Request) -> Dict[str, Any]:
+    return require_platform_admin(bearer_token(request))
+
+
+def sanitize_admin_user(user: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in user.items() if key != "password_hash"}
+
+
+def tenant_api_key_payload(tenant_id: str) -> Dict[str, Any]:
+    if tenant_id == str(storage.default_tenant_id) and storage.default_api_key:
+        existing = next((item for item in storage.list_api_keys(tenant_id) if item.get("is_active")), None)
+        return {
+            "kid": existing.get("kid") if existing else "default",
+            "masked": existing.get("masked_key") if existing else storage.default_api_key[:8] + "****",
+            "plaintext": storage.default_api_key,
+        }
+    created = storage.generate_api_key_for_tenant(tenant_id)
+    return {"kid": created["kid"], "masked": created["masked_key"], "plaintext": created["plaintext"]}
+
+
+def mobile_session_payload(
+    *,
+    base_url: str,
+    user: Optional[Dict[str, Any]],
+    tenant_id: str,
+    mode: str,
+    access_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    tenant = storage.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+    key_payload = tenant_api_key_payload(tenant_id)
+    latest = storage.latest_bundle(tenant_id=tenant_id)
+    manifest = build_experience_manifest(tenant_id, base_url, latest_bundle_version=int(latest["version"]) if latest else 0)
+    return {
+        "mode": mode,
+        "accessToken": access_token,
+        "user": sanitize_admin_user(user) if user else None,
+        "tenant": tenant,
+        "apiKey": key_payload["plaintext"],
+        "apiKeyKid": key_payload["kid"],
+        "apiKeyMasked": key_payload["masked"],
+        "experienceManifest": manifest,
+        "availableTenants": storage.list_tenants() if user else [tenant],
+    }
+
+
 def workflow_executor() -> PolicyExecutor:
     return PolicyExecutor(storage)
 
@@ -776,6 +880,237 @@ def active_tenant_id(request: Optional[Request] = None) -> str:
     return str(storage.default_tenant_id or "")
 
 
+def public_api_base_url(request: Optional[Request] = None) -> str:
+    configured = os.getenv("RULEMIND_PUBLIC_API_BASE_URL")
+    if configured:
+        return configured.rstrip("/")
+    if request is not None:
+        return str(request.base_url).rstrip("/")
+    return storage.get_settings().get("api_base_url", "http://localhost:8080").rstrip("/")
+
+
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def normalize_sdk_rule_result(item: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = copy.deepcopy(item)
+    rule_id = normalized.get("ruleId") or normalized.get("rule_id")
+    if rule_id is not None:
+        normalized["ruleId"] = rule_id
+        normalized["rule_id"] = rule_id
+    return normalized
+
+
+def build_sdk_response(
+    ctx: ExecutionContext,
+    *,
+    request_id: Optional[str] = None,
+    source: str = "sdk_server",
+    latency_ms: Optional[int] = None,
+) -> Dict[str, Any]:
+    scorecard_results = copy.deepcopy(ctx.scorecard_results)
+    rule_results = [normalize_sdk_rule_result(item) for item in ctx.rule_results]
+    review_task = storage.get_review_task(ctx.review_task_id, tenant_id=ctx.tenant_id) if ctx.review_task_id else None
+    pending_operations = copy.deepcopy(ctx.pending_operations)
+    resolved_latency = latency_ms if latency_ms is not None else ctx.total_latency_ms
+    callbacks = []
+    blockers = []
+    threshold_hits = []
+    timeline = []
+    for item in copy.deepcopy(ctx.step_trace):
+        step = item.get("step", {})
+        result = item.get("result") or {}
+        step_type = step.get("type")
+        step_id = step.get("id") or step.get("ref_id") or step.get("ref") or step.get("label") or step_type
+        timeline.append(
+            {
+                "stepId": step_id,
+                "label": step.get("label") or step.get("name") or step_id,
+                "type": step_type,
+                "status": "skipped" if item.get("skipped") else ("error" if item.get("error") else ("paused" if result.get("paused") else "completed")),
+                "durationMs": item.get("duration_ms") or item.get("durationMs") or 0,
+                "result": copy.deepcopy(result),
+                "error": item.get("error"),
+            }
+        )
+        if step_type == "action":
+            callbacks.append(
+                {
+                    "stepId": step_id,
+                    "label": step.get("label") or step.get("name") or step_id,
+                    "queued": result.get("queued", False),
+                    "blocking": result.get("blocking", False),
+                    "status": result.get("status") or ("queued" if result.get("queued") else ("ok" if result.get("success") else "failed")),
+                    "url": result.get("url"),
+                    "method": result.get("method"),
+                }
+            )
+            if result.get("blocking") and result.get("queued"):
+                blockers.append({"kind": "callback", "label": step.get("label") or step_id, "detail": "Blocking callback is waiting for delivery."})
+        if step_type == "review_gate" and result.get("paused"):
+            blockers.append({"kind": "review", "label": step.get("label") or step_id, "detail": "Execution is waiting for reviewer input."})
+    for rule_result in rule_results:
+        for condition in rule_result.get("conditions", []):
+            if not condition.get("passed"):
+                threshold_hits.append(
+                    {
+                        "kind": "rule_condition",
+                        "variableId": condition.get("variable_id"),
+                        "label": condition.get("variable_name") or condition.get("variable_id"),
+                        "value": condition.get("value"),
+                        "threshold": condition.get("threshold"),
+                        "operator": condition.get("operator"),
+                    }
+                )
+        if rule_result.get("passed") is False:
+            blockers.append(
+                {
+                    "kind": "rule_failure",
+                    "label": rule_result.get("ruleId") or rule_result.get("rule_id"),
+                    "detail": "Rule outcome was {0}.".format(rule_result.get("outcome") or "reject"),
+                }
+            )
+    for scorecard_id, payload in scorecard_results.items():
+        for breakdown in payload.get("breakdown", []):
+            if float(breakdown.get("points", 0)) < 0:
+                threshold_hits.append(
+                    {
+                        "kind": "scorecard_penalty",
+                        "scorecardId": scorecard_id,
+                        "label": breakdown.get("variable_name") or breakdown.get("variable_id"),
+                        "value": breakdown.get("value"),
+                        "points": breakdown.get("points"),
+                    }
+                )
+    experiment = None
+    if ctx.experiment_id or ctx.experiment_variant:
+        experiment = {"id": ctx.experiment_id, "variant": ctx.experiment_variant}
+    return {
+        "outcome": ctx.outcome,
+        "score": next(iter(scorecard_results.values()), {}).get("score") if scorecard_results else None,
+        "variables": copy.deepcopy(ctx.variables),
+        "ruleResults": rule_results,
+        "experiment": experiment,
+        "experimentId": ctx.experiment_id,
+        "experimentVariant": ctx.experiment_variant,
+        "latencyMs": resolved_latency,
+        "requestId": request_id,
+        "executionId": ctx.execution_id,
+        "status": ctx.status,
+        "trace": copy.deepcopy(ctx.step_trace),
+        "scorecardResults": scorecard_results,
+        "actionResults": copy.deepcopy(ctx.action_results),
+        "reviewTask": review_task,
+        "pendingOperations": pending_operations,
+        "transformOutputs": copy.deepcopy(ctx.transform_outputs),
+        "reviewResponse": copy.deepcopy(ctx.review_response),
+        "startedAt": ctx.started_at.replace(microsecond=0).isoformat() + "Z",
+        "completedAt": ctx.completed_at.replace(microsecond=0).isoformat() + "Z" if ctx.completed_at else None,
+        "explainability": {
+            "rules": rule_results,
+            "scorecards": scorecard_results,
+            "trace": copy.deepcopy(ctx.step_trace),
+            "callbacks": callbacks,
+            "thresholdHits": threshold_hits,
+            "blockers": blockers,
+            "timeline": timeline,
+        },
+        "auditSummary": {
+            "source": source,
+            "traceSteps": len(ctx.step_trace),
+            "pendingOperationCount": len(pending_operations),
+            "actionCount": len(ctx.action_results),
+            "reviewTaskId": ctx.review_task_id,
+            "startedAt": ctx.started_at.replace(microsecond=0).isoformat() + "Z",
+            "completedAt": ctx.completed_at.replace(microsecond=0).isoformat() + "Z" if ctx.completed_at else None,
+            "currentStepIndex": ctx.current_step_index,
+        },
+        "serverOnlyStepsSkipped": [],
+    }
+
+
+def persist_sdk_action_logs(execution_id: str, action_results: List[Dict[str, Any]], tenant_id: str) -> None:
+    existing_logs = storage.list_action_logs(execution_id=execution_id, tenant_id=tenant_id)
+    for item in action_results[len(existing_logs):]:
+        if not item.get("url"):
+            continue
+        storage.add_action_log(
+            {
+                "tenant_id": tenant_id,
+                "execution_id": execution_id,
+                "step_id": item.get("step_id") or item.get("stepId"),
+                "action_name": item.get("action_name") or item.get("actionName"),
+                "url": item.get("url"),
+                "method": item.get("method", "POST"),
+                "request_body": item.get("request_body") or item.get("requestBody"),
+                "response_status": item.get("response_status") or item.get("responseStatus"),
+                "response_body": item.get("response_body") or item.get("responseBody"),
+                "latency_ms": item.get("latency_ms") or item.get("latencyMs"),
+                "success": item.get("success", False),
+                "retry_count": item.get("retry_count") or item.get("retryCount") or 0,
+                "error": item.get("error"),
+            },
+            tenant_id=tenant_id,
+        )
+
+
+def maybe_create_sdk_decision(request: SdkExecutionSyncRequest, tenant_id: str, existing: Optional[Dict[str, Any]]) -> None:
+    if request.status not in {"completed", "failed"}:
+        return
+    if existing and existing.get("status") in {"completed", "failed"}:
+        return
+    storage.add_decision(
+        {
+            "tenant_id": tenant_id,
+            "id": str(uuid.uuid4()),
+            "policy_id": request.policyId,
+            "payload": redact_payload(request.payload),
+            "computed_variables": copy.deepcopy(request.variables),
+            "rule_results": [normalize_sdk_rule_result(item) for item in request.ruleResults],
+            "scorecard_result": next(iter(request.scorecardResults.values()), None) if request.scorecardResults else None,
+            "trace": copy.deepcopy(request.trace),
+            "outcome": request.outcome if request.outcome != "pending" else "review",
+            "latency_ms": request.latencyMs,
+            "source": request.source,
+            "sdk_version": request.sdkVersion,
+            "experiment_variant": request.experimentVariant,
+        },
+        tenant_id=tenant_id,
+    )
+
+
+def sync_sdk_review_task(request: SdkExecutionSyncRequest, tenant_id: str) -> Optional[Dict[str, Any]]:
+    if request.status != "paused":
+        return None
+    task_payload = copy.deepcopy(request.reviewTask or {})
+    task_id = str(task_payload.get("id") or "sdk_review_" + uuid.uuid4().hex[:12])
+    existing_task = storage.get_review_task(task_id, tenant_id=tenant_id)
+    patch = {
+        "id": task_id,
+        "tenant_id": tenant_id,
+        "execution_id": request.executionId,
+        "policy_id": request.policyId,
+        "step_id": task_payload.get("step_id") or task_payload.get("stepId"),
+        "queue": task_payload.get("queue", "mobile_review"),
+        "status": task_payload.get("status", "pending"),
+        "required_fields": task_payload.get("required_fields") or task_payload.get("requiredFields") or [],
+        "context_snapshot": task_payload.get("context_snapshot") or task_payload.get("contextSnapshot") or {},
+        "reviewer_response": task_payload.get("reviewer_response") or task_payload.get("reviewerResponse"),
+        "reviewed_by": task_payload.get("reviewed_by") or task_payload.get("reviewedBy"),
+        "timeout_at": parse_iso_datetime(task_payload.get("timeout_at") or task_payload.get("timeoutAt")),
+        "reviewed_at": parse_iso_datetime(task_payload.get("reviewed_at") or task_payload.get("reviewedAt")),
+    }
+    if existing_task:
+        return storage.update_review_task(task_id, patch, tenant_id=tenant_id)
+    return storage.create_review_task(patch, tenant_id=tenant_id)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     if not (is_local_dev() or os.getenv("RULEMIND_RUN_API_SCHEDULER") == "1"):
@@ -819,6 +1154,53 @@ def metrics() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+@app.post("/api/mobile/v1/auth/demo")
+def mobile_demo_access(request: Request) -> Dict[str, Any]:
+    tenant_id = str(storage.default_tenant_id or "")
+    if not tenant_id:
+        raise HTTPException(status_code=500, detail="Default tenant is unavailable.")
+    return mobile_session_payload(
+        base_url=public_api_base_url(request),
+        user=None,
+        tenant_id=tenant_id,
+        mode="demo",
+    )
+
+
+@app.post("/api/mobile/v1/auth/login")
+def mobile_admin_login(request: MobileAdminLoginRequest, http_request: Request) -> Dict[str, Any]:
+    user = storage.get_platform_admin_user_by_email(request.email)
+    if not user or not user.get("is_active") or not bcrypt_verify(request.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    tenant_id = request.tenantId or str(storage.default_tenant_id or "")
+    token = create_admin_jwt(user["id"], user["email"])
+    return mobile_session_payload(
+        base_url=public_api_base_url(http_request),
+        user=user,
+        tenant_id=tenant_id,
+        mode="admin",
+        access_token=token,
+    )
+
+
+@app.get("/api/mobile/v1/auth/me")
+def mobile_admin_me(request: Request) -> Dict[str, Any]:
+    user = require_platform_admin_request(request)
+    return {"user": sanitize_admin_user(user), "availableTenants": storage.list_tenants()}
+
+
+@app.post("/api/mobile/v1/tenants/{tenant_id}/session")
+def mobile_switch_tenant(tenant_id: str, request: Request) -> Dict[str, Any]:
+    user = require_platform_admin_request(request)
+    return mobile_session_payload(
+        base_url=public_api_base_url(request),
+        user=user,
+        tenant_id=tenant_id,
+        mode="admin",
+        access_token=bearer_token(request),
+    )
+
+
 @app.post("/api/admin/v1/auth/login")
 def admin_login(request: AdminLoginRequest, response: Response) -> Dict[str, Any]:
     user = storage.get_platform_admin_user_by_email(request.email)
@@ -839,7 +1221,7 @@ def admin_login(request: AdminLoginRequest, response: Response) -> Dict[str, Any
 
 @app.get("/api/admin/v1/auth/me")
 def admin_me(admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
-    return {"user": require_platform_admin(admin_token)}
+    return {"user": sanitize_admin_user(require_platform_admin(admin_token))}
 
 
 @app.post("/api/admin/v1/auth/logout")
@@ -906,6 +1288,29 @@ def list_connectors() -> List[Dict[str, Any]]:
     return storage.list_connectors()
 
 
+@app.post("/api/v1/connectors")
+def create_connector(request: ConnectorCreateRequest) -> Dict[str, Any]:
+    connector_id = make_id(request.name, current_connectors())
+    return storage.create_connector(
+        {
+            "id": connector_id,
+            "name": request.name,
+            "icon": request.icon,
+            "color": request.color,
+            "description": request.description,
+            "schema_paths": request.schema_paths,
+            "sample_payload": request.sample_payload,
+            "is_active": request.is_active,
+            "config": request.config,
+        }
+    )
+
+
+@app.get("/api/v1/connectors/{connector_id}")
+def get_connector(connector_id: str) -> Dict[str, Any]:
+    return ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
+
+
 @app.put("/api/v1/connectors/{connector_id}")
 def update_connector(connector_id: str, request: ConnectorUpdateRequest) -> Dict[str, Any]:
     connector = ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
@@ -923,6 +1328,14 @@ def update_connector(connector_id: str, request: ConnectorUpdateRequest) -> Dict
         },
     )
     return ensure_exists(updated, "connector", connector_id)
+
+
+@app.delete("/api/v1/connectors/{connector_id}")
+def delete_connector(connector_id: str) -> Dict[str, Any]:
+    connector = ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
+    if connector.get("is_active"):
+        raise HTTPException(status_code=409, detail="Deactivate the connector before deleting it.")
+    return storage.delete_connector(connector_id) or connector
 
 
 @app.post("/api/v1/connectors/{connector_id}/test")
@@ -1085,9 +1498,19 @@ def variable_graph() -> Dict[str, Any]:
     return {"nodes": nodes, "edges": edges}
 
 
+@app.get("/api/v1/variables/{variable_id}")
+def get_variable(variable_id: str) -> Dict[str, Any]:
+    return ensure_exists(storage.get_variable(variable_id), "variable", variable_id)
+
+
 @app.get("/api/v1/rules")
 def list_rules(status: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
     return storage.list_rules(status=status)
+
+
+@app.get("/api/v1/rules/{rule_id}")
+def get_rule(rule_id: str) -> Dict[str, Any]:
+    return ensure_exists(storage.get_rule(rule_id), "rule", rule_id)
 
 
 @app.post("/api/v1/rules")
@@ -1171,6 +1594,11 @@ def list_scorecards(status: Optional[str] = Query(default=None)) -> List[Dict[st
     return storage.list_scorecards(status=status)
 
 
+@app.get("/api/v1/scorecards/{scorecard_id}")
+def get_scorecard(scorecard_id: str) -> Dict[str, Any]:
+    return ensure_exists(storage.get_scorecard(scorecard_id), "scorecard", scorecard_id)
+
+
 @app.post("/api/v1/scorecards")
 def create_scorecard(request: ScorecardUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
     bins = [item.model_dump() for item in request.bins]
@@ -1217,6 +1645,14 @@ def update_scorecard(
     return ensure_exists(updated, "scorecard", scorecard_id)
 
 
+@app.delete("/api/v1/scorecards/{scorecard_id}")
+def delete_scorecard(scorecard_id: str) -> Dict[str, Any]:
+    scorecard = ensure_exists(storage.get_scorecard(scorecard_id), "scorecard", scorecard_id)
+    if scorecard["status"] != "dev":
+        raise HTTPException(status_code=409, detail="Only DEV scorecards can be deleted.")
+    return storage.delete_scorecard(scorecard_id) or scorecard
+
+
 @app.post("/api/v1/scorecards/{scorecard_id}/test")
 def test_scorecard(scorecard_id: str, request: TestPayloadRequest = Body(default=TestPayloadRequest())) -> Dict[str, Any]:
     scorecard = ensure_exists(storage.get_scorecard(scorecard_id), "scorecard", scorecard_id)
@@ -1238,6 +1674,11 @@ def promote_scorecard(
 @app.get("/api/v1/policies")
 def list_policies(status: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
     return storage.list_policies(status=status)
+
+
+@app.get("/api/v1/policies/{policy_id}")
+def get_policy(policy_id: str) -> Dict[str, Any]:
+    return ensure_exists(storage.get_policy(policy_id), "policy", policy_id)
 
 
 @app.post("/api/v1/policies")
@@ -1284,6 +1725,14 @@ def update_policy(
     if existing["status"] == "prod" or request.status == "prod":
         maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
     return ensure_exists(updated, "policy", policy_id)
+
+
+@app.delete("/api/v1/policies/{policy_id}")
+def delete_policy(policy_id: str) -> Dict[str, Any]:
+    policy = ensure_exists(storage.get_policy(policy_id), "policy", policy_id)
+    if policy["status"] != "dev":
+        raise HTTPException(status_code=409, detail="Only DEV policies can be deleted.")
+    return storage.delete_policy(policy_id) or policy
 
 
 @app.post("/api/v1/policies/{policy_id}/execute")
@@ -1487,6 +1936,14 @@ def list_experiments() -> List[Dict[str, Any]]:
     return storage.list_experiments()
 
 
+@app.get("/api/v1/experiments/{experiment_id}")
+def get_experiment(experiment_id: str) -> Dict[str, Any]:
+    experiment = storage.get_experiment(experiment_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+    return experiment
+
+
 @app.post("/api/v1/experiments")
 def create_experiment(request: ExperimentUpsertRequest) -> Dict[str, Any]:
     experiment_id = request.id or make_id(request.name, {item["id"]: item for item in storage.list_experiments()})
@@ -1542,6 +1999,13 @@ def analytics_latency() -> Dict[str, Any]:
 @app.get("/api/v1/analytics/sdk")
 def analytics_sdk() -> Dict[str, Any]:
     return sdk_analytics(storage, active_tenant_id())
+
+
+@app.get("/sdk/v1/experience-manifest")
+def sdk_experience_manifest(request: Request) -> Dict[str, Any]:
+    tenant_id = active_tenant_id(request)
+    latest = storage.latest_bundle(tenant_id=tenant_id)
+    return build_experience_manifest(tenant_id, public_api_base_url(request), latest_bundle_version=int(latest["version"]) if latest else 0)
 
 
 @app.get("/sdk/v1/health")
@@ -1611,18 +2075,111 @@ def sdk_decide(request: SdkDecideRequest) -> Dict[str, Any]:
         )
     )
     latency_ms = int((time.perf_counter() - started) * 1000)
+    ctx.total_latency_ms = latency_ms
     DECISIONS_TOTAL.labels(outcome=ctx.outcome, source="sdk_server").inc()
     DECISION_LATENCY.labels(source="sdk_server").observe(max(latency_ms, 1) / 1000)
-    return {
-        "outcome": ctx.outcome,
-        "score": next(iter(ctx.scorecard_results.values()), {}).get("score") if ctx.scorecard_results else None,
-        "variables": ctx.variables,
-        "ruleResults": ctx.rule_results,
-        "experiment": {"id": ctx.experiment_id, "variant": ctx.experiment_variant} if ctx.experiment_variant else None,
-        "latencyMs": latency_ms,
-        "requestId": request.requestId,
-        "serverOnlyStepsSkipped": [],
+    return build_sdk_response(ctx, request_id=request.requestId, source="sdk_server", latency_ms=latency_ms)
+
+
+@app.post("/sdk/v1/executions/sync")
+def sdk_sync_execution(request: SdkExecutionSyncRequest) -> Dict[str, Any]:
+    tenant_id = active_tenant_id()
+    existing = storage.get_workflow_execution(request.executionId, tenant_id=tenant_id)
+    synced_review_task = sync_sdk_review_task(request, tenant_id)
+    ctx = ExecutionContext(
+        payload=copy.deepcopy(request.payload),
+        tenant_id=tenant_id,
+        policy_id=request.policyId,
+        execution_id=request.executionId,
+        user_id=request.userId,
+        variables=copy.deepcopy(request.variables),
+        rule_results=[normalize_sdk_rule_result(item) for item in request.ruleResults],
+        scorecard_results=copy.deepcopy(request.scorecardResults),
+        action_results=copy.deepcopy(request.actionResults),
+        pending_operations=copy.deepcopy(request.pendingOperations),
+        outcome=request.outcome,
+        status=request.status,
+        review_task_id=(synced_review_task or request.reviewTask or {}).get("id"),
+        experiment_id=request.experimentId,
+        experiment_variant=request.experimentVariant,
+        step_trace=copy.deepcopy(request.trace),
+        started_at=parse_iso_datetime(request.startedAt) or datetime.utcnow(),
+        completed_at=parse_iso_datetime(request.completedAt),
+        total_latency_ms=request.latencyMs,
+    )
+    payload = {
+        "id": request.executionId,
+        "tenant_id": tenant_id,
+        "policy_id": request.policyId,
+        "status": request.status,
+        "context": ctx.to_dict(),
+        "current_step_index": max(len(request.trace) - 1, 0),
+        "trigger_type": request.source,
+        "trigger_metadata": {"request_id": request.requestId},
+        "started_at": ctx.started_at,
+        "paused_at": datetime.utcnow() if request.status == "paused" else None,
+        "completed_at": ctx.completed_at,
     }
+    if existing:
+        storage.update_workflow_execution(request.executionId, payload, tenant_id=tenant_id)
+    else:
+        storage.create_workflow_execution(payload, tenant_id=tenant_id)
+    persist_sdk_action_logs(request.executionId, request.actionResults, tenant_id)
+    maybe_create_sdk_decision(request, tenant_id, existing)
+    storage.add_audit_event(
+        {
+            "tenant_id": tenant_id,
+            "event_type": "sdk_execution_synced",
+            "entity_type": "workflow_execution",
+            "entity_id": request.executionId,
+            "detail": "SDK execution synchronized from device.",
+            "metadata": {"status": request.status, "policy_id": request.policyId, "source": request.source},
+        },
+        tenant_id=tenant_id,
+    )
+    return build_sdk_response(ctx, request_id=request.requestId, source=request.source, latency_ms=request.latencyMs)
+
+
+@app.get("/sdk/v1/executions/{execution_id}")
+def sdk_get_execution(execution_id: str) -> Dict[str, Any]:
+    execution = storage.get_workflow_execution(execution_id, tenant_id=active_tenant_id())
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found.")
+    ctx = ExecutionContext.from_dict(execution["context"])
+    return build_sdk_response(
+        ctx,
+        request_id=execution.get("trigger_metadata", {}).get("request_id"),
+        source=execution.get("trigger_type") or "sdk_edge",
+        latency_ms=ctx.total_latency_ms,
+    )
+
+
+@app.post("/sdk/v1/executions/{execution_id}/resume")
+def sdk_resume_execution(execution_id: str, request: SdkResumeExecutionRequest) -> Dict[str, Any]:
+    execution = storage.get_workflow_execution(execution_id, tenant_id=active_tenant_id())
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found.")
+    ctx = ExecutionContext.from_dict(execution["context"])
+    if request.decision and ctx.review_task_id:
+        result = submit_review_decision(
+            storage,
+            ctx.review_task_id,
+            request.response,
+            request.reviewerId or "sdk",
+            request.decision,
+        )
+        stored = storage.get_workflow_execution(execution_id, tenant_id=ctx.tenant_id)
+        if not stored:
+            raise HTTPException(status_code=404, detail="Execution not found after resume.")
+        resumed_ctx = ExecutionContext.from_dict(stored["context"])
+        return build_sdk_response(resumed_ctx, source="sdk_edge_resume", latency_ms=resumed_ctx.total_latency_ms)
+    policy = storage.get_policy(ctx.policy_id, tenant_id=ctx.tenant_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found.")
+    resumed = asyncio.run(
+        workflow_executor().execute(policy=policy, payload=ctx.payload, tenant_id=ctx.tenant_id, resume_from=ctx, source="sdk_edge_resume")
+    )
+    return build_sdk_response(resumed, source="sdk_edge_resume", latency_ms=resumed.total_latency_ms)
 
 
 @app.post("/sdk/v1/events")
@@ -1635,6 +2192,14 @@ def sdk_events(request: SdkEventsRequest) -> Dict[str, int]:
 @app.get("/api/v1/webhooks")
 def list_webhooks() -> List[Dict[str, Any]]:
     return storage.list_webhooks()
+
+
+@app.get("/api/v1/webhooks/{webhook_id}")
+def get_webhook(webhook_id: str) -> Dict[str, Any]:
+    webhook = storage.get_webhook(webhook_id)
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    return webhook
 
 
 @app.post("/api/v1/webhooks")
@@ -1697,13 +2262,35 @@ async def webhook_trigger(webhook_id: str, request: Request) -> Dict[str, Any]:
         return await trigger_webhook(storage, webhook_id, body, signature=request.headers.get("x-webhook-signature"))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except PermissionError as error:
+    except WebhookAuthenticationError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
+    except PermissionError as error:
+        storage.add_error_event(
+            {
+                "tenant_id": active_tenant_id(),
+                "scope": "webhook",
+                "entity_type": "workflow_execution",
+                "entity_id": webhook_id,
+                "stage": "execute",
+                "message": str(error),
+                "details": {"trigger": "webhook"},
+            },
+            tenant_id=active_tenant_id(),
+        )
+        raise HTTPException(status_code=500, detail="Webhook execution failed.") from error
 
 
 @app.get("/api/v1/schedules")
 def list_schedules() -> List[Dict[str, Any]]:
     return storage.list_schedules()
+
+
+@app.get("/api/v1/schedules/{schedule_id}")
+def get_schedule(schedule_id: str) -> Dict[str, Any]:
+    schedule = storage.get_schedule(schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return schedule
 
 
 @app.post("/api/v1/schedules")
@@ -1797,3 +2384,21 @@ def resume_execution(execution_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Policy not found.")
     result = asyncio.run(workflow_executor().execute(policy=policy, payload=ctx.payload, tenant_id=ctx.tenant_id, resume_from=ctx, source="api"))
     return {"executionId": result.execution_id, "outcome": result.outcome, "status": result.status}
+
+
+@app.get("/api/v1/executions/{execution_id}")
+def get_execution_detail(execution_id: str) -> Dict[str, Any]:
+    execution = storage.get_workflow_execution(execution_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found.")
+    ctx = ExecutionContext.from_dict(execution["context"])
+    detail = build_sdk_response(
+        ctx,
+        request_id=execution.get("trigger_metadata", {}).get("request_id"),
+        source=execution.get("trigger_type") or "api",
+        latency_ms=ctx.total_latency_ms,
+    )
+    detail["actionLogs"] = storage.list_action_logs(execution_id=execution_id)
+    detail["auditEvents"] = [event for event in storage.list_audit_events() if event.get("entity_id") == execution_id]
+    detail["entitySchemas"] = ADMIN_ENTITY_SCHEMAS
+    return detail

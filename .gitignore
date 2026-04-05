@@ -10,3 +10,20 @@ node_modules
 __pycache__
 .pytest_cache
 *.pyc
+
+# Android
+*.apk
+.gradle/
+local.properties
+**/build/
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.lock
+!pnpm-lock.yaml
+
+# IDE
+*.iml
+.idea/

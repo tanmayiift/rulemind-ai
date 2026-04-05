@@ -1,4 +1,4 @@
-export const environments = ["dev", "staging", "prod"] as const;
+export const environments = ["dev", "uat", "prod"] as const;
 export type EnvironmentName = (typeof environments)[number];
 
 export const nodeTypes = [
@@ -262,8 +262,8 @@ export interface DecisionTableDefinition {
   rows: Array<Record<string, unknown>>;
 }
 
-export const runtimeEnvironments = ["dev", "uat", "prod"] as const;
-export type RuntimeEnvironment = (typeof runtimeEnvironments)[number];
+export const runtimeEnvironments = environments;
+export type RuntimeEnvironment = EnvironmentName;
 
 export type WorkflowStepType = "connector" | "rule" | "scorecard" | "outcome" | "transform" | "action" | "review_gate";
 export type WorkflowTriggerType = "api" | "webhook" | "cron";
@@ -463,8 +463,19 @@ export interface SdkDecideResponseContract {
   variables: Record<string, unknown>;
   ruleResults: Array<Record<string, unknown>>;
   experiment?: SdkDecisionExperiment | null;
+  experimentId?: string | null;
+  experimentVariant?: string | null;
   latencyMs: number;
   requestId?: string | null;
+  executionId?: string | null;
+  status?: string;
+  trace?: ExecutionTraceStep[];
+  scorecardResults?: Record<string, unknown>;
+  actionResults?: Array<Record<string, unknown>>;
+  reviewTask?: ReviewTaskRecord | null;
+  pendingOperations?: Array<Record<string, unknown>>;
+  explainability?: Record<string, unknown>;
+  auditSummary?: Record<string, unknown>;
   serverOnlyStepsSkipped: string[];
 }
 

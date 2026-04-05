@@ -1,15 +1,17 @@
-import 'dart:convert';
+import "dart:convert";
 
-import 'package:http/http.dart' as http;
+import "package:http/http.dart" as http;
 
-import 'src/bundle_manager.dart';
-import 'src/decision_cache.dart';
-import 'src/event_logger.dart';
-import 'src/models.dart';
-import 'src/rulemind_engine.dart';
-import 'src/sync_service.dart';
+import "src/bundle_manager.dart";
+import "src/decision_cache.dart";
+import "src/decision_codec.dart";
+import "src/event_logger.dart";
+import "src/execution_store.dart";
+import "src/models.dart";
+import "src/rulemind_engine.dart";
+import "src/sync_service.dart";
 
-export 'src/models.dart';
+export "src/models.dart";
 
 class RuleMind {
   RuleMind._();
@@ -19,12 +21,14 @@ class RuleMind {
   static EventLogger? _eventLogger;
   static RuleMindEngine _engine = RuleMindEngine();
   static DecisionCache? _decisionCache;
+  static ExecutionStore? _executionStore;
   static http.Client _httpClient = http.Client();
 
   static Future<void> initialize(RuleMindConfig config) async {
     _config = config;
     _bundleManager = BundleManager(config: config, httpClient: _httpClient);
     _eventLogger = EventLogger(config: config, httpClient: _httpClient);
+    _executionStore = ExecutionStore();
     SyncService(bundleManager: _bundleManager!, eventLogger: _eventLogger!);
     _decisionCache = DecisionCache(
       boxName: "rulemind.decisions",
@@ -33,11 +37,27 @@ class RuleMind {
     );
     await _decisionCache!.initialize();
     await _eventLogger!.initialize();
+    await _executionStore!.initialize();
     await SyncService.registerPeriodicSync(intervalMinutes: config.bundleSyncIntervalMinutes);
   }
 
   static Future<Bundle?> syncNow() async {
     return _bundleManager?.syncNow();
+  }
+
+  static Future<Map<String, dynamic>> health() async {
+    final config = _requireConfig();
+    final response = await _httpClient.get(
+      Uri.parse("${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/sdk/v1/health"),
+      headers: <String, String>{
+        "X-API-Key": config.apiKey,
+        "X-SDK-Version": config.sdkVersion,
+      },
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw StateError("Health check failed with HTTP ${response.statusCode}");
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
   static Future<Decision> evaluate(String policyId, Map<String, dynamic> payload, {String? userId}) async {
@@ -58,12 +78,142 @@ class RuleMind {
     final variant = experiment == null ? null : _engine.getExperiment(activeBundle, experiment.id, userId);
     final cacheKey = _decisionCache!.buildKey(policyId, payload, variant?.id);
     final cached = await _decisionCache!.get(cacheKey);
-    if (cached != null) {
+    if (cached != null && cached.status == "completed" && cached.pendingOperations.isEmpty) {
       return cached;
     }
-    final decision = _engine.evaluate(activeBundle, policyId, payload, userId: userId);
-    await _decisionCache!.put(cacheKey, decision);
+    final decision = _engine.evaluate(activeBundle, policyId, payload, userId: userId).copyWith(
+      source: "edge_bundle",
+      policyId: policyId,
+      userId: userId,
+    );
+    await _executionStore?.save(decision);
+    if (decision.status == "completed" && decision.pendingOperations.isEmpty) {
+      await _decisionCache!.put(cacheKey, decision);
+    }
+    await _syncDecision(decision);
     return decision;
+  }
+
+  static Future<List<Decision>> flushPendingOperations() async {
+    final executions = await _executionStore?.list() ?? const <Decision>[];
+    if (executions.isEmpty) {
+      return const <Decision>[];
+    }
+    final bundle = await _bundleManager?.currentBundle() ?? await syncNow();
+    final updated = <Decision>[];
+    for (final execution in executions.where((item) => item.pendingOperations.any((op) => op["status"] != "delivered"))) {
+      var next = execution;
+      final pending = <Map<String, dynamic>>[];
+      final actionResults = execution.actionResults.map((item) => Map<String, dynamic>.from(item)).toList();
+      for (final operation in execution.pendingOperations) {
+        if (operation["status"] == "delivered") {
+          pending.add(Map<String, dynamic>.from(operation));
+          continue;
+        }
+        final result = await _dispatchPendingOperation(operation);
+        final updatedOperation = Map<String, dynamic>.from(operation)
+          ..["status"] = result["success"] == true ? "delivered" : "failed"
+          ..["lastResult"] = result;
+        pending.add(updatedOperation);
+        final index = actionResults.indexWhere((item) => item["operationId"] == operation["id"]);
+        if (index >= 0) {
+          actionResults[index] = <String, dynamic>{...actionResults[index], ...result};
+        } else {
+          actionResults.add(result);
+        }
+      }
+      next = next.copyWith(
+        pendingOperations: pending,
+        actionResults: actionResults,
+        source: "edge_bundle",
+      );
+      final blockingPending = next.pendingOperations.any((item) => item["blocking"] == true && item["status"] != "delivered");
+      if (next.status == "pending_sync" && !blockingPending && bundle != null && next.policyId != null) {
+        final resumedSeed = next.copyWith(status: "running");
+        next = _engine.evaluate(bundle, next.policyId!, next.payload, userId: next.userId, resumeFrom: resumedSeed).copyWith(
+          source: "edge_resume",
+          policyId: next.policyId,
+          userId: next.userId,
+        );
+      }
+      await _executionStore?.save(next);
+      await _syncDecision(next);
+      updated.add(next);
+    }
+    return updated;
+  }
+
+  static Future<Decision?> getExecution(String executionId) async {
+    final local = await _executionStore?.get(executionId);
+    if (local != null) {
+      return local;
+    }
+    final config = _requireConfig();
+    final response = await _httpClient.get(
+      Uri.parse("${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/sdk/v1/executions/$executionId"),
+      headers: <String, String>{
+        "X-API-Key": config.apiKey,
+        "X-SDK-Version": config.sdkVersion,
+      },
+    );
+    if (response.statusCode == 404) {
+      return null;
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw StateError("Execution lookup failed with HTTP ${response.statusCode}");
+    }
+    return decisionFromMap(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  static Future<Decision> resumeExecution(String executionId, ReviewDecision reviewDecision) async {
+    final local = await _executionStore?.get(executionId);
+    if (local != null && local.status == "paused" && local.policyId != null) {
+      final bundle = await _bundleManager?.currentBundle() ?? await syncNow();
+      if (bundle == null) {
+        throw StateError("No cached bundle available to resume execution.");
+      }
+      final resumedSeed = local.copyWith(
+        status: "running",
+        outcome: reviewDecision.decision == "approve" ? "approve" : "reject",
+        reviewResponse: <String, dynamic>{...local.reviewResponse, ...reviewDecision.response},
+        pausedAtStep: null,
+        currentStepIndex: (local.pausedAtStep ?? local.currentStepIndex) + 1,
+        reviewTask: <String, dynamic>{
+          ...?local.reviewTask,
+          "status": reviewDecision.decision == "approve" ? "approved" : "rejected",
+          "reviewer_response": reviewDecision.response,
+          "reviewed_by": reviewDecision.reviewerId,
+        },
+      );
+      final resumed = _engine.evaluate(bundle, local.policyId!, local.payload, userId: local.userId, resumeFrom: resumedSeed).copyWith(
+        source: "edge_resume",
+        policyId: local.policyId,
+        userId: local.userId,
+      );
+      await _executionStore?.save(resumed);
+      await _syncDecision(resumed);
+      return resumed;
+    }
+    final config = _requireConfig();
+    final response = await _httpClient.post(
+      Uri.parse("${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/sdk/v1/executions/$executionId/resume"),
+      headers: <String, String>{
+        "Content-Type": "application/json",
+        "X-API-Key": config.apiKey,
+        "X-SDK-Version": config.sdkVersion,
+      },
+      body: jsonEncode(<String, dynamic>{
+        "decision": reviewDecision.decision,
+        "reviewerId": reviewDecision.reviewerId,
+        "response": reviewDecision.response,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw StateError("Execution resume failed with HTTP ${response.statusCode}");
+    }
+    final resumed = decisionFromMap(jsonDecode(response.body) as Map<String, dynamic>);
+    await _executionStore?.save(resumed);
+    return resumed;
   }
 
   static Future<ExperimentVariant?> getExperiment(String experimentId, String? userId) async {
@@ -85,38 +235,176 @@ class RuleMind {
   static RuleMindConfig _requireConfig() {
     final config = _config;
     if (config == null) {
-      throw StateError('RuleMind.initialize() must be called first.');
+      throw StateError("RuleMind.initialize() must be called first.");
     }
     return config;
+  }
+
+  static Future<void> _syncDecision(Decision decision) async {
+    final config = _config;
+    if (config == null || decision.executionId == null || decision.policyId == null) {
+      return;
+    }
+    try {
+      await _httpClient.post(
+        Uri.parse("${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/sdk/v1/executions/sync"),
+        headers: <String, String>{
+          "Content-Type": "application/json",
+          "X-API-Key": config.apiKey,
+          "X-SDK-Version": config.sdkVersion,
+        },
+        body: jsonEncode(decisionToMap(decision)),
+      );
+    } catch (_) {
+      // Best-effort sync so offline flows remain usable.
+    }
+  }
+
+  static Future<Map<String, dynamic>> _dispatchPendingOperation(Map<String, dynamic> operation) async {
+    final startedAt = DateTime.now().millisecondsSinceEpoch;
+    final url = operation["url"]?.toString() ?? "";
+    final method = (operation["method"]?.toString() ?? "POST").toUpperCase();
+    if (url.startsWith("rulemind://simulate/")) {
+      return <String, dynamic>{
+        "operationId": operation["id"],
+        "stepId": operation["stepId"],
+        "url": url,
+        "method": method,
+        "requestBody": operation["requestBody"],
+        "responseStatus": 202,
+        "responseBody": '{"simulated":true}',
+        "latencyMs": DateTime.now().millisecondsSinceEpoch - startedAt,
+        "success": true,
+        "status": "delivered",
+      };
+    }
+    final headers = ((operation["headers"] as Map?) ?? const <String, dynamic>{}).map((key, value) => MapEntry(key.toString(), value?.toString() ?? ""));
+    final requestBody = operation["requestBody"];
+    try {
+      late final http.Response response;
+      switch (method) {
+        case "GET":
+          response = await _httpClient.get(Uri.parse(url), headers: headers);
+          break;
+        case "PUT":
+          response = await _httpClient.put(Uri.parse(url), headers: {...headers, "Content-Type": "application/json"}, body: jsonEncode(requestBody));
+          break;
+        case "PATCH":
+          response = await _httpClient.patch(Uri.parse(url), headers: {...headers, "Content-Type": "application/json"}, body: jsonEncode(requestBody));
+          break;
+        default:
+          response = await _httpClient.post(Uri.parse(url), headers: {...headers, "Content-Type": "application/json"}, body: jsonEncode(requestBody));
+      }
+      return <String, dynamic>{
+        "operationId": operation["id"],
+        "stepId": operation["stepId"],
+        "url": url,
+        "method": method,
+        "requestBody": requestBody,
+        "responseStatus": response.statusCode,
+        "responseBody": response.body,
+        "latencyMs": DateTime.now().millisecondsSinceEpoch - startedAt,
+        "success": response.statusCode >= 200 && response.statusCode < 300,
+        "status": response.statusCode >= 200 && response.statusCode < 300 ? "delivered" : "failed",
+      };
+    } catch (error) {
+      return <String, dynamic>{
+        "operationId": operation["id"],
+        "stepId": operation["stepId"],
+        "url": url,
+        "method": method,
+        "requestBody": requestBody,
+        "latencyMs": DateTime.now().millisecondsSinceEpoch - startedAt,
+        "success": false,
+        "status": "failed",
+        "error": error.toString(),
+      };
+    }
   }
 
   static Future<Decision> _serverDecide(String policyId, Map<String, dynamic> payload, {String? userId}) async {
     final config = _requireConfig();
     final response = await _httpClient.post(
-      Uri.parse('${config.baseUrl.replaceAll(RegExp(r'/+$'), '')}/sdk/v1/decide'),
+      Uri.parse("${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/sdk/v1/decide"),
       headers: <String, String>{
-        'Content-Type': 'application/json',
-        'X-API-Key': config.apiKey,
-        'X-SDK-Version': config.sdkVersion,
+        "Content-Type": "application/json",
+        "X-API-Key": config.apiKey,
+        "X-SDK-Version": config.sdkVersion,
       },
       body: jsonEncode(<String, dynamic>{
-        'policyId': policyId,
-        'payload': payload,
-        'userId': userId,
-        'sdkVersion': config.sdkVersion,
+        "policyId": policyId,
+        "payload": payload,
+        "userId": userId,
+        "sdkVersion": config.sdkVersion,
       }),
     );
-    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    final decision = decisionFromMap(jsonDecode(response.body) as Map<String, dynamic>).copyWith(
+      source: "sdk_server",
+      policyId: policyId,
+      userId: userId,
+      payload: payload,
+    );
+    await _executionStore?.save(decision);
+    return decision;
+  }
+}
+
+extension on Decision {
+  Decision copyWith({
+    String? outcome,
+    double? score,
+    Map<String, dynamic>? variables,
+    List<Map<String, dynamic>>? ruleResults,
+    String? experimentId,
+    String? experimentVariant,
+    int? latencyMs,
+    String? requestId,
+    List<String>? serverOnlyStepsSkipped,
+    String? executionId,
+    String? status,
+    List<Map<String, dynamic>>? trace,
+    Map<String, Map<String, dynamic>>? scorecardResults,
+    List<Map<String, dynamic>>? actionResults,
+    List<Map<String, dynamic>>? pendingOperations,
+    Map<String, dynamic>? reviewTask,
+    Map<String, dynamic>? explainability,
+    Map<String, dynamic>? auditSummary,
+    String? source,
+    String? policyId,
+    String? userId,
+    Map<String, dynamic>? payload,
+    Map<String, Map<String, dynamic>>? transformOutputs,
+    int? currentStepIndex,
+    int? pausedAtStep,
+    Map<String, dynamic>? reviewResponse,
+  }) {
     return Decision(
-      outcome: json['outcome'] as String,
-      score: (json['score'] as num?)?.toDouble(),
-      variables: (json['variables'] as Map<String, dynamic>?) ?? const <String, dynamic>{},
-      ruleResults: ((json['ruleResults'] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().toList()),
-      experimentId: json['experimentId'] as String?,
-      experimentVariant: json['experimentVariant'] as String?,
-      latencyMs: (json['latencyMs'] as num?)?.toInt() ?? 0,
-      requestId: json['requestId'] as String?,
-      serverOnlyStepsSkipped: (json['serverOnlyStepsSkipped'] as List<dynamic>? ?? const <dynamic>[]).map((item) => item.toString()).toList(),
+      outcome: outcome ?? this.outcome,
+      score: score ?? this.score,
+      variables: variables ?? this.variables,
+      ruleResults: ruleResults ?? this.ruleResults,
+      experimentId: experimentId ?? this.experimentId,
+      experimentVariant: experimentVariant ?? this.experimentVariant,
+      latencyMs: latencyMs ?? this.latencyMs,
+      requestId: requestId ?? this.requestId,
+      serverOnlyStepsSkipped: serverOnlyStepsSkipped ?? this.serverOnlyStepsSkipped,
+      executionId: executionId ?? this.executionId,
+      status: status ?? this.status,
+      trace: trace ?? this.trace,
+      scorecardResults: scorecardResults ?? this.scorecardResults,
+      actionResults: actionResults ?? this.actionResults,
+      pendingOperations: pendingOperations ?? this.pendingOperations,
+      reviewTask: reviewTask ?? this.reviewTask,
+      explainability: explainability ?? this.explainability,
+      auditSummary: auditSummary ?? this.auditSummary,
+      source: source ?? this.source,
+      policyId: policyId ?? this.policyId,
+      userId: userId ?? this.userId,
+      payload: payload ?? this.payload,
+      transformOutputs: transformOutputs ?? this.transformOutputs,
+      currentStepIndex: currentStepIndex ?? this.currentStepIndex,
+      pausedAtStep: pausedAtStep ?? this.pausedAtStep,
+      reviewResponse: reviewResponse ?? this.reviewResponse,
     );
   }
 }

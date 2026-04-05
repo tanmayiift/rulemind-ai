@@ -2,6 +2,7 @@ import "dart:convert";
 
 import "package:hive/hive.dart";
 
+import "decision_codec.dart";
 import "models.dart";
 
 class DecisionCache {
@@ -36,33 +37,12 @@ class DecisionCache {
       await delete(key);
       return null;
     }
-    return Decision(
-      outcome: raw["outcome"] as String,
-      score: (raw["score"] as num?)?.toDouble(),
-      variables: Map<String, dynamic>.from(raw["variables"] as Map? ?? const <String, dynamic>{}),
-      ruleResults: ((raw["ruleResults"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList()),
-      experimentId: raw["experimentId"] as String?,
-      experimentVariant: raw["experimentVariant"] as String?,
-      latencyMs: raw["latencyMs"] as int? ?? 0,
-      requestId: raw["requestId"] as String?,
-      serverOnlyStepsSkipped: (raw["serverOnlyStepsSkipped"] as List<dynamic>? ?? const <dynamic>[]).map((item) => item.toString()).toList(),
-    );
+    return decisionFromMap(Map<String, dynamic>.from(raw));
   }
 
   Future<void> put(String key, Decision decision) async {
     await initialize();
-    final payload = <String, dynamic>{
-      "outcome": decision.outcome,
-      "score": decision.score,
-      "variables": decision.variables,
-      "ruleResults": decision.ruleResults,
-      "experimentId": decision.experimentId,
-      "experimentVariant": decision.experimentVariant,
-      "latencyMs": decision.latencyMs,
-      "requestId": decision.requestId,
-      "serverOnlyStepsSkipped": decision.serverOnlyStepsSkipped,
-      "expiresAt": DateTime.now().millisecondsSinceEpoch + ttlMs,
-    };
+    final payload = decisionToMap(decision)..["expiresAt"] = DateTime.now().millisecondsSinceEpoch + ttlMs;
     if (_box != null) {
       await _box!.put(key, payload);
       final keys = _box!.keys.cast<dynamic>().toList();

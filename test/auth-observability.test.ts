@@ -156,7 +156,7 @@ describe("auth and observability conformance", () => {
       },
       payload: {
         name: "Scoped Create",
-        environment: "staging",
+        environment: "uat",
         nodes: [
           { id: "c1", type: "condition", label: "Score", x: 0, y: 0, config: { field: "score", fieldType: "number", operator: ">=", value: "700" } }
         ],

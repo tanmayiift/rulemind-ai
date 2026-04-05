@@ -13,7 +13,7 @@ import httpx
 
 from .experiments import apply_experiment_overrides, resolve_experiment_assignment
 from .jsonpath import evaluate_math_expr, resolve_jsonpath
-from .logic import evaluate_rule_definition, evaluate_scorecard, now_iso, redact_payload
+from .logic import evaluate_rule_definition, evaluate_scorecard, json_dumps, now_iso, redact_payload
 from .sandbox import execute_variable
 from .storage import Storage, mask_secret_values
 from .templates import resolve_template
@@ -40,6 +40,27 @@ def _coerce_number(value: Any) -> Any:
         except ValueError:
             return value
     return value
+
+
+def _merge_outcome(current: Optional[str], candidate: Optional[str]) -> str:
+    current_value = str(current or "pending")
+    candidate_value = str(candidate or current_value)
+    precedence = {
+        "pending": 0,
+        "pass": 1,
+        "approve": 2,
+        "review": 3,
+        "reject": 4,
+    }
+    current_rank = precedence.get(current_value, 0)
+    candidate_rank = precedence.get(candidate_value, 0)
+    if candidate_rank > current_rank:
+        return candidate_value
+    if candidate_rank < current_rank:
+        return current_value
+    if current_value == "pass" and candidate_value == "approve":
+        return candidate_value
+    return current_value
 
 
 def _redact_resolved_secrets(value: Any, secret_values: set[str]) -> Any:
@@ -132,6 +153,7 @@ class ExecutionContext:
     scorecard_results: Dict[str, Any] = field(default_factory=dict)
     transform_outputs: Dict[str, Any] = field(default_factory=dict)
     action_results: List[Dict[str, Any]] = field(default_factory=list)
+    pending_operations: List[Dict[str, Any]] = field(default_factory=list)
     outcome: str = "pending"
     status: str = "running"
     current_step_index: int = 0
@@ -164,6 +186,7 @@ class ExecutionContext:
             scorecard_results=copy.deepcopy(payload.get("scorecard_results", {})),
             transform_outputs=copy.deepcopy(payload.get("transform_outputs", {})),
             action_results=copy.deepcopy(payload.get("action_results", [])),
+            pending_operations=copy.deepcopy(payload.get("pending_operations", [])),
             outcome=str(payload.get("outcome", "pending")),
             status=str(payload.get("status", "running")),
             current_step_index=int(payload.get("current_step_index", 0)),
@@ -319,7 +342,10 @@ class PolicyExecutor:
                         self._persist_execution(ctx, trigger_type=source)
                         return ctx
                 elif step_type == "outcome":
-                    ctx.outcome = step.get("ref_id") or step.get("label") or config.get("outcome") or "review"
+                    ctx.outcome = _merge_outcome(
+                        ctx.outcome,
+                        step.get("ref_id") or config.get("outcome") or step.get("label") or "review",
+                    )
                     result = {"outcome": ctx.outcome}
                 else:
                     error = "Unknown step type: {0}".format(step_type)
@@ -408,7 +434,8 @@ class PolicyExecutor:
         variable_lookup = {item["id"]: item for item in self.storage.list_variables(tenant_id=ctx.tenant_id)}
         result = evaluate_rule_definition(rule, ctx.variables, variable_lookup)
         ctx.rule_results.append({"rule_id": ref_id, **copy.deepcopy(result)})
-        ctx.outcome = result.get("outcome", ctx.outcome)
+        ctx.rule_results[-1]["ruleId"] = ref_id
+        ctx.outcome = _merge_outcome(ctx.outcome, result.get("outcome"))
         return result
 
     def _execute_scorecard(self, step: Dict[str, Any], ctx: ExecutionContext, scorecards: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -448,6 +475,19 @@ class PolicyExecutor:
         timeout = int(config.get("timeoutMs", 5000)) / 1000
         retries = int(config.get("retries", 0))
         last_error = None
+
+        if url.startswith("rulemind://simulate/"):
+            simulated = {
+                "status": int(config.get("simulatedStatus", 202)),
+                "success": True,
+                "body": json_dumps({"simulated": True, "step": step.get("id"), "url": url}),
+                "attempt": 1,
+                "queued": True,
+                "url": url,
+                "method": method,
+            }
+            ctx.action_results.append(simulated)
+            return simulated
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             for attempt in range(retries + 1):
@@ -499,7 +539,7 @@ class PolicyExecutor:
         if on_failure == "abort":
             raise ActionFailedError("Action failed: {0}".format(last_error))
         if on_failure == "review_gate":
-            ctx.outcome = "review"
+            ctx.outcome = _merge_outcome(ctx.outcome, "review")
         return failure_result
 
     async def _execute_review_gate(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:

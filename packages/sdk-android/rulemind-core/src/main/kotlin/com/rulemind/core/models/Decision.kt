@@ -10,6 +10,29 @@ data class Decision(
     val latencyMs: Long = 0,
     val requestId: String? = null,
     val serverOnlyStepsSkipped: List<String> = emptyList(),
+    val executionId: String? = null,
+    val status: String = "completed",
+    val trace: List<Map<String, Any?>> = emptyList(),
+    val scorecardResults: Map<String, Map<String, Any?>> = emptyMap(),
+    val actionResults: List<Map<String, Any?>> = emptyList(),
+    val pendingOperations: List<Map<String, Any?>> = emptyList(),
+    val reviewTask: Map<String, Any?>? = null,
+    val explainability: Map<String, Any?> = emptyMap(),
+    val auditSummary: Map<String, Any?> = emptyMap(),
+    val source: String? = null,
+    val policyId: String? = null,
+    val userId: String? = null,
+    val payload: Map<String, Any?> = emptyMap(),
+    val transformOutputs: Map<String, Map<String, Any?>> = emptyMap(),
+    val currentStepIndex: Int = 0,
+    val pausedAtStep: Int? = null,
+    val reviewResponse: Map<String, Any?> = emptyMap(),
+)
+
+data class ReviewDecision(
+    val decision: String,
+    val response: Map<String, Any?> = emptyMap(),
+    val reviewerId: String? = null,
 )
 
 data class RuleMindConfig(

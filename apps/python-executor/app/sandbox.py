@@ -101,7 +101,9 @@ def resolve_callable(namespace: Dict[str, Any]):
         return decorated[0]
 
     fallbacks = [
-        value for key, value in namespace.items() if callable(value) and not key.startswith("_")
+        value
+        for key, value in namespace.items()
+        if callable(value) and not key.startswith("_") and key not in {"variable", "restricted_import", "resolve_callable"}
     ]
     if not fallbacks:
         raise ValueError("No callable variable function found.")
@@ -179,14 +181,19 @@ def execute_variable(code: str, payload: Dict[str, Any], variables_map: Optional
     # Production path: submit to pre-warmed process pool instead of spawning
     # a fresh process per call. This amortizes the ~500ms spawn cost across
     # all requests and allows concurrent variable execution.
-    pool = _get_pool()
     try:
+        pool = _get_pool()
         future = pool.submit(_execute_in_process, code, payload, context, timeout_ms, memory_mb)
         return future.result(timeout=timeout_seconds)
     except FuturesTimeoutError:
         return {"value": None, "error": "Variable execution timed out.", "latency_ms": float(timeout_ms), "variable_name": None}
     except Exception as exc:
-        return {"value": None, "error": str(exc), "latency_ms": 0.0, "variable_name": None}
+        if os.getenv("SANDBOX_FALLBACK_MODE", "inline") == "inline":
+            fallback = _execute_inline(code, payload, context)
+            fallback["sandbox_fallback"] = "inline"
+            fallback["sandbox_error"] = str(exc)
+            return fallback
+        return {"value": None, "error": "Sandbox execution unavailable: {0}".format(exc), "latency_ms": 0.0, "variable_name": None}
 
 
 # Legacy API preserved for backward compatibility

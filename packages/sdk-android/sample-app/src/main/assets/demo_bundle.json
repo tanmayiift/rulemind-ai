@@ -1,0 +1,208 @@
+{
+  "bundleVersion": 1,
+  "bundleId": "demo-bundle-001",
+  "tenantId": "demo-tenant",
+  "compiledAt": "2026-03-30T00:00:00Z",
+  "expiresAt": "2030-12-31T23:59:59Z",
+  "checksum": "demo",
+  "serverOnlyVariables": [],
+  "variables": [
+    {
+      "id": "var_credit_score",
+      "sourceId": "var_credit_score",
+      "name": "credit_score",
+      "returnType": "number",
+      "compilable": true,
+      "instructions": [
+        { "op": "get", "source": "payload", "path": "bureau.score", "target": "result" },
+        { "op": "return", "source": "result" }
+      ]
+    },
+    {
+      "id": "var_avg_balance",
+      "sourceId": "var_avg_balance",
+      "name": "avg_balance",
+      "returnType": "number",
+      "compilable": true,
+      "instructions": [
+        { "op": "get", "source": "payload", "path": "bank.summary.avgBalance", "target": "result" },
+        { "op": "return", "source": "result" }
+      ]
+    },
+    {
+      "id": "var_device_risk",
+      "sourceId": "var_device_risk",
+      "name": "device_risk_score",
+      "returnType": "number",
+      "compilable": true,
+      "instructions": [
+        { "op": "get", "source": "payload", "path": "device.risk_score", "target": "result" },
+        { "op": "return", "source": "result" }
+      ]
+    },
+    {
+      "id": "var_annual_income",
+      "sourceId": "var_annual_income",
+      "name": "annual_income",
+      "returnType": "number",
+      "compilable": true,
+      "instructions": [
+        { "op": "get", "source": "payload", "path": "annual_income", "target": "result" },
+        { "op": "return", "source": "result" }
+      ]
+    },
+    {
+      "id": "var_dti",
+      "sourceId": "var_dti",
+      "name": "debt_to_income",
+      "returnType": "number",
+      "compilable": true,
+      "instructions": [
+        { "op": "get", "source": "payload", "path": "debt_to_income", "target": "result" },
+        { "op": "return", "source": "result" }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_credit_check",
+      "name": "Credit Eligibility Check",
+      "ruleFormat": "v2",
+      "expression": null,
+      "nodes": [],
+      "tree": {
+        "type": "group",
+        "id": "root",
+        "logic": "AND",
+        "onPass": "approve",
+        "onFail": "reject",
+        "children": [
+          {
+            "type": "condition",
+            "id": "cond_score",
+            "variable": "credit_score",
+            "operator": ">=",
+            "value": 650,
+            "children": []
+          },
+          {
+            "type": "condition",
+            "id": "cond_income",
+            "variable": "annual_income",
+            "operator": ">",
+            "value": 300000,
+            "children": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "rule_fraud_screen",
+      "name": "Fraud Screening",
+      "ruleFormat": "v2",
+      "expression": null,
+      "nodes": [],
+      "tree": {
+        "type": "group",
+        "id": "root",
+        "logic": "AND",
+        "onPass": "pass",
+        "onFail": "reject",
+        "children": [
+          {
+            "type": "condition",
+            "id": "cond_device",
+            "variable": "device_risk_score",
+            "operator": "<",
+            "value": 50,
+            "children": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "rule_dti_check",
+      "name": "Debt-to-Income Ratio Check",
+      "ruleFormat": "v2",
+      "expression": null,
+      "nodes": [],
+      "tree": {
+        "type": "condition",
+        "id": "cond_dti",
+        "variable": "debt_to_income",
+        "operator": "<=",
+        "value": 0.5,
+        "onPass": "pass",
+        "onFail": "review",
+        "children": []
+      }
+    }
+  ],
+  "scorecards": [
+    {
+      "id": "sc_credit",
+      "name": "Credit Risk Scorecard",
+      "baseScore": 500,
+      "maxScore": 900,
+      "bins": [
+        {
+          "variableId": "var_credit_score",
+          "ranges": [
+            { "min": 300, "max": 549, "points": -100 },
+            { "min": 550, "max": 649, "points": 0 },
+            { "min": 650, "max": 749, "points": 50 },
+            { "min": 750, "max": 850, "points": 100 }
+          ]
+        },
+        {
+          "variableId": "var_avg_balance",
+          "ranges": [
+            { "min": 0, "max": 9999, "points": -50 },
+            { "min": 10000, "max": 49999, "points": 25 },
+            { "min": 50000, "max": 500000, "points": 75 }
+          ]
+        }
+      ]
+    }
+  ],
+  "policies": [
+    {
+      "id": "policy_loan_eligibility",
+      "name": "Personal Loan Eligibility",
+      "defaultOutcome": "reject",
+      "serverOnlySteps": [],
+      "steps": [
+        {
+          "type": "rule",
+          "ref": "rule_credit_check",
+          "refId": "rule_credit_check",
+          "label": "Credit Eligibility"
+        },
+        {
+          "type": "scorecard",
+          "ref": "sc_credit",
+          "refId": "sc_credit",
+          "label": "Credit Risk Scoring"
+        },
+        {
+          "type": "rule",
+          "ref": "rule_fraud_screen",
+          "refId": "rule_fraud_screen",
+          "label": "Fraud Screening"
+        },
+        {
+          "type": "rule",
+          "ref": "rule_dti_check",
+          "refId": "rule_dti_check",
+          "label": "DTI Ratio Check"
+        },
+        {
+          "type": "outcome",
+          "label": "Final Decision",
+          "config": { "outcome": "approve" }
+        }
+      ]
+    }
+  ],
+  "experiments": []
+}

@@ -215,6 +215,80 @@ class RuleMindPlatformTests(unittest.TestCase):
         self.assertEqual(key_response.status_code, 200)
         self.assertTrue(key_response.json()["plaintext"].startswith("rm_live_"))
 
+    def test_mobile_demo_access_and_manifest_are_available(self) -> None:
+        response = self.client.post("/api/mobile/v1/auth/demo")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["mode"], "demo")
+        self.assertTrue(body["apiKey"].startswith("rm_live_"))
+        self.assertIn("experienceManifest", body)
+        manifest = body["experienceManifest"]
+        self.assertEqual(manifest["locale"], "en-IN")
+        self.assertEqual(manifest["shell"]["appName"], "RuleMind Experience Studio")
+        self.assertEqual(manifest["design"]["themeId"], "rulemind_slate_steel")
+        self.assertEqual(manifest["design"]["colors"]["primary"], "#005394")
+        self.assertEqual(manifest["design"]["colors"]["surface"], "#F7FAFC")
+        self.assertTrue(any(item["id"] == "travel_guard" for item in manifest["journeys"]))
+        self.assertTrue(any(item["id"] == "instant_personal_loan" for item in manifest["journeys"]))
+        self.assertTrue(any(item["id"] == "sme_underwriting" for item in manifest["journeys"]))
+        self.assertEqual(sum(len(item["screens"]) for item in manifest["journeys"]), 25)
+        self.assertTrue(any(item["id"] == "variables" for item in manifest["admin"]["entities"]))
+
+        manifest_response = self.client.get("/sdk/v1/experience-manifest", headers=self.default_headers)
+        self.assertEqual(manifest_response.status_code, 200)
+        self.assertEqual(manifest_response.json()["tenantId"], str(app_main.storage.default_tenant_id))
+
+    def test_mobile_admin_login_can_switch_tenants_and_fetch_profile(self) -> None:
+        tenant_b = app_main.storage.create_tenant("Mobile Tenant", plan="enterprise")
+        response = self.client.post(
+            "/api/mobile/v1/auth/login",
+            json={
+                "email": app_main.storage.default_admin_email,
+                "password": app_main.storage.default_admin_password,
+                "tenantId": tenant_b["id"],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["mode"], "admin")
+        self.assertTrue(body["accessToken"])
+        self.assertEqual(body["tenant"]["id"], tenant_b["id"])
+
+        auth_headers = {"Authorization": f"Bearer {body['accessToken']}"}
+        me_response = self.client.get("/api/mobile/v1/auth/me", headers=auth_headers)
+        self.assertEqual(me_response.status_code, 200)
+        self.assertEqual(me_response.json()["user"]["email"], app_main.storage.default_admin_email)
+        self.assertTrue(any(item["id"] == tenant_b["id"] for item in me_response.json()["availableTenants"]))
+
+        switched = self.client.post(
+            f"/api/mobile/v1/tenants/{app_main.storage.default_tenant_id}/session",
+            headers=auth_headers,
+        )
+        self.assertEqual(switched.status_code, 200)
+        self.assertEqual(switched.json()["tenant"]["id"], str(app_main.storage.default_tenant_id))
+        self.assertTrue(switched.json()["apiKey"].startswith("rm_live_"))
+
+    def test_runtime_detail_endpoints_return_seeded_assets(self) -> None:
+        connector = self.client.get("/api/v1/connectors/loan", headers=self.default_headers)
+        self.assertEqual(connector.status_code, 200)
+        self.assertEqual(connector.json()["id"], "loan")
+
+        variable = self.client.get("/api/v1/variables/loan_bureau_score", headers=self.default_headers)
+        self.assertEqual(variable.status_code, 200)
+        self.assertEqual(variable.json()["id"], "loan_bureau_score")
+
+        rule = self.client.get("/api/v1/rules/rule_loan_bureau_gate", headers=self.default_headers)
+        self.assertEqual(rule.status_code, 200)
+        self.assertEqual(rule.json()["id"], "rule_loan_bureau_gate")
+
+        scorecard = self.client.get("/api/v1/scorecards/sc_loan_risk", headers=self.default_headers)
+        self.assertEqual(scorecard.status_code, 200)
+        self.assertEqual(scorecard.json()["id"], "sc_loan_risk")
+
+        policy = self.client.get("/api/v1/policies/policy_instant_personal_loan", headers=self.default_headers)
+        self.assertEqual(policy.status_code, 200)
+        self.assertEqual(policy.json()["id"], "policy_instant_personal_loan")
+
     def test_rate_limit_standard_and_enterprise_plan_behavior(self) -> None:
         standard_tenant = app_main.storage.create_tenant("Standard Tenant", plan="standard")
         standard_key = app_main.storage.generate_api_key_for_tenant(standard_tenant["id"])["plaintext"]

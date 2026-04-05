@@ -3,8 +3,11 @@ plugins {
     `maven-publish`
 }
 
+val activeJvm = JavaVersion.current().majorVersion.toIntOrNull() ?: 17
+val toolchainJvm = activeJvm.coerceIn(17, 21)
+
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(toolchainJvm)
 }
 
 dependencies {

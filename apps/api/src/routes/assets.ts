@@ -21,12 +21,11 @@ const resources = [
   { path: "exports", kind: "export" }
 ] as const;
 
-async function callPythonExecutor(baseUrl: string, secret: string, path: string, payload: Record<string, unknown>) {
+async function callPythonExecutor(baseUrl: string, path: string, payload: Record<string, unknown>) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
-      "content-type": "application/json",
-      "x-executor-secret": secret
+      "content-type": "application/json"
     },
     body: JSON.stringify(payload)
   });
@@ -158,12 +157,9 @@ export async function registerAssetRoutes(app: FastifyInstance) {
     const body = variableTestSchema.parse(request.body);
     return callPythonExecutor(
       app.services.config.pythonExecutorUrl,
-      app.services.config.pythonExecutorSecret,
-      "/variables/test",
+      `/api/v1/variables/${asset.id}/test`,
       {
-        code: String(asset.definition.code ?? ""),
-        payload: body.payload,
-        variables: body.variables
+        payload: body.payload
       }
     );
   });

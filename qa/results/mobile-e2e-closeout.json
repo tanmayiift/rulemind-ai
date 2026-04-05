@@ -1,0 +1,489 @@
+{
+  "generatedAt": "2026-04-04T15:51:09.931997+00:00",
+  "manifestVersion": "2026.04.01",
+  "tenantId": "045e0c7e-74e5-4502-a7a5-f8b30ec1088f",
+  "screenRouteMap": [
+    {
+      "screen": "1. Login / Access Screen",
+      "route": "access"
+    },
+    {
+      "screen": "2. Experience Selection Screen",
+      "route": "experience_selection"
+    },
+    {
+      "screen": "3. Home Dashboard",
+      "route": "home_dashboard"
+    },
+    {
+      "screen": "4. Demo Scenario Hub",
+      "route": "scenario_hub"
+    },
+    {
+      "screen": "5. Logs & Explainability Landing",
+      "route": "logs_explainability"
+    },
+    {
+      "screen": "6. Admin Console Landing",
+      "route": "admin_console"
+    },
+    {
+      "screen": "7. Travel Flow Landing",
+      "route": "travel_landing"
+    },
+    {
+      "screen": "8. Trip Basics",
+      "route": "trip_basics"
+    },
+    {
+      "screen": "9. Travel Readiness",
+      "route": "travel_readiness"
+    },
+    {
+      "screen": "10. Coverage Preferences",
+      "route": "coverage_preferences"
+    },
+    {
+      "screen": "11. Verification & Callback Processing",
+      "route": "travel_processing"
+    },
+    {
+      "screen": "12. Decision Outcome",
+      "route": "travel_decision"
+    },
+    {
+      "screen": "13. Explainability & Audit View",
+      "route": "travel_audit"
+    },
+    {
+      "screen": "14. Loan Flow Landing",
+      "route": "loan_landing"
+    },
+    {
+      "screen": "15. Applicant Basics",
+      "route": "applicant_basics"
+    },
+    {
+      "screen": "16. Income & Employment",
+      "route": "income_employment"
+    },
+    {
+      "screen": "17. Obligations & Stability",
+      "route": "obligations_stability"
+    },
+    {
+      "screen": "18. Documents & Identity Inputs",
+      "route": "documents_identity"
+    },
+    {
+      "screen": "19. External Verification & Rule Processing",
+      "route": "loan_processing"
+    },
+    {
+      "screen": "20. Offer Decision",
+      "route": "loan_offer"
+    },
+    {
+      "screen": "21. Underwriting Explainability & Audit",
+      "route": "loan_audit"
+    },
+    {
+      "screen": "22. SME Flow Landing",
+      "route": "sme_landing"
+    },
+    {
+      "screen": "23. Business Onboarding",
+      "route": "business_onboarding"
+    },
+    {
+      "screen": "24. Coverage Design",
+      "route": "coverage_design"
+    },
+    {
+      "screen": "25. Employee Census Intake",
+      "route": "employee_census"
+    },
+    {
+      "screen": "26. Prior Policy & Claims Experience",
+      "route": "prior_policy_claims"
+    },
+    {
+      "screen": "27. Compliance Documents",
+      "route": "compliance_documents"
+    },
+    {
+      "screen": "28. External Verification & Parsing",
+      "route": "sme_processing"
+    },
+    {
+      "screen": "29. Underwriting, Compliance & Routing Evaluation",
+      "route": "sme_routing"
+    },
+    {
+      "screen": "30. Final Outcome",
+      "route": "sme_outcome"
+    },
+    {
+      "screen": "31. Full Explainability, Audit & Workflow Trace",
+      "route": "sme_audit"
+    }
+  ],
+  "scenarioResults": [
+    {
+      "scenario_id": "travel_happy_path",
+      "journey_id": "travel_guard",
+      "title": "Happy Path Traveler",
+      "expected_outcome": "approve",
+      "observed_outcome": "approve",
+      "expected_status": "completed",
+      "observed_status": "completed",
+      "latency_ms": 39,
+      "trace_steps": 8,
+      "pending_callbacks": 1,
+      "execution_id": "2f28bdfc-b28b-4c15-a9ca-b06d843dd04a",
+      "request_id": "closeout-travel_happy_path",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": null,
+      "resumed_outcome": null
+    },
+    {
+      "scenario_id": "travel_senior_review",
+      "journey_id": "travel_guard",
+      "title": "Senior Traveler Review",
+      "expected_outcome": "review",
+      "observed_outcome": "review",
+      "expected_status": "paused",
+      "observed_status": "paused",
+      "latency_ms": 27,
+      "trace_steps": 7,
+      "pending_callbacks": 1,
+      "execution_id": "b63f4399-e3b1-4020-8455-917ad64efad4",
+      "request_id": "closeout-travel_senior_review",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "review_gates",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": "completed",
+      "resumed_outcome": "approve"
+    },
+    {
+      "scenario_id": "travel_passport_failure",
+      "journey_id": "travel_guard",
+      "title": "Passport Validity Failure",
+      "expected_outcome": "reject",
+      "observed_outcome": "reject",
+      "expected_status": "completed",
+      "observed_status": "completed",
+      "latency_ms": 29,
+      "trace_steps": 8,
+      "pending_callbacks": 1,
+      "execution_id": "e7c4fd76-8beb-41cd-b683-d1b2ddfb1835",
+      "request_id": "closeout-travel_passport_failure",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": null,
+      "resumed_outcome": null
+    },
+    {
+      "scenario_id": "loan_prime_approved",
+      "journey_id": "instant_personal_loan",
+      "title": "Prime Borrower Approved",
+      "expected_outcome": "approve",
+      "observed_outcome": "approve",
+      "expected_status": "completed",
+      "observed_status": "completed",
+      "latency_ms": 29,
+      "trace_steps": 9,
+      "pending_callbacks": 1,
+      "execution_id": "1bc7d272-76b8-444d-9462-505691b348e5",
+      "request_id": "closeout-loan_prime_approved",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": null,
+      "resumed_outcome": null
+    },
+    {
+      "scenario_id": "loan_borderline_review",
+      "journey_id": "instant_personal_loan",
+      "title": "Borderline Borrower",
+      "expected_outcome": "review",
+      "observed_outcome": "review",
+      "expected_status": "paused",
+      "observed_status": "paused",
+      "latency_ms": 27,
+      "trace_steps": 8,
+      "pending_callbacks": 1,
+      "execution_id": "29ef6a8d-80e2-45ca-9a6e-01aeccbb5aea",
+      "request_id": "closeout-loan_borderline_review",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "review_gates",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": "completed",
+      "resumed_outcome": "approve"
+    },
+    {
+      "scenario_id": "loan_high_foir_reject",
+      "journey_id": "instant_personal_loan",
+      "title": "High FOIR Reject",
+      "expected_outcome": "reject",
+      "observed_outcome": "reject",
+      "expected_status": "completed",
+      "observed_status": "completed",
+      "latency_ms": 29,
+      "trace_steps": 9,
+      "pending_callbacks": 1,
+      "execution_id": "24c4ff26-db52-47b5-9c9a-1ac12dd4d415",
+      "request_id": "closeout-loan_high_foir_reject",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": null,
+      "resumed_outcome": null
+    },
+    {
+      "scenario_id": "loan_fraud_review",
+      "journey_id": "instant_personal_loan",
+      "title": "Fraud Review Case",
+      "expected_outcome": "review",
+      "observed_outcome": "review",
+      "expected_status": "paused",
+      "observed_status": "paused",
+      "latency_ms": 27,
+      "trace_steps": 8,
+      "pending_callbacks": 1,
+      "execution_id": "3f2d290e-9985-41be-ab16-a332edfa127e",
+      "request_id": "closeout-loan_fraud_review",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "review_gates",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": "completed",
+      "resumed_outcome": "approve"
+    },
+    {
+      "scenario_id": "loan_kyc_reject",
+      "journey_id": "instant_personal_loan",
+      "title": "KYC Mismatch Reject",
+      "expected_outcome": "reject",
+      "observed_outcome": "reject",
+      "expected_status": "completed",
+      "observed_status": "completed",
+      "latency_ms": 29,
+      "trace_steps": 9,
+      "pending_callbacks": 1,
+      "execution_id": "1a77a748-faee-46b3-a7a6-726a43b4faca",
+      "request_id": "closeout-loan_kyc_reject",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": null,
+      "resumed_outcome": null
+    },
+    {
+      "scenario_id": "sme_instant_quote",
+      "journey_id": "sme_underwriting",
+      "title": "Clean SME Instant Quote",
+      "expected_outcome": "approve",
+      "observed_outcome": "approve",
+      "expected_status": "completed",
+      "observed_status": "completed",
+      "latency_ms": 45,
+      "trace_steps": 10,
+      "pending_callbacks": 2,
+      "execution_id": "01d2826c-477a-43cf-baaf-b6758a678b24",
+      "request_id": "closeout-sme_instant_quote",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": null,
+      "resumed_outcome": null
+    },
+    {
+      "scenario_id": "sme_claims_review",
+      "journey_id": "sme_underwriting",
+      "title": "High Claims Ratio Review",
+      "expected_outcome": "review",
+      "observed_outcome": "review",
+      "expected_status": "paused",
+      "observed_status": "paused",
+      "latency_ms": 28,
+      "trace_steps": 8,
+      "pending_callbacks": 1,
+      "execution_id": "38536261-d2b2-46d0-b5be-e9f761bb1bec",
+      "request_id": "closeout-sme_claims_review",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "review_gates",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": "completed",
+      "resumed_outcome": "approve"
+    },
+    {
+      "scenario_id": "sme_census_failure",
+      "journey_id": "sme_underwriting",
+      "title": "Census Quality Failure",
+      "expected_outcome": "review",
+      "observed_outcome": "review",
+      "expected_status": "paused",
+      "observed_status": "paused",
+      "latency_ms": 29,
+      "trace_steps": 8,
+      "pending_callbacks": 1,
+      "execution_id": "525dbda8-9949-4df4-90ea-947e98d336e6",
+      "request_id": "closeout-sme_census_failure",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "review_gates",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": "completed",
+      "resumed_outcome": "approve"
+    },
+    {
+      "scenario_id": "sme_compliance_hold",
+      "journey_id": "sme_underwriting",
+      "title": "Compliance Hold",
+      "expected_outcome": "review",
+      "observed_outcome": "review",
+      "expected_status": "paused",
+      "observed_status": "paused",
+      "latency_ms": 29,
+      "trace_steps": 8,
+      "pending_callbacks": 1,
+      "execution_id": "a1072c46-fca1-4ad2-a5a2-cccea3249e8f",
+      "request_id": "closeout-sme_compliance_hold",
+      "capabilities": [
+        "auditability",
+        "callback_queueing",
+        "decisioning",
+        "explainability",
+        "review_gates",
+        "rules",
+        "scorecards",
+        "traceability",
+        "workflow_orchestration"
+      ],
+      "passed": true,
+      "resumed_status": "completed",
+      "resumed_outcome": "approve"
+    }
+  ],
+  "scenarioPassRate": {
+    "passed": 12,
+    "total": 12
+  },
+  "latencySummary": {
+    "medianMs": 29,
+    "p95Ms": 39,
+    "maxMs": 45
+  },
+  "capabilitiesCovered": [
+    "auditability",
+    "callback_queueing",
+    "decisioning",
+    "explainability",
+    "review_gates",
+    "review_resume",
+    "rules",
+    "scorecards",
+    "traceability",
+    "workflow_orchestration"
+  ],
+  "residualRisks": [
+    "Device-cloud validation remains gated by external BrowserStack credentials.",
+    "Signed release APK generation remains gated by Android signing secrets.",
+    "Local Flutter and Android emulator execution still depends on host tool installation; CI remains the primary E2E path."
+  ]
+}

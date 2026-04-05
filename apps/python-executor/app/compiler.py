@@ -54,11 +54,17 @@ def _parse_public_key(header_value: Optional[str]):
     raw = header_value.encode("utf-8")
     try:
         decoded = base64.b64decode(raw)
-        if b"BEGIN PUBLIC KEY" not in decoded:
+        if b"BEGIN PUBLIC KEY" in decoded:
+            return serialization.load_pem_public_key(decoded)
+        try:
+            return serialization.load_der_public_key(decoded)
+        except Exception:
             decoded = raw
     except Exception:
         decoded = raw
-    return serialization.load_pem_public_key(decoded)
+    if b"BEGIN PUBLIC KEY" in decoded:
+        return serialization.load_pem_public_key(decoded)
+    return serialization.load_der_public_key(decoded)
 
 
 def _sign_payload(payload: bytes) -> str:
@@ -286,7 +292,7 @@ def compile_bundle(storage: Storage, tenant_id: str, client_public_key: Optional
         for step in policy.get("steps", []):
             step_type = step.get("type")
             step_id = step.get("id") or step.get("ref_id") or step.get("ref")
-            if step_type in {"action", "transform", "review_gate"}:
+            if step_type not in {"connector", "rule", "scorecard", "transform", "action", "review_gate", "outcome"}:
                 if step_id:
                     server_only_steps.append(step_id)
                 continue

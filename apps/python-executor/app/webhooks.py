@@ -8,6 +8,10 @@ from .executor import PolicyExecutor
 from .storage import Storage
 
 
+class WebhookAuthenticationError(PermissionError):
+    pass
+
+
 def apply_mapping(payload: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]:
     if not mapping:
         return copy.deepcopy(payload)
@@ -33,7 +37,7 @@ async def trigger_webhook(storage: Storage, webhook_id: str, body: Dict[str, Any
         secret = webhook["secret_hash"]
         valid = verify_hmac_signature(secret, json_bytes(body), signature)
         if not valid:
-            raise PermissionError("Invalid signature")
+            raise WebhookAuthenticationError("Invalid signature")
     payload = apply_mapping(body, webhook.get("payload_mapping") or {})
     policy = storage.get_policy(webhook["policy_id"], tenant_id=webhook["tenant_id"])
     if not policy:

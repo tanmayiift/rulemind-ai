@@ -352,6 +352,23 @@ class Decision {
     this.latencyMs = 0,
     this.requestId,
     this.serverOnlyStepsSkipped = const <String>[],
+    this.executionId,
+    this.status = "completed",
+    this.trace = const <Map<String, dynamic>>[],
+    this.scorecardResults = const <String, Map<String, dynamic>>{},
+    this.actionResults = const <Map<String, dynamic>>[],
+    this.pendingOperations = const <Map<String, dynamic>>[],
+    this.reviewTask,
+    this.explainability = const <String, dynamic>{},
+    this.auditSummary = const <String, dynamic>{},
+    this.source,
+    this.policyId,
+    this.userId,
+    this.payload = const <String, dynamic>{},
+    this.transformOutputs = const <String, Map<String, dynamic>>{},
+    this.currentStepIndex = 0,
+    this.pausedAtStep,
+    this.reviewResponse = const <String, dynamic>{},
   });
 
   final String outcome;
@@ -363,6 +380,35 @@ class Decision {
   final int latencyMs;
   final String? requestId;
   final List<String> serverOnlyStepsSkipped;
+  final String? executionId;
+  final String status;
+  final List<Map<String, dynamic>> trace;
+  final Map<String, Map<String, dynamic>> scorecardResults;
+  final List<Map<String, dynamic>> actionResults;
+  final List<Map<String, dynamic>> pendingOperations;
+  final Map<String, dynamic>? reviewTask;
+  final Map<String, dynamic> explainability;
+  final Map<String, dynamic> auditSummary;
+  final String? source;
+  final String? policyId;
+  final String? userId;
+  final Map<String, dynamic> payload;
+  final Map<String, Map<String, dynamic>> transformOutputs;
+  final int currentStepIndex;
+  final int? pausedAtStep;
+  final Map<String, dynamic> reviewResponse;
+}
+
+class ReviewDecision {
+  ReviewDecision({
+    required this.decision,
+    this.response = const <String, dynamic>{},
+    this.reviewerId,
+  });
+
+  final String decision;
+  final Map<String, dynamic> response;
+  final String? reviewerId;
 }
 
 class RuleMindConfig {

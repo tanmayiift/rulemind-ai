@@ -221,7 +221,7 @@ describe("suite conformance", () => {
     const promoteResponse = await app.inject({
       method: "POST",
       url: `/api/v1/rules/${created.id}/promote`,
-      payload: { fromEnv: "dev", toEnv: "staging" }
+      payload: { fromEnv: "dev", toEnv: "uat" }
     });
     expect(promoteResponse.statusCode).toBe(200);
 

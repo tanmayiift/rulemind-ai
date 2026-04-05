@@ -23,7 +23,7 @@ class RuleMindWidgetElement extends HTMLElement {
   private render() {
     this.root?.render(
       <RuleBuilder
-        environment={(this.getAttribute("environment") as "dev" | "staging" | "prod" | null) ?? "dev"}
+        environment={(this.getAttribute("environment") as "dev" | "uat" | "prod" | null) ?? "dev"}
         readOnly={this.getAttribute("read-only") === "true"}
       />
     );
