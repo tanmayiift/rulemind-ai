@@ -41,6 +41,9 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if not (path.startswith("/api/v1") or path.startswith("/sdk/v1")):
             return await call_next(request)
 
+        if os.getenv("AUTH_MODE") == "none":
+            return await call_next(request)
+
         if request.method == "POST" and path.startswith("/api/v1/webhooks/") and not path.endswith("/test"):
             return await call_next(request)
 

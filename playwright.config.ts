@@ -36,7 +36,8 @@ export default defineConfig({
         DATABASE_URL: "sqlite:///.runtime/playwright-v3.db",
         CORS_ORIGINS: webBaseUrl,
         PYTHON_SANDBOX_TIMEOUT: "2000",
-        PYTHON_SANDBOX_MEMORY: "128"
+        PYTHON_SANDBOX_MEMORY: "128",
+        AUTH_MODE: "none"
       }
     },
     {
