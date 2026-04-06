@@ -485,21 +485,104 @@ export interface SdkEventRecordContract {
   data?: Record<string, unknown>;
 }
 
+export interface WoERange {
+  min: number;
+  max: number;
+  woe: number;
+  iv: number;
+  event_rate: number;
+  non_event_rate: number;
+  points?: number;
+}
+
+export interface MetricFormula {
+  name: string;
+  formula: string;
+  unit?: string;
+  category?: "financial" | "non_financial";
+}
+
+export interface ScorecardFactor {
+  name: string;
+  field: string;
+  operator: Operator;
+  value?: unknown;
+  value2?: unknown;
+  score: number;
+  weight?: number;
+  coefficient?: number;
+  woe_values?: WoERange[];
+}
+
+export interface ScorecardBand {
+  min: number;
+  max: number;
+  label: string;
+  decision?: OutcomeType;
+}
+
+export type ScoringMethod = "points" | "woe" | "formula";
+
 export interface ScorecardDefinition {
-  factors: Array<{
-    name: string;
-    field: string;
-    operator: Operator;
-    value?: unknown;
-    value2?: unknown;
-    score: number;
+  factors: ScorecardFactor[];
+  bands: ScorecardBand[];
+  scoring_method?: ScoringMethod;
+  intercept?: number;
+  pdo?: number;
+  target_score?: number;
+  target_odds?: number;
+  formula?: string;
+  metrics?: MetricFormula[];
+}
+
+export interface WoEDetail {
+  factor: string;
+  woe: number;
+  coefficient: number;
+  contribution: number;
+}
+
+export interface ScorecardResult {
+  score: number;
+  band?: ScorecardBand;
+  breakdown?: Array<{
+    factor: string;
+    points: number;
+    weight: number;
+    weighted_points: number;
   }>;
-  bands: Array<{
-    min: number;
-    max: number;
-    label: string;
-    decision?: OutcomeType;
-  }>;
+  scoring_method?: ScoringMethod;
+  woe_details?: WoEDetail[];
+  information_value?: number;
+  metrics?: Record<string, unknown>;
+}
+
+export interface ModelDefinition {
+  id: string;
+  name: string;
+  description?: string;
+  model_type?: string;
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown>;
+  status?: string;
+  version?: number;
+  metrics?: Record<string, unknown>;
+}
+
+export interface ImportValidationResult {
+  id: string;
+  name?: string;
+  valid: boolean;
+  issues: string[];
+}
+
+export interface ImportValidationReport {
+  connectors: ImportValidationResult[];
+  variables: ImportValidationResult[];
+  rules: ImportValidationResult[];
+  scorecards: ImportValidationResult[];
+  policies: ImportValidationResult[];
+  summary: { total: number; valid: number; invalid: number };
 }
 
 export interface SegmentDefinition {

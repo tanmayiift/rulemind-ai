@@ -2002,3 +2002,37 @@ class Storage:
             "error": model.error,
             "created_at": serialize_datetime(model.created_at),
         }
+
+    # ───────────────────────────────────────────────────────────────────
+    # MODEL HOSTING (in-memory store for now, no DB migration needed)
+    # ───────────────────────────────────────────────────────────────────
+    _models: Dict[str, Dict[str, Any]] = {}
+
+    def list_models(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [
+            {k: v for k, v in m.items() if k != "model_blob"}
+            for m in self._models.values()
+        ]
+
+    def get_model(self, model_id: str, include_blob: bool = False, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        model = self._models.get(model_id)
+        if model is None:
+            return None
+        if include_blob:
+            return copy.deepcopy(model)
+        return {k: v for k, v in model.items() if k != "model_blob"}
+
+    def create_model(self, data: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        model_id = data["id"]
+        self._models[model_id] = copy.deepcopy(data)
+        return {k: v for k, v in data.items() if k != "model_blob"}
+
+    def update_model(self, model_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        if model_id not in self._models:
+            return None
+        self._models[model_id].update(patch)
+        model = self._models[model_id]
+        return {k: v for k, v in model.items() if k != "model_blob"}
+
+    def delete_model(self, model_id: str, tenant_id: Optional[str] = None) -> bool:
+        return self._models.pop(model_id, None) is not None

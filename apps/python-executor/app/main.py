@@ -151,12 +151,32 @@ class RuleUpsertRequest(BaseModel):
 class ScorecardRangeModel(BaseModel):
     min: float
     max: float
-    points: int
+    points: int = 0
+
+
+class WoERangeModel(BaseModel):
+    min: float
+    max: float
+    woe: float = 0.0
+    iv: float = 0.0
+    event_rate: float = 0.0
+    non_event_rate: float = 0.0
+    points: int = 0
+
+
+class MetricFormulaModel(BaseModel):
+    name: str
+    formula: str
+    unit: str = ""
+    category: str = "financial"
 
 
 class ScorecardBinModel(BaseModel):
     variable_id: str
-    ranges: List[ScorecardRangeModel]
+    ranges: List[ScorecardRangeModel] = Field(default_factory=list)
+    weight: float = 1.0
+    woe_values: Optional[List[WoERangeModel]] = None
+    coefficient: float = 0.0
 
 
 class ScorecardUpsertRequest(BaseModel):
@@ -164,6 +184,13 @@ class ScorecardUpsertRequest(BaseModel):
     base_score: int = 300
     max_score: int = 900
     bins: List[ScorecardBinModel]
+    scoring_method: str = "points"
+    intercept: float = 0.0
+    pdo: float = 20.0
+    target_score: float = 600.0
+    target_odds: float = 50.0
+    formula: Optional[str] = None
+    metrics: Optional[List[MetricFormulaModel]] = None
     status: str = "dev"
 
 
@@ -1870,11 +1897,12 @@ def deploy_promote(request: DeployPromoteRequest) -> Dict[str, Any]:
 def export_config(format: str = Query(default="json")) -> PlainTextResponse:
     config = storage.export_config()
     content = export_bundle(config, format)
-    extension = "py" if format == "python" else format
+    extension = {"python": "py", "csv": "csv"}.get(format, format)
     media_type = {
         "json": "application/json",
         "yaml": "application/x-yaml",
         "python": "text/x-python",
+        "csv": "text/csv",
     }.get(format, "text/plain")
     return PlainTextResponse(
         content,
@@ -1883,11 +1911,124 @@ def export_config(format: str = Query(default="json")) -> PlainTextResponse:
     )
 
 
+def _validate_import_entity(entity_type: str, entity: Dict[str, Any], existing_connectors: List[str], existing_variables: List[str]) -> Dict[str, Any]:
+    """Validate a single entity and return a validation report."""
+    issues: List[str] = []
+    entity_id = entity.get("id", entity.get("name", "unknown"))
+
+    if entity_type == "variable":
+        if not entity.get("code"):
+            issues.append("Missing 'code' field")
+        else:
+            import ast as _ast
+            try:
+                _ast.parse(entity["code"])
+            except SyntaxError as exc:
+                issues.append(f"Python syntax error: {exc}")
+        if entity.get("source_id") and entity["source_id"] not in existing_connectors:
+            issues.append(f"Referenced connector '{entity['source_id']}' not found")
+
+    elif entity_type == "rule":
+        nodes = entity.get("nodes", [])
+        tree = entity.get("tree")
+        if not nodes and not tree:
+            issues.append("Rule has no nodes and no tree")
+        for node in nodes:
+            node_type = node.get("type", "")
+            if node_type not in ALLOWED_NODE_TYPES:
+                issues.append(f"Invalid node type: '{node_type}'")
+            if node_type == "condition":
+                operator = node.get("operator", "")
+                if operator and operator not in ALLOWED_OPERATORS:
+                    issues.append(f"Unsupported operator '{operator}' on node '{node.get('id', '?')}'")
+                if node.get("variable") and node["variable"] not in existing_variables:
+                    issues.append(f"Referenced variable '{node['variable']}' not found")
+        has_outcome = any(n.get("type") in {"approve", "review", "reject"} for n in nodes)
+        if nodes and not has_outcome and not tree:
+            issues.append("Rule has no outcome node (approve/review/reject)")
+        if tree:
+            _validate_tree_depth(tree, issues, depth=0, max_depth=10)
+
+    elif entity_type == "scorecard":
+        if not entity.get("bins"):
+            issues.append("Scorecard has no bins")
+        for b in entity.get("bins", []):
+            if b.get("variable_id") and b["variable_id"] not in existing_variables:
+                issues.append(f"Referenced variable '{b['variable_id']}' not found in scorecard bin")
+            for r in b.get("ranges", []):
+                try:
+                    if float(r.get("min", 0)) > float(r.get("max", 0)):
+                        issues.append(f"Invalid range: min ({r.get('min')}) > max ({r.get('max')}) in bin '{b.get('variable_id')}'")
+                except (TypeError, ValueError):
+                    issues.append(f"Non-numeric range values in bin '{b.get('variable_id')}'")
+
+    elif entity_type == "policy":
+        if not entity.get("steps"):
+            issues.append("Policy has no steps")
+        valid_step_types = {"connector", "rule", "scorecard", "outcome", "action", "review_gate", "transform", "model"}
+        for step in entity.get("steps", []):
+            st = step.get("type", "")
+            if st not in valid_step_types:
+                issues.append(f"Invalid step type: '{st}'")
+
+    return {
+        "id": entity_id,
+        "valid": len(issues) == 0,
+        "issues": issues,
+    }
+
+
+def _validate_tree_depth(tree: Dict[str, Any], issues: List[str], depth: int, max_depth: int) -> None:
+    if depth > max_depth:
+        issues.append(f"Tree depth exceeds maximum ({max_depth})")
+        return
+    for child in tree.get("children", []):
+        _validate_tree_depth(child, issues, depth + 1, max_depth)
+    child_node = tree.get("child")
+    if isinstance(child_node, dict):
+        _validate_tree_depth(child_node, issues, depth + 1, max_depth)
+
+
+@app.post("/api/v1/import/validate")
+def validate_import(request: ImportRequest) -> Dict[str, Any]:
+    """Validate an import payload and return a detailed report of which entities are valid/invalid."""
+    data = request.model_dump()
+    connector_ids = {c.get("id") for c in data.get("connectors", []) if c.get("id")}
+    connector_ids.update(c["id"] for c in storage.list_connectors())
+    variable_ids = {v.get("id") for v in data.get("variables", []) if v.get("id")}
+    variable_ids.update(v["id"] for v in storage.list_variables())
+
+    report: Dict[str, Any] = {}
+    total, valid_count, invalid_count = 0, 0, 0
+
+    for entity_type in ("connectors", "variables", "rules", "scorecards", "policies"):
+        singular = entity_type.rstrip("s") if entity_type != "policies" else "policy"
+        entity_reports = []
+        for entity in data.get(entity_type, []):
+            r = _validate_import_entity(singular, entity, list(connector_ids), list(variable_ids))
+            entity_reports.append(r)
+            total += 1
+            if r["valid"]:
+                valid_count += 1
+            else:
+                invalid_count += 1
+        report[entity_type] = entity_reports
+
+    report["summary"] = {"total": total, "valid": valid_count, "invalid": invalid_count}
+    return report
+
+
 @app.post("/api/v1/import")
 def import_config(request: ImportRequest) -> Dict[str, Any]:
+    """Import configuration with validation report. All entities are imported; invalid ones are flagged."""
+    validation = validate_import(request)
     try:
         storage.replace_all(request.model_dump())
-        return {"imported": True, "counts": {key: len(value) if isinstance(value, list) else 1 for key, value in request.model_dump().items()}}
+        return {
+            "imported": True,
+            "counts": {key: len(value) if isinstance(value, list) else 1 for key, value in request.model_dump().items()},
+            "validation": validation,
+        }
     except Exception as error:
         record_error("imports", "replace_all", str(error), None, None, {"keys": sorted(request.model_dump().keys())})
         raise
@@ -2402,3 +2543,159 @@ def get_execution_detail(execution_id: str) -> Dict[str, Any]:
     detail["auditEvents"] = [event for event in storage.list_audit_events() if event.get("entity_id") == execution_id]
     detail["entitySchemas"] = ADMIN_ENTITY_SCHEMAS
     return detail
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODEL HOSTING ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ModelCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    model_type: str = "sklearn"
+    model_base64: str
+    input_schema: Optional[Dict[str, Any]] = None
+    output_schema: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+    status: str = "dev"
+
+
+class ModelPredictRequest(BaseModel):
+    input_data: Dict[str, Any]
+    features: Optional[List[str]] = None
+
+
+@app.get("/api/v1/models")
+def list_models() -> List[Dict[str, Any]]:
+    return storage.list_models()
+
+
+@app.get("/api/v1/models/{model_id}")
+def get_model(model_id: str) -> Dict[str, Any]:
+    model = storage.get_model(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found.")
+    return model
+
+
+@app.post("/api/v1/models")
+def create_model(request: ModelCreateRequest) -> Dict[str, Any]:
+    from .model_executor import base64_to_model, validate_model
+
+    model_blob = base64_to_model(request.model_base64)
+    validation = validate_model(model_blob)
+    if not validation["valid"]:
+        raise HTTPException(status_code=422, detail=f"Invalid model: {validation['error']}")
+
+    model_id = slugify(request.name)
+    existing_ids = {m["id"] for m in storage.list_models()}
+    if model_id in existing_ids:
+        model_id = f"{model_id}_{uuid.uuid4().hex[:6]}"
+
+    model_data = {
+        "id": model_id,
+        "name": request.name,
+        "description": request.description,
+        "model_type": validation.get("model_type", request.model_type),
+        "model_blob": model_blob,
+        "input_schema": request.input_schema,
+        "output_schema": request.output_schema,
+        "metrics": request.metrics,
+        "status": request.status,
+        "version": 1,
+        "has_predict": validation["has_predict"],
+        "has_predict_proba": validation["has_predict_proba"],
+    }
+    return storage.create_model(model_data)
+
+
+@app.post("/api/v1/models/{model_id}/predict")
+def predict_model(model_id: str, request: ModelPredictRequest) -> Dict[str, Any]:
+    from .model_executor import execute_model
+
+    model = storage.get_model(model_id, include_blob=True)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found.")
+    model_blob = model.get("model_blob")
+    if not model_blob:
+        raise HTTPException(status_code=422, detail="Model has no binary data.")
+
+    result = execute_model(model_blob, request.input_data, features=request.features)
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=result["error"])
+    return result
+
+
+@app.post("/api/v1/models/{model_id}/test")
+def test_model(model_id: str, request: ModelPredictRequest) -> Dict[str, Any]:
+    from .model_executor import execute_model
+
+    model = storage.get_model(model_id, include_blob=True)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found.")
+    model_blob = model.get("model_blob")
+    if not model_blob:
+        raise HTTPException(status_code=422, detail="Model has no binary data.")
+
+    result = execute_model(model_blob, request.input_data, features=request.features)
+    storage.update_model(model_id, {"last_test_result": {
+        "prediction": result.get("prediction"),
+        "latency_ms": result.get("latency_ms"),
+        "tested_at": now_iso(),
+        "error": result.get("error"),
+    }})
+    return {"model": storage.get_model(model_id), "result": result}
+
+
+@app.delete("/api/v1/models/{model_id}")
+def delete_model(model_id: str) -> Dict[str, Any]:
+    model = storage.get_model(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found.")
+    storage.delete_model(model_id)
+    return {"deleted": True, "id": model_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EXCEL FUNCTIONS INFO ENDPOINT
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/excel-functions")
+def list_excel_functions() -> Dict[str, Any]:
+    """List all available Excel functions in the sandbox."""
+    from .excel_functions import EXCEL_FUNCTIONS
+    categories: Dict[str, List[str]] = {
+        "math_trig": [], "statistical": [], "financial": [], "logical": [],
+        "text": [], "lookup_reference": [], "date_time": [], "information": [],
+        "engineering": [], "database": [],
+    }
+    for name, func in sorted(EXCEL_FUNCTIONS.items()):
+        doc = (func.__doc__ or "").strip()
+        module = getattr(func, "__module__", "")
+        # Categorize by function name patterns
+        if name in {"SUM", "SUMIF", "SUMIFS", "SUMPRODUCT", "SUMSQ", "ABS", "ACOS", "ACOSH", "ASIN", "ASINH", "ATAN", "ATAN2", "ATANH", "CEILING", "COMBIN", "COMBINA", "COS", "COSH", "COT", "CSC", "DEGREES", "EVEN", "EXP", "FACT", "FACTDOUBLE", "FLOOR", "FLOOR_MATH", "GCD", "INT", "LCM", "LN", "LOG", "LOG10", "MOD", "MROUND", "MULTINOMIAL", "ODD", "PI", "POWER", "PRODUCT", "QUOTIENT", "RADIANS", "RAND", "RANDBETWEEN", "ROUND", "ROUNDDOWN", "ROUNDUP", "SEC", "SIGN", "SIN", "SINH", "SQRT", "SQRTPI", "SUBTOTAL", "TAN", "TANH", "TRUNC"}:
+            categories["math_trig"].append(name)
+        elif name in {"AVERAGE", "AVERAGEA", "AVERAGEIF", "AVERAGEIFS", "COUNT", "COUNTA", "COUNTBLANK", "COUNTIF", "COUNTIFS", "LARGE", "MAX", "MAXA", "MEDIAN", "MIN", "MINA", "MODE", "PERCENTILE", "PERCENTRANK", "QUARTILE", "RANK", "SMALL", "STDEV", "STDEVA", "STDEVP", "STDEVPA", "VAR", "VARA", "VARP", "VARPA", "CORREL", "COVAR", "FORECAST", "INTERCEPT", "SLOPE", "RSQ"}:
+            categories["statistical"].append(name)
+        elif name in {"PMT", "IPMT", "PPMT", "FV", "PV", "NPV", "IRR", "MIRR", "NPER", "RATE", "XNPV", "XIRR", "SLN", "SYD", "DB", "DDB", "VDB", "EFFECT", "NOMINAL", "CUMIPMT", "CUMPRINC", "FVSCHEDULE", "ISPMT", "DISC", "INTRATE", "RECEIVED", "DOLLARDE", "DOLLARFR", "DURATION", "MDURATION"}:
+            categories["financial"].append(name)
+        elif name in {"AND", "OR", "NOT", "XOR", "IF", "IFS", "IFERROR", "IFNA", "SWITCH", "TRUE", "FALSE"}:
+            categories["logical"].append(name)
+        elif name in {"CHAR", "CLEAN", "CODE", "CONCATENATE", "CONCAT", "EXACT", "FIND", "FIXED", "LEFT", "LEN", "LOWER", "MID", "PROPER", "REPLACE", "REPT", "RIGHT", "SEARCH", "SUBSTITUTE", "T", "TEXT", "TEXTJOIN", "TRIM", "UPPER", "VALUE", "UNICODE", "UNICHAR", "NUMBERVALUE"}:
+            categories["text"].append(name)
+        elif name in {"VLOOKUP", "HLOOKUP", "INDEX", "MATCH", "XLOOKUP", "CHOOSE", "LOOKUP", "COLUMNS", "ROWS", "ROW", "TRANSPOSE", "SORT", "FILTER", "UNIQUE", "SEQUENCE"}:
+            categories["lookup_reference"].append(name)
+        elif name in {"DATE", "DATEVALUE", "DAY", "DAYS", "DAYS360", "EDATE", "EOMONTH", "HOUR", "ISOWEEKNUM", "MINUTE", "MONTH", "NETWORKDAYS", "NOW", "SECOND", "TIME", "TIMEVALUE", "TODAY", "WEEKDAY", "WEEKNUM", "WORKDAY", "YEAR", "YEARFRAC", "DATEDIF"}:
+            categories["date_time"].append(name)
+        elif name in {"ISBLANK", "ISERR", "ISERROR", "ISEVEN", "ISLOGICAL", "ISNA", "ISNONTEXT", "ISNUMBER", "ISODD", "ISTEXT", "N", "NA", "TYPE", "ERROR.TYPE"}:
+            categories["information"].append(name)
+        elif name.startswith(("BIN2", "DEC2", "HEX2", "OCT2")) or name == "CONVERT":
+            categories["engineering"].append(name)
+        elif name.startswith("D") and name in {"DAVERAGE", "DCOUNT", "DCOUNTA", "DGET", "DMAX", "DMIN", "DSUM"}:
+            categories["database"].append(name)
+
+    return {
+        "total_functions": len(EXCEL_FUNCTIONS),
+        "categories": categories,
+        "all_functions": sorted(EXCEL_FUNCTIONS.keys()),
+    }

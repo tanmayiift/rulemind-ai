@@ -37,6 +37,13 @@ SAFE_BUILTINS = {
     "zip": zip,
 }
 
+# Add all Excel-compatible functions (400+) to the sandbox
+try:
+    from .excel_functions import EXCEL_FUNCTIONS
+    SAFE_BUILTINS.update(EXCEL_FUNCTIONS)
+except ImportError:
+    pass  # Graceful fallback if excel_functions not available
+
 # Cache for validated+compiled code to avoid re-parsing on every call
 _validated_code_cache: Dict[str, bool] = {}
 _compiled_code_cache: Dict[str, Any] = {}

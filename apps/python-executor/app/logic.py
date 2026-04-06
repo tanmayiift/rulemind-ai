@@ -271,23 +271,84 @@ def evaluate_rule_definition(rule: Dict[str, Any], variable_values: Dict[str, An
     return evaluate_rule_nodes(rule.get("nodes", []), variable_values, variable_lookup)
 
 
+def _evaluate_formula(formula: str, context: Dict[str, Any]) -> Any:
+    """Evaluate an Excel-style formula string in a sandboxed context."""
+    try:
+        from .excel_functions import EXCEL_FUNCTIONS
+        safe_ns: Dict[str, Any] = dict(EXCEL_FUNCTIONS)
+        safe_ns.update(context)
+        safe_ns["__builtins__"] = {
+            "abs": abs, "min": min, "max": max, "round": round,
+            "int": int, "float": float, "str": str, "bool": bool,
+            "len": len, "sum": sum, "True": True, "False": False, "None": None,
+        }
+        safe_ns["__builtins__"].update(EXCEL_FUNCTIONS)
+        return eval(formula, {"__builtins__": safe_ns}, safe_ns)  # noqa: S307
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 def evaluate_scorecard(scorecard: Dict[str, Any], variable_values: Dict[str, Any], variable_lookup: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     variable_lookup = variable_lookup or {}
     base_score = int(scorecard.get("base_score", 300))
     max_score = int(scorecard.get("max_score", 900))
+    scoring_method = scorecard.get("scoring_method", "points")
     breakdown = []
     total_points = 0
+    total_woe_score = 0.0
+    total_iv = 0.0
+    woe_details: List[Dict[str, Any]] = []
 
     for factor in scorecard.get("bins", []):
         variable_id = factor.get("variable_id")
         value = variable_values.get(variable_id, 0)
+        weight = float(factor.get("weight", 1.0))
+        coefficient = float(factor.get("coefficient", 0.0))
+
+        # Find matching range
         active_range = None
+        active_woe_range = None
         for candidate in factor.get("ranges", []):
-            if float(candidate.get("min", 0)) <= float(value) <= float(candidate.get("max", 0)):
-                active_range = candidate
-                break
+            try:
+                if float(candidate.get("min", 0)) <= float(value) <= float(candidate.get("max", 0)):
+                    active_range = candidate
+                    break
+            except (TypeError, ValueError):
+                continue
+
+        # Check WoE ranges if present
+        for woe_range in factor.get("woe_values", []) or []:
+            try:
+                if float(woe_range.get("min", 0)) <= float(value) <= float(woe_range.get("max", 0)):
+                    active_woe_range = woe_range
+                    break
+            except (TypeError, ValueError):
+                continue
+
+        # Points-based scoring (original + weight support)
         points = int(active_range.get("points", 0)) if active_range else 0
-        total_points += points
+        weighted_points = int(points * weight)
+        total_points += weighted_points
+
+        # WoE scoring
+        woe_value = float(active_woe_range.get("woe", 0)) if active_woe_range else 0.0
+        iv_contribution = float(active_woe_range.get("iv", 0)) if active_woe_range else 0.0
+        total_iv += iv_contribution
+        total_woe_score += coefficient * woe_value
+
+        if active_woe_range:
+            woe_details.append({
+                "variable_id": variable_id,
+                "variable_name": variable_lookup.get(variable_id, {}).get("name", variable_id),
+                "value": value,
+                "woe": woe_value,
+                "iv": iv_contribution,
+                "coefficient": coefficient,
+                "contribution": coefficient * woe_value,
+                "event_rate": active_woe_range.get("event_rate"),
+                "non_event_rate": active_woe_range.get("non_event_rate"),
+            })
+
         breakdown.append(
             {
                 "variable_id": variable_id,
@@ -296,11 +357,73 @@ def evaluate_scorecard(scorecard: Dict[str, Any], variable_values: Dict[str, Any
                 "value": value,
                 "active_range": active_range,
                 "points": points,
+                "weighted_points": weighted_points,
+                "weight": weight,
+                "woe": woe_value,
+                "coefficient": coefficient,
             }
         )
 
-    score = max(0, min(max_score, base_score + total_points))
-    return {"score": score, "base_score": base_score, "max_score": max_score, "breakdown": breakdown}
+    # Compute score based on method
+    if scoring_method == "woe":
+        # WoE-based scoring: score = target_score + (PDO / ln(2)) × (intercept + Σ(coefficient × WoE))
+        import math as _math
+        intercept = float(scorecard.get("intercept", 0))
+        pdo = float(scorecard.get("pdo", 20))
+        target_score = float(scorecard.get("target_score", 600))
+        target_odds = float(scorecard.get("target_odds", 50))
+        factor_val = pdo / _math.log(2) if pdo > 0 else 1
+        offset = target_score - factor_val * _math.log(target_odds) if target_odds > 0 else target_score
+        raw_score = offset + factor_val * (intercept + total_woe_score)
+        score = max(0, min(max_score, round(raw_score)))
+    elif scoring_method == "formula":
+        # Custom formula evaluation
+        formula = scorecard.get("formula", f"base_score + total_points")
+        formula_context = {
+            "base_score": base_score, "max_score": max_score,
+            "total_points": total_points, "total_woe_score": total_woe_score,
+            "variables": variable_values,
+        }
+        for entry in breakdown:
+            formula_context[entry["variable_id"]] = entry["value"]
+        result = _evaluate_formula(formula, formula_context)
+        score = max(0, min(max_score, int(result) if isinstance(result, (int, float)) else base_score))
+    else:
+        # Default points-based scoring (backward compatible)
+        score = max(0, min(max_score, base_score + total_points))
+
+    # Compute metric formulas
+    metrics_results: Dict[str, Any] = {}
+    for metric in scorecard.get("metrics", []) or []:
+        metric_context = {
+            "score": score, "base_score": base_score, "max_score": max_score,
+            "total_points": total_points, "total_woe_score": total_woe_score,
+            "total_iv": total_iv, "variables": variable_values,
+        }
+        for entry in breakdown:
+            metric_context[entry["variable_id"]] = entry["value"]
+        metrics_results[metric.get("name", "unnamed")] = {
+            "value": _evaluate_formula(metric.get("formula", "0"), metric_context),
+            "unit": metric.get("unit", ""),
+            "category": metric.get("category", "financial"),
+        }
+
+    result = {
+        "score": score,
+        "base_score": base_score,
+        "max_score": max_score,
+        "scoring_method": scoring_method,
+        "breakdown": breakdown,
+    }
+
+    if woe_details:
+        result["woe_details"] = woe_details
+        result["information_value"] = total_iv
+
+    if metrics_results:
+        result["metrics"] = metrics_results
+
+    return result
 
 
 def execute_policy(policy: Dict[str, Any], payload_by_source: Dict[str, Any], variables_map: Dict[str, Dict[str, Any]], rules_map: Dict[str, Dict[str, Any]], scorecards_map: Dict[str, Dict[str, Any]], variable_values: Dict[str, Any]) -> Dict[str, Any]:
@@ -378,6 +501,76 @@ def export_python_bundle(config: Dict[str, Any]) -> str:
     )
 
 
+def export_csv_bundle(config: Dict[str, Any]) -> str:
+    """Export configuration as CSV with sections per entity type."""
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # --- Connectors ---
+    writer.writerow(["## CONNECTORS"])
+    writer.writerow(["id", "name", "icon", "color", "description", "is_active", "schema_paths", "sample_payload", "config"])
+    for c in config.get("connectors", []):
+        writer.writerow([
+            c.get("id", ""), c.get("name", ""), c.get("icon", ""), c.get("color", ""),
+            c.get("description", ""), c.get("is_active", True),
+            json.dumps(c.get("schema_paths", [])), json.dumps(c.get("sample_payload", {})),
+            json.dumps(c.get("config", {})),
+        ])
+    writer.writerow([])
+
+    # --- Variables ---
+    writer.writerow(["## VARIABLES"])
+    writer.writerow(["id", "name", "category", "source_id", "code", "description", "status", "version"])
+    for v in config.get("variables", []):
+        writer.writerow([
+            v.get("id", ""), v.get("name", ""), v.get("category", ""),
+            v.get("source_id", ""), v.get("code", ""), v.get("description", ""),
+            v.get("status", "dev"), v.get("version", 1),
+        ])
+    writer.writerow([])
+
+    # --- Rules ---
+    writer.writerow(["## RULES"])
+    writer.writerow(["id", "name", "rule_format", "nodes", "tree", "expression", "status", "version"])
+    for r in config.get("rules", []):
+        writer.writerow([
+            r.get("id", ""), r.get("name", ""), r.get("rule_format", "v1"),
+            json.dumps(r.get("nodes", [])), json.dumps(r.get("tree", {})),
+            r.get("expression", ""), r.get("status", "dev"), r.get("version", 1),
+        ])
+    writer.writerow([])
+
+    # --- Scorecards ---
+    writer.writerow(["## SCORECARDS"])
+    writer.writerow(["id", "name", "base_score", "max_score", "scoring_method", "intercept", "pdo",
+                      "target_score", "target_odds", "bins", "metrics", "status", "version"])
+    for s in config.get("scorecards", []):
+        writer.writerow([
+            s.get("id", ""), s.get("name", ""), s.get("base_score", 300),
+            s.get("max_score", 900), s.get("scoring_method", "points"),
+            s.get("intercept", 0), s.get("pdo", 20),
+            s.get("target_score", 600), s.get("target_odds", 50),
+            json.dumps(s.get("bins", [])), json.dumps(s.get("metrics", [])),
+            s.get("status", "dev"), s.get("version", 1),
+        ])
+    writer.writerow([])
+
+    # --- Policies ---
+    writer.writerow(["## POLICIES"])
+    writer.writerow(["id", "name", "trigger", "steps", "defaultOutcome", "status", "version"])
+    for p in config.get("policies", []):
+        writer.writerow([
+            p.get("id", ""), p.get("name", ""), json.dumps(p.get("trigger", {})),
+            json.dumps(p.get("steps", [])), p.get("defaultOutcome", "review"),
+            p.get("status", "dev"), p.get("version", 1),
+        ])
+
+    return output.getvalue()
+
+
 def export_bundle(config: Dict[str, Any], format_name: str) -> str:
     format_name = format_name.lower()
     if format_name == "json":
@@ -386,6 +579,8 @@ def export_bundle(config: Dict[str, Any], format_name: str) -> str:
         return yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
     if format_name == "python":
         return export_python_bundle(config)
+    if format_name == "csv":
+        return export_csv_bundle(config)
     raise ValueError("Unsupported export format.")
 
 

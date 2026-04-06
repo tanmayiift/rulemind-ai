@@ -328,6 +328,8 @@ class PolicyExecutor:
                     result = await self._execute_transform(step, ctx)
                 elif step_type == "action":
                     result = await self._execute_action(step, ctx)
+                elif step_type == "model":
+                    result = self._execute_model(step, ctx)
                 elif step_type == "review_gate":
                     result = await self._execute_review_gate(step, ctx)
                     if ctx.status == "paused":
@@ -541,6 +543,36 @@ class PolicyExecutor:
         if on_failure == "review_gate":
             ctx.outcome = _merge_outcome(ctx.outcome, "review")
         return failure_result
+
+    def _execute_model(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
+        from .model_executor import execute_model
+        ref_id = step.get("ref_id") or step.get("ref")
+        model = self.storage.get_model(ref_id, include_blob=True)
+        if not model:
+            raise ValueError("Unknown model: {0}".format(ref_id))
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        input_mapping = config.get("inputMapping", {})
+        features = config.get("features")
+        output_variable = config.get("outputVariable", f"model_{ref_id}")
+
+        # Build input data from mapping or use variables directly
+        if input_mapping:
+            from .jsonpath import resolve_jsonpath
+            view = self._context_view(ctx)
+            input_data = {}
+            for target, source_expr in input_mapping.items():
+                if isinstance(source_expr, str) and source_expr.startswith("$."):
+                    input_data[target] = resolve_jsonpath(source_expr, view)
+                else:
+                    input_data[target] = ctx.variables.get(str(source_expr), source_expr)
+        else:
+            input_data = copy.deepcopy(ctx.variables)
+
+        result = execute_model(model["model_blob"], input_data, features=features)
+        # Store prediction in variables for downstream steps
+        if result.get("prediction") is not None:
+            ctx.variables[output_variable] = result["prediction"]
+        return result
 
     async def _execute_review_gate(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
         config = step.get("config", {})
