@@ -24,6 +24,9 @@ local.properties
 *.lock
 !pnpm-lock.yaml
 
+# Test artifacts
+test-results/
+
 # IDE
 *.iml
 .idea/

@@ -2,7 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:rulemind/rulemind.dart';
 import 'package:rulemind_example/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -12,6 +14,13 @@ const String _adminPassword = String.fromEnvironment('RM_E2E_ADMIN_PASSWORD', de
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() async {
+    // Reset SDK state and Hive between tests to avoid leaked frames/boxes.
+    await RuleMind.resetForTest();
+    final dir = Directory.systemTemp.createTempSync('rulemind_test_');
+    Hive.init(dir.path);
+  });
 
   testWidgets('demo scenario supports review resume and audit flow', (WidgetTester tester) async {
     await _resetState();

@@ -40,14 +40,18 @@ class SyncService {
   }
 
   static Future<void> registerPeriodicSync({int intervalMinutes = 15}) async {
-    await Workmanager().initialize(ruleMindWorkmanagerDispatcher);
-    await Workmanager().registerPeriodicTask(
-      "rulemind.bundle.sync",
-      "rulemind.bundle.sync",
-      frequency: Duration(minutes: intervalMinutes),
-      constraints: Constraints(
-        networkType: NetworkType.connected,
-      ),
-    );
+    try {
+      await Workmanager().initialize(ruleMindWorkmanagerDispatcher);
+      await Workmanager().registerPeriodicTask(
+        "rulemind.bundle.sync",
+        "rulemind.bundle.sync",
+        frequency: Duration(minutes: intervalMinutes),
+        constraints: Constraints(
+          networkType: NetworkType.connected,
+        ),
+      );
+    } catch (_) {
+      // WorkManager may not be available in test or desktop environments.
+    }
   }
 }

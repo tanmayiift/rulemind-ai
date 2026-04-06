@@ -1,5 +1,7 @@
 import "dart:convert";
 
+import "package:flutter/foundation.dart";
+import "package:hive/hive.dart";
 import "package:http/http.dart" as http;
 
 import "src/bundle_manager.dart";
@@ -230,6 +232,19 @@ class RuleMind {
 
   static Future<void> clearCache() async {
     await _decisionCache?.clearCache();
+  }
+
+  /// Reset all static state. Intended for integration tests.
+  @visibleForTesting
+  static Future<void> resetForTest() async {
+    try { await Hive.close(); } catch (_) {}
+    _config = null;
+    _bundleManager = null;
+    _eventLogger = null;
+    _engine = RuleMindEngine();
+    _decisionCache = null;
+    _executionStore = null;
+    _httpClient = http.Client();
   }
 
   static RuleMindConfig _requireConfig() {

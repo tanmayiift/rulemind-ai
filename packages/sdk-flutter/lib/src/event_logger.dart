@@ -16,11 +16,16 @@ class EventLogger {
   Box<dynamic>? _box;
 
   Future<void> initialize() async {
-    _box ??= await Hive.openBox<dynamic>("rulemind.events");
+    try {
+      _box ??= await Hive.openBox<dynamic>("rulemind.events");
+    } catch (_) {
+      _box = null;
+    }
   }
 
   Future<void> queue(String type, Map<String, dynamic> data) async {
     await initialize();
+    if (_box == null) return;
     final events = ((await _box!.get("pending", defaultValue: <dynamic>[])) as List<dynamic>)
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
@@ -34,6 +39,7 @@ class EventLogger {
 
   Future<void> flush() async {
     await initialize();
+    if (_box == null) return;
     final events = ((await _box!.get("pending", defaultValue: <dynamic>[])) as List<dynamic>)
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
