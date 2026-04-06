@@ -1,8 +1,8 @@
-# RuleMind V3
+RuleMind
 
 RuleMind is an open-source, source-agnostic decisioning engine. It accepts JSON payloads from pluggable connectors such as bureau, bank statements, GST, device, KYC, or custom APIs, then lets teams build Python variables, click-built rules, scorecards, and policies that promote through `dev -> uat -> prod`.
 
-## Product Surface
+Product Surface
 
 - Dashboard
 - Connectors
