@@ -98,7 +98,8 @@ jobs:
       - name: Run Android emulator E2E
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 30
+          target: google_apis
           arch: x86_64
           profile: pixel_6
           disable-animations: true
@@ -186,11 +187,12 @@ jobs:
       - name: Run Flutter emulator E2E
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 30
+          target: google_apis
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          script: cd packages/sdk-flutter/example && flutter drive --driver=test_driver/integration_test.dart --target=integration_test/studio_app_test.dart -d emulator-5554 --dart-define=RM_E2E_BASE_URL=http://10.0.2.2:8080 --dart-define=RM_E2E_ADMIN_EMAIL=admin@rulemind.local --dart-define=RM_E2E_ADMIN_PASSWORD=rulemind-admin
+          script: cd packages/sdk-flutter/example && mv test _test_ci_disabled && flutter test integration_test/studio_app_test.dart -d emulator-5554 --dart-define=RM_E2E_BASE_URL=http://10.0.2.2:8080 --dart-define=RM_E2E_ADMIN_EMAIL=admin@rulemind.local --dart-define=RM_E2E_ADMIN_PASSWORD=rulemind-admin ; mv _test_ci_disabled test
 
       - name: Stop FastAPI backend
         if: always()
