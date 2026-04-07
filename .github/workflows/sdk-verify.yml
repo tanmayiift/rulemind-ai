@@ -20,7 +20,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 9.15.0
 
       - uses: actions/setup-node@v4
         with:
@@ -103,8 +103,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            cd packages/sdk-android
-            ./gradlew --no-daemon --stacktrace :sample-app:connectedDebugAndroidTest \
+            cd packages/sdk-android && ./gradlew --no-daemon --stacktrace :sample-app:connectedDebugAndroidTest \
               -Pandroid.testInstrumentationRunnerArguments.backendUrl=http://10.0.2.2:8080 \
               -Pandroid.testInstrumentationRunnerArguments.adminEmail=admin@rulemind.local \
               -Pandroid.testInstrumentationRunnerArguments.adminPassword=rulemind-admin
@@ -196,8 +195,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            cd packages/sdk-flutter/example
-            flutter test integration_test -d emulator-5554 \
+            cd packages/sdk-flutter/example && flutter test integration_test/studio_app_test.dart -d emulator-5554 \
               --dart-define=RM_E2E_BASE_URL=http://10.0.2.2:8080 \
               --dart-define=RM_E2E_ADMIN_EMAIL=admin@rulemind.local \
               --dart-define=RM_E2E_ADMIN_PASSWORD=rulemind-admin
