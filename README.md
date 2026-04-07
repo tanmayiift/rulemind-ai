@@ -12,24 +12,31 @@ RuleMind accepts JSON payloads from pluggable connectors (bureau, bank, GST, dev
 - **Variables** — Python functions that extract and compute values from connector payloads
 - **Rules** — visual rule builder with 12 operators, AND/OR/NOT logic, nested groups
 - **Scorecards** — point-based risk scoring with weighted attributes and score bands
-- **Policies** — multi-step workflows chaining variables, rules, scorecards, actions, and human review gates
+- **WoE Scoring** — Weight of Evidence scoring with logistic regression coefficients, Information Value, and configurable PDO/target score
+- **Weighted Bins** — per-bin weight multipliers, WoE ranges, and coefficient-based scoring
+- **Metric Computation** — configurable output metrics (discount %, loan amount, interest rate, custom formulas)
+- **Excel Functions** — 230+ Excel-compatible functions (Math, Statistical, Financial, Logical, Text, Lookup, Date, Info, Engineering, Database) available in variable sandbox and formulas
+- **Policies** — multi-step workflows chaining variables, rules, scorecards, actions, ML models, and human review gates
+- **ML Model Hosting** — upload, store, and execute Python .pkl models as policy steps with prediction and probability outputs
+- **CSV Export** — export full configuration as JSON or CSV with section-based layout
+- **Import Validation** — import with per-entity validation report highlighting which rules, variables, scorecards are valid vs invalid
 - **Environment Promotion** — dev > uat > prod with test-gating before promotion
 - **SDKs** — Android (Kotlin), Flutter (Dart), JavaScript, Python — with encrypted edge bundles
 - **Audit & Explainability** — full decision traces, rule-level explainability, audit summaries
 - **Multi-Tenant** — API key isolation, per-tenant rate limiting, role-based access
-- **Export/Import** — full configuration export as JSON, re-import across environments
 
 ## Architecture
 
 ```
 apps/
-  web/                  Next.js 14 dashboard
-  python-executor/      FastAPI backend (canonical runtime)
+  web/                  Next.js 14 dashboard (visual rule builder, scorecard editor, policy designer)
+  python-executor/      FastAPI backend (canonical runtime, sandbox, ML model hosting)
   api/                  Legacy Fastify backend (retained, not active)
   worker/               Background job worker
 
 packages/
-  engine/               Core rule evaluation engine (TypeScript)
+  rule-engine/          Core rule evaluation engine (TypeScript) + Excel functions + WoE scoring
+  shared/               Shared TypeScript types (WoE, metrics, models, import validation)
   sdk-js/               JavaScript SDK
   sdk-python/           Python SDK
   sdk-android/          Android SDK (Kotlin) + sample app
@@ -37,8 +44,8 @@ packages/
   schemas/              Shared JSON schemas
   widget/               Embeddable widget
 
-e2e/                    Playwright end-to-end tests
-test/                   TypeScript unit tests
+e2e/                    Playwright end-to-end tests (43 edge-case + 5 workflow tests)
+test/                   TypeScript unit tests (34 tests: engine, SDK, auth, parity)
 ```
 
 ## Quick Start
@@ -158,15 +165,69 @@ Used by mobile and edge SDKs:
 | `/sdk/v1/events` | POST | Batch upload SDK analytics events |
 | `/sdk/v1/experience-manifest` | GET | Get admin/studio metadata |
 
-### Authentication
+| `/api/v1/excel-functions` | GET | List all 230+ available Excel functions |
+| `/api/v1/models` | GET, POST, DELETE | Manage hosted .pkl ML models |
+| `/api/v1/models/{id}/predict` | POST | Run prediction on a hosted model |
+| `/api/v1/models/{id}/test` | POST | Test model with sample data |
+| `/api/v1/import/validate` | POST | Validate import payload without importing |
 
-API requests require an `X-API-Key` header (when `AUTH_MODE=apikey`):
+### Authentication & Credentials
+
+RuleMind supports three authentication modes configured via `AUTH_MODE`:
+
+| Mode | Header | Description |
+| --- | --- | --- |
+| `none` | — | No authentication (development only) |
+| `apikey` | `X-API-Key: rm_live_...` | API key authentication (default) |
+| `jwt` | `Authorization: Bearer <token>` | JWT-based authentication |
+
+**API Key Generation:**
+
+API keys are generated via the admin API. Each key follows the format `rm_live_` + 32 random alphanumeric characters.
 
 ```bash
-curl -H "X-API-Key: your-api-key" http://localhost:8080/api/v1/connectors
+# Admin login (returns JWT session cookie)
+curl -X POST http://localhost:8080/api/admin/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@rulemind.local", "password": "your-admin-password"}'
+
+# Create a new tenant
+curl -X POST http://localhost:8080/api/admin/v1/tenants \
+  -H "Content-Type: application/json" \
+  -b "rulemind_admin_session=<jwt>" \
+  -d '{"name": "My Tenant", "plan": "standard"}'
+
+# Generate API key for tenant (returns plaintext key — save it, shown only once)
+curl -X POST http://localhost:8080/api/admin/v1/tenants/{tenant_id}/keys \
+  -b "rulemind_admin_session=<jwt>"
+
+# List tenant API keys (masked)
+curl http://localhost:8080/api/admin/v1/tenants/{tenant_id}/keys \
+  -b "rulemind_admin_session=<jwt>"
+
+# Revoke an API key
+curl -X DELETE http://localhost:8080/api/admin/v1/tenants/{tenant_id}/keys/{kid} \
+  -b "rulemind_admin_session=<jwt>"
 ```
 
-Admin console uses JWT-based session auth via `/api/admin/v1/auth/login`.
+**Key Storage & Security:**
+- Raw API keys are **never stored** — only a SHA-256 lookup hash and bcrypt verification hash
+- Keys are masked in API responses (e.g., `rm_live_****xyz`)
+- Each key has a unique `kid` (key ID) for revocation
+- Rate limiting: 1,000 RPM (standard), 5,000 RPM (enterprise)
+- Key rotation: revoke old key, generate new one — no downtime
+
+**For local development**, a default API key is auto-provisioned:
+```bash
+RULEMIND_DEV_API_KEY=rm_live_devlocaltenantkey000000000000
+```
+
+**Using API keys:**
+```bash
+curl -H "X-API-Key: rm_live_..." http://localhost:8080/api/v1/connectors
+```
+
+**Admin Console** uses JWT session cookies (HttpOnly, 12-hour expiry) via `/api/admin/v1/auth/login`.
 
 ## SDKs
 
@@ -347,23 +408,221 @@ Policies are ordered step sequences:
 
 Policies support pause/resume: when a review gate is hit, the execution pauses and can be resumed later with an approve/reject decision.
 
+## Excel Functions
+
+The platform includes 230+ Excel-compatible functions available in:
+- **Variable sandbox** — use `SUM()`, `IF()`, `PMT()`, etc. directly in Python variable code
+- **Scorecard metric formulas** — Excel-style expressions for computed metrics
+- **TypeScript engine** — cross-platform parity for edge/SDK evaluation
+
+### Function Categories
+
+| Category | Count | Examples |
+| --- | --- | --- |
+| Math & Trig | 50+ | `SUM`, `ROUND`, `ABS`, `SQRT`, `MOD`, `POWER`, `CEILING`, `FLOOR` |
+| Statistical | 35+ | `AVERAGE`, `MEDIAN`, `STDEV`, `PERCENTILE`, `CORREL`, `FORECAST`, `RANK` |
+| Financial | 30+ | `PMT`, `FV`, `PV`, `NPV`, `IRR`, `XIRR`, `RATE`, `NPER`, `IPMT`, `PPMT` |
+| Logical | 10+ | `IF`, `AND`, `OR`, `NOT`, `IFS`, `SWITCH`, `IFERROR`, `XOR` |
+| Text | 30+ | `CONCATENATE`, `LEFT`, `RIGHT`, `MID`, `TRIM`, `UPPER`, `LOWER`, `FIND` |
+| Lookup | 15+ | `VLOOKUP`, `HLOOKUP`, `INDEX`, `MATCH`, `CHOOSE`, `XLOOKUP` |
+| Date & Time | 25+ | `DATE`, `TODAY`, `NOW`, `YEAR`, `MONTH`, `DAY`, `DATEDIF`, `NETWORKDAYS` |
+| Information | 15+ | `ISBLANK`, `ISNUMBER`, `ISTEXT`, `ISERROR`, `TYPE` |
+| Engineering | 13 | `BIN2DEC`, `DEC2HEX`, `HEX2OCT`, `CONVERT` |
+| Database | 7 | `DAVERAGE`, `DCOUNT`, `DSUM`, `DMAX`, `DMIN` |
+
+### Usage in Variables
+
+```python
+@variable(source="bureau")
+def risk_adjusted_score(payload, variables, apis):
+    score = payload.get("score", 0)
+    return IF(score >= 700, ROUND(score * 1.1, 0), MAX(score - 50, 0))
+```
+
+### List Available Functions
+
+```bash
+curl http://localhost:8080/api/v1/excel-functions
+# Returns: {total_functions: 232, categories: {...}, all_functions: [...]}
+```
+
+## Scorecard Scoring Methods
+
+Scorecards support three scoring methods:
+
+### 1. Points-Based (Default)
+
+Traditional additive scoring with optional weight multipliers:
+
+```json
+{
+  "scoring_method": "points",
+  "bins": [
+    {"variable_id": "bureau_score", "ranges": [{"min": 700, "max": 900, "points": 50}], "weight": 2.0},
+    {"variable_id": "income", "ranges": [{"min": 50000, "max": 999999, "points": 30}], "weight": 1.0}
+  ]
+}
+```
+
+### 2. Weight of Evidence (WoE)
+
+Logistic regression-based scoring with WoE values per bin:
+
+```json
+{
+  "scoring_method": "woe",
+  "intercept": -1.5,
+  "pdo": 20,
+  "target_score": 600,
+  "target_odds": 50,
+  "bins": [{
+    "variable_id": "bureau_score",
+    "coefficient": 1.2,
+    "woe_values": [
+      {"min": 0, "max": 500, "woe": -0.8, "iv": 0.10, "event_rate": 0.30, "non_event_rate": 0.10},
+      {"min": 500, "max": 700, "woe": 0.2, "iv": 0.05, "event_rate": 0.40, "non_event_rate": 0.50},
+      {"min": 700, "max": 900, "woe": 0.9, "iv": 0.15, "event_rate": 0.30, "non_event_rate": 0.40}
+    ]
+  }]
+}
+```
+
+**WoE Formula:** `score = target_score + (PDO / ln(2)) x (intercept + SUM(coefficient x WoE))`
+
+### 3. Formula-Based
+
+Custom scoring using Excel-style formulas:
+
+```json
+{
+  "scoring_method": "formula",
+  "formula": "factor_total * 2 + IF(factors.bureau_score > 0, 100, 0)"
+}
+```
+
+### Metric Computation
+
+Attach computed metrics to any scorecard:
+
+```json
+{
+  "metrics": [
+    {"name": "discount_pct", "formula": "IF(score >= 700, 0.15, IF(score >= 600, 0.10, 0.05))", "unit": "%", "category": "financial"},
+    {"name": "loan_amount", "formula": "ROUND(score * 500, -3)", "unit": "INR", "category": "financial"},
+    {"name": "interest_rate", "formula": "MAX(8, 18 - score / 100)", "unit": "%", "category": "financial"},
+    {"name": "risk_tier", "formula": "IF(score >= 750, 1, IF(score >= 600, 2, 3))", "category": "non_financial"}
+  ]
+}
+```
+
+## ML Model Hosting
+
+Upload and execute Python `.pkl` models as part of policy pipelines:
+
+### Upload a Model
+
+```bash
+# Base64-encode your pickle file and POST it
+curl -X POST http://localhost:8080/api/v1/models \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: rm_live_..." \
+  -d '{
+    "name": "Credit Risk Model v1",
+    "model_type": "sklearn",
+    "model_blob_base64": "<base64-encoded-pickle>",
+    "input_schema": {"features": ["bureau_score", "income", "age"]},
+    "description": "Logistic regression credit risk model"
+  }'
+```
+
+### Run Predictions
+
+```bash
+curl -X POST http://localhost:8080/api/v1/models/{model_id}/predict \
+  -H "Content-Type: application/json" \
+  -d '{"input_data": {"bureau_score": 750, "income": 60000, "age": 35}}'
+# Returns: {prediction: 0, probabilities: [0.85, 0.15], model_type: "LogisticRegression"}
+```
+
+### Use in Policy Steps
+
+```json
+{
+  "type": "model",
+  "id": "credit_model_step",
+  "ref_id": "credit_risk_model_v1",
+  "config": {
+    "inputMapping": {
+      "bureau_score": "$.variables.bureau_score",
+      "income": "$.variables.salary"
+    },
+    "outputVariable": "model_prediction"
+  }
+}
+```
+
+**Security:** Models are deserialized only in the isolated sandbox process pool (never in the main process). Max size: 50MB.
+
+## Export & Import
+
+### Export Formats
+
+```bash
+# JSON export (default)
+curl http://localhost:8080/api/v1/export?format=json
+
+# CSV export (section-based layout)
+curl http://localhost:8080/api/v1/export?format=csv
+```
+
+CSV format uses section headers (`## CONNECTORS`, `## VARIABLES`, `## RULES`, `## SCORECARDS`, `## POLICIES`) with pipe-delimited fields.
+
+### Import with Validation
+
+```bash
+# Validate before importing (dry run)
+curl -X POST http://localhost:8080/api/v1/import/validate \
+  -H "Content-Type: application/json" \
+  -d @config.json
+
+# Returns per-entity validation report:
+# {
+#   "rules": [{"id": "r1", "valid": true, "issues": []}, {"id": "r2", "valid": false, "issues": ["Invalid operator: LIKE"]}],
+#   "variables": [...],
+#   "scorecards": [...],
+#   "policies": [...],
+#   "summary": {"total": 50, "valid": 48, "invalid": 2}
+# }
+
+# Import (includes validation report in response)
+curl -X POST http://localhost:8080/api/v1/import \
+  -H "Content-Type: application/json" \
+  -d @config.json
+```
+
+**Validation checks:**
+- Rules: operator validity, variable references, outcome nodes present, tree depth limits
+- Variables: Python syntax (AST parse), source connector references
+- Scorecards: bin variable references, range overlap detection
+- Policies: step type validity, rule/scorecard reference existence
+
 ## Testing
 
 ```bash
-# TypeScript unit tests
+# TypeScript unit tests (34 tests across 8 files)
 pnpm test
 
-# Python backend tests
+# Python backend tests (224 tests)
 cd apps/python-executor && python3 -m unittest discover -s tests -p 'test_*.py'
+
+# Playwright E2E tests — full server stack (43 edge-case + 5 workflow tests)
+pnpm test:e2e
 
 # Type checking
 pnpm typecheck
 
 # Linting
 pnpm lint
-
-# End-to-end browser tests (starts servers automatically)
-pnpm test:e2e
 
 # Android instrumented tests
 cd packages/sdk-android && ./gradlew :sample-app:connectedDebugAndroidTest
@@ -375,15 +634,21 @@ cd packages/sdk-android && ./gradlew :sample-app:connectedDebugAndroidTest
 | --- | --- |
 | `apps/web/` | Next.js 14 dashboard with visual rule builder |
 | `apps/python-executor/` | FastAPI backend — all business logic, API, sandbox |
-| `apps/python-executor/app/seed_data.py` | V3 sample data seeded on first startup |
-| `packages/engine/` | Core rule evaluation engine (TypeScript) |
+| `apps/python-executor/app/excel_functions.py` | 230+ Excel-compatible functions (Python) |
+| `apps/python-executor/app/model_executor.py` | ML model hosting — pickle deserialization and prediction |
+| `apps/python-executor/app/sandbox.py` | Isolated variable execution with Excel function builtins |
+| `apps/python-executor/app/logic.py` | Scorecard evaluation (points/WoE/formula), CSV export, metric computation |
+| `apps/python-executor/app/auth.py` | API key generation, JWT creation, HMAC signing, bcrypt hashing |
+| `apps/python-executor/app/middleware.py` | Tenant context, API key validation, rate limiting |
+| `packages/rule-engine/` | Core rule evaluation engine (TypeScript) + Excel functions + WoE scoring |
+| `packages/shared/` | Shared types — WoE, metrics, models, import validation |
 | `packages/sdk-js/` | JavaScript/TypeScript SDK |
 | `packages/sdk-python/` | Python SDK |
 | `packages/sdk-android/` | Android SDK + sample app |
 | `packages/sdk-flutter/` | Flutter SDK + sample app |
 | `packages/schemas/` | Shared JSON schemas for rule definitions |
-| `e2e/` | Playwright E2E test specs |
-| `test/` | TypeScript unit test suites |
+| `e2e/` | Playwright E2E tests (48 tests across 2 spec files) |
+| `test/` | TypeScript unit tests (34 tests across 8 files) |
 | `docker-compose.yml` | Production deployment with Postgres + Redis |
 | `.env.example` | Environment variable template |
 
