@@ -90,6 +90,12 @@ jobs:
         working-directory: packages/sdk-android
         run: ./gradlew --no-daemon --stacktrace :rulemind-core:test :sample-app:test :sample-app:assembleDebug :sample-app:assembleAndroidTest
 
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Start FastAPI backend
         run: |
           bash qa/mobile_e2e/start_fastapi.sh
@@ -178,6 +184,12 @@ jobs:
       - name: Install example app dependencies
         working-directory: packages/sdk-flutter/example
         run: flutter pub get
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
       - name: Start FastAPI backend
         run: |
