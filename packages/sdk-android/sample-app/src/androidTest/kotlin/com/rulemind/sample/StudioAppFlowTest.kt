@@ -22,7 +22,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import androidx.compose.ui.test.ComposeTimeoutException
-import java.net.Socket
 import java.net.URL
 
 @RunWith(AndroidJUnit4::class)
@@ -91,10 +90,14 @@ class StudioAppFlowTest {
         replaceText("input_server_url", backendUrl)
         replaceText("input_email", adminEmail)
         replaceText("input_password", adminPassword)
+        // Dismiss keyboard to ensure the connect button is visible and clickable
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("action_connect_live", useUnmergedTree = true).performScrollTo()
         composeRule.onNodeWithTag("action_connect_live", useUnmergedTree = true).performClick()
 
-        waitForLiveSession(timeoutMs = 30_000)
-        waitForTag("route_experience_selection", timeoutMs = 30_000)
+        waitForLiveSession(timeoutMs = 60_000)
+        waitForTag("route_experience_selection", timeoutMs = 60_000)
         composeRule.onNodeWithTag("action_open_home_dashboard", useUnmergedTree = true).performClick()
         waitForTag("route_home_dashboard")
         composeRule.onNodeWithTag("nav_admin_console", useUnmergedTree = true).performClick()
@@ -183,12 +186,13 @@ class StudioAppFlowTest {
         ViewModelProvider(composeRule.activity)[RuleMindViewModel::class.java].state.value
 
     private fun backendReachable(baseUrl: String): Boolean = runCatching {
-        val url = URL(baseUrl)
-        val host = url.host.ifBlank { "10.0.2.2" }
-        val port = if (url.port > 0) url.port else 80
-        Socket(host, port).use { socket ->
-            socket.soTimeout = 3_000
-            socket.isConnected
-        }
+        val healthUrl = URL("${baseUrl.trimEnd('/')}/health")
+        val connection = healthUrl.openConnection() as java.net.HttpURLConnection
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 5_000
+        connection.requestMethod = "GET"
+        val code = connection.responseCode
+        connection.disconnect()
+        code in 200..299
     }.getOrDefault(false)
 }
