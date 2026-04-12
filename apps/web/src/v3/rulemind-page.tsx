@@ -2769,6 +2769,8 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
   const [steps, setSteps] = React.useState<PolicyStepRecord[]>([]);
   const [execution, setExecution] = React.useState<PolicyExecuteResponse | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [meceResult, setMeceResult] = React.useState<{ isMutuallyExclusive: boolean; isCollectivelyExhaustive: boolean; diagnostics: Array<{ type: string; severity: string; fields: string[]; description: string; involvedRules: string[]; involvedNodeIds?: string[] }>; analyzedFields: string[]; ruleCount: number; hasOpaqueConstraints: boolean; warnings: string[] } | null>(null);
+  const [meceOverlapRuleIds, setMeceOverlapRuleIds] = React.useState<Set<string>>(new Set());
 
   React.useEffect(() => {
     const current = selectedId ? props.data.policies.find((policy) => policy.id === selectedId) : null;
@@ -2836,6 +2838,53 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
     }
   }, [apiBaseUrl, apiKey, props, selectedId]);
 
+  const analyzeMece = React.useCallback(async () => {
+    if (!selectedId) {
+      props.onNotify("Save the policy first, then analyze MECE.");
+      return;
+    }
+    setBusy(true);
+    setMeceResult(null);
+    setMeceOverlapRuleIds(new Set());
+    try {
+      // Gather rules referenced by this policy's steps
+      const ruleSteps = steps.filter((step) => step.type === "rule");
+      const ruleInputs = ruleSteps.map((step) => {
+        const refId = step.ref_id ?? step.ref ?? "";
+        const rule = props.data.rules.find((r) => r.id === refId);
+        return rule ? { id: rule.id, name: rule.name, definition: rule.definition } : null;
+      }).filter(Boolean);
+
+      if (ruleInputs.length < 2) {
+        props.onNotify("Need at least 2 rule steps to analyze MECE.");
+        setBusy(false);
+        return;
+      }
+
+      const result = await apiJson<typeof meceResult>(apiBaseUrl, "/api/v1/policies/" + selectedId + "/analyze-mece", { method: "POST", body: "{}" }, apiKey);
+      setMeceResult(result);
+      // Collect rule IDs that have overlaps for highlighting
+      const overlapIds = new Set<string>();
+      if (result?.diagnostics) {
+        for (const d of result.diagnostics) {
+          if (d.type === "overlap") {
+            for (const rId of d.involvedRules) overlapIds.add(rId);
+          }
+        }
+      }
+      setMeceOverlapRuleIds(overlapIds);
+      if (result?.isMutuallyExclusive && result?.isCollectivelyExhaustive) {
+        props.onNotify("MECE check passed — rules are mutually exclusive and collectively exhaustive.");
+      } else {
+        props.onNotify("MECE issues found — see diagnostics below.");
+      }
+    } catch (error) {
+      props.onNotify(error instanceof Error ? error.message : "MECE analysis failed.");
+    } finally {
+      setBusy(false);
+    }
+  }, [apiBaseUrl, apiKey, props, selectedId, steps]);
+
   return (
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
       <SectionHeader
@@ -2843,6 +2892,9 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
         subtitle={PAGE_META.policies.subtitle}
         actions={
           <div style={{ display: "flex", gap: 8 }}>
+            <Button small onClick={analyzeMece} disabled={busy} testId="policy-mece">
+              Analyze MECE
+            </Button>
             <Button small onClick={executePolicyRun} disabled={busy} testId="policy-run">
               Execute
             </Button>
@@ -2912,7 +2964,7 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
                       : step.name ?? step.id ?? stepRef;
                 return (
                   <React.Fragment key={index}>
-                    <div style={{ background: isConnector ? theme.accentBg : step.type === "rule" ? theme.successBg : step.type === "scorecard" ? theme.warningBg : step.type === "action" ? theme.purpleBg : theme.hover, color: isConnector ? theme.accent : step.type === "rule" ? theme.success : step.type === "scorecard" ? theme.warning : step.type === "action" ? theme.purple : theme.text, borderRadius: 12, padding: 10, display: "grid", gap: 8, minWidth: 220 }}>
+                    <div style={{ background: isConnector ? theme.accentBg : step.type === "rule" ? (meceOverlapRuleIds.has(stepRef) ? "rgba(239,68,68,0.15)" : theme.successBg) : step.type === "scorecard" ? theme.warningBg : step.type === "action" ? theme.purpleBg : theme.hover, color: isConnector ? theme.accent : step.type === "rule" ? (meceOverlapRuleIds.has(stepRef) ? "#ef4444" : theme.success) : step.type === "scorecard" ? theme.warning : step.type === "action" ? theme.purple : theme.text, borderRadius: 12, padding: 10, display: "grid", gap: 8, minWidth: 220, border: meceOverlapRuleIds.has(stepRef) ? "2px solid #ef4444" : "none", transition: "border 0.3s, background 0.3s" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                         <strong style={{ fontSize: "var(--rm-fs-body)" }}>{step.type.toUpperCase()}</strong>
                         <div style={{ display: "flex", gap: 4 }}>
@@ -3011,6 +3063,58 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
               })
             )}
           </div>
+
+          {meceResult ? (
+            <div data-testid="mece-diagnostics" style={{ background: meceResult.isMutuallyExclusive && meceResult.isCollectivelyExhaustive ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)", borderRadius: 12, padding: 14, border: "1px solid " + (meceResult.isMutuallyExclusive && meceResult.isCollectivelyExhaustive ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)") }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: meceResult.isMutuallyExclusive && meceResult.isCollectivelyExhaustive ? "#22c55e" : "#ef4444" }}>
+                  {meceResult.isMutuallyExclusive && meceResult.isCollectivelyExhaustive ? "MECE CHECK PASSED" : "MECE ISSUES DETECTED"}
+                </div>
+                <span style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>
+                  {meceResult.ruleCount} rules analyzed across {meceResult.analyzedFields.length} fields
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: "var(--rm-fs-caption)", fontWeight: 600, background: meceResult.isMutuallyExclusive ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)", color: meceResult.isMutuallyExclusive ? "#22c55e" : "#ef4444" }}>
+                  ME: {meceResult.isMutuallyExclusive ? "PASS" : "FAIL"}
+                </span>
+                <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: "var(--rm-fs-caption)", fontWeight: 600, background: meceResult.isCollectivelyExhaustive ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)", color: meceResult.isCollectivelyExhaustive ? "#22c55e" : "#ef4444" }}>
+                  CE: {meceResult.isCollectivelyExhaustive ? "PASS" : "FAIL"}
+                </span>
+                {meceResult.hasOpaqueConstraints ? (
+                  <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: "var(--rm-fs-caption)", fontWeight: 600, background: "rgba(234,179,8,0.15)", color: "#eab308" }}>OPAQUE OPS</span>
+                ) : null}
+              </div>
+              {meceResult.diagnostics.length > 0 ? (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {meceResult.diagnostics.map((d, i) => (
+                    <div key={i} style={{ background: theme.card, borderRadius: 8, padding: 10, border: "1px solid " + (d.severity === "error" ? "rgba(239,68,68,0.3)" : d.severity === "warning" ? "rgba(234,179,8,0.3)" : theme.border), display: "grid", gap: 4 }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: "var(--rm-fs-caption)", fontWeight: 600, textTransform: "uppercase", background: d.type === "overlap" ? "rgba(239,68,68,0.15)" : d.type === "gap" ? "rgba(234,179,8,0.15)" : "rgba(96,165,250,0.15)", color: d.type === "overlap" ? "#ef4444" : d.type === "gap" ? "#eab308" : "#60a5fa" }}>
+                          {d.type}
+                        </span>
+                        <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: "var(--rm-fs-caption)", background: d.severity === "error" ? "rgba(239,68,68,0.1)" : d.severity === "warning" ? "rgba(234,179,8,0.1)" : "rgba(96,165,250,0.1)", color: d.severity === "error" ? "#ef4444" : d.severity === "warning" ? "#eab308" : "#60a5fa" }}>
+                          {d.severity}
+                        </span>
+                        {d.fields.length > 0 ? <span style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted }}>fields: {d.fields.join(", ")}</span> : null}
+                      </div>
+                      <div style={{ fontSize: "var(--rm-fs-small)", color: theme.text }}>{d.description}</div>
+                      {d.involvedRules.length > 0 ? (
+                        <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted }}>
+                          Rules: {d.involvedRules.map((rId) => props.data.rules.find((r) => r.id === rId)?.name ?? rId).join(", ")}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {meceResult.warnings.length > 0 ? (
+                <div style={{ marginTop: 8, fontSize: "var(--rm-fs-caption)", color: "#eab308" }}>
+                  {meceResult.warnings.map((w, i) => <div key={i}>{w}</div>)}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {execution ? (
             <div style={{ background: theme.hover, borderRadius: 12, padding: 14 }}>

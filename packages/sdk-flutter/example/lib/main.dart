@@ -204,6 +204,8 @@ class StudioShell extends StatelessWidget {
         return 'Logs & Explainability';
       case 'admin_console':
         return 'Admin Console';
+      case 'sandbox':
+        return 'Dynamic Sandbox';
       default:
         final Map<String, dynamic>? journey = state.journeys.firstWhere(
           (Map<String, dynamic> item) => (item['screens'] as List<dynamic>).any((dynamic screen) => (screen as Map<String, dynamic>)['id'] == state.route),
@@ -222,6 +224,7 @@ class StudioShell extends StatelessWidget {
       case 'scenario_hub':
       case 'logs_explainability':
       case 'admin_console':
+      case 'sandbox':
         state.goTo('experience_selection');
         break;
       default:
@@ -253,6 +256,8 @@ class StudioShell extends StatelessWidget {
         return _LogsView(state: state);
       case 'admin_console':
         return _AdminView(state: state);
+      case 'sandbox':
+        return _SandboxView(state: state);
       default:
         return _JourneyView(state: state);
     }
@@ -305,14 +310,20 @@ class _AccessView extends StatelessWidget {
                 key: const ValueKey<String>('input_server_url'),
                 initialValue: state.baseUrl,
                 onChanged: state.updateBaseUrl,
-                decoration: const InputDecoration(labelText: 'Server URL'),
+                decoration: InputDecoration(
+                  labelText: 'Server URL',
+                  errorText: state.loginErrors['url'],
+                ),
               ),
               const SizedBox(height: 12),
               TextFormField(
                 key: const ValueKey<String>('input_email'),
                 initialValue: state.email,
                 onChanged: state.updateEmail,
-                decoration: const InputDecoration(labelText: 'Email'),
+                decoration: InputDecoration(
+                  labelText: 'Email',
+                  errorText: state.loginErrors['email'],
+                ),
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -408,6 +419,16 @@ class _HomeDashboardView extends StatelessWidget {
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            key: const ValueKey<String>('action_open_sandbox'),
+            onPressed: () => state.goTo('sandbox'),
+            icon: const Icon(Icons.science),
+            label: const Text('Open Sandbox'),
+          ),
         ),
         const SizedBox(height: 16),
         for (final List<Map<String, dynamic>> row in _chunk(state.logMetrics.cast<Map<String, dynamic>>(), 2)) ...<Widget>[
@@ -1012,6 +1033,182 @@ class _AuditView extends StatelessWidget {
   }
 }
 
+class _SandboxView extends StatelessWidget {
+  const _SandboxView({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<dynamic> policies = state.bundle?.policies ?? [];
+    return Column(
+      key: const ValueKey<String>('route_sandbox'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _hero(context, 'Dynamic Sandbox', 'Select a policy, add key-value fields, choose types, and run the rule engine offline.'),
+        const SizedBox(height: 16),
+        _card(
+          context,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('Policy', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                key: const ValueKey<String>('sandbox_policy_select'),
+                value: state.sandboxPolicyId,
+                decoration: const InputDecoration(labelText: 'Select a policy'),
+                items: policies.map((dynamic p) {
+                  final String id = (p is Map) ? (p['id']?.toString() ?? p.toString()) : p.toString();
+                  return DropdownMenuItem<String>(value: id, child: Text(id));
+                }).toList(),
+                onChanged: (String? next) {
+                  if (next != null) state.selectSandboxPolicy(next);
+                },
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _card(
+          context,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('Input Fields', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              for (int i = 0; i < state.sandboxFields.length; i++) ...<Widget>[
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: TextFormField(
+                        key: ValueKey<String>('sandbox_key_$i'),
+                        initialValue: state.sandboxFields[i]['key'],
+                        onChanged: (String v) => state.updateSandboxField(i, key: v),
+                        decoration: const InputDecoration(labelText: 'Key'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextFormField(
+                        key: ValueKey<String>('sandbox_value_$i'),
+                        initialValue: state.sandboxFields[i]['value'],
+                        onChanged: (String v) => state.updateSandboxField(i, value: v),
+                        decoration: const InputDecoration(labelText: 'Value'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    DropdownButton<String>(
+                      key: ValueKey<String>('sandbox_type_$i'),
+                      value: state.sandboxFields[i]['type'] ?? 'string',
+                      items: const <DropdownMenuItem<String>>[
+                        DropdownMenuItem<String>(value: 'string', child: Text('string')),
+                        DropdownMenuItem<String>(value: 'number', child: Text('number')),
+                        DropdownMenuItem<String>(value: 'boolean', child: Text('boolean')),
+                      ],
+                      onChanged: (String? v) {
+                        if (v != null) state.updateSandboxField(i, type: v);
+                      },
+                    ),
+                    IconButton(
+                      key: ValueKey<String>('sandbox_remove_$i'),
+                      icon: const Icon(Icons.clear),
+                      onPressed: () => state.removeSandboxField(i),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+              OutlinedButton.icon(
+                key: const ValueKey<String>('sandbox_add_field'),
+                onPressed: state.addSandboxField,
+                icon: const Icon(Icons.add),
+                label: const Text('Add Field'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: FilledButton.icon(
+                key: const ValueKey<String>('sandbox_evaluate'),
+                onPressed: () => state.evaluateSandbox(),
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('Run Evaluation'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: OutlinedButton(
+                key: const ValueKey<String>('sandbox_clear'),
+                onPressed: state.clearSandbox,
+                child: const Text('Clear'),
+              ),
+            ),
+          ],
+        ),
+        if (state.sandboxError != null) ...<Widget>[
+          const SizedBox(height: 12),
+          Text(state.sandboxError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+        ],
+        if (state.sandboxResult != null) ...<Widget>[
+          const SizedBox(height: 16),
+          _card(
+            context,
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                gradient: LinearGradient(
+                  colors: <Color>[
+                    _outcomeColor(state.sandboxResult!.outcome),
+                    _outcomeColor(state.sandboxResult!.outcome).withOpacity(0.72),
+                  ],
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(state.sandboxResult!.outcome.toUpperCase(), style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 4),
+                  Text('Evaluated in ${state.sandboxResult!.latencyMs}ms', style: const TextStyle(color: Colors.white70)),
+                ],
+              ),
+            ),
+          ),
+          if (state.sandboxResult!.score != null) ...<Widget>[
+            const SizedBox(height: 12),
+            _card(context, Text('Score: ${formatNumber(state.sandboxResult!.score)}', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700))),
+          ],
+          const SizedBox(height: 12),
+          _card(
+            context,
+            Column(
+              key: const ValueKey<String>('sandbox_decision_summary'),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text('Decision Summary', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 8),
+                Text('Outcome: ${state.sandboxResult!.outcome.toUpperCase()} • Status: ${state.sandboxResult!.status}'),
+                Text('Source: sandbox'),
+                Text('Trace steps: ${state.sandboxResult!.trace.length}'),
+                if (state.sandboxResult!.variables.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text('Variables', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+                  for (final MapEntry<String, dynamic> entry in state.sandboxResult!.variables.entries.take(8)) Text('${entry.key}: ${entry.value}'),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 Widget _adminEditor(BuildContext context, AppState state, Map<String, dynamic> schema) {
   return _card(
     context,
@@ -1054,11 +1251,15 @@ Widget _adminEditor(BuildContext context, AppState state, Map<String, dynamic> s
 
 Widget _journeyField(BuildContext context, AppState state, String journeyId, Map<String, dynamic> field, dynamic value) {
   final String kind = field['kind'] as String? ?? 'text';
+  final String? fieldError = journeyId != '__admin__' ? state.fieldErrors[journeyId]?[field['id'] as String] : null;
   if (kind == 'choice' && field['multi'] != true) {
     return DropdownButtonFormField<String>(
       key: ValueKey<String>('field_${field['id']}_${journeyId == '__admin__' ? state.editingRecordId ?? 'create' : state.route}'),
       value: value?.toString().isEmpty ?? true ? null : value.toString(),
-      decoration: InputDecoration(labelText: field['label'] as String),
+      decoration: InputDecoration(
+        labelText: field['label'] as String,
+        errorText: fieldError,
+      ),
       items: ((field['options'] as List<dynamic>? ?? const <dynamic>[]).cast<String>())
           .map((String option) => DropdownMenuItem<String>(value: option, child: Text(option)))
           .toList(),
@@ -1085,10 +1286,13 @@ Widget _journeyField(BuildContext context, AppState state, String journeyId, Map
     maxLines: kind == 'json' || kind == 'code' ? 5 : 1,
     decoration: InputDecoration(
       labelText: field['label'] as String,
-      helperText: <String>[
-        if (field['required'] == true) 'Required',
-        if ((field['hint'] as String? ?? '').isNotEmpty) field['hint'] as String,
-      ].join(' • '),
+      errorText: fieldError,
+      helperText: fieldError == null
+          ? <String>[
+              if (field['required'] == true) 'Required',
+              if ((field['hint'] as String? ?? '').isNotEmpty) field['hint'] as String,
+            ].join(' • ')
+          : null,
     ),
   );
 }

@@ -25,9 +25,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.FlightTakeoff
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Logout
@@ -128,6 +130,7 @@ fun RuleMindStudioApp(viewModel: RuleMindViewModel = viewModel()) {
                 "scenario_hub" -> ScenarioHubScreen(state, viewModel)
                 "logs_explainability" -> LogsScreen(state, viewModel)
                 "admin_console" -> AdminConsoleScreen(state, viewModel)
+                "sandbox" -> SandboxScreen(state, viewModel)
                 else -> JourneyScreen(state, viewModel)
             }
         }
@@ -138,7 +141,7 @@ private fun handleBack(state: AppState, viewModel: RuleMindViewModel) {
     when (state.route) {
         "access" -> Unit
         "experience_selection" -> viewModel.goTo("access")
-        "home_dashboard", "scenario_hub", "logs_explainability", "admin_console" -> viewModel.goTo("experience_selection")
+        "home_dashboard", "scenario_hub", "logs_explainability", "admin_console", "sandbox" -> viewModel.goTo("experience_selection")
         else -> viewModel.previousJourneyScreen()
     }
 }
@@ -153,6 +156,7 @@ private fun StudioTopBar(state: AppState, onBack: () -> Unit, onLogout: () -> Un
         "scenario_hub" -> "Scenario Hub"
         "logs_explainability" -> "Logs & Explainability"
         "admin_console" -> "Admin Console"
+        "sandbox" -> "Dynamic Sandbox"
         else -> state.content.journeys.firstOrNull { journey -> journey.screens.any { it.id == state.route } }?.title ?: "RuleMind Studio"
     }
     CenterAlignedTopAppBar(
@@ -238,8 +242,24 @@ private fun AccessScreen(viewModel: RuleMindViewModel) {
         StudioCard {
             Text("Admin Live Mode", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
-            LabeledField("Server URL", state.session.baseUrl, "input_server_url") { viewModel.updateBaseUrl(it) }
-            LabeledField("Email", state.session.email, "input_email") { viewModel.updateEmail(it) }
+            OutlinedTextField(
+                value = state.session.baseUrl,
+                onValueChange = { viewModel.updateBaseUrl(it) },
+                modifier = Modifier.fillMaxWidth().testTag("input_server_url"),
+                label = { Text("Server URL") },
+                isError = state.loginErrors["url"] != null,
+                supportingText = state.loginErrors["url"]?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
+                colors = editorialFieldColors(),
+            )
+            OutlinedTextField(
+                value = state.session.email,
+                onValueChange = { viewModel.updateEmail(it) },
+                modifier = Modifier.fillMaxWidth().testTag("input_email"),
+                label = { Text("Email") },
+                isError = state.loginErrors["email"] != null,
+                supportingText = state.loginErrors["email"]?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
+                colors = editorialFieldColors(),
+            )
             PasswordField(state.session.password, "input_password") { viewModel.updatePassword(it) }
             Spacer(Modifier.height(12.dp))
             Button(
@@ -321,6 +341,16 @@ private fun HomeDashboardScreen(state: AppState, viewModel: RuleMindViewModel) {
                 Spacer(Modifier.width(8.dp))
                 Text("Scenarios")
             }
+        }
+        TextButton(
+            onClick = { viewModel.goTo("sandbox") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("action_open_sandbox"),
+        ) {
+            Icon(Icons.Filled.Science, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Open Sandbox")
         }
         state.content.logMetrics.chunked(2).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
@@ -536,7 +566,8 @@ private fun JourneyScreen(state: AppState, viewModel: RuleMindViewModel) {
             }
             "form" -> {
                 screen.fields.forEach { field ->
-                    JourneyField(field = field, value = draft[field.id], onChange = { viewModel.updateDraftField(journey.id, field, it) })
+                    val fieldError = state.fieldErrors[journey.id]?.get(field.id)
+                    JourneyField(field = field, value = draft[field.id], onChange = { viewModel.updateDraftField(journey.id, field, it) }, error = fieldError)
                 }
                 NavigationRow(
                     onBack = { viewModel.previousJourneyScreen() },
@@ -573,6 +604,148 @@ private fun JourneyScreen(state: AppState, viewModel: RuleMindViewModel) {
             "audit" -> {
                 AuditScreenBody(decision = decision, onFlush = { viewModel.flushPendingOperations(context, journey.id) })
             }
+        }
+    }
+}
+
+@Composable
+private fun SandboxScreen(state: AppState, viewModel: RuleMindViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val sandbox = state.sandbox
+    val bundle = state.bundle
+    val policies = bundle?.policies.orEmpty()
+    Column(
+        modifier = Modifier
+            .testTag("route_sandbox")
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        HeroHeader("Dynamic Sandbox", "Evaluate any policy with arbitrary input data.", "Select a policy, add key-value fields, choose types, and run the rule engine offline.")
+        StudioCard {
+            Text("Policy", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            var expanded by remember { mutableStateOf(false) }
+            Box {
+                OutlinedTextField(
+                    value = sandbox.selectedPolicyId ?: "Select a policy...",
+                    onValueChange = {},
+                    modifier = Modifier.fillMaxWidth().testTag("sandbox_policy_select"),
+                    readOnly = true,
+                    colors = editorialFieldColors(),
+                    trailingIcon = {
+                        TextButton(onClick = { expanded = true }) { Text("Choose") }
+                    },
+                )
+                androidx.compose.material3.DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    policies.forEach { policy ->
+                        val policyId = (policy as? Map<*, *>)?.get("id")?.toString()
+                            ?: policy.toString()
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text(policyId) },
+                            onClick = {
+                                viewModel.selectSandboxPolicy(policyId)
+                                expanded = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        StudioCard {
+            Text("Input Fields", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            sandbox.fields.forEachIndexed { index, field ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = field.key,
+                        onValueChange = { viewModel.updateSandboxField(index, key = it) },
+                        modifier = Modifier.weight(1f).testTag("sandbox_key_$index"),
+                        label = { Text("Key") },
+                        singleLine = true,
+                        colors = editorialFieldColors(),
+                    )
+                    OutlinedTextField(
+                        value = field.value,
+                        onValueChange = { viewModel.updateSandboxField(index, value = it) },
+                        modifier = Modifier.weight(1f).testTag("sandbox_value_$index"),
+                        label = { Text("Value") },
+                        singleLine = true,
+                        colors = editorialFieldColors(),
+                    )
+                    var typeExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        AssistChip(
+                            onClick = { typeExpanded = true },
+                            label = { Text(field.type) },
+                            modifier = Modifier.testTag("sandbox_type_$index"),
+                        )
+                        androidx.compose.material3.DropdownMenu(expanded = typeExpanded, onDismissRequest = { typeExpanded = false }) {
+                            listOf("string", "number", "boolean").forEach { type ->
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text(type) },
+                                    onClick = {
+                                        viewModel.updateSandboxField(index, type = type)
+                                        typeExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    IconButton(
+                        onClick = { viewModel.removeSandboxField(index) },
+                        modifier = Modifier.testTag("sandbox_remove_$index"),
+                    ) {
+                        Icon(Icons.Filled.Clear, contentDescription = "Remove")
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            TextButton(
+                onClick = { viewModel.addSandboxField() },
+                modifier = Modifier.testTag("sandbox_add_field"),
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Add Field")
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = { viewModel.evaluateSandbox(context) },
+                modifier = Modifier.weight(1f).testTag("sandbox_evaluate"),
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Run Evaluation")
+            }
+            TextButton(
+                onClick = { viewModel.clearSandbox() },
+                modifier = Modifier.weight(1f).testTag("sandbox_clear"),
+            ) {
+                Text("Clear")
+            }
+        }
+        sandbox.error?.let { ErrorText(it) }
+        sandbox.result?.let { decision ->
+            OutcomeBanner(outcome = decision.outcome, latencyMs = decision.latencyMs)
+            decision.score?.let { score ->
+                StudioCard {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        ScoreGauge(score = score, maxScore = 900.0, label = "Sandbox Score")
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Score Summary", fontWeight = FontWeight.SemiBold)
+                            Text("Trace steps: ${decision.trace.size}", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            DecisionSummaryCard(decision = decision)
         }
     }
 }
@@ -759,7 +932,7 @@ private fun ScoreSection(journey: StudioJourney, decision: Decision, score: Doub
 }
 
 @Composable
-private fun JourneyField(field: StudioField, value: Any?, onChange: (String) -> Unit) {
+private fun JourneyField(field: StudioField, value: Any?, onChange: (String) -> Unit, error: String? = null) {
     when {
         field.kind == "choice" && !field.multi -> {
             var expanded by remember { mutableStateOf(false) }
@@ -772,6 +945,7 @@ private fun JourneyField(field: StudioField, value: Any?, onChange: (String) -> 
                         .testTag("field_${field.id}"),
                     readOnly = true,
                     label = { Text(field.label) },
+                    isError = error != null,
                     colors = editorialFieldColors(),
                     trailingIcon = {
                         TextButton(onClick = { expanded = true }) { Text("Choose") }
@@ -801,18 +975,23 @@ private fun JourneyField(field: StudioField, value: Any?, onChange: (String) -> 
                     .fillMaxWidth()
                     .testTag("field_${field.id}"),
                 label = { Text(field.label) },
+                isError = error != null,
                 minLines = if (field.kind in setOf("json", "code")) 5 else 1,
                 keyboardOptions = KeyboardOptions(keyboardType = if (field.kind == "number") KeyboardType.Decimal else KeyboardType.Text),
                 colors = editorialFieldColors(),
                 supportingText = {
-                    val hint = buildString {
-                        if (field.required) append("Required")
-                        if (field.hint.isNotBlank()) {
-                            if (isNotBlank()) append(" • ")
-                            append(field.hint)
+                    if (error != null) {
+                        Text(error, color = MaterialTheme.colorScheme.error)
+                    } else {
+                        val hint = buildString {
+                            if (field.required) append("Required")
+                            if (field.hint.isNotBlank()) {
+                                if (isNotBlank()) append(" • ")
+                                append(field.hint)
+                            }
                         }
+                        if (hint.isNotBlank()) Text(hint)
                     }
-                    if (hint.isNotBlank()) Text(hint)
                 },
             )
         }
