@@ -724,3 +724,65 @@ export interface UserContext {
   authMode: AuthMode;
   apiKeyId?: string;
 }
+
+// ---------------------------------------------------------------------------
+// MECE Analysis Types
+// ---------------------------------------------------------------------------
+
+export interface MECEInterval {
+  lower: number;
+  upper: number;
+  lowerInclusive: boolean;
+  upperInclusive: boolean;
+}
+
+export interface MECEValueSet {
+  /** null means "all values" (universal set) */
+  included: Set<string> | null;
+  excluded: Set<string>;
+}
+
+export interface MECEFieldConstraint {
+  field: string;
+  fieldType: FieldType;
+  intervals?: MECEInterval[];
+  valueSet?: MECEValueSet;
+  excludedPoints?: number[];
+  opaque?: boolean;
+}
+
+export interface MECERuleConstraintSpace {
+  ruleId: string;
+  ruleName: string;
+  branches: MECEFieldConstraint[][];
+  outcome?: OutcomeType;
+}
+
+export type MECEDiagnosticSeverity = "error" | "warning" | "info";
+
+export interface MECEDiagnostic {
+  type: "overlap" | "gap" | "warning";
+  severity: MECEDiagnosticSeverity;
+  fields: string[];
+  description: string;
+  involvedRules: string[];
+  /** Node IDs involved — for UI highlighting */
+  involvedNodeIds?: string[];
+}
+
+export interface MECEAnalysisResult {
+  isMutuallyExclusive: boolean;
+  isCollectivelyExhaustive: boolean;
+  diagnostics: MECEDiagnostic[];
+  analyzedFields: string[];
+  ruleCount: number;
+  hasOpaqueConstraints: boolean;
+  warnings: string[];
+}
+
+export interface MECERuleInput {
+  id: string;
+  name: string;
+  definition: RuleDefinition;
+  outcome?: OutcomeType;
+}

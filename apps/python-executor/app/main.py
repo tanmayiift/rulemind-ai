@@ -1772,12 +1772,68 @@ def execute_policy_endpoint(policy_id: str, request: TestPayloadRequest = Body(d
     return result
 
 
+@app.post("/api/v1/policies/{policy_id}/analyze-mece")
+def analyze_policy_mece(policy_id: str) -> Dict[str, Any]:
+    """Analyze the rules within a policy for MECE (Mutually Exclusive & Collectively Exhaustive) compliance."""
+    from .mece import analyze_mece
+
+    policy = find_by_id(storage.list_policies(), policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found.")
+
+    rules_map = current_rule_map()
+    steps = policy.get("steps") or []
+    rule_inputs = []
+    for step in steps:
+        ref_id = step.get("ref_id") or step.get("ref")
+        if step.get("type") == "rule" and ref_id in rules_map:
+            rule = rules_map[ref_id]
+            rule_inputs.append({
+                "id": rule["id"],
+                "name": rule.get("name", rule["id"]),
+                "definition": rule.get("definition") or {"nodes": rule.get("nodes", []), "connections": rule.get("connections", [])},
+            })
+
+    return analyze_mece(rule_inputs)
+
+
 @app.post("/api/v1/policies/{policy_id}/promote")
 def promote_policy(
     policy_id: str,
     request: PromoteRequest,
     background_tasks: BackgroundTasks = None,
+    skip_mece: bool = Query(default=False, alias="skipMece"),
 ) -> Dict[str, Any]:
+    # MECE gate: check rules within this policy for overlaps before promotion
+    if not skip_mece:
+        from .mece import analyze_mece
+        policy = find_by_id(storage.list_policies(), policy_id)
+        if policy:
+            rules_map = current_rule_map()
+            steps = policy.get("steps") or []
+            rule_inputs = []
+            for step in steps:
+                ref_id = step.get("ref_id") or step.get("ref")
+                if step.get("type") == "rule" and ref_id in rules_map:
+                    rule = rules_map[ref_id]
+                    rule_inputs.append({
+                        "id": rule["id"],
+                        "name": rule.get("name", rule["id"]),
+                        "definition": rule.get("definition") or {"nodes": rule.get("nodes", []), "connections": rule.get("connections", [])},
+                    })
+            if len(rule_inputs) > 1:
+                mece_result = analyze_mece(rule_inputs)
+                hard_overlaps = [d for d in mece_result.get("diagnostics", []) if d.get("type") == "overlap" and d.get("severity") == "error"]
+                if hard_overlaps:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "message": "Promotion blocked: MECE overlap detected between rules in this policy.",
+                            "diagnostics": hard_overlaps,
+                            "meceResult": mece_result,
+                        },
+                    )
+
     promoted = promote_entity("policy", policy_id, request.promoted_by, request.reason)
     if promoted["status"] == "prod":
         maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)

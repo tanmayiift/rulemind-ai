@@ -21,6 +21,21 @@ data class StudioField(
     val min: Double? = null,
     val max: Double? = null,
     val language: String? = null,
+    val pattern: String? = null,
+    val patternMessage: String? = null,
+)
+
+data class SandboxField(
+    val key: String = "",
+    val value: String = "",
+    val type: String = "string",
+)
+
+data class SandboxState(
+    val selectedPolicyId: String? = null,
+    val fields: List<SandboxField> = listOf(SandboxField()),
+    val result: Decision? = null,
+    val error: String? = null,
 )
 
 data class StudioScreen(
@@ -158,4 +173,10 @@ data class AppState(
     val logs: List<LogEntry> = emptyList(),
     val admin: AdminState = AdminState(),
     val error: String? = null,
+    /** Field validation errors: journeyId → fieldId → error message (null = valid) */
+    val fieldErrors: Map<String, Map<String, String?>> = emptyMap(),
+    /** Login form validation errors: "email" | "url" → error message */
+    val loginErrors: Map<String, String?> = emptyMap(),
+    /** Dynamic offline sandbox state */
+    val sandbox: SandboxState = SandboxState(),
 )

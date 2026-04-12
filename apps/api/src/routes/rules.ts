@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { compileRule, evaluateCompiledRule, generateExpression, validateRuleDefinition } from "@rulemind/rule-engine";
+import { analyzeMECE, compileRule, evaluateCompiledRule, generateExpression, validateRuleDefinition } from "@rulemind/rule-engine";
 import {
   batchEvaluationRequestSchema,
   evaluationRequestSchema,
@@ -12,6 +12,7 @@ import {
   ruleUpdateSchema
 } from "@rulemind/shared";
 import type { EnvironmentName, RuleDefinition, RuleRecord } from "@rulemind/shared";
+import type { MECERuleInput } from "@rulemind/rule-engine";
 import { requirePermission } from "../auth/middleware";
 import { createRuleVersionSnapshot } from "../db/adapter";
 
@@ -136,6 +137,26 @@ export async function registerRuleRoutes(app: FastifyInstance) {
           }
         : null
     };
+  });
+
+  app.post("/api/v1/rules/analyze-mece", async (request, reply) => {
+    requirePermission(request, "rule:read", reply);
+    const body = request.body as { rules?: unknown };
+
+    if (!body || !Array.isArray(body.rules) || body.rules.length === 0) {
+      reply.code(400);
+      return { message: "Request body must contain a non-empty 'rules' array." };
+    }
+
+    const meceInput: MECERuleInput[] = (body.rules as Array<{ id: string; name: string; definition: unknown; outcome?: string }>).map((r) => ({
+      id: r.id,
+      name: r.name,
+      definition: ruleDefinitionSchema.parse(r.definition) as RuleDefinition,
+      outcome: r.outcome as MECERuleInput["outcome"],
+    }));
+
+    const result = analyzeMECE(meceInput);
+    return result;
   });
 
   app.post("/api/v1/rules", async (request, reply) => {
@@ -481,6 +502,12 @@ export async function registerRuleRoutes(app: FastifyInstance) {
 
     assertEnvironmentAccess(request, reply, rule.environment);
     assertEnvironmentAccess(request, reply, body.toEnvironment);
+
+    // MECE enforcement is done at the policy level, not individual rule promotion.
+    // Use POST /api/v1/rules/analyze-mece with the full set of rules in a policy
+    // to validate MECE before promoting the policy. This avoids false positives
+    // from unrelated rules in the same environment.
+
     const updated = await app.services.store.updateRule(rule.id, {
       environment: body.toEnvironment
     });

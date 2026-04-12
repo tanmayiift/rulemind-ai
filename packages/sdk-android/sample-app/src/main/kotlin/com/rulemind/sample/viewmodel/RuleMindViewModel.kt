@@ -122,7 +122,80 @@ class RuleMindViewModel : ViewModel() {
             "choice" -> if (field.multi) value.split(",").mapNotNull { it.trim().takeIf(String::isNotEmpty) } else value
             else -> value
         }
-        _state.value = _state.value.copy(drafts = _state.value.drafts + (journeyId to existing))
+        // Validate field on every change
+        val error = validateField(field, existing[field.id])
+        val currentErrors = _state.value.fieldErrors[journeyId].orEmpty().toMutableMap()
+        currentErrors[field.id] = error
+        _state.value = _state.value.copy(
+            drafts = _state.value.drafts + (journeyId to existing),
+            fieldErrors = _state.value.fieldErrors + (journeyId to currentErrors),
+        )
+    }
+
+    // ---------------------------------------------------------------------------
+    // Input Validation
+    // ---------------------------------------------------------------------------
+
+    fun validateField(field: StudioField, value: Any?): String? {
+        val strVal = value?.toString().orEmpty()
+
+        // Required check
+        if (field.required && (value == null || strVal.isBlank())) {
+            return "${field.label} is required"
+        }
+
+        // Skip further checks if empty and not required
+        if (strVal.isBlank()) return null
+
+        // Numeric validation
+        if (field.kind == "number") {
+            val num = strVal.toDoubleOrNull()
+            if (num == null) return "Must be a valid number"
+            if (field.min != null && num < field.min) return "Must be at least ${field.min}"
+            if (field.max != null && num > field.max) return "Must be at most ${field.max}"
+        }
+
+        // Pattern validation
+        if (field.pattern != null) {
+            try {
+                if (!Regex(field.pattern).containsMatchIn(strVal)) {
+                    return field.patternMessage ?: "Format invalid"
+                }
+            } catch (_: Exception) { /* invalid regex — skip */ }
+        }
+
+        return null
+    }
+
+    fun validateJourney(journeyId: String): Map<String, String?> {
+        val journey = _state.value.content.journeys.firstOrNull { it.id == journeyId } ?: return emptyMap()
+        val draft = _state.value.drafts[journeyId].orEmpty()
+        val errors = mutableMapOf<String, String?>()
+        for (screen in journey.screens) {
+            for (field in screen.fields) {
+                val error = validateField(field, draft[field.id])
+                if (error != null) errors[field.id] = error
+            }
+        }
+        return errors
+    }
+
+    fun validateLogin(): Map<String, String?> {
+        val session = _state.value.session
+        val errors = mutableMapOf<String, String?>()
+        val emailRegex = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$")
+
+        if (session.email.isNotBlank() && !emailRegex.matches(session.email)) {
+            errors["email"] = "Invalid email format"
+        }
+        if (session.baseUrl.isNotBlank()) {
+            try {
+                java.net.URL(session.baseUrl)
+            } catch (_: Exception) {
+                errors["url"] = "Invalid URL format"
+            }
+        }
+        return errors
     }
 
     suspend fun startDemo(context: Context): Boolean = withContext(Dispatchers.IO) {
@@ -159,6 +232,16 @@ class RuleMindViewModel : ViewModel() {
             log("Live mode requires base URL, email, and password.", isError = true)
             return@withContext false
         }
+        // Validate login field formats
+        val loginErrors = validateLogin()
+        if (loginErrors.isNotEmpty()) {
+            _state.value = _state.value.copy(
+                loginErrors = loginErrors,
+                error = loginErrors.values.filterNotNull().joinToString("; ")
+            )
+            return@withContext false
+        }
+        _state.value = _state.value.copy(loginErrors = emptyMap())
         _state.value = _state.value.copy(isLoading = true, error = null)
         return@withContext try {
             val response = requestJson(
@@ -274,6 +357,19 @@ class RuleMindViewModel : ViewModel() {
 
     suspend fun evaluateJourney(context: Context, journeyId: String, explicitPayload: Map<String, Any?>? = null): Boolean = withContext(Dispatchers.IO) {
         val journey = _state.value.content.journeys.firstOrNull { it.id == journeyId } ?: return@withContext false
+
+        // Validate all fields before evaluation (skip if explicit payload from scenario)
+        if (explicitPayload == null) {
+            val errors = validateJourney(journeyId)
+            if (errors.isNotEmpty()) {
+                _state.value = _state.value.copy(
+                    fieldErrors = _state.value.fieldErrors + (journeyId to errors),
+                    error = "Please fix validation errors before running evaluation."
+                )
+                return@withContext false
+            }
+        }
+
         _state.value = _state.value.copy(isLoading = true, error = null)
         return@withContext try {
             val payload = explicitPayload ?: buildPayloadForJourney(journeyId)
@@ -974,5 +1070,79 @@ class RuleMindViewModel : ViewModel() {
     private fun BufferedWriter.writeJson(body: Map<String, Any?>) {
         write(mapToJson(body).toString())
         flush()
+    }
+
+    // ---------------------------------------------------------------------------
+    // Dynamic Offline Sandbox
+    // ---------------------------------------------------------------------------
+
+    fun selectSandboxPolicy(policyId: String) {
+        _state.value = _state.value.copy(
+            sandbox = _state.value.sandbox.copy(selectedPolicyId = policyId, result = null, error = null)
+        )
+    }
+
+    fun addSandboxField() {
+        val fields = _state.value.sandbox.fields + SandboxField()
+        _state.value = _state.value.copy(sandbox = _state.value.sandbox.copy(fields = fields))
+    }
+
+    fun updateSandboxField(index: Int, key: String? = null, value: String? = null, type: String? = null) {
+        val fields = _state.value.sandbox.fields.toMutableList()
+        if (index !in fields.indices) return
+        val f = fields[index]
+        fields[index] = f.copy(
+            key = key ?: f.key,
+            value = value ?: f.value,
+            type = type ?: f.type,
+        )
+        _state.value = _state.value.copy(sandbox = _state.value.sandbox.copy(fields = fields))
+    }
+
+    fun removeSandboxField(index: Int) {
+        val fields = _state.value.sandbox.fields.toMutableList()
+        if (index in fields.indices) fields.removeAt(index)
+        _state.value = _state.value.copy(sandbox = _state.value.sandbox.copy(fields = fields))
+    }
+
+    fun clearSandbox() {
+        _state.value = _state.value.copy(sandbox = SandboxState())
+    }
+
+    fun evaluateSandbox(context: Context) {
+        val sandbox = _state.value.sandbox
+        val policyId = sandbox.selectedPolicyId
+        if (policyId.isNullOrBlank()) {
+            _state.value = _state.value.copy(sandbox = sandbox.copy(error = "Select a policy first"))
+            return
+        }
+        val validFields = sandbox.fields.filter { it.key.isNotBlank() }
+        if (validFields.isEmpty()) {
+            _state.value = _state.value.copy(sandbox = sandbox.copy(error = "Add at least one field with a key"))
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Build payload with type coercion
+                val payload = mutableMapOf<String, Any?>()
+                for (f in validFields) {
+                    payload[f.key] = when (f.type) {
+                        "number" -> f.value.toDoubleOrNull() ?: f.value
+                        "boolean" -> f.value.lowercase() == "true"
+                        else -> f.value
+                    }
+                }
+
+                val bundle = _state.value.bundle ?: StudioFixtures.demoBundle()
+                val decision = engine.evaluate(bundle, policyId, payload, userId = "sandbox_user")
+                    .copy(source = "sandbox", policyId = policyId, userId = "sandbox_user")
+                _state.value = _state.value.copy(sandbox = sandbox.copy(result = decision, error = null))
+                log("Sandbox evaluation: outcome=${decision.outcome}, score=${decision.score}")
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(sandbox = sandbox.copy(error = e.message, result = null))
+                log("Sandbox evaluation failed: ${e.message}", isError = true)
+            }
+        }
     }
 }

@@ -4,3 +4,4 @@ export * from "./evaluator";
 export * from "./excel-functions";
 export * from "./expression";
 export * from "./validator";
+export * from "./mece";

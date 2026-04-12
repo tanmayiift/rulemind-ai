@@ -46,6 +46,13 @@ class AppState extends ChangeNotifier {
   final Map<String, List<Map<String, dynamic>>> adminRecords = <String, List<Map<String, dynamic>>>{};
   final Map<String, String> adminEditorRawValues = <String, String>{};
   String? adminStatus;
+  Map<String, Map<String, String?>> fieldErrors = {};
+  Map<String, String?> loginErrors = {};
+  // Sandbox state
+  String? sandboxPolicyId;
+  List<Map<String, String>> sandboxFields = [{'key': '', 'value': '', 'type': 'string'}];
+  Decision? sandboxResult;
+  String? sandboxError;
 
   final RuleMindEngine _engine = RuleMindEngine();
   static const String _prefsMode = 'preferred_mode';
@@ -161,6 +168,14 @@ class AppState extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+    final Map<String, String?> loginErrs = validateLogin();
+    if (loginErrs.isNotEmpty) {
+      loginErrors = loginErrs;
+      error = loginErrs.values.whereType<String>().join('; ');
+      notifyListeners();
+      return false;
+    }
+    loginErrors = {};
     isLoading = true;
     error = null;
     notifyListeners();
@@ -255,6 +270,11 @@ class AppState extends ChangeNotifier {
         next[field['id'] as String] = value;
     }
     drafts[journeyId] = next;
+    // Validate on change
+    final String? error = validateField(field, next[field['id'] as String]);
+    final Map<String, String?> journeyErrors = Map<String, String?>.from(fieldErrors[journeyId] ?? {});
+    journeyErrors[field['id'] as String] = error;
+    fieldErrors[journeyId] = journeyErrors;
     notifyListeners();
   }
 
@@ -270,6 +290,16 @@ class AppState extends ChangeNotifier {
     final journey = journeys.cast<Map<String, dynamic>>().firstWhere((Map<String, dynamic> item) => item['id'] == journeyId);
     isLoading = true;
     error = null;
+    // Validate all fields before evaluation (skip if explicit payload from scenario)
+    if (explicitPayload == null) {
+      final Map<String, String?> errors = validateJourney(journeyId);
+      if (errors.isNotEmpty) {
+        fieldErrors[journeyId] = errors;
+        error = 'Please fix validation errors before running evaluation.';
+        notifyListeners();
+        return false;
+      }
+    }
     notifyListeners();
     try {
       final payload = explicitPayload ?? _buildPayloadForJourney(journeyId);
@@ -559,8 +589,150 @@ class AppState extends ChangeNotifier {
     await _persist();
   }
 
+  void selectSandboxPolicy(String policyId) {
+    sandboxPolicyId = policyId;
+    sandboxResult = null;
+    sandboxError = null;
+    notifyListeners();
+  }
+
+  void addSandboxField() {
+    sandboxFields.add({'key': '', 'value': '', 'type': 'string'});
+    notifyListeners();
+  }
+
+  void updateSandboxField(int index, {String? key, String? value, String? type}) {
+    if (index < 0 || index >= sandboxFields.length) return;
+    final Map<String, String> f = Map<String, String>.from(sandboxFields[index]);
+    if (key != null) f['key'] = key;
+    if (value != null) f['value'] = value;
+    if (type != null) f['type'] = type;
+    sandboxFields[index] = f;
+    notifyListeners();
+  }
+
+  void removeSandboxField(int index) {
+    if (index >= 0 && index < sandboxFields.length) {
+      sandboxFields.removeAt(index);
+      notifyListeners();
+    }
+  }
+
+  void clearSandbox() {
+    sandboxPolicyId = null;
+    sandboxFields = [{'key': '', 'value': '', 'type': 'string'}];
+    sandboxResult = null;
+    sandboxError = null;
+    notifyListeners();
+  }
+
+  Future<void> evaluateSandbox() async {
+    if (sandboxPolicyId == null || sandboxPolicyId!.isEmpty) {
+      sandboxError = 'Select a policy first';
+      notifyListeners();
+      return;
+    }
+    final List<Map<String, String>> validFields = sandboxFields.where((Map<String, String> f) => (f['key'] ?? '').isNotEmpty).toList();
+    if (validFields.isEmpty) {
+      sandboxError = 'Add at least one field with a key';
+      notifyListeners();
+      return;
+    }
+    try {
+      final Map<String, dynamic> payload = {};
+      for (final Map<String, String> f in validFields) {
+        final String key = f['key']!;
+        final String val = f['value'] ?? '';
+        switch (f['type']) {
+          case 'number':
+            payload[key] = double.tryParse(val) ?? val;
+            break;
+          case 'boolean':
+            payload[key] = val.toLowerCase() == 'true';
+            break;
+          default:
+            payload[key] = val;
+        }
+      }
+      final Bundle activeBundle = bundle ?? StudioFixtures.demoBundle();
+      final Decision decision = _engine.evaluate(activeBundle, sandboxPolicyId!, payload, userId: 'sandbox_user');
+      sandboxResult = decision;
+      sandboxError = null;
+      log('Sandbox evaluation: outcome=${decision.outcome}, score=${decision.score}');
+    } catch (e) {
+      sandboxResult = null;
+      sandboxError = e.toString();
+      log('Sandbox evaluation failed: $e', isError: true);
+    }
+    notifyListeners();
+  }
+
   Map<String, dynamic> _adminEntity(String? entityId) {
     return adminEntities.cast<Map<String, dynamic>>().firstWhere((Map<String, dynamic> item) => item['id'] == entityId, orElse: () => <String, dynamic>{});
+  }
+
+  String? validateField(Map<String, dynamic> field, dynamic value) {
+    final String strVal = value?.toString() ?? '';
+    final bool required = field['required'] == true;
+    final String label = field['label']?.toString() ?? field['id']?.toString() ?? 'Field';
+
+    if (required && (value == null || strVal.trim().isEmpty)) {
+      return '$label is required';
+    }
+    if (strVal.trim().isEmpty) return null;
+
+    if (field['kind'] == 'number') {
+      final double? num = double.tryParse(strVal);
+      if (num == null) return 'Must be a valid number';
+      final double? min = (field['min'] as num?)?.toDouble();
+      final double? max = (field['max'] as num?)?.toDouble();
+      if (min != null && num < min) return 'Must be at least $min';
+      if (max != null && num > max) return 'Must be at most $max';
+    }
+
+    final String? pattern = field['pattern']?.toString();
+    if (pattern != null && pattern.isNotEmpty) {
+      try {
+        if (!RegExp(pattern).hasMatch(strVal)) {
+          return field['patternMessage']?.toString() ?? 'Format invalid';
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Map<String, String?> validateJourney(String journeyId) {
+    final Map<String, dynamic> journey = journeys.cast<Map<String, dynamic>>().firstWhere(
+      (Map<String, dynamic> item) => item['id'] == journeyId,
+      orElse: () => <String, dynamic>{},
+    );
+    final Map<String, dynamic> draft = drafts[journeyId] ?? {};
+    final Map<String, String?> errors = {};
+    for (final dynamic screen in (journey['screens'] as List<dynamic>? ?? [])) {
+      for (final dynamic field in ((screen as Map<String, dynamic>)['fields'] as List<dynamic>? ?? [])) {
+        final Map<String, dynamic> f = Map<String, dynamic>.from(field as Map);
+        final String? error = validateField(f, draft[f['id']]);
+        if (error != null) errors[f['id'] as String] = error;
+      }
+    }
+    return errors;
+  }
+
+  Map<String, String?> validateLogin() {
+    final Map<String, String?> errors = {};
+    final RegExp emailRegex = RegExp(r'^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$');
+    if (email.isNotEmpty && !emailRegex.hasMatch(email)) {
+      errors['email'] = 'Invalid email format';
+    }
+    if (baseUrl.isNotEmpty) {
+      try {
+        final uri = Uri.parse(baseUrl);
+        if (!uri.hasScheme) errors['url'] = 'Invalid URL format';
+      } catch (_) {
+        errors['url'] = 'Invalid URL format';
+      }
+    }
+    return errors;
   }
 
   Map<String, dynamic> _buildPayloadForJourney(String journeyId) {
