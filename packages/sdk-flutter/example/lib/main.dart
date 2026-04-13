@@ -1251,7 +1251,7 @@ Widget _adminEditor(BuildContext context, AppState state, Map<String, dynamic> s
 
 Widget _journeyField(BuildContext context, AppState state, String journeyId, Map<String, dynamic> field, dynamic value) {
   final String kind = field['kind'] as String? ?? 'text';
-  final String? fieldError = journeyId != '__admin__' ? state.fieldErrors[journeyId]?[field['id'] as String] : null;
+  final String? fieldError = journeyId != '__admin__' ? (state.fieldErrors[journeyId] ?? const <String, String?>{})[field['id'] as String] : null;
   if (kind == 'choice' && field['multi'] != true) {
     return DropdownButtonFormField<String>(
       key: ValueKey<String>('field_${field['id']}_${journeyId == '__admin__' ? state.editingRecordId ?? 'create' : state.route}'),

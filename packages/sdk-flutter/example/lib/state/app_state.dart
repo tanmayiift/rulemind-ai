@@ -682,12 +682,12 @@ class AppState extends ChangeNotifier {
     if (strVal.trim().isEmpty) return null;
 
     if (field['kind'] == 'number') {
-      final double? num = double.tryParse(strVal);
-      if (num == null) return 'Must be a valid number';
-      final double? min = (field['min'] as num?)?.toDouble();
-      final double? max = (field['max'] as num?)?.toDouble();
-      if (min != null && num < min) return 'Must be at least $min';
-      if (max != null && num > max) return 'Must be at most $max';
+      final double? numVal = double.tryParse(strVal);
+      if (numVal == null) return 'Must be a valid number';
+      final double? minVal = (field['min'] is num) ? (field['min'] as num).toDouble() : null;
+      final double? maxVal = (field['max'] is num) ? (field['max'] as num).toDouble() : null;
+      if (minVal != null && numVal < minVal) return 'Must be at least $minVal';
+      if (maxVal != null && numVal > maxVal) return 'Must be at most $maxVal';
     }
 
     final String? pattern = field['pattern']?.toString();

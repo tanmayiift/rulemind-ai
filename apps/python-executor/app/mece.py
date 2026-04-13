@@ -211,8 +211,22 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
 def extract_condition_constraint(node: Dict[str, Any]) -> Optional[FieldConstraint]:
     config = node.get("config") or {}
     field_name = config.get("field")
-    field_type = config.get("fieldType", "string")
     operator = config.get("operator", "==")
+    raw_value = config.get("value")
+    # Auto-detect field type from value when fieldType is not explicitly set
+    explicit_type = config.get("fieldType")
+    if explicit_type:
+        field_type = explicit_type
+    elif isinstance(raw_value, bool):
+        field_type = "boolean"
+    elif isinstance(raw_value, (int, float)):
+        field_type = "number"
+    elif isinstance(raw_value, list) and raw_value and isinstance(raw_value[0], (int, float)):
+        field_type = "number"
+    elif operator in (">=", ">", "<=", "<", "between"):
+        field_type = "number"
+    else:
+        field_type = "string"
     if not field_name:
         return None
 
@@ -248,10 +262,18 @@ def extract_condition_constraint(node: Dict[str, Any]) -> Optional[FieldConstrai
 
     # String / enum
     if operator == "in":
-        values = {v.strip() for v in str(config.get("value", "")).split(",") if v.strip()}
+        raw = config.get("value", "")
+        if isinstance(raw, list):
+            values = {str(v).strip() for v in raw if str(v).strip()}
+        else:
+            values = {v.strip() for v in str(raw).split(",") if v.strip()}
         return FieldConstraint(field_name, field_type, value_set=ValueSet(included=values))
     if operator == "not_in":
-        values = {v.strip() for v in str(config.get("value", "")).split(",") if v.strip()}
+        raw = config.get("value", "")
+        if isinstance(raw, list):
+            values = {str(v).strip() for v in raw if str(v).strip()}
+        else:
+            values = {v.strip() for v in str(raw).split(",") if v.strip()}
         return FieldConstraint(field_name, field_type, value_set=ValueSet(included=None, excluded=values))
     if operator == "==" and config.get("value") is not None:
         return FieldConstraint(field_name, field_type, value_set=ValueSet(included={str(config["value"])}))
@@ -268,6 +290,19 @@ def extract_condition_constraint(node: Dict[str, Any]) -> Optional[FieldConstrai
 
 
 def extract_rule_constraint_space(definition: Dict[str, Any]) -> List[List[FieldConstraint]]:
+    # Support shorthand: flat list of conditions (each with field/operator/value)
+    conditions = definition.get("conditions")
+    if isinstance(conditions, list) and conditions:
+        branch: List[FieldConstraint] = []
+        for cond in conditions:
+            fc = extract_condition_constraint({
+                "type": "condition",
+                "config": {"field": cond.get("field"), "operator": cond.get("operator"), "value": cond.get("value")},
+            })
+            if fc:
+                branch.append(fc)
+        return [branch] if branch else [[]]
+
     nodes = definition.get("nodes") or []
     connections = definition.get("connections") or []
     if not nodes:
@@ -578,10 +613,14 @@ def analyze_mece(rules: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Extract constraint spaces
     rule_spaces = []
     for rule in rules:
-        branches = extract_rule_constraint_space(rule.get("definition", {}))
+        # Support both full definition format and shorthand conditions format
+        defn = rule.get("definition", {})
+        if not defn and "conditions" in rule:
+            defn = {"conditions": rule["conditions"]}
+        branches = extract_rule_constraint_space(defn)
         rule_spaces.append({
             "id": rule["id"],
-            "name": rule["name"],
+            "name": rule.get("name", rule["id"]),
             "branches": branches,
             "definition": rule.get("definition", {}),
         })

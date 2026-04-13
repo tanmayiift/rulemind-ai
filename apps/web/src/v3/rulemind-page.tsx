@@ -2847,15 +2847,10 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
     setMeceResult(null);
     setMeceOverlapRuleIds(new Set());
     try {
-      // Gather rules referenced by this policy's steps
+      // Gather rule refs from this policy's steps
       const ruleSteps = steps.filter((step) => step.type === "rule");
-      const ruleInputs = ruleSteps.map((step) => {
-        const refId = step.ref_id ?? step.ref ?? "";
-        const rule = props.data.rules.find((r) => r.id === refId);
-        return rule ? { id: rule.id, name: rule.name, definition: rule.definition } : null;
-      }).filter(Boolean);
 
-      if (ruleInputs.length < 2) {
+      if (ruleSteps.length < 2) {
         props.onNotify("Need at least 2 rule steps to analyze MECE.");
         setBusy(false);
         return;
