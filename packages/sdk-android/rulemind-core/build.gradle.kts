@@ -4,7 +4,7 @@ plugins {
 }
 
 val activeJvm = JavaVersion.current().majorVersion.toIntOrNull() ?: 17
-val toolchainJvm = activeJvm.coerceIn(17, 21)
+val toolchainJvm = if (activeJvm in 17..21) activeJvm else 17
 
 kotlin {
     jvmToolchain(toolchainJvm)
