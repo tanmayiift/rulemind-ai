@@ -637,7 +637,7 @@ def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
             raise HTTPException(status_code=422, detail="Unknown scorecard in policy: {0}".format(ref_id))
         if step_type == "workflow" and not ref_id:
             raise HTTPException(status_code=422, detail="Sub-workflow step requires a ref_id (target policy).")
-        if step_type not in {"connector", "rule", "scorecard", "outcome", "transform", "action", "review_gate", "model", "branch", "workflow"}:
+        if step_type not in {"connector", "rule", "scorecard", "outcome", "transform", "action", "review_gate", "model", "branch", "workflow", "monitor"}:
             raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
 
 
@@ -1989,6 +1989,38 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         "scorecard_result": outcome["result"].get("scorecard_result"),
         "trace": outcome["result"]["trace"],
         "latency_ms": outcome["latency_ms"],
+    }
+
+
+class WorkflowCallbackRequest(BaseModel):
+    step_id: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/api/v1/workflows/{execution_id}/callback")
+def workflow_callback(execution_id: str, request: WorkflowCallbackRequest) -> Dict[str, Any]:
+    """Resume a durably-paused async workflow step with its provider's result.
+
+    An async `action` step fires its request, pauses the execution, and waits for
+    the provider to POST back here; the execution then continues from that step.
+    """
+    tenant_id = active_tenant_id()
+    execution = ensure_exists(storage.get_workflow_execution(execution_id, tenant_id=tenant_id), "workflow_execution", execution_id)
+    ctx = ExecutionContext.from_dict(execution["context"])
+    if ctx.status != "paused":
+        raise HTTPException(status_code=409, detail="Execution is not awaiting a callback (status: {0}).".format(ctx.status))
+    ctx.callbacks[request.step_id] = copy.deepcopy(request.data)
+    ctx.current_step_index = int(ctx.paused_at_step or 0)  # re-enter the async step to consume the callback
+    ctx.status = "running"
+    policy = ensure_exists(storage.get_policy(ctx.policy_id, tenant_id=tenant_id), "policy", ctx.policy_id)
+    result = asyncio.run(
+        workflow_executor().execute(policy=policy, payload=ctx.payload, tenant_id=tenant_id, resume_from=ctx, source="callback")
+    )
+    return {
+        "execution_id": execution_id,
+        "status": result.status,
+        "outcome": result.outcome if result.outcome != "pending" else (policy.get("defaultOutcome") or "review"),
+        "trace": result.step_trace,
     }
 
 

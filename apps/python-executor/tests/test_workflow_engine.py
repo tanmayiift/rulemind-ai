@@ -93,5 +93,48 @@ class WorkflowEngineTests(unittest.TestCase):
         self.assertTrue(any("cycle" in str(e).lower() for e in errors), errors)
 
 
+    def test_async_action_pauses_then_resumes_via_callback(self):
+        import asyncio
+
+        from app.executor import PolicyExecutor
+
+        pid = self._create_policy(
+            "Async KYC",
+            [
+                {"type": "action", "id": "kyc", "config": {"mode": "async", "url": "rulemind://simulate/kyc"}},
+                {"type": "outcome", "ref_id": "approve"},
+            ],
+        )
+        policy = app_main.storage.get_policy(pid)
+        tenant = app_main.storage.default_tenant_id or "default"
+        ctx = asyncio.run(PolicyExecutor(app_main.storage).execute(policy=policy, payload={}, tenant_id=tenant, source="test"))
+        self.assertEqual(ctx.status, "paused")  # durably waiting for the provider callback
+        eid = ctx.execution_id
+
+        resumed = self.client.post(
+            f"/api/v1/workflows/{eid}/callback",
+            json={"step_id": "kyc", "data": {"verified": True, "outcome": "approve"}},
+            headers=self.headers,
+        )
+        self.assertEqual(resumed.status_code, 200, resumed.text)
+        self.assertEqual(resumed.json()["status"], "completed")
+        self.assertEqual(resumed.json()["outcome"], "approve")
+
+    def test_monitor_fires_alert_and_schedules_reeval(self):
+        pid = self._create_policy(
+            "Monitored",
+            [
+                {"type": "outcome", "ref_id": "reject"},
+                {"type": "monitor", "name": "drift", "config": {"alertUrl": "rulemind://simulate/alert", "reevaluateInDays": 90}},
+            ],
+        )
+        result = self._decide(pid, {})
+        self.assertEqual(result["outcome"], "reject")
+        monitors = [e for e in result["trace"] if e.get("step", {}).get("type") == "monitor"]
+        self.assertTrue(monitors)
+        self.assertTrue(monitors[0]["result"].get("alerted"))
+        self.assertTrue(monitors[0]["result"].get("scheduled"))
+
+
 if __name__ == "__main__":
     unittest.main()

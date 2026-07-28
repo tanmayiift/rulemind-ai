@@ -162,6 +162,9 @@ class ExecutionContext:
     paused_at_step: Optional[int] = None
     review_task_id: Optional[str] = None
     review_response: Dict[str, Any] = field(default_factory=dict)
+    # Async-step callbacks: {step_id: callback_payload}. Set by the resume endpoint
+    # so a paused async action continues with its provider's response.
+    callbacks: Dict[str, Any] = field(default_factory=dict)
     experiment_id: Optional[str] = None
     experiment_variant: Optional[str] = None
     step_trace: List[Dict[str, Any]] = field(default_factory=list)
@@ -195,6 +198,7 @@ class ExecutionContext:
             paused_at_step=payload.get("paused_at_step"),
             review_task_id=payload.get("review_task_id"),
             review_response=copy.deepcopy(payload.get("review_response", {})),
+            callbacks=copy.deepcopy(payload.get("callbacks", {})),
             experiment_id=payload.get("experiment_id"),
             experiment_variant=payload.get("experiment_variant"),
             step_trace=copy.deepcopy(payload.get("step_trace", [])),
@@ -411,7 +415,51 @@ class PolicyExecutor:
             return await self._execute_branch(step, ctx, rules, scorecards, connectors, source, depth), None
         if step_type == "workflow":
             return await self._execute_subworkflow(step, ctx, rules, scorecards, connectors, source, depth), None
+        if step_type == "monitor":
+            return await self._execute_monitor(step, ctx), None
         return None, "Unknown step type: {0}".format(step_type)
+
+    async def _execute_monitor(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
+        """Post-decision monitor: fire an external alert webhook and/or schedule a
+        re-evaluation of the subject after a delay (drift / re-apply windows)."""
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        result: Dict[str, Any] = {"monitor": step.get("name", "monitor")}
+        alert_url = config.get("alertUrl")
+        if alert_url:
+            try:
+                await self._fire_action_request(
+                    step,
+                    ctx,
+                    {
+                        "url": alert_url,
+                        "method": config.get("method", "POST"),
+                        "headers": config.get("headers", {}),
+                        "bodyTemplate": config.get("payload", {"executionId": "{{execution_id}}", "outcome": "{{outcome}}"}),
+                        "timeoutMs": config.get("timeoutMs", 5000),
+                    },
+                )
+                result["alerted"] = True
+            except Exception as exc:  # pragma: no cover - alert best-effort
+                result["alertError"] = str(exc)
+        reeval_days = config.get("reevaluateInDays")
+        if reeval_days:
+            try:
+                self.storage.add_audit_event(
+                    {
+                        "tenant_id": ctx.tenant_id,
+                        "event_type": "monitor_scheduled",
+                        "entity_type": "workflow_execution",
+                        "entity_id": ctx.execution_id,
+                        "detail": "Re-evaluation scheduled in {0} day(s).".format(reeval_days),
+                        "metadata": {"policy_id": ctx.policy_id, "reevaluateInDays": reeval_days, "subject": ctx.user_id},
+                    },
+                    tenant_id=ctx.tenant_id,
+                )
+                result["reevaluateInDays"] = reeval_days
+                result["scheduled"] = True
+            except Exception:  # pragma: no cover
+                result["scheduled"] = False
+        return result
 
     async def _execute_branch(self, step, ctx, rules, scorecards, connectors, source, depth):
         """Multi-branch routing: run the first branch whose condition matches (or
@@ -624,6 +672,32 @@ class PolicyExecutor:
 
     async def _execute_action(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
         config = step.get("config", {})
+        # Async/durable action: on first arrival fire the request (to kick off the
+        # long-running provider job) then pause the execution; it resumes via the
+        # workflow callback endpoint once the provider posts its result back.
+        step_id = str(step.get("id") or step.get("name") or "action")
+        if config.get("mode") == "async":
+            if step_id in ctx.callbacks:
+                result = {"async": True, "resumed": True, "callback": ctx.callbacks[step_id]}
+                ctx.action_results.append(result)
+                # Merge an outcome the provider may have returned.
+                callback_outcome = ctx.callbacks[step_id].get("outcome") if isinstance(ctx.callbacks[step_id], dict) else None
+                if callback_outcome:
+                    ctx.outcome = _merge_outcome(ctx.outcome, str(callback_outcome))
+                return result
+            # kick off the async job (best-effort) then pause durably
+            try:
+                if config.get("url"):
+                    await self._fire_action_request(step, ctx, config)
+            except Exception:  # pragma: no cover - kickoff failures don't block the pause
+                pass
+            ctx.status = "paused"
+            ctx.paused_at_step = ctx.current_step_index
+            ctx.pending_operations.append({"type": "async_action", "step_id": step_id, "url": config.get("url")})
+            return {"paused": True, "awaiting": "callback", "stepId": step_id, "executionId": ctx.execution_id}
+        return await self._fire_action_request(step, ctx, config)
+
+    async def _fire_action_request(self, step: Dict[str, Any], ctx: ExecutionContext, config: Dict[str, Any]) -> Dict[str, Any]:
         view = self._context_view(ctx)
         resolved_secrets: set[str] = set()
         url = resolve_template(config.get("url", ""), view, resolved_secrets)
