@@ -1992,6 +1992,21 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
     }
 
 
+@app.get("/api/v1/providers")
+def list_provider_templates(category: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Built-in provider action templates for workflow API steps."""
+    from .providers import list_providers
+
+    return list_providers(category)
+
+
+@app.get("/api/v1/providers/{provider_id}")
+def get_provider_template(provider_id: str) -> Dict[str, Any]:
+    from .providers import get_provider
+
+    return ensure_exists(get_provider(provider_id), "provider", provider_id)
+
+
 class WorkflowCallbackRequest(BaseModel):
     step_id: str
     data: Dict[str, Any] = Field(default_factory=dict)

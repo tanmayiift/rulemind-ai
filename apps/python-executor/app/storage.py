@@ -1832,6 +1832,16 @@ class Storage:
 
     @staticmethod
     def _review_task_to_dict(model: ReviewTask) -> Dict[str, Any]:
+        snapshot = copy.deepcopy(model.context_snapshot or {})
+        routing = snapshot.get("routing", {}) if isinstance(snapshot, dict) else {}
+        sla_at = routing.get("sla_at")
+        sla_breached = False
+        if sla_at and model.status == "pending":
+            try:
+                deadline = datetime.fromisoformat(str(sla_at).replace("Z", "+00:00")).replace(tzinfo=None)
+                sla_breached = datetime.utcnow() > deadline
+            except ValueError:
+                sla_breached = False
         return {
             "id": model.id,
             "tenant_id": model.tenant_id,
@@ -1839,8 +1849,12 @@ class Storage:
             "policy_id": model.policy_id,
             "step_id": model.step_id,
             "queue": model.queue,
+            "role": routing.get("role"),
+            "priority": routing.get("priority", "normal"),
+            "sla_at": sla_at,
+            "sla_breached": sla_breached,
             "status": model.status,
-            "context_snapshot": copy.deepcopy(model.context_snapshot or {}),
+            "context_snapshot": snapshot,
             "required_fields": copy.deepcopy(model.required_fields or []),
             "reviewer_response": copy.deepcopy(model.reviewer_response),
             "reviewed_by": model.reviewed_by,
