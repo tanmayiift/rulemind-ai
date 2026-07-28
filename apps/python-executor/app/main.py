@@ -1801,8 +1801,13 @@ def execute_policy_endpoint(policy_id: str, request: TestPayloadRequest = Body(d
 
 
 @app.post("/api/v1/policies/{policy_id}/analyze-mece")
-def analyze_policy_mece(policy_id: str) -> Dict[str, Any]:
-    """Analyze the rules within a policy for MECE (Mutually Exclusive & Collectively Exhaustive) compliance."""
+def analyze_policy_mece(policy_id: str, payload: Optional[Dict[str, Any]] = Body(default=None)) -> Dict[str, Any]:
+    """Analyze the rules within a policy for MECE (Mutually Exclusive & Collectively Exhaustive) compliance.
+
+    Analyzes the persisted policy by default. If the caller posts a ``steps`` array
+    (e.g. the visual workflow builder validating unsaved edits), those steps are
+    analyzed instead so the check reflects what's on the canvas.
+    """
     from .mece import analyze_mece
 
     policy = find_by_id(storage.list_policies(), policy_id)
@@ -1810,7 +1815,8 @@ def analyze_policy_mece(policy_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Policy not found.")
 
     rules_map = current_rule_map()
-    steps = policy.get("steps") or []
+    posted_steps = payload.get("steps") if isinstance(payload, dict) else None
+    steps = posted_steps if isinstance(posted_steps, list) else (policy.get("steps") or [])
     rule_inputs = []
     for step in steps:
         ref_id = step.get("ref_id") or step.get("ref")
