@@ -1291,6 +1291,17 @@ DEFAULT_SETTINGS = {
     "source_defaults": {"default_format": "json", "batch_support": True, "active_sources": ["bureau", "bank", "gst", "device", "kyc"]},
     "audit_retention_days": 90,
     "theme_mode": "light",
+    # White-label branding, editable by admins only. Empty strings fall back to the
+    # active theme's tokens so an untouched install looks exactly like stock RuleMind.
+    "branding": {
+        "brandName": "",       # sidebar wordmark; "" -> "RuleMind"
+        "logoText": "",        # square logo glyph/initials; "" -> "R"
+        "accent": "",          # primary / CTA colour (hex)
+        "accentText": "",      # text colour on CTA buttons (hex)
+        "background": "",      # app canvas background (hex)
+        "sidebar": "",         # sidebar background (hex)
+        "hiddenNav": [],       # nav item hrefs to hide (e.g. "/experiments")
+    },
 }
 
 

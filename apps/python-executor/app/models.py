@@ -357,4 +357,7 @@ class Setting(Base):
     source_defaults: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     audit_retention_days: Mapped[int] = mapped_column(Integer, default=90, nullable=False)
     theme_mode: Mapped[str] = mapped_column(String(16), default="light", nullable=False)
+    # Admin-only, config-driven white-label branding (accent/CTA colour, background,
+    # sidebar, brand name/logo, hidden nav items). Empty values fall back to theme defaults.
+    branding: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

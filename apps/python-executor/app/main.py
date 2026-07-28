@@ -267,6 +267,7 @@ class SettingsRequest(BaseModel):
     source_defaults: Optional[Dict[str, Any]] = None
     audit_retention_days: Optional[int] = None
     theme_mode: Optional[str] = None
+    branding: Optional[Dict[str, Any]] = None
 
 
 class TenantCreateRequest(BaseModel):

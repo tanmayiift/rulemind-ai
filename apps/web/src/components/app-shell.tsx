@@ -6,7 +6,16 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, Moon, Sun, X } from "lucide-react";
 import { useRuleMindStore } from "../lib/store";
+import { apiJson } from "../lib/api";
 import { ENVIRONMENT_ACCENT, THEMES, themeStyleBlock } from "../v3/theme";
+import {
+  type Branding,
+  withBranding,
+  brandingStyleBlock,
+  brandName as resolveBrandName,
+  logoText as resolveLogoText,
+  isNavHidden,
+} from "../v3/branding";
 import { PageIcon } from "../v3/icons";
 
 const NAVIGATION: ReadonlyArray<{
@@ -48,7 +57,10 @@ const NAVIGATION: ReadonlyArray<{
   },
   {
     group: "System",
-    items: [{ href: "/settings" as Route, label: "Settings", icon: "settings" }],
+    items: [
+      { href: "/settings" as Route, label: "Settings", icon: "settings" },
+      { href: "/branding" as Route, label: "Branding", icon: "settings" },
+    ],
   },
 ];
 
@@ -66,12 +78,14 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/audit": { title: "Audit Logs", subtitle: "Decision history, promotion history, and operational error telemetry." },
   "/exports": { title: "Exports", subtitle: "Download, validate, and restore complete RuleMind configurations." },
   "/settings": { title: "Settings", subtitle: "Persist API, engine, audit, source, SDK, and environment defaults." },
+  "/branding": { title: "Branding", subtitle: "Admin-only white-label theming — CTA colour, backgrounds, brand name, and visible tabs." },
 };
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const {
     apiBaseUrl,
+    apiKey,
     environment,
     setEnvironment,
     themeMode,
@@ -84,13 +98,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setMobileMenuOpen,
     setSidebarOpen,
   } = useRuleMindStore();
-  const theme = THEMES[themeMode];
+  const [branding, setBranding] = React.useState<Branding | undefined>(undefined);
+  const theme = withBranding(THEMES[themeMode], branding);
   const page = PAGE_COPY[pathname ?? "/"] ?? PAGE_COPY["/"];
+
+  // Load tenant-wide, admin-configured branding once; apply it as CSS-var overrides.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const settings = await apiJson<{ branding?: Branding }>(apiBaseUrl, "/api/v1/settings", {}, apiKey);
+        if (!cancelled) setBranding(settings.branding ?? undefined);
+      } catch {
+        /* branding is optional — stock theme is a fine fallback */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, apiKey]);
 
   React.useEffect(() => {
     document.documentElement.dataset.theme = themeMode;
-    document.documentElement.setAttribute("style", themeStyleBlock(themeMode));
-  }, [themeMode]);
+    const base = themeStyleBlock(themeMode);
+    const brand = brandingStyleBlock(branding);
+    document.documentElement.setAttribute("style", brand ? base + ";" + brand : base);
+  }, [themeMode, branding]);
 
   React.useEffect(() => {
     const mq = window.matchMedia("(max-width: 768px)");
@@ -194,15 +227,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {showLabels ? <X size={18} /> : <Menu size={18} />}
             </button>
             {showLabels ? (
-              <div style={{ display: "grid", gap: 2 }}>
-                <span style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, letterSpacing: -0.3 }}>RuleMind</span>
-                <span style={{ fontSize: "var(--rm-fs-caption)", color: theme.sidebarGroup }}>Enterprise decisioning</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span
+                  aria-hidden
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: 7,
+                    background: theme.accent,
+                    color: theme.inverseText,
+                    display: "grid",
+                    placeItems: "center",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    flexShrink: 0,
+                  }}
+                >
+                  {resolveLogoText(branding)}
+                </span>
+                <div style={{ display: "grid", gap: 2 }}>
+                  <span style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, letterSpacing: -0.3 }}>{resolveBrandName(branding)}</span>
+                  <span style={{ fontSize: "var(--rm-fs-caption)", color: theme.sidebarGroup }}>Enterprise decisioning</span>
+                </div>
               </div>
             ) : null}
           </div>
 
           <nav style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
-            {NAVIGATION.map((group) => (
+            {NAVIGATION.map((group) => ({ ...group, items: group.items.filter((item) => !isNavHidden(branding, item.href)) }))
+              .filter((group) => group.items.length > 0)
+              .map((group) => (
               <div key={group.group} style={{ marginBottom: 10 }}>
                 {showLabels ? (
                   <div
