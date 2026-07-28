@@ -38,3 +38,7 @@ target/
 # Python venv / caches
 **/.venv/
 **/__pycache__/
+
+# wasm-pack build outputs
+packages/rulemind-core-rs/pkg/
+packages/rulemind-core-rs/pkg-node/

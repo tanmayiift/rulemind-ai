@@ -1,0 +1,27 @@
+RuleMind
+Copyright 2026 the RuleMind authors (https://github.com/tanmayiift/rulemind-ai)
+
+This product includes software developed as the RuleMind decisioning platform.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------------
+Attribution (please credit)
+------------------------------------------------------------------------------
+RuleMind is free to use, fork, self-host, and extend under Apache-2.0 — no
+approval or payment required. If you build a product or service on RuleMind, we
+ask that you credit it visibly, for example:
+
+    "Built on RuleMind"  /  "Powered by RuleMind"
+
+with a link to https://github.com/tanmayiift/rulemind-ai. This is a request, not
+a license condition. Retaining this NOTICE in redistributions of the source or
+binaries IS required by the Apache-2.0 license (Section 4d).
+
+------------------------------------------------------------------------------
+Trademarks
+------------------------------------------------------------------------------
+"RuleMind" and the RuleMind name and logo are trademarks of the project owner.
+The Apache-2.0 license covers the code — it does NOT grant rights to the RuleMind
+name or logo. Please do not use them in a way that implies endorsement, or to
+pass off a derivative product as RuleMind. You may of course state truthfully
+that your product is "built on RuleMind".
