@@ -34,6 +34,7 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/rules" as Route, label: "Rules", icon: "rules" },
       { href: "/scorecards" as Route, label: "Scorecards", icon: "scorecards" },
       { href: "/policies" as Route, label: "Policies", icon: "policies" },
+      { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
     ],
   },
   {
@@ -79,6 +80,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/exports": { title: "Exports", subtitle: "Download, validate, and restore complete RuleMind configurations." },
   "/settings": { title: "Settings", subtitle: "Persist API, engine, audit, source, SDK, and environment defaults." },
   "/branding": { title: "Branding", subtitle: "Admin-only white-label theming — CTA colour, backgrounds, brand name, and visible tabs." },
+  "/workflow-builder": { title: "Workflow Builder", subtitle: "Drag-and-drop canvas for policy steps — connectors, rules, branches, sub-workflows, monitors, and outcomes." },
 };
 
 export function AppShell({ children }: { children: React.ReactNode }) {
