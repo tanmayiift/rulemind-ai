@@ -1,10 +1,13 @@
 # RuleMind AI
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-5b5bd6.svg)](LICENSE)
+[![Built on RuleMind](https://img.shields.io/badge/Built%20on-RuleMind-5b5bd6.svg)](https://github.com/tanmayiift/rulemind-ai)
+
 Open-source, source-agnostic decisioning engine. Build rules, scorecards, and policies from any JSON data source — then deploy them through `dev > uat > prod` with full audit trails.
 
 RuleMind accepts JSON payloads from pluggable connectors (bureau, bank, GST, device, KYC, or custom APIs), lets teams author Python variables, click-built rules, scorecards, and multi-step policies — all from a visual dashboard.
 
-**License:** Apache 2.0 — fork it, self-host it, extend it. No approval needed.
+**License:** Apache 2.0 — fork it, self-host it, extend it. No approval or payment needed. If you build on RuleMind, please **credit it visibly** ("Built on RuleMind", with a link) — a request, not a condition. The **RuleMind name and logo are trademarks**; the license covers the code, not the brand. See [NOTICE](NOTICE) and the [attribution section](#license-attribution--trademark).
 
 ## Features
 
@@ -660,8 +663,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and coding guide
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and security architecture details.
 
-## License
+## License, attribution & trademark
 
-Apache License 2.0 — see [LICENSE](LICENSE) for full text.
+**Code:** [Apache License 2.0](LICENSE) — use, modify, self-host, and distribute freely, **no permission or payment required**.
 
-You are free to use, modify, and distribute this software without requiring permission from the original authors.
+**Please credit (a request, not a condition):** if you build a product or service on RuleMind, credit it visibly — e.g. **"Built on RuleMind"** or **"Powered by RuleMind"**, with a link to this repo. It costs you nothing and helps the project. Retaining the [NOTICE](NOTICE) file in redistributions *is* required by Apache-2.0.
+
+```
+Built on RuleMind — https://github.com/tanmayiift/rulemind-ai
+```
+
+**Trademark:** the **RuleMind** name and logo are trademarks of the project owner. Apache-2.0 grants rights to the *code*, not the *brand* — don't use the name/logo to imply endorsement or to pass a derivative off as RuleMind. You may always state truthfully that your product is *built on* RuleMind. See [NOTICE](NOTICE).

@@ -353,6 +353,50 @@ mod python {
 }
 
 // --------------------------------------------------------------------------
+// WASM (wasm-bindgen) interface for edge / browser / on-device
+// --------------------------------------------------------------------------
+#[cfg(feature = "wasm")]
+mod wasm_bindings {
+    use super::*;
+    use wasm_bindgen::prelude::*;
+
+    /// Evaluate a single condition. Inputs are JSON strings.
+    #[wasm_bindgen(js_name = compare)]
+    pub fn compare_wasm(
+        actual_json: &str,
+        operator: &str,
+        expected_json: &str,
+        expected2_json: &str,
+        field_type: Option<String>,
+    ) -> bool {
+        let a: Value = serde_json::from_str(actual_json).unwrap_or(Value::Null);
+        let e: Value = serde_json::from_str(expected_json).unwrap_or(Value::Null);
+        let e2: Value = serde_json::from_str(expected2_json).unwrap_or(Value::Null);
+        crate::compare(&a, operator, &e, &e2, field_type.as_deref())
+    }
+
+    /// Evaluate a v2 rule tree; returns the outcome string.
+    #[wasm_bindgen(js_name = evaluateTree)]
+    pub fn evaluate_tree_wasm(tree_json: &str, variables_json: &str) -> String {
+        let tree: Value = serde_json::from_str(tree_json).unwrap_or(Value::Null);
+        let vars: Value = serde_json::from_str(variables_json).unwrap_or(Value::Null);
+        crate::evaluate_tree(&tree, &vars)
+    }
+
+    /// Decide a compiled bundle against a payload; returns the outcome string.
+    #[wasm_bindgen(js_name = decide)]
+    pub fn decide_wasm(bundle_json: &str, payload_json: &str) -> String {
+        match crate::CompiledBundle::from_json(bundle_json) {
+            Ok(bundle) => {
+                let vars: Value = serde_json::from_str(payload_json).unwrap_or(Value::Null);
+                bundle.decide(&vars)
+            }
+            Err(_) => String::from("error"),
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
 // Native Rust tests
 // --------------------------------------------------------------------------
 #[cfg(test)]

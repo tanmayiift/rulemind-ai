@@ -14,9 +14,12 @@ crate-type = ["cdylib", "rlib"]
 serde_json = "1"
 regex = "1"
 pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
 
 [features]
 default = ["python"]
-# `python` pulls in PyO3 for the CPython extension. Omit for a WASM/native build:
-#   cargo build --no-default-features
+# `python` pulls in PyO3 for the CPython extension.
 python = ["dep:pyo3"]
+# `wasm` exposes a wasm-bindgen JS interface for edge/browser/on-device:
+#   wasm-pack build --no-default-features --features wasm --target web
+wasm = ["dep:wasm-bindgen"]
