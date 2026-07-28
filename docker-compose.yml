@@ -54,7 +54,10 @@ services:
     build:
       context: .
       dockerfile: apps/python-executor/Dockerfile
-    command: ["python3", "-m", "app.worker"]
+    # Skip the migration entrypoint — the api runs migrations once; the worker just
+    # needs the schema to be current (it retries until the api has migrated).
+    entrypoint: ["python3"]
+    command: ["-m", "app.worker"]
     environment:
       DATABASE_URL: postgresql://rulemind:${POSTGRES_PASSWORD:-rulemind}@db:5432/rulemind
       RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
