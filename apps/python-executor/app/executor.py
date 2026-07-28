@@ -219,9 +219,13 @@ def _decision_log_pool() -> ThreadPoolExecutor:
     return _DECISION_LOG_POOL
 
 
+_MAX_WORKFLOW_DEPTH = 10
+
+
 class PolicyExecutor:
     def __init__(self, storage: Storage):
         self.storage = storage
+        self._visited_workflows: set = set()
         # Per-execution catalog cache. A PolicyExecutor is created fresh per
         # request, so memoizing the tenant's connectors/variables/settings/secrets
         # here removes the repeated DB round-trips that dominated decision latency
@@ -344,6 +348,105 @@ class PolicyExecutor:
         ctx.variables = values
         ctx.payload = payloads
 
+    async def _run_steps(
+        self,
+        steps: List[Dict[str, Any]],
+        ctx: ExecutionContext,
+        rules: Dict[str, Any],
+        scorecards: Dict[str, Any],
+        connectors: Dict[str, Any],
+        source: str,
+        depth: int = 0,
+        start_index: int = 0,
+    ) -> None:
+        """Run an ordered list of steps. Reused by the top-level policy, by branch
+        arms, and by sub-workflows. Bubbles up a review-gate pause (nested resume
+        is a later phase) and stops on an aborting failure."""
+        for index in range(start_index, len(steps)):
+            step = steps[index]
+            if depth == 0:
+                ctx.current_step_index = index
+            config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+            condition = config.get("condition")
+            if condition and not evaluate_condition(condition, self._context_view(ctx)):
+                ctx.step_trace.append({"step": step, "skipped": True, "reason": "Condition not met: {0}".format(condition)})
+                continue
+            started = time.perf_counter()
+            result: Any = None
+            error: Optional[str] = None
+            try:
+                result, error = await self._execute_step_body(step, ctx, rules, scorecards, connectors, source, depth)
+                if ctx.status == "paused":
+                    ctx.step_trace.append({"step": step, "result": result, "error": error, "duration_ms": _ms_since(started)})
+                    return
+            except Exception as exc:  # pragma: no cover - defensive execution path
+                error = str(exc)
+                if config.get("onFailure") == "abort":
+                    ctx.status = "failed"
+            ctx.step_trace.append({"step": step, "result": result, "error": error, "duration_ms": _ms_since(started)})
+            if ctx.status == "failed":
+                return
+
+    async def _execute_step_body(self, step, ctx, rules, scorecards, connectors, source, depth):
+        step_type = step.get("type")
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        if step_type == "connector":
+            return self._execute_connector(step, ctx, connectors), None
+        if step_type == "rule":
+            return self._execute_rule(step, ctx, rules), None
+        if step_type == "scorecard":
+            return self._execute_scorecard(step, ctx, scorecards), None
+        if step_type == "transform":
+            return await self._execute_transform(step, ctx), None
+        if step_type == "action":
+            return await self._execute_action(step, ctx), None
+        if step_type == "model":
+            return self._execute_model(step, ctx), None
+        if step_type == "review_gate":
+            return await self._execute_review_gate(step, ctx), None
+        if step_type == "outcome":
+            ctx.outcome = _merge_outcome(ctx.outcome, step.get("ref_id") or config.get("outcome") or step.get("label") or "review")
+            return {"outcome": ctx.outcome}, None
+        if step_type == "branch":
+            return await self._execute_branch(step, ctx, rules, scorecards, connectors, source, depth), None
+        if step_type == "workflow":
+            return await self._execute_subworkflow(step, ctx, rules, scorecards, connectors, source, depth), None
+        return None, "Unknown step type: {0}".format(step_type)
+
+    async def _execute_branch(self, step, ctx, rules, scorecards, connectors, source, depth):
+        """Multi-branch routing: run the first branch whose condition matches (or
+        `default`). Branches are lists of steps evaluated with the live context."""
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        branches = config.get("branches", []) or []
+        view = self._context_view(ctx)
+        for i, branch in enumerate(branches):
+            cond = branch.get("condition")
+            if not cond or evaluate_condition(cond, view):
+                await self._run_steps(branch.get("steps", []) or [], ctx, rules, scorecards, connectors, source, depth + 1)
+                return {"branch": i, "label": branch.get("label", i), "matched": True}
+        default_steps = config.get("default", []) or []
+        if default_steps:
+            await self._run_steps(default_steps, ctx, rules, scorecards, connectors, source, depth + 1)
+            return {"branch": "default", "matched": True}
+        return {"branch": None, "matched": False}
+
+    async def _execute_subworkflow(self, step, ctx, rules, scorecards, connectors, source, depth):
+        """Invoke another policy as a step (composition), sharing the live context.
+        Guards against cycles and runaway depth."""
+        if depth >= _MAX_WORKFLOW_DEPTH:
+            raise ValueError("Max sub-workflow depth ({0}) exceeded".format(_MAX_WORKFLOW_DEPTH))
+        ref_id = step.get("ref_id") or step.get("ref")
+        if not ref_id:
+            raise ValueError("Sub-workflow step missing ref_id")
+        if ref_id in self._visited_workflows:
+            raise ValueError("Sub-workflow cycle detected: {0}".format(ref_id))
+        sub_policy = self.storage.get_policy(ref_id, tenant_id=ctx.tenant_id)
+        if not sub_policy:
+            raise ValueError("Unknown sub-workflow: {0}".format(ref_id))
+        self._visited_workflows.add(ref_id)
+        await self._run_steps(sub_policy.get("steps", []) or [], ctx, rules, scorecards, connectors, source, depth + 1)
+        return {"workflow": ref_id, "outcome": ctx.outcome}
+
     async def execute(
         self,
         policy: Dict[str, Any],
@@ -393,67 +496,12 @@ class PolicyExecutor:
             self._compute_variables(ctx, needed_ids=needed)
 
         steps = policy.get("steps", [])
-        for index in range(start_step, len(steps)):
-            step = steps[index]
-            ctx.current_step_index = index
-            config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
-            condition = config.get("condition")
-            if condition and not evaluate_condition(condition, self._context_view(ctx)):
-                ctx.step_trace.append({"step": step, "skipped": True, "reason": "Condition not met: {0}".format(condition)})
-                continue
-
-            started = time.perf_counter()
-            result: Any = None
-            error: Optional[str] = None
-            try:
-                step_type = step.get("type")
-                if step_type == "connector":
-                    result = self._execute_connector(step, ctx, connectors)
-                elif step_type == "rule":
-                    result = self._execute_rule(step, ctx, rules)
-                elif step_type == "scorecard":
-                    result = self._execute_scorecard(step, ctx, scorecards)
-                elif step_type == "transform":
-                    result = await self._execute_transform(step, ctx)
-                elif step_type == "action":
-                    result = await self._execute_action(step, ctx)
-                elif step_type == "model":
-                    result = self._execute_model(step, ctx)
-                elif step_type == "review_gate":
-                    result = await self._execute_review_gate(step, ctx)
-                    if ctx.status == "paused":
-                        ctx.step_trace.append(
-                            {
-                                "step": step,
-                                "result": result,
-                                "error": error,
-                                "duration_ms": _ms_since(started),
-                            }
-                        )
-                        self._persist_execution(ctx, trigger_type=source)
-                        return ctx
-                elif step_type == "outcome":
-                    ctx.outcome = _merge_outcome(
-                        ctx.outcome,
-                        step.get("ref_id") or config.get("outcome") or step.get("label") or "review",
-                    )
-                    result = {"outcome": ctx.outcome}
-                else:
-                    error = "Unknown step type: {0}".format(step_type)
-            except Exception as exc:  # pragma: no cover - defensive execution path
-                error = str(exc)
-                if config.get("onFailure") == "abort":
-                    ctx.status = "failed"
-            ctx.step_trace.append(
-                {
-                    "step": step,
-                    "result": result,
-                    "error": error,
-                    "duration_ms": _ms_since(started),
-                }
-            )
-            if ctx.status == "failed":
-                break
+        # Cycle guard for sub-workflow composition — this policy is already active.
+        self._visited_workflows = {policy["id"]}
+        await self._run_steps(steps, ctx, rules, scorecards, connectors, source, depth=0, start_index=start_step)
+        if ctx.status == "paused":
+            self._persist_execution(ctx, trigger_type=source)
+            return ctx
 
         if ctx.status == "running":
             ctx.status = "completed"

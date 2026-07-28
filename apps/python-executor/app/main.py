@@ -635,7 +635,9 @@ def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
             raise HTTPException(status_code=422, detail="Unknown rule in policy: {0}".format(ref_id))
         if step_type == "scorecard" and ref_id not in scorecards_map:
             raise HTTPException(status_code=422, detail="Unknown scorecard in policy: {0}".format(ref_id))
-        if step_type not in {"connector", "rule", "scorecard", "outcome", "transform", "action", "review_gate"}:
+        if step_type == "workflow" and not ref_id:
+            raise HTTPException(status_code=422, detail="Sub-workflow step requires a ref_id (target policy).")
+        if step_type not in {"connector", "rule", "scorecard", "outcome", "transform", "action", "review_gate", "model", "branch", "workflow"}:
             raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
 
 
@@ -752,7 +754,7 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
     scorecard_result = next(iter(ctx.scorecard_results.values()), None)
     outcome = {
         "policy_id": policy.get("id"),
-        "outcome": ctx.outcome if ctx.outcome != "pending" else policy.get("defaultOutcome", "review"),
+        "outcome": ctx.outcome if ctx.outcome != "pending" else (policy.get("defaultOutcome") or "review"),
         "scorecard_result": scorecard_result,
         "trace": copy.deepcopy(ctx.step_trace),
         "status": ctx.status,
