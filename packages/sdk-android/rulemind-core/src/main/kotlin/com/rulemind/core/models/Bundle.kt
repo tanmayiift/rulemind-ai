@@ -38,6 +38,8 @@ data class RuleTreeNode(
     val variable: String? = null,
     val operator: String? = null,
     val value: Any? = null,
+    val value2: Any? = null,
+    val fieldType: String? = null,
     val logic: String? = null,
     val children: List<RuleTreeNode> = emptyList(),
     val child: RuleTreeNode? = null,

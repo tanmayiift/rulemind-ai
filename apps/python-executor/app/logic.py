@@ -63,15 +63,19 @@ def nodes_to_tree(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
     for node in nodes:
         node_type = node.get("type")
         if node_type == "condition":
-            children.append(
-                {
-                    "type": "condition",
-                    "id": node.get("id"),
-                    "variable": node.get("variable"),
-                    "operator": node.get("operator", "=="),
-                    "value": parse_rule_value(node.get("value")),
-                }
-            )
+            condition = {
+                "type": "condition",
+                "id": node.get("id"),
+                "variable": node.get("variable"),
+                "operator": node.get("operator", "=="),
+                "value": parse_rule_value(node.get("value")),
+            }
+            if node.get("value2") is not None:
+                condition["value2"] = parse_rule_value(node.get("value2"))
+            field_type = node.get("fieldType") or node.get("field_type")
+            if field_type is not None:
+                condition["fieldType"] = field_type
+            children.append(condition)
         elif node_type == "or":
             logic = "OR"
         elif node_type == "and":
@@ -169,12 +173,83 @@ def generate_rule_expression_definition(rule: Dict[str, Any], variable_lookup: D
     return generate_rule_expression(rule.get("nodes", []), variable_lookup)
 
 
-def compare(actual: Any, operator: str, expected: Any) -> bool:
-    if operator in {">=", "<=", ">", "<"}:
+def _coerce_number(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def _as_option_list(expected: Any) -> List[Any]:
+    if isinstance(expected, (list, tuple, set)):
+        return list(expected)
+    if expected is None:
+        return []
+    return [item.strip() for item in str(expected).split(",") if item.strip() != ""]
+
+
+def _loose_equal(actual: Any, expected: Any) -> bool:
+    if actual == expected:
+        return True
+    actual_number = _coerce_number(actual)
+    expected_number = _coerce_number(expected)
+    if actual_number is not None and expected_number is not None:
+        return actual_number == expected_number
+    return str(actual) == str(expected)
+
+
+def compare(
+    actual: Any,
+    operator: str,
+    expected: Any,
+    expected2: Any = None,
+    field_type: Optional[str] = None,
+) -> bool:
+    """Evaluate a single condition.
+
+    Mirrors the operator set of the TypeScript engine (packages/rule-engine)
+    so that the server runtime, the browser preview, and the mobile SDKs all
+    agree. Supports: == != > >= < <= between in not_in regex exists !exists.
+    """
+    # Existence checks intentionally run before the "missing value" guard.
+    if operator == "exists":
+        return actual is not None and actual != ""
+    if operator == "!exists":
+        return actual is None or actual == ""
+
+    # Set membership. `expected` may be a list or a comma-separated string.
+    if operator in {"in", "not_in"}:
+        options = _as_option_list(expected)
+        matched = any(_loose_equal(actual, option) for option in options)
+        return matched if operator == "in" else not matched
+
+    # Regular-expression match against the string form of the value.
+    if operator == "regex":
+        if actual is None:
+            return False
         try:
-            actual_value = float(actual)
-            expected_value = float(expected)
-        except (TypeError, ValueError):
+            return re.search(str(expected), str(actual)) is not None
+        except re.error:
+            return False
+
+    # Boolean-typed equality (only when the field is declared boolean).
+    if (field_type or "").lower() == "boolean" and operator in {"==", "!="}:
+        matched = _to_bool(actual) == _to_bool(expected)
+        return matched if operator == "==" else not matched
+
+    # Ordered comparisons and inclusive range operate on numbers.
+    if operator in {">=", "<=", ">", "<", "between"}:
+        actual_value = _coerce_number(actual)
+        expected_value = _coerce_number(expected)
+        if actual_value is None or expected_value is None:
             return False
         if operator == ">=":
             return actual_value >= expected_value
@@ -182,7 +257,13 @@ def compare(actual: Any, operator: str, expected: Any) -> bool:
             return actual_value <= expected_value
         if operator == ">":
             return actual_value > expected_value
-        return actual_value < expected_value
+        if operator == "<":
+            return actual_value < expected_value
+        # between is inclusive and requires an upper bound (value2).
+        upper_value = _coerce_number(expected2)
+        if upper_value is None:
+            return False
+        return expected_value <= actual_value <= upper_value
 
     if operator == "==":
         return actual == expected
@@ -206,7 +287,9 @@ def evaluate_rule_tree(
             variable_id = str(node.get("variable", ""))
             actual = variable_values.get(variable_id)
             expected = parse_rule_value(node.get("value"))
-            passed = compare(actual, str(node.get("operator", "==")), expected)
+            expected2 = parse_rule_value(node.get("value2")) if node.get("value2") is not None else None
+            field_type = node.get("fieldType") or node.get("field_type")
+            passed = compare(actual, str(node.get("operator", "==")), expected, expected2, field_type)
             condition_results.append(
                 {
                     "variable_id": variable_id,

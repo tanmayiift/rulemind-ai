@@ -1,0 +1,59 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "title": "RuleMind — Decisioning Overview",
+  "uid": "rulemind-overview",
+  "tags": ["rulemind"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Total decisions",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(rulemind_decisions_total)", "refId": "A" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Decision rate by outcome (per sec)",
+      "gridPos": { "h": 9, "w": 12, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (outcome) (rate(rulemind_decisions_total[1m]))", "legendFormat": "{{outcome}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "piechart",
+      "title": "Outcome mix",
+      "gridPos": { "h": 9, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (outcome) (rulemind_decisions_total)", "legendFormat": "{{outcome}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Decisions by source",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (source) (rate(rulemind_decisions_total[1m]))", "legendFormat": "{{source}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "Traces",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "options": {
+        "mode": "markdown",
+        "content": "Distributed traces of every request are in the **Tempo** data source (Explore → Tempo). Each `/api/v1/decide` call is a span tree across FastAPI + SQLAlchemy. Point any OTLP backend at the collector to swap Tempo out."
+      }
+    }
+  ]
+}

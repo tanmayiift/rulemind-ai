@@ -14,9 +14,12 @@ const NAVIGATION: ReadonlyArray<{
   items: Array<{ href: Route; label: string; icon: string }>;
 }> = [
   {
+    group: "Overview",
+    items: [{ href: "/" as Route, label: "Dashboard", icon: "dashboard" }],
+  },
+  {
     group: "Build",
     items: [
-      { href: "/" as Route, label: "Dashboard", icon: "dashboard" },
       { href: "/connectors" as Route, label: "Connectors", icon: "connectors" },
       { href: "/variables" as Route, label: "Variables", icon: "variables" },
       { href: "/rules" as Route, label: "Rules", icon: "rules" },
@@ -25,12 +28,17 @@ const NAVIGATION: ReadonlyArray<{
     ],
   },
   {
-    group: "Operate",
+    group: "Validate & ship",
     items: [
       { href: "/test-console" as Route, label: "Test Console", icon: "testing" },
+      { href: "/deploy" as Route, label: "Deploy", icon: "deploy" },
+    ],
+  },
+  {
+    group: "Operate",
+    items: [
       { href: "/review-queue" as Route, label: "Review Queue", icon: "audit" },
       { href: "/schedules" as Route, label: "Schedules", icon: "deploy" },
-      { href: "/deploy" as Route, label: "Deploy", icon: "deploy" },
       { href: "/audit" as Route, label: "Audit Logs", icon: "audit" },
       { href: "/exports" as Route, label: "Exports", icon: "exports" },
     ],

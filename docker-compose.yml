@@ -35,6 +35,10 @@ services:
       PYTHON_SANDBOX_TIMEOUT: 2000
       PYTHON_SANDBOX_MEMORY: 128
       CORS_ORIGINS: ${RULEMIND_WEB_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Empty by default = tracing off. Set to http://otel-collector:4317 with the
+      # observability profile to emit traces. Metrics are always on at /metrics.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: rulemind-api
     depends_on:
       db:
         condition: service_healthy
@@ -96,6 +100,56 @@ services:
       timeout: 3s
       retries: 10
 
+  # ---------------------------------------------------------------------------
+  # Observability stack — starts only with:  docker compose --profile observability up
+  # Grafana at http://localhost:3001 (admin/admin). Prometheus scrapes /metrics;
+  # Tempo receives OTLP traces via the collector. Pre-provisioned datasources +
+  # a starter dashboard. To emit traces, also set OTEL_EXPORTER_OTLP_ENDPOINT.
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    profiles: ["observability"]
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "${RULEMIND_OTLP_PORT:-4317}:4317"
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    profiles: ["observability"]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempodata:/var/tempo
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${RULEMIND_PROM_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "${RULEMIND_GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
+      - tempo
+
 volumes:
   pgdata:
   redisdata:
+  tempodata:
+  grafanadata:

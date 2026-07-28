@@ -4,6 +4,7 @@ import math
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Union
 
+from .champion_challenger import analyze_champion_challenger
 from .runtime import cache_get_json, cache_set_json
 from .storage import Storage
 
@@ -148,22 +149,27 @@ def experiment_analytics(storage: Storage, tenant_id: str, experiment_id: str) -
         grouped[str(decision.get("experiment_variant"))].append(decision)
 
     variant_rows = []
+    variant_stats: dict[str, dict[str, Any]] = {}
     for variant in experiment.get("variants", []):
         items = grouped.get(variant.get("id"), [])
         users = len(items)
         approved = sum(1 for item in items if item.get("outcome") == "approve")
         rejected = sum(1 for item in items if item.get("outcome") == "reject")
         reviewed = sum(1 for item in items if item.get("outcome") == "review")
-        variant_rows.append(
-            {
-                "id": variant.get("id"),
-                "users": users,
-                "approved": approved,
-                "rejected": rejected,
-                "reviewed": reviewed,
-                "approvalRate": round((approved / users) * 100, 2) if users else 0,
-            }
-        )
+        avg_latency = round(sum(int(item.get("latency_ms", 0)) for item in items) / users, 2) if users else 0
+        row = {
+            "id": variant.get("id"),
+            "role": variant.get("role"),
+            "users": users,
+            "approved": approved,
+            "rejected": rejected,
+            "reviewed": reviewed,
+            "approvalRate": round((approved / users) * 100, 2) if users else 0,
+            "rejectRate": round((rejected / users) * 100, 2) if users else 0,
+            "avgLatencyMs": avg_latency,
+        }
+        variant_rows.append(row)
+        variant_stats[str(variant.get("id"))] = row
 
     significance = {"pValue": 1.0, "significant": False}
     if len(variant_rows) >= 2:
@@ -178,6 +184,13 @@ def experiment_analytics(storage: Storage, tenant_id: str, experiment_id: str) -
         p_value = math.erfc(abs(z_score) / math.sqrt(2))
         significance = {"pValue": round(p_value, 6), "significant": p_value < 0.05}
 
-    result = {"experiment": {key: experiment[key] for key in ["id", "name", "status"]}, "variants": variant_rows, "significance": significance}
+    champion_challenger = analyze_champion_challenger(experiment.get("variants", []), variant_stats)
+
+    result = {
+        "experiment": {key: experiment[key] for key in ["id", "name", "status"]},
+        "variants": variant_rows,
+        "significance": significance,
+        "championChallenger": champion_challenger,
+    }
     cache_set_json(cache_key, result, ttl_seconds=300)
     return result

@@ -1,0 +1,61 @@
+{
+  "$comment": "Canonical cross-engine operator contract for RuleMind. Every evaluation engine (TypeScript packages/rule-engine, Python apps/python-executor, Kotlin sdk-android/rulemind-core, Dart sdk-flutter) MUST satisfy every case below. Conformance tests in each language load this file and assert their compare() returns `expected`. Fixtures use native JSON types and set fieldType on ordering/equality cases so all engines agree without relying on value-string-parsing differences. Do not weaken a case to make an engine pass — fix the engine.",
+  "version": 1,
+  "operators": [
+    { "op": "==", "arity": 1 },
+    { "op": "!=", "arity": 1 },
+    { "op": ">", "arity": 1, "numeric": true },
+    { "op": ">=", "arity": 1, "numeric": true },
+    { "op": "<", "arity": 1, "numeric": true },
+    { "op": "<=", "arity": 1, "numeric": true },
+    { "op": "between", "arity": 2, "numeric": true, "needsValue2": true },
+    { "op": "in", "arity": 1, "set": true },
+    { "op": "not_in", "arity": 1, "set": true },
+    { "op": "regex", "arity": 1 },
+    { "op": "exists", "arity": 0 },
+    { "op": "!exists", "arity": 0 }
+  ],
+  "cases": [
+    { "name": "gte-pass", "actual": 750, "operator": ">=", "value": 700, "fieldType": "number", "expected": true },
+    { "name": "gte-fail", "actual": 650, "operator": ">=", "value": 700, "fieldType": "number", "expected": false },
+    { "name": "gte-boundary", "actual": 700, "operator": ">=", "value": 700, "fieldType": "number", "expected": true },
+    { "name": "gt-pass", "actual": 701, "operator": ">", "value": 700, "fieldType": "number", "expected": true },
+    { "name": "gt-boundary-fail", "actual": 700, "operator": ">", "value": 700, "fieldType": "number", "expected": false },
+    { "name": "lt-pass", "actual": 5, "operator": "<", "value": 10, "fieldType": "number", "expected": true },
+    { "name": "lte-boundary", "actual": 10, "operator": "<=", "value": 10, "fieldType": "number", "expected": true },
+    { "name": "gte-numeric-string-actual", "actual": "720", "operator": ">=", "value": 700, "fieldType": "number", "expected": true },
+    { "name": "gte-non-numeric-actual-fails", "actual": "abc", "operator": ">=", "value": 700, "fieldType": "number", "expected": false },
+
+    { "name": "eq-number", "actual": 1, "operator": "==", "value": 1, "fieldType": "number", "expected": true },
+    { "name": "eq-number-fail", "actual": 1, "operator": "==", "value": 2, "fieldType": "number", "expected": false },
+    { "name": "eq-string", "actual": "KYC", "operator": "==", "value": "KYC", "fieldType": "string", "expected": true },
+    { "name": "eq-string-fail", "actual": "KYC", "operator": "==", "value": "AML", "fieldType": "string", "expected": false },
+    { "name": "neq-string", "actual": "KYC", "operator": "!=", "value": "AML", "fieldType": "string", "expected": true },
+    { "name": "neq-number-fail", "actual": 5, "operator": "!=", "value": 5, "fieldType": "number", "expected": false },
+
+    { "name": "between-inside", "actual": 50000, "operator": "between", "value": 40000, "value2": 60000, "fieldType": "number", "expected": true },
+    { "name": "between-low-boundary", "actual": 40000, "operator": "between", "value": 40000, "value2": 60000, "fieldType": "number", "expected": true },
+    { "name": "between-high-boundary", "actual": 60000, "operator": "between", "value": 40000, "value2": 60000, "fieldType": "number", "expected": true },
+    { "name": "between-above", "actual": 60001, "operator": "between", "value": 40000, "value2": 60000, "fieldType": "number", "expected": false },
+    { "name": "between-below", "actual": 39999, "operator": "between", "value": 40000, "value2": 60000, "fieldType": "number", "expected": false },
+
+    { "name": "in-list-hit", "actual": "KA", "operator": "in", "value": ["KA", "MH", "DL"], "expected": true },
+    { "name": "in-list-miss", "actual": "TN", "operator": "in", "value": ["KA", "MH", "DL"], "expected": false },
+    { "name": "in-numeric-list", "actual": 2, "operator": "in", "value": [1, 2, 3], "expected": true },
+    { "name": "not-in-hit", "actual": "TN", "operator": "not_in", "value": ["KA", "MH", "DL"], "expected": true },
+    { "name": "not-in-miss", "actual": "KA", "operator": "not_in", "value": ["KA", "MH", "DL"], "expected": false },
+
+    { "name": "regex-pan-pass", "actual": "ABCDE1234F", "operator": "regex", "value": "^[A-Z]{5}[0-9]{4}[A-Z]$", "expected": true },
+    { "name": "regex-pan-fail", "actual": "bad-pan", "operator": "regex", "value": "^[A-Z]{5}[0-9]{4}[A-Z]$", "expected": false },
+
+    { "name": "exists-value", "actual": "something", "operator": "exists", "value": null, "expected": true },
+    { "name": "exists-null", "actual": null, "operator": "exists", "value": null, "expected": false },
+    { "name": "exists-empty", "actual": "", "operator": "exists", "value": null, "expected": false },
+    { "name": "not-exists-null", "actual": null, "operator": "!exists", "value": null, "expected": true },
+    { "name": "not-exists-value", "actual": "x", "operator": "!exists", "value": null, "expected": false },
+
+    { "name": "bool-true-eq", "actual": true, "operator": "==", "value": true, "fieldType": "boolean", "expected": true },
+    { "name": "bool-string-true-eq", "actual": "true", "operator": "==", "value": true, "fieldType": "boolean", "expected": true },
+    { "name": "bool-false-neq-true", "actual": false, "operator": "!=", "value": true, "fieldType": "boolean", "expected": true }
+  ]
+}

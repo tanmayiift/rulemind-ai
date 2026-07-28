@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import os
+import time as _time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Iterator, List, Optional
@@ -54,6 +55,10 @@ from .seed_data import CONNECTORS, DEFAULT_SETTINGS, POLICIES, RULES, SCORECARDS
 
 
 SECRET_FIELD_MARKERS = ("token", "secret", "password", "api_key", "apikey", "client_secret", "private_key")
+
+# Verified API keys are cached per-Storage-instance (bcrypt is deliberately
+# ~200ms; running it per request caps the whole API at a few req/s). TTL below.
+_API_KEY_CACHE_TTL = float(os.getenv("API_KEY_CACHE_TTL", "300"))
 
 
 def serialize_datetime(value: Optional[datetime]) -> Optional[str]:
@@ -121,6 +126,10 @@ class Storage:
         Base.metadata.create_all(self.engine)
         self.default_tenant_id: Optional[str] = None
         self.default_api_key: Optional[str] = None
+        # Per-instance verified-API-key cache (see get_tenant_by_api_key). Keeping
+        # it on the instance keeps it correct in prod (Storage is a singleton) and
+        # isolated in tests (each Storage/DB gets its own cache).
+        self._api_key_cache: Dict[str, Any] = {}
         self.default_admin_email = os.getenv("RULEMIND_ADMIN_EMAIL", "admin@rulemind.local")
         self.default_admin_password = os.getenv("RULEMIND_ADMIN_PASSWORD", "rulemind-admin")
         self.seed_if_empty()
@@ -601,6 +610,7 @@ class Storage:
             "steps": copy.deepcopy(model.steps or []),
             "defaultOutcome": model.default_outcome,
             "status": model.status,
+            "lifecycle_status": getattr(model, "lifecycle_status", "draft") or "draft",
             "last_test_result": copy.deepcopy(model.last_test_result),
             "version": model.version,
             "created_at": serialize_datetime(model.created_at),
@@ -1102,6 +1112,7 @@ class Storage:
             model.steps = copy.deepcopy(next_value.get("steps", []))
             model.default_outcome = next_value.get("defaultOutcome")
             model.status = next_value["status"]
+            model.lifecycle_status = next_value.get("lifecycle_status", getattr(model, "lifecycle_status", "draft")) or "draft"
             model.last_test_result = copy.deepcopy(next_value.get("last_test_result"))
             model.version = next_value["version"]
             model.updated_at = datetime.utcnow()
@@ -1459,9 +1470,19 @@ class Storage:
                 return False
             row.is_active = False
             row.revoked_at = datetime.utcnow()
+            # Eagerly drop any cached verification so the revoke takes effect now.
+            self._api_key_cache.clear()
             return True
 
     def get_tenant_by_api_key(self, api_key: str) -> Optional[Dict[str, Any]]:
+        # bcrypt-verifying the API key on EVERY request costs ~200ms and caps the
+        # whole API at a few req/s. Verify once, then cache the resolved tenant for
+        # a short TTL — subsequent requests skip both bcrypt and the DB round-trip.
+        # Revocation is honoured within API_KEY_CACHE_TTL (and eagerly on revoke).
+        now = _time.time()
+        cached = self._api_key_cache.get(api_key)
+        if cached is not None and cached[1] > now:
+            return cached[0]
         lookup_hash = key_lookup_hash(api_key)
         with self.connect() as session:
             row = session.scalar(select(ApiKey).where(ApiKey.lookup_hash == lookup_hash, ApiKey.is_active.is_(True)))
@@ -1472,8 +1493,11 @@ class Storage:
             tenant = session.get(Tenant, row.tenant_id)
             if not tenant:
                 return None
-            row.last_used_at = datetime.utcnow()
-            return {
+            # Throttle the last_used_at write so it isn't a DB write per request.
+            last_used = row.last_used_at
+            if last_used is None or (datetime.utcnow() - last_used).total_seconds() > 60:
+                row.last_used_at = datetime.utcnow()
+            result = {
                 "tenant": {
                     "id": tenant.id,
                     "name": tenant.name,
@@ -1487,6 +1511,9 @@ class Storage:
                     "masked_key": row.masked_key,
                 },
             }
+        if _API_KEY_CACHE_TTL > 0:
+            self._api_key_cache[api_key] = (result, now + _API_KEY_CACHE_TTL)
+        return result
 
     def get_platform_admin_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         with self.connect() as session:

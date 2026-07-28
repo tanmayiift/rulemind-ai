@@ -453,3 +453,35 @@ export function evaluateRule(
 }
 
 export { evaluateCompiledRule };
+
+/**
+ * Evaluate a single condition against an actual value. Thin, test-friendly
+ * wrapper over the internal operator logic used to assert cross-engine
+ * conformance against packages/shared/operators.spec.json.
+ */
+export function evaluateCondition(
+  config: {
+    operator?: RuleNode["config"]["operator"];
+    value?: unknown;
+    value2?: unknown;
+    fieldType?: RuleNode["config"]["fieldType"];
+    field?: string;
+  },
+  actual: unknown
+): boolean {
+  const node: RuleNode = {
+    id: "cond",
+    type: "condition",
+    label: config.field ?? "cond",
+    x: 0,
+    y: 0,
+    config: {
+      field: config.field,
+      fieldType: config.fieldType,
+      operator: config.operator,
+      value: config.value,
+      value2: config.value2
+    }
+  };
+  return compareValues(node, actual).pass;
+}

@@ -30,3 +30,11 @@ test-results/
 # IDE
 *.iml
 .idea/
+
+# Rust build artifacts
+packages/rulemind-core-rs/target/
+target/
+
+# Python venv / caches
+**/.venv/
+**/__pycache__/

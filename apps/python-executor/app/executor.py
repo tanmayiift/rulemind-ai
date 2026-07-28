@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import ast
 import copy
+import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -160,6 +162,9 @@ class ExecutionContext:
     paused_at_step: Optional[int] = None
     review_task_id: Optional[str] = None
     review_response: Dict[str, Any] = field(default_factory=dict)
+    # Async-step callbacks: {step_id: callback_payload}. Set by the resume endpoint
+    # so a paused async action continues with its provider's response.
+    callbacks: Dict[str, Any] = field(default_factory=dict)
     experiment_id: Optional[str] = None
     experiment_variant: Optional[str] = None
     step_trace: List[Dict[str, Any]] = field(default_factory=list)
@@ -193,6 +198,7 @@ class ExecutionContext:
             paused_at_step=payload.get("paused_at_step"),
             review_task_id=payload.get("review_task_id"),
             review_response=copy.deepcopy(payload.get("review_response", {})),
+            callbacks=copy.deepcopy(payload.get("callbacks", {})),
             experiment_id=payload.get("experiment_id"),
             experiment_variant=payload.get("experiment_variant"),
             step_trace=copy.deepcopy(payload.get("step_trace", [])),
@@ -206,9 +212,43 @@ class ActionFailedError(RuntimeError):
     pass
 
 
+_DECISION_LOG_POOL: Optional[ThreadPoolExecutor] = None
+
+
+def _decision_log_pool() -> ThreadPoolExecutor:
+    """Shared background pool for fire-and-forget decision logging."""
+    global _DECISION_LOG_POOL
+    if _DECISION_LOG_POOL is None:
+        _DECISION_LOG_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("DECISION_LOG_WORKERS", "4")))
+    return _DECISION_LOG_POOL
+
+
+_MAX_WORKFLOW_DEPTH = 10
+
+
 class PolicyExecutor:
     def __init__(self, storage: Storage):
         self.storage = storage
+        self._visited_workflows: set = set()
+        # Per-execution catalog cache. A PolicyExecutor is created fresh per
+        # request, so memoizing the tenant's connectors/variables/settings/secrets
+        # here removes the repeated DB round-trips that dominated decision latency
+        # (list_variables was previously queried on every rule/scorecard step, and
+        # secrets were re-fetched + decrypted on every step via _context_view).
+        self._catalog: Dict[str, Dict[str, Any]] = {}
+
+    def _catalog_for(self, tenant_id: str) -> Dict[str, Any]:
+        cat = self._catalog.get(tenant_id)
+        if cat is None:
+            variables = self.storage.list_variables(tenant_id=tenant_id)
+            cat = {
+                "connectors": {item["id"]: item for item in self.storage.list_connectors(tenant_id=tenant_id)},
+                "variables": variables,
+                "variable_lookup": {item["id"]: item for item in variables},
+                "settings": self.storage.get_settings(tenant_id=tenant_id),
+            }
+            self._catalog[tenant_id] = cat
+        return cat
 
     def _context_view(self, ctx: ExecutionContext) -> Dict[str, Any]:
         scorecards = {
@@ -229,17 +269,21 @@ class PolicyExecutor:
         }
 
     def _tenant_secrets(self, tenant_id: str) -> Dict[str, Any]:
+        cat = self._catalog_for(tenant_id)
+        if "secrets" in cat:
+            return cat["secrets"]
         secrets: Dict[str, Any] = {}
-        for connector in self.storage.list_connectors(tenant_id=tenant_id):
+        for connector in cat["connectors"].values():
             raw = self.storage.get_connector(connector["id"], include_secrets=True, tenant_id=tenant_id) or {}
             config = raw.get("config", {})
             for key, value in config.items():
                 if any(marker in key.lower() for marker in ("token", "secret", "password", "api_key", "apikey")):
                     secrets[key] = value
+        cat["secrets"] = secrets
         return secrets
 
     def _payloads_by_source(self, ctx: ExecutionContext) -> Dict[str, Dict[str, Any]]:
-        connectors = {item["id"]: item for item in self.storage.list_connectors(tenant_id=ctx.tenant_id)}
+        connectors = self._catalog_for(ctx.tenant_id)["connectors"]
         normalized: Dict[str, Dict[str, Any]] = {}
         for connector_id, connector in connectors.items():
             normalized[connector_id] = copy.deepcopy(connector.get("sample_payload", {}))
@@ -250,19 +294,206 @@ class PolicyExecutor:
             normalized["custom"] = copy.deepcopy(ctx.payload)
         return normalized
 
-    def _compute_variables(self, ctx: ExecutionContext) -> None:
-        connectors = {item["id"]: item for item in self.storage.list_connectors(tenant_id=ctx.tenant_id)}
+    @staticmethod
+    def _collect_condition_variable_ids(node: Any, out: set) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "condition" and node.get("variable"):
+                out.add(str(node["variable"]))
+            for value in node.values():
+                PolicyExecutor._collect_condition_variable_ids(value, out)
+        elif isinstance(node, list):
+            for item in node:
+                PolicyExecutor._collect_condition_variable_ids(item, out)
+
+    def _needed_variable_ids(self, policy: Dict[str, Any], rules: Dict[str, Any], scorecards: Dict[str, Any], tenant_id: str) -> set:
+        """Variable ids the policy uses, closed over inter-variable dependencies.
+
+        Over-inclusive by design (a substring match on variable code counts as a
+        dependency) so we never skip a variable a computation relies on.
+        """
+        direct: set = set()
+        for step in policy.get("steps", []):
+            ref_id = step.get("ref_id") or step.get("ref")
+            if step.get("type") == "rule" and ref_id in rules:
+                rule = rules[ref_id]
+                self._collect_condition_variable_ids(rule.get("tree"), direct)
+                self._collect_condition_variable_ids(rule.get("nodes"), direct)
+            elif step.get("type") == "scorecard" and ref_id in scorecards:
+                for factor in scorecards[ref_id].get("bins", []):
+                    if factor.get("variable_id"):
+                        direct.add(str(factor["variable_id"]))
+        by_id = {v["id"]: v for v in self._catalog_for(tenant_id)["variables"]}
+        needed: set = set()
+        stack = list(direct)
+        while stack:
+            vid = stack.pop()
+            if vid in needed or vid not in by_id:
+                continue
+            needed.add(vid)
+            code = str(by_id[vid].get("code", ""))
+            for other in by_id:
+                if other != vid and other not in needed and other in code:
+                    stack.append(other)
+        return needed
+
+    def _compute_variables(self, ctx: ExecutionContext, needed_ids: Optional[set] = None) -> None:
+        catalog = self._catalog_for(ctx.tenant_id)
         payloads = self._payloads_by_source(ctx)
-        limits = self.storage.get_settings(tenant_id=ctx.tenant_id).get("engine_config", {})
+        limits = catalog["settings"].get("engine_config", {})
         timeout_ms = int(limits.get("timeout_ms", 2000))
         memory_mb = int(limits.get("memory_mb", 128))
         values: Dict[str, Any] = {}
-        for variable in self.storage.list_variables(tenant_id=ctx.tenant_id):
+        for variable in catalog["variables"]:
+            if needed_ids is not None and variable["id"] not in needed_ids:
+                continue
             source_payload = payloads.get(variable["source_id"], {})
             execution = execute_variable(variable["code"], source_payload, values, timeout_ms=timeout_ms, memory_mb=memory_mb)
             values[variable["id"]] = execution.get("value")
         ctx.variables = values
         ctx.payload = payloads
+
+    async def _run_steps(
+        self,
+        steps: List[Dict[str, Any]],
+        ctx: ExecutionContext,
+        rules: Dict[str, Any],
+        scorecards: Dict[str, Any],
+        connectors: Dict[str, Any],
+        source: str,
+        depth: int = 0,
+        start_index: int = 0,
+    ) -> None:
+        """Run an ordered list of steps. Reused by the top-level policy, by branch
+        arms, and by sub-workflows. Bubbles up a review-gate pause (nested resume
+        is a later phase) and stops on an aborting failure."""
+        for index in range(start_index, len(steps)):
+            step = steps[index]
+            if depth == 0:
+                ctx.current_step_index = index
+            config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+            condition = config.get("condition")
+            if condition and not evaluate_condition(condition, self._context_view(ctx)):
+                ctx.step_trace.append({"step": step, "skipped": True, "reason": "Condition not met: {0}".format(condition)})
+                continue
+            started = time.perf_counter()
+            result: Any = None
+            error: Optional[str] = None
+            try:
+                result, error = await self._execute_step_body(step, ctx, rules, scorecards, connectors, source, depth)
+                if ctx.status == "paused":
+                    ctx.step_trace.append({"step": step, "result": result, "error": error, "duration_ms": _ms_since(started)})
+                    return
+            except Exception as exc:  # pragma: no cover - defensive execution path
+                error = str(exc)
+                if config.get("onFailure") == "abort":
+                    ctx.status = "failed"
+            ctx.step_trace.append({"step": step, "result": result, "error": error, "duration_ms": _ms_since(started)})
+            if ctx.status == "failed":
+                return
+
+    async def _execute_step_body(self, step, ctx, rules, scorecards, connectors, source, depth):
+        step_type = step.get("type")
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        if step_type == "connector":
+            return self._execute_connector(step, ctx, connectors), None
+        if step_type == "rule":
+            return self._execute_rule(step, ctx, rules), None
+        if step_type == "scorecard":
+            return self._execute_scorecard(step, ctx, scorecards), None
+        if step_type == "transform":
+            return await self._execute_transform(step, ctx), None
+        if step_type == "action":
+            return await self._execute_action(step, ctx), None
+        if step_type == "model":
+            return self._execute_model(step, ctx), None
+        if step_type == "review_gate":
+            return await self._execute_review_gate(step, ctx), None
+        if step_type == "outcome":
+            ctx.outcome = _merge_outcome(ctx.outcome, step.get("ref_id") or config.get("outcome") or step.get("label") or "review")
+            return {"outcome": ctx.outcome}, None
+        if step_type == "branch":
+            return await self._execute_branch(step, ctx, rules, scorecards, connectors, source, depth), None
+        if step_type == "workflow":
+            return await self._execute_subworkflow(step, ctx, rules, scorecards, connectors, source, depth), None
+        if step_type == "monitor":
+            return await self._execute_monitor(step, ctx), None
+        return None, "Unknown step type: {0}".format(step_type)
+
+    async def _execute_monitor(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
+        """Post-decision monitor: fire an external alert webhook and/or schedule a
+        re-evaluation of the subject after a delay (drift / re-apply windows)."""
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        result: Dict[str, Any] = {"monitor": step.get("name", "monitor")}
+        alert_url = config.get("alertUrl")
+        if alert_url:
+            try:
+                await self._fire_action_request(
+                    step,
+                    ctx,
+                    {
+                        "url": alert_url,
+                        "method": config.get("method", "POST"),
+                        "headers": config.get("headers", {}),
+                        "bodyTemplate": config.get("payload", {"executionId": "{{execution_id}}", "outcome": "{{outcome}}"}),
+                        "timeoutMs": config.get("timeoutMs", 5000),
+                    },
+                )
+                result["alerted"] = True
+            except Exception as exc:  # pragma: no cover - alert best-effort
+                result["alertError"] = str(exc)
+        reeval_days = config.get("reevaluateInDays")
+        if reeval_days:
+            try:
+                self.storage.add_audit_event(
+                    {
+                        "tenant_id": ctx.tenant_id,
+                        "event_type": "monitor_scheduled",
+                        "entity_type": "workflow_execution",
+                        "entity_id": ctx.execution_id,
+                        "detail": "Re-evaluation scheduled in {0} day(s).".format(reeval_days),
+                        "metadata": {"policy_id": ctx.policy_id, "reevaluateInDays": reeval_days, "subject": ctx.user_id},
+                    },
+                    tenant_id=ctx.tenant_id,
+                )
+                result["reevaluateInDays"] = reeval_days
+                result["scheduled"] = True
+            except Exception:  # pragma: no cover
+                result["scheduled"] = False
+        return result
+
+    async def _execute_branch(self, step, ctx, rules, scorecards, connectors, source, depth):
+        """Multi-branch routing: run the first branch whose condition matches (or
+        `default`). Branches are lists of steps evaluated with the live context."""
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        branches = config.get("branches", []) or []
+        view = self._context_view(ctx)
+        for i, branch in enumerate(branches):
+            cond = branch.get("condition")
+            if not cond or evaluate_condition(cond, view):
+                await self._run_steps(branch.get("steps", []) or [], ctx, rules, scorecards, connectors, source, depth + 1)
+                return {"branch": i, "label": branch.get("label", i), "matched": True}
+        default_steps = config.get("default", []) or []
+        if default_steps:
+            await self._run_steps(default_steps, ctx, rules, scorecards, connectors, source, depth + 1)
+            return {"branch": "default", "matched": True}
+        return {"branch": None, "matched": False}
+
+    async def _execute_subworkflow(self, step, ctx, rules, scorecards, connectors, source, depth):
+        """Invoke another policy as a step (composition), sharing the live context.
+        Guards against cycles and runaway depth."""
+        if depth >= _MAX_WORKFLOW_DEPTH:
+            raise ValueError("Max sub-workflow depth ({0}) exceeded".format(_MAX_WORKFLOW_DEPTH))
+        ref_id = step.get("ref_id") or step.get("ref")
+        if not ref_id:
+            raise ValueError("Sub-workflow step missing ref_id")
+        if ref_id in self._visited_workflows:
+            raise ValueError("Sub-workflow cycle detected: {0}".format(ref_id))
+        sub_policy = self.storage.get_policy(ref_id, tenant_id=ctx.tenant_id)
+        if not sub_policy:
+            raise ValueError("Unknown sub-workflow: {0}".format(ref_id))
+        self._visited_workflows.add(ref_id)
+        await self._run_steps(sub_policy.get("steps", []) or [], ctx, rules, scorecards, connectors, source, depth + 1)
+        return {"workflow": ref_id, "outcome": ctx.outcome}
 
     async def execute(
         self,
@@ -288,7 +519,6 @@ class PolicyExecutor:
                 user_id=user_id,
                 started_at=datetime.utcnow(),
             )
-            self._compute_variables(ctx)
             start_step = 0
 
         assignment = resolve_experiment_assignment(self.storage, tenant_id, policy["id"], ctx.user_id or (ctx.payload.get("user_id") if isinstance(ctx.payload, dict) else None))
@@ -301,82 +531,56 @@ class PolicyExecutor:
         rules = {item["id"]: item for item in self.storage.list_rules(tenant_id=tenant_id)}
         rules = apply_experiment_overrides(rules, assignment)
         scorecards = {item["id"]: item for item in self.storage.list_scorecards(tenant_id=tenant_id)}
-        connectors = {item["id"]: item for item in self.storage.list_connectors(tenant_id=tenant_id)}
+        connectors = self._catalog_for(tenant_id)["connectors"]
+
+        # By default every tenant variable is computed (full parity + available for
+        # audit/downstream). Setting COMPUTE_ONLY_USED_VARS=1 restricts computation
+        # to the variables the policy actually uses (transitively) — a real latency
+        # win, but it changes the workload, so it is opt-in rather than default.
+        if not resume_from:
+            needed = None
+            if os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1":
+                needed = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
+            self._compute_variables(ctx, needed_ids=needed)
 
         steps = policy.get("steps", [])
-        for index in range(start_step, len(steps)):
-            step = steps[index]
-            ctx.current_step_index = index
-            config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
-            condition = config.get("condition")
-            if condition and not evaluate_condition(condition, self._context_view(ctx)):
-                ctx.step_trace.append({"step": step, "skipped": True, "reason": "Condition not met: {0}".format(condition)})
-                continue
-
-            started = time.perf_counter()
-            result: Any = None
-            error: Optional[str] = None
-            try:
-                step_type = step.get("type")
-                if step_type == "connector":
-                    result = self._execute_connector(step, ctx, connectors)
-                elif step_type == "rule":
-                    result = self._execute_rule(step, ctx, rules)
-                elif step_type == "scorecard":
-                    result = self._execute_scorecard(step, ctx, scorecards)
-                elif step_type == "transform":
-                    result = await self._execute_transform(step, ctx)
-                elif step_type == "action":
-                    result = await self._execute_action(step, ctx)
-                elif step_type == "model":
-                    result = self._execute_model(step, ctx)
-                elif step_type == "review_gate":
-                    result = await self._execute_review_gate(step, ctx)
-                    if ctx.status == "paused":
-                        ctx.step_trace.append(
-                            {
-                                "step": step,
-                                "result": result,
-                                "error": error,
-                                "duration_ms": _ms_since(started),
-                            }
-                        )
-                        self._persist_execution(ctx, trigger_type=source)
-                        return ctx
-                elif step_type == "outcome":
-                    ctx.outcome = _merge_outcome(
-                        ctx.outcome,
-                        step.get("ref_id") or config.get("outcome") or step.get("label") or "review",
-                    )
-                    result = {"outcome": ctx.outcome}
-                else:
-                    error = "Unknown step type: {0}".format(step_type)
-            except Exception as exc:  # pragma: no cover - defensive execution path
-                error = str(exc)
-                if config.get("onFailure") == "abort":
-                    ctx.status = "failed"
-            ctx.step_trace.append(
-                {
-                    "step": step,
-                    "result": result,
-                    "error": error,
-                    "duration_ms": _ms_since(started),
-                }
-            )
-            if ctx.status == "failed":
-                break
+        # Cycle guard for sub-workflow composition — this policy is already active.
+        self._visited_workflows = {policy["id"]}
+        await self._run_steps(steps, ctx, rules, scorecards, connectors, source, depth=0, start_index=start_step)
+        if ctx.status == "paused":
+            self._persist_execution(ctx, trigger_type=source)
+            return ctx
 
         if ctx.status == "running":
             ctx.status = "completed"
         ctx.completed_at = datetime.utcnow()
         ctx.total_latency_ms = int((ctx.completed_at - ctx.started_at).total_seconds() * 1000)
-        self._persist_execution(ctx, trigger_type=source)
-        self._log_decision(
-            ctx,
-            source=source,
-            sdk_version=sdk_version,
-            experiment_variant=ctx.experiment_variant or experiment_variant,
+        # A WorkflowExecution row only exists so a paused execution can be resumed.
+        # A one-shot decision that never paused (and whose policy has no review
+        # gate) needs no such row — skipping this write roughly halves the DB
+        # writes per decision on the hot path. Resumable executions are always
+        # persisted at the pause point above.
+        needs_execution_row = (
+            ctx.paused_at_step is not None
+            or ctx.review_task_id is not None
+            or any(step.get("type") == "review_gate" for step in steps)
         )
+        if needs_execution_row:
+            self._persist_execution(ctx, trigger_type=source)
+        # Decision logging can be moved off the request's critical path. Gated by
+        # env so tests (which assert the decision immediately) stay deterministic;
+        # enable ASYNC_DECISION_LOG=1 in high-QPS deployments.
+        if os.getenv("ASYNC_DECISION_LOG", "0") == "1":
+            _decision_log_pool().submit(
+                self._log_decision, ctx, source, sdk_version, ctx.experiment_variant or experiment_variant
+            )
+        else:
+            self._log_decision(
+                ctx,
+                source=source,
+                sdk_version=sdk_version,
+                experiment_variant=ctx.experiment_variant or experiment_variant,
+            )
         return ctx
 
     def _persist_execution(self, ctx: ExecutionContext, trigger_type: str) -> None:
@@ -433,7 +637,7 @@ class PolicyExecutor:
         rule = rules.get(ref_id)
         if not rule:
             raise ValueError("Unknown rule: {0}".format(ref_id))
-        variable_lookup = {item["id"]: item for item in self.storage.list_variables(tenant_id=ctx.tenant_id)}
+        variable_lookup = self._catalog_for(ctx.tenant_id)["variable_lookup"]
         result = evaluate_rule_definition(rule, ctx.variables, variable_lookup)
         ctx.rule_results.append({"rule_id": ref_id, **copy.deepcopy(result)})
         ctx.rule_results[-1]["ruleId"] = ref_id
@@ -445,7 +649,7 @@ class PolicyExecutor:
         scorecard = scorecards.get(ref_id)
         if not scorecard:
             raise ValueError("Unknown scorecard: {0}".format(ref_id))
-        variable_lookup = {item["id"]: item for item in self.storage.list_variables(tenant_id=ctx.tenant_id)}
+        variable_lookup = self._catalog_for(ctx.tenant_id)["variable_lookup"]
         result = evaluate_scorecard(scorecard, ctx.variables, variable_lookup)
         ctx.scorecard_results[ref_id] = result
         return result
@@ -468,6 +672,32 @@ class PolicyExecutor:
 
     async def _execute_action(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
         config = step.get("config", {})
+        # Async/durable action: on first arrival fire the request (to kick off the
+        # long-running provider job) then pause the execution; it resumes via the
+        # workflow callback endpoint once the provider posts its result back.
+        step_id = str(step.get("id") or step.get("name") or "action")
+        if config.get("mode") == "async":
+            if step_id in ctx.callbacks:
+                result = {"async": True, "resumed": True, "callback": ctx.callbacks[step_id]}
+                ctx.action_results.append(result)
+                # Merge an outcome the provider may have returned.
+                callback_outcome = ctx.callbacks[step_id].get("outcome") if isinstance(ctx.callbacks[step_id], dict) else None
+                if callback_outcome:
+                    ctx.outcome = _merge_outcome(ctx.outcome, str(callback_outcome))
+                return result
+            # kick off the async job (best-effort) then pause durably
+            try:
+                if config.get("url"):
+                    await self._fire_action_request(step, ctx, config)
+            except Exception:  # pragma: no cover - kickoff failures don't block the pause
+                pass
+            ctx.status = "paused"
+            ctx.paused_at_step = ctx.current_step_index
+            ctx.pending_operations.append({"type": "async_action", "step_id": step_id, "url": config.get("url")})
+            return {"paused": True, "awaiting": "callback", "stepId": step_id, "executionId": ctx.execution_id}
+        return await self._fire_action_request(step, ctx, config)
+
+    async def _fire_action_request(self, step: Dict[str, Any], ctx: ExecutionContext, config: Dict[str, Any]) -> Dict[str, Any]:
         view = self._context_view(ctx)
         resolved_secrets: set[str] = set()
         url = resolve_template(config.get("url", ""), view, resolved_secrets)

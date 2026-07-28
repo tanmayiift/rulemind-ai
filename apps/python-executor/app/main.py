@@ -33,6 +33,7 @@ from .logic import (
     nodes_to_tree,
     slugify,
 )
+from .experiments import apply_experiment_overrides
 from .middleware import TenantContextMiddleware, admin_cookie_secure
 from .reviews import submit_review_decision
 from .runtime import is_local_dev, redis_client
@@ -72,6 +73,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(TenantContextMiddleware, storage=current_storage)
+
+# Optional OpenTelemetry tracing (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set).
+try:
+    from .observability import setup_telemetry
+
+    setup_telemetry(app, engine=getattr(storage, "engine", None))
+except Exception:  # pragma: no cover - never let telemetry break startup
+    pass
 
 
 DECISIONS_TOTAL = Counter("rulemind_decisions_total", "RuleMind decisions", ["outcome", "source"])
@@ -236,6 +245,12 @@ class DeployPromoteRequest(BaseModel):
     items: List[DeployItemModel]
 
 
+class LifecycleTransitionRequest(BaseModel):
+    target: str
+    actor: Optional[str] = None
+    note: Optional[str] = None
+
+
 class ImportRequest(BaseModel):
     connectors: List[Dict[str, Any]] = Field(default_factory=list)
     variables: List[Dict[str, Any]] = Field(default_factory=list)
@@ -291,6 +306,12 @@ class ExperimentUpsertRequest(BaseModel):
 
 class ExperimentStatusRequest(BaseModel):
     status: str
+
+
+class ExperimentPromoteRequest(BaseModel):
+    variant_id: str
+    promoted_by: Optional[str] = None
+    force: bool = False
 
 
 class SdkDecideRequest(BaseModel):
@@ -614,7 +635,9 @@ def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
             raise HTTPException(status_code=422, detail="Unknown rule in policy: {0}".format(ref_id))
         if step_type == "scorecard" and ref_id not in scorecards_map:
             raise HTTPException(status_code=422, detail="Unknown scorecard in policy: {0}".format(ref_id))
-        if step_type not in {"connector", "rule", "scorecard", "outcome", "transform", "action", "review_gate"}:
+        if step_type == "workflow" and not ref_id:
+            raise HTTPException(status_code=422, detail="Sub-workflow step requires a ref_id (target policy).")
+        if step_type not in {"connector", "rule", "scorecard", "outcome", "transform", "action", "review_gate", "model", "branch", "workflow", "monitor"}:
             raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
 
 
@@ -731,7 +754,7 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
     scorecard_result = next(iter(ctx.scorecard_results.values()), None)
     outcome = {
         "policy_id": policy.get("id"),
-        "outcome": ctx.outcome if ctx.outcome != "pending" else policy.get("defaultOutcome", "review"),
+        "outcome": ctx.outcome if ctx.outcome != "pending" else (policy.get("defaultOutcome") or "review"),
         "scorecard_result": scorecard_result,
         "trace": copy.deepcopy(ctx.step_trace),
         "status": ctx.status,
@@ -858,6 +881,10 @@ def workflow_executor() -> PolicyExecutor:
 
 
 def maybe_compile_bundle(tenant_id: str, background_tasks: Optional[BackgroundTasks] = None, force: bool = False) -> None:
+    # Any publish/update invalidates the fast-path serving cache for this tenant.
+    from .fast_decide import invalidate as invalidate_fast_cache
+
+    invalidate_fast_cache(tenant_id)
     if not storage.mark_bundle_compile_queued(tenant_id, force=force):
         return
 
@@ -1797,6 +1824,54 @@ def analyze_policy_mece(policy_id: str) -> Dict[str, Any]:
     return analyze_mece(rule_inputs)
 
 
+@app.get("/api/v1/policies/{policy_id}/lifecycle")
+def get_policy_lifecycle(policy_id: str) -> Dict[str, Any]:
+    from .lifecycle import LIFECYCLE_LABELS, LIFECYCLE_STAGES, allowed_transitions
+
+    policy = ensure_exists(storage.get_policy(policy_id), "policy", policy_id)
+    stage = policy.get("lifecycle_status", "draft")
+    return {
+        "policy_id": policy_id,
+        "stage": stage,
+        "label": LIFECYCLE_LABELS.get(stage, stage),
+        "allowedTransitions": allowed_transitions(stage),
+        "stages": [{"id": s, "label": LIFECYCLE_LABELS[s]} for s in LIFECYCLE_STAGES],
+    }
+
+
+@app.post("/api/v1/policies/{policy_id}/lifecycle")
+def transition_policy_lifecycle(policy_id: str, request: LifecycleTransitionRequest) -> Dict[str, Any]:
+    """Move a policy to a new lifecycle stage, enforcing the allowed transitions."""
+    from .lifecycle import LIFECYCLE_LABELS, allowed_transitions, can_transition
+
+    tenant_id = active_tenant_id()
+    policy = ensure_exists(storage.get_policy(policy_id, tenant_id=tenant_id), "policy", policy_id)
+    current = policy.get("lifecycle_status", "draft")
+    if not can_transition(current, request.target):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Cannot move from '{current}' to '{request.target}'. Allowed: {allowed_transitions(current)}",
+        )
+    updated = storage.update_policy(policy_id, {"lifecycle_status": request.target}, bump_version=False, tenant_id=tenant_id)
+    storage.add_audit_event(
+        {
+            "tenant_id": tenant_id,
+            "event_type": "policy_lifecycle_changed",
+            "entity_type": "policy",
+            "entity_id": policy_id,
+            "detail": f"Lifecycle {current} → {request.target}.",
+            "metadata": {"from": current, "to": request.target, "by": request.actor, "note": request.note},
+        },
+        tenant_id=tenant_id,
+    )
+    return {
+        "policy_id": policy_id,
+        "stage": request.target,
+        "label": LIFECYCLE_LABELS.get(request.target, request.target),
+        "allowedTransitions": allowed_transitions(request.target),
+    }
+
+
 @app.post("/api/v1/policies/{policy_id}/promote")
 def promote_policy(
     policy_id: str,
@@ -1892,6 +1967,16 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
 @app.post("/api/v1/decide")
 def decide(request: DecideRequest) -> Dict[str, Any]:
     policy = ensure_exists(storage.get_policy(request.policy_id), "policy", request.policy_id)
+    # Scalable hot path: serve pure-compute policies from the cached bundle via the
+    # stateless core (Rust when available), bypassing the heavy PolicyExecutor.
+    if os.getenv("FAST_DECIDE", "0") == "1":
+        from .fast_decide import fast_decide, is_fast_servable
+
+        if is_fast_servable(policy):
+            decision = fast_decide(storage, policy, request.payload or {}, active_tenant_id())
+            if decision["outcome"] == "reject":
+                record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {})
+            return decision
     outcome = test_policy_entity(policy, request.payload, log_decision=True)
     if outcome["result"]["outcome"] == "reject":
         record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {"trace": outcome["result"].get("trace", [])})
@@ -1904,6 +1989,38 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         "scorecard_result": outcome["result"].get("scorecard_result"),
         "trace": outcome["result"]["trace"],
         "latency_ms": outcome["latency_ms"],
+    }
+
+
+class WorkflowCallbackRequest(BaseModel):
+    step_id: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/api/v1/workflows/{execution_id}/callback")
+def workflow_callback(execution_id: str, request: WorkflowCallbackRequest) -> Dict[str, Any]:
+    """Resume a durably-paused async workflow step with its provider's result.
+
+    An async `action` step fires its request, pauses the execution, and waits for
+    the provider to POST back here; the execution then continues from that step.
+    """
+    tenant_id = active_tenant_id()
+    execution = ensure_exists(storage.get_workflow_execution(execution_id, tenant_id=tenant_id), "workflow_execution", execution_id)
+    ctx = ExecutionContext.from_dict(execution["context"])
+    if ctx.status != "paused":
+        raise HTTPException(status_code=409, detail="Execution is not awaiting a callback (status: {0}).".format(ctx.status))
+    ctx.callbacks[request.step_id] = copy.deepcopy(request.data)
+    ctx.current_step_index = int(ctx.paused_at_step or 0)  # re-enter the async step to consume the callback
+    ctx.status = "running"
+    policy = ensure_exists(storage.get_policy(ctx.policy_id, tenant_id=tenant_id), "policy", ctx.policy_id)
+    result = asyncio.run(
+        workflow_executor().execute(policy=policy, payload=ctx.payload, tenant_id=tenant_id, resume_from=ctx, source="callback")
+    )
+    return {
+        "execution_id": execution_id,
+        "status": result.status,
+        "outcome": result.outcome if result.outcome != "pending" else (policy.get("defaultOutcome") or "review"),
+        "trace": result.step_trace,
     }
 
 
@@ -2181,6 +2298,71 @@ def experiment_results(experiment_id: str) -> Dict[str, Any]:
         return experiment_analytics(storage, active_tenant_id(), experiment_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.post("/api/v1/experiments/{experiment_id}/promote")
+def promote_experiment(experiment_id: str, request: ExperimentPromoteRequest) -> Dict[str, Any]:
+    """Promote a challenger variant to champion.
+
+    Applies the winning variant's condition overrides to the live rules
+    (maker/checker recorded) and completes the experiment. `force=true` bypasses
+    the guardrail/significance safety check.
+    """
+    tenant_id = active_tenant_id()
+    experiment = ensure_exists(storage.get_experiment(experiment_id, tenant_id=tenant_id), "experiment", experiment_id)
+    variants = experiment.get("variants", [])
+    variant = next((item for item in variants if item.get("id") == request.variant_id), None)
+    if not variant:
+        raise HTTPException(status_code=404, detail="Variant not found in experiment.")
+
+    # Safety gate: only promote a challenger the analysis recommends, unless forced.
+    if not request.force:
+        analysis = experiment_analytics(storage, tenant_id, experiment_id).get("championChallenger", {})
+        row = next((c for c in analysis.get("challengers", []) if c["id"] == request.variant_id), None)
+        if row is None:
+            raise HTTPException(status_code=422, detail="Only a challenger variant can be promoted.")
+        if row["recommendation"] != "promote":
+            raise HTTPException(
+                status_code=422,
+                detail=f"Promotion blocked: recommendation is '{row['recommendation']}'. "
+                f"Guardrails: {row['guardrails'].get('breaches', [])}. Use force=true to override.",
+            )
+
+    # Bake the variant overrides into the live rules (permanent promotion).
+    rules = {item["id"]: item for item in storage.list_rules(tenant_id=tenant_id)}
+    patched = apply_experiment_overrides(rules, {"variant": variant})
+    changed = []
+    for rule_id, rule in patched.items():
+        if rule != rules.get(rule_id):
+            storage.update_rule(
+                rule_id,
+                {"tree": rule.get("tree"), "nodes": rule.get("nodes")},
+                tenant_id=tenant_id,
+            )
+            changed.append(rule_id)
+
+    storage.create_or_update_experiment(
+        {
+            **experiment,
+            "id": experiment_id,
+            "status": "completed",
+            "promoted_variant_id": request.variant_id,
+            "promoted_by": request.promoted_by,
+            "promoted_at": now_iso(),
+        }
+    )
+    storage.add_audit_event(
+        {
+            "tenant_id": tenant_id,
+            "event_type": "experiment_promoted",
+            "entity_type": "experiment",
+            "entity_id": experiment_id,
+            "detail": f"Promoted variant {request.variant_id} to champion.",
+            "metadata": {"variant": request.variant_id, "rules_updated": changed, "promoted_by": request.promoted_by, "forced": request.force},
+        },
+        tenant_id=tenant_id,
+    )
+    return {"experiment_id": experiment_id, "promoted_variant": request.variant_id, "rules_updated": changed}
 
 
 @app.get("/api/v1/analytics/decisions")
