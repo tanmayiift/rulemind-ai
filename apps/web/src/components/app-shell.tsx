@@ -41,6 +41,7 @@ const NAVIGATION: ReadonlyArray<{
     group: "Validate & ship",
     items: [
       { href: "/test-console" as Route, label: "Test Console", icon: "testing" },
+      { href: "/api-console" as Route, label: "API Console", icon: "connectors" },
       { href: "/simulation" as Route, label: "Simulation", icon: "testing" },
       { href: "/lifecycle" as Route, label: "Lifecycle", icon: "policies" },
       { href: "/deploy" as Route, label: "Deploy", icon: "deploy" },
@@ -73,6 +74,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/scorecards": { title: "Scorecards", subtitle: "Points-based scoring with editable ranges and live factor breakdown." },
   "/policies": { title: "Policies", subtitle: "Execution pipelines across connectors, rules, scorecards, and final decisions." },
   "/test-console": { title: "Test Console", subtitle: "Single-run, batch simulation, and production API preview workflows." },
+  "/api-console": { title: "API Console", subtitle: "Postman-style console for workflow action steps — resolve templates and send requests server-side." },
   "/review-queue": { title: "Review Queue", subtitle: "Pending human-in-the-loop reviews with decision context and queue state." },
   "/schedules": { title: "Schedules", subtitle: "Cron-driven policy runs, payload sources, and batch execution history." },
   "/deploy": { title: "Deploy", subtitle: "Promote tested assets through DEV, UAT, and PROD with audit-safe controls." },
