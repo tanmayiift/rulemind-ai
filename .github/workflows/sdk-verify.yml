@@ -212,7 +212,12 @@ jobs:
 
       - name: Verify pub publish readiness
         working-directory: packages/sdk-flutter
-        run: dart pub publish --dry-run
+        run: |
+          # Earlier build/emulator steps regenerate checked-in files (e.g.
+          # example/android/gradle.properties); restore tracked files so the
+          # readiness dry-run reflects the committed state, not build output.
+          git checkout -- . 2>/dev/null || true
+          dart pub publish --dry-run
 
       - name: Upload Flutter artifacts
         if: always()
