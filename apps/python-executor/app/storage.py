@@ -381,6 +381,7 @@ class Storage:
                 source_defaults=copy.deepcopy(DEFAULT_SETTINGS["source_defaults"]),
                 audit_retention_days=DEFAULT_SETTINGS["audit_retention_days"],
                 theme_mode=DEFAULT_SETTINGS["theme_mode"],
+                branding=copy.deepcopy(DEFAULT_SETTINGS["branding"]),
             )
         )
 
@@ -1276,6 +1277,7 @@ class Storage:
                 "source_defaults": copy.deepcopy(row.source_defaults or {}),
                 "audit_retention_days": row.audit_retention_days,
                 "theme_mode": row.theme_mode,
+                "branding": copy.deepcopy(row.branding or {}),
                 "updated_at": serialize_datetime(row.updated_at),
             }
 
@@ -1296,6 +1298,7 @@ class Storage:
             row.source_defaults = copy.deepcopy(next_value["source_defaults"])
             row.audit_retention_days = int(next_value["audit_retention_days"])
             row.theme_mode = next_value["theme_mode"]
+            row.branding = copy.deepcopy(next_value.get("branding") or {})
             row.updated_at = datetime.utcnow()
         return self.get_settings(tenant_id=resolved)
 
