@@ -31,12 +31,15 @@ const NAVIGATION: ReadonlyArray<{
     group: "Validate & ship",
     items: [
       { href: "/test-console" as Route, label: "Test Console", icon: "testing" },
+      { href: "/simulation" as Route, label: "Simulation", icon: "testing" },
+      { href: "/lifecycle" as Route, label: "Lifecycle", icon: "policies" },
       { href: "/deploy" as Route, label: "Deploy", icon: "deploy" },
     ],
   },
   {
     group: "Operate",
     items: [
+      { href: "/decision-explorer" as Route, label: "Decision Explorer", icon: "audit" },
       { href: "/review-queue" as Route, label: "Review Queue", icon: "audit" },
       { href: "/schedules" as Route, label: "Schedules", icon: "deploy" },
       { href: "/audit" as Route, label: "Audit Logs", icon: "audit" },
