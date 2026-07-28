@@ -1,6 +1,6 @@
 :root {
-  --font-sans: "Inter", "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-sans: var(--font-inter), "Inter", system-ui, "Segoe UI", sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace, monospace;
   --rm-bg: #f4f5f7;
   --rm-card: #ffffff;
   --rm-card-alt: #fafbfc;
