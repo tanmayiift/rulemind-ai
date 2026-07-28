@@ -2014,6 +2014,89 @@ def get_provider_template(provider_id: str) -> Dict[str, Any]:
     return ensure_exists(get_provider(provider_id), "provider", provider_id)
 
 
+class ActionTestRequest(BaseModel):
+    action: Dict[str, Any]
+    context: Optional[Dict[str, Any]] = None
+
+
+_BLOCKED_HOST_MARKERS = ("localhost", "127.", "0.0.0.0", "169.254.", "::1", "metadata.google", "metadata.")
+
+
+def _action_host_blocked(url: str) -> bool:
+    """Light SSRF guard for the interactive console: block loopback / link-local /
+    cloud-metadata targets. Saved workflow actions are authored deliberately; this
+    ad-hoc endpoint should not be a pivot to internal services."""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return True
+    return any(host == marker.rstrip(".") or host.startswith(marker) for marker in _BLOCKED_HOST_MARKERS)
+
+
+@app.post("/api/v1/test/action")
+def test_action(request: ActionTestRequest) -> Dict[str, Any]:
+    """Postman-style console: resolve an `action` step's templates against a sample
+    context and send it server-side (no browser CORS). Only console-supplied secrets
+    are resolved — stored tenant secrets are never injected here, so nothing sensitive
+    leaks back to the client."""
+    import httpx
+
+    from .templates import resolve_template
+
+    action = request.action or {}
+    ctx = request.context or {}
+    view = {
+        "payload": ctx.get("payload", {}) or {},
+        "variables": ctx.get("variables", {}) or {},
+        "secrets": ctx.get("secrets", {}) or {},
+        "computed": ctx.get("computed", {}) or {},
+        "outcome": ctx.get("outcome", "review"),
+        "execution_id": ctx.get("execution_id", "console-test"),
+    }
+    url = resolve_template(action.get("url", ""), view)
+    method = str(action.get("method", "GET")).upper()
+    headers = resolve_template(action.get("headers", {}) or {}, view)
+    body = resolve_template(action.get("bodyTemplate", action.get("body", {})) or {}, view)
+    timeout = min(max(int(action.get("timeoutMs", 5000)), 100), 15000) / 1000
+
+    if not isinstance(url, str) or not url:
+        raise HTTPException(status_code=422, detail="Action url is required.")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=422, detail="Only http(s) URLs are supported.")
+    if _action_host_blocked(url):
+        raise HTTPException(status_code=422, detail="That host is blocked in the console (loopback / link-local / metadata).")
+
+    started = time.perf_counter()
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            if method == "GET":
+                resp = client.get(url, headers=headers)
+            elif method == "PUT":
+                resp = client.put(url, json=body, headers=headers)
+            elif method == "PATCH":
+                resp = client.patch(url, json=body, headers=headers)
+            elif method == "DELETE":
+                resp = client.request("DELETE", url, headers=headers)
+            else:
+                resp = client.post(url, json=body, headers=headers)
+        latency = (time.perf_counter() - started) * 1000
+        return {
+            "ok": True,
+            "status": resp.status_code,
+            "success": 200 <= resp.status_code < 300,
+            "latencyMs": round(latency, 1),
+            "resolvedUrl": url,
+            "resolvedMethod": method,
+            "responseHeaders": dict(resp.headers),
+            "body": resp.text[:20480],
+        }
+    except Exception as error:  # network / timeout / DNS
+        latency = (time.perf_counter() - started) * 1000
+        return {"ok": False, "error": str(error), "latencyMs": round(latency, 1), "resolvedUrl": url, "resolvedMethod": method}
+
+
 class WorkflowCallbackRequest(BaseModel):
     step_id: str
     data: Dict[str, Any] = Field(default_factory=dict)
