@@ -137,6 +137,9 @@ class Policy(Base, TimestampMixin):
     steps: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     default_outcome: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="dev", nullable=False, index=True)
+    # Lifecycle stage, orthogonal to the dev/uat/prod `status` environment:
+    # draft -> in_review -> ready -> live, plus rejected / archived.
+    lifecycle_status: Mapped[str] = mapped_column(String(24), default="draft", nullable=False, index=True)
     last_test_result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 

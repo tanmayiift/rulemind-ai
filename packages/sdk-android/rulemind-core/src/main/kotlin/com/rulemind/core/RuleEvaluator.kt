@@ -34,7 +34,7 @@ class RuleEvaluator {
             val actual = variables[variableId] ?: 0
             val operator = node["operator"] as? String ?: "=="
             val expected = node["value"]
-            val passed = compare(actual, operator, expected)
+            val passed = compare(actual, operator, expected, node["value2"], node["fieldType"] as? String)
             val result = mapOf(
                 "variable_id" to variableId,
                 "variable_name" to variableId,
@@ -78,7 +78,7 @@ class RuleEvaluator {
                 val actual = variables[variableId] ?: 0
                 val operator = node.operator ?: "=="
                 val expected = node.value
-                val passed = compare(actual, operator, expected)
+                val passed = compare(actual, operator, expected, node.value2, node.fieldType)
                 conditions += mapOf(
                     "variable_id" to variableId,
                     "variable_name" to variableId,
@@ -108,21 +108,104 @@ class RuleEvaluator {
         }
     }
 
-    private fun compare(actual: Any?, operator: String, expected: Any?): Boolean {
-        val actualValue = if (actual is Number) actual.toDouble() else (actual?.toString()?.toDoubleOrNull() ?: 0.0)
-        val expectedValue = when (expected) {
-            is Number -> expected.toDouble()
-            is String -> expected.toDoubleOrNull()
-            else -> null
+    /**
+     * Public entry point used by the cross-engine operator conformance suite
+     * (packages/shared/operators.spec.json). Delegates to the private [compare].
+     */
+    fun compareCondition(
+        actual: Any?,
+        operator: String,
+        expected: Any?,
+        expected2: Any? = null,
+        fieldType: String? = null,
+    ): Boolean = compare(actual, operator, expected, expected2, fieldType)
+
+    /**
+     * Evaluate a single condition. Mirrors the canonical operator contract
+     * (packages/shared/operators.spec.json) shared with the TS, Python, and
+     * Dart engines: == != > >= < <= between in not_in regex exists !exists.
+     */
+    private fun compare(
+        actual: Any?,
+        operator: String,
+        expected: Any?,
+        expected2: Any? = null,
+        fieldType: String? = null,
+    ): Boolean {
+        // Existence checks run before any missing-value handling.
+        if (operator == "exists") return actual != null && actual != ""
+        if (operator == "!exists") return actual == null || actual == ""
+
+        // Set membership. `expected` may be a list or a comma-separated string.
+        if (operator == "in" || operator == "not_in") {
+            val options = asOptionList(expected)
+            val matched = options.any { looseEqual(actual, it) }
+            return if (operator == "in") matched else !matched
         }
+
+        // Regular-expression match against the string form of the value.
+        if (operator == "regex") {
+            if (actual == null) return false
+            return try {
+                Regex(expected.toString()).containsMatchIn(actual.toString())
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        // Boolean-typed equality (only when the field is declared boolean).
+        if ((fieldType ?: "").lowercase() == "boolean" && (operator == "==" || operator == "!=")) {
+            val matched = toBool(actual) == toBool(expected)
+            return if (operator == "==") matched else !matched
+        }
+
+        // Ordered comparisons and inclusive range operate on numbers.
+        if (operator in setOf(">=", "<=", ">", "<", "between")) {
+            val a = numericOrNull(actual) ?: return false
+            val e = numericOrNull(expected) ?: return false
+            return when (operator) {
+                ">=" -> a >= e
+                "<=" -> a <= e
+                ">" -> a > e
+                "<" -> a < e
+                else -> {
+                    val upper = numericOrNull(expected2) ?: return false
+                    a in e..upper
+                }
+            }
+        }
+
         return when (operator) {
-            ">" -> actualValue > (expectedValue ?: 0.0)
-            ">=" -> actualValue >= (expectedValue ?: 0.0)
-            "<" -> actualValue < (expectedValue ?: 0.0)
-            "<=" -> actualValue <= (expectedValue ?: 0.0)
-            "!=" -> actual != expected
-            else -> actual == expected || actualValue == (expectedValue ?: Double.NaN)
+            "==" -> looseEqual(actual, expected)
+            "!=" -> !looseEqual(actual, expected)
+            else -> false
         }
+    }
+
+    private fun numericOrNull(value: Any?): Double? = when (value) {
+        is Number -> value.toDouble()
+        is String -> value.toDoubleOrNull()
+        else -> null
+    }
+
+    private fun toBool(value: Any?): Boolean = when (value) {
+        is Boolean -> value
+        is Number -> value.toDouble() != 0.0
+        else -> value?.toString()?.trim()?.lowercase() in setOf("true", "1", "yes")
+    }
+
+    private fun asOptionList(expected: Any?): List<Any?> = when (expected) {
+        is List<*> -> expected
+        null -> emptyList()
+        else -> expected.toString().split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    private fun looseEqual(a: Any?, b: Any?): Boolean {
+        if (a == b) return true
+        val an = numericOrNull(a)
+        val bn = numericOrNull(b)
+        if (an != null && bn != null) return an == bn
+        return a.toString() == b.toString()
     }
 
     private data class RuleEvaluation(

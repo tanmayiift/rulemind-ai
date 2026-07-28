@@ -1374,24 +1374,96 @@ function parseDraftRuleValue(value: unknown): string | number | boolean | null {
   return value as string | number | boolean | null;
 }
 
-function compareDraftRuleValue(actual: unknown, operator: string, expected: unknown): boolean {
-  if ([">=", "<=", ">", "<"].includes(operator)) {
-    const actualValue = Number(actual);
-    const expectedValue = Number(expected);
-    if (Number.isNaN(actualValue) || Number.isNaN(expectedValue)) {
+const RULE_OPERATORS: Array<{ value: string; label: string }> = [
+  { value: "==", label: "==" },
+  { value: "!=", label: "≠" },
+  { value: ">", label: ">" },
+  { value: ">=", label: "≥" },
+  { value: "<", label: "<" },
+  { value: "<=", label: "≤" },
+  { value: "between", label: "between" },
+  { value: "in", label: "in" },
+  { value: "not_in", label: "not in" },
+  { value: "regex", label: "regex" },
+  { value: "exists", label: "exists" },
+  { value: "!exists", label: "!exists" }
+];
+
+function draftNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isNaN(value) ? null : value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+function draftOptionList(expected: unknown): string[] {
+  if (Array.isArray(expected)) return expected.map((item) => String(item).trim()).filter(Boolean);
+  if (expected === null || expected === undefined) return [];
+  return String(expected)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function draftLooseEqual(actual: unknown, expected: unknown): boolean {
+  if (actual === expected) return true;
+  const a = draftNumber(actual);
+  const b = draftNumber(expected);
+  if (a !== null && b !== null) return a === b;
+  return String(actual) === String(expected);
+}
+
+// Mirrors packages/shared/operators.spec.json — kept in parity with the server,
+// Kotlin, and Dart engines so the draft preview matches production.
+function compareDraftRuleValue(
+  actual: unknown,
+  operator: string,
+  expected: unknown,
+  expected2?: unknown,
+  fieldType?: string
+): boolean {
+  if (operator === "exists") return actual !== undefined && actual !== null && actual !== "";
+  if (operator === "!exists") return actual === undefined || actual === null || actual === "";
+
+  if (operator === "in" || operator === "not_in") {
+    const options = draftOptionList(expected);
+    const matched = options.some((option) => draftLooseEqual(actual, option));
+    return operator === "in" ? matched : !matched;
+  }
+
+  if (operator === "regex") {
+    if (actual === undefined || actual === null) return false;
+    try {
+      return new RegExp(String(expected)).test(String(actual));
+    } catch {
       return false;
     }
+  }
+
+  if ((fieldType ?? "").toLowerCase() === "boolean" && (operator === "==" || operator === "!=")) {
+    const toBool = (value: unknown) =>
+      typeof value === "boolean" ? value : ["true", "1", "yes"].includes(String(value).trim().toLowerCase());
+    const matched = toBool(actual) === toBool(expected);
+    return operator === "==" ? matched : !matched;
+  }
+
+  if ([">=", "<=", ">", "<", "between"].includes(operator)) {
+    const actualValue = draftNumber(actual);
+    const expectedValue = draftNumber(expected);
+    if (actualValue === null || expectedValue === null) return false;
     if (operator === ">=") return actualValue >= expectedValue;
     if (operator === "<=") return actualValue <= expectedValue;
     if (operator === ">") return actualValue > expectedValue;
-    return actualValue < expectedValue;
+    if (operator === "<") return actualValue < expectedValue;
+    const upper = draftNumber(expected2);
+    if (upper === null) return false;
+    return actualValue >= expectedValue && actualValue <= upper;
   }
-  if (operator === "==") {
-    return actual === expected;
-  }
-  if (operator === "!=") {
-    return actual !== expected;
-  }
+
+  if (operator === "==") return draftLooseEqual(actual, expected);
+  if (operator === "!=") return !draftLooseEqual(actual, expected);
   return false;
 }
 
@@ -1435,6 +1507,8 @@ function normalizeRuleTree(node: RuleTreeNodeRecord | null | undefined, defaultV
       variable: node.variable ?? defaultVariable?.id ?? "",
       operator: node.operator ?? ">=",
       value: node.value ?? "",
+      ...(node.value2 !== undefined ? { value2: node.value2 } : {}),
+      ...(node.fieldType !== undefined ? { fieldType: node.fieldType } : {}),
     };
   }
   if (node.type === "not") {
@@ -1472,6 +1546,8 @@ function simpleNodesToTree(nodes: RuleNodeRecord[], defaultVariable?: VariableRe
         variable: node.variable ?? defaultVariable?.id ?? "",
         operator: node.operator ?? ">=",
         value: node.value ?? "",
+        ...(node.value2 !== undefined ? { value2: node.value2 } : {}),
+        ...(node.fieldType !== undefined ? { fieldType: node.fieldType } : {}),
       });
     }
     if (node.type === "and") {
@@ -1666,7 +1742,8 @@ function simulateRuleTreeDraft(
       const variable = node.variable ? variableMap[node.variable] : undefined;
       const actual = variable?.last_test_result?.value;
       const expected = parseDraftRuleValue(node.value ?? "");
-      const passed = compareDraftRuleValue(actual, node.operator ?? "==", expected);
+      const expected2 = node.value2 === undefined ? undefined : parseDraftRuleValue(node.value2);
+      const passed = compareDraftRuleValue(actual, node.operator ?? "==", expected, expected2, node.fieldType);
       conditions.push({
         variable_id: node.variable ?? "",
         variable_name: variable?.name ?? node.variable ?? "",
@@ -1836,15 +1913,30 @@ function AdvancedRuleTreeEditor(props: {
           <InlineSelect
             value={props.node.operator ?? ">="}
             onChange={(event) => props.onChange({ ...props.node, operator: event.target.value as RuleNodeRecord["operator"] })}
-            style={{ width: 86 }}
+            style={{ width: 104 }}
           >
-            {[">=", "<=", "==", ">", "<", "!="].map((operator) => (
-              <option key={operator} value={operator}>
-                {operator}
+            {RULE_OPERATORS.map((operator) => (
+              <option key={operator.value} value={operator.value}>
+                {operator.label}
               </option>
             ))}
           </InlineSelect>
-          <InlineInput value={String(props.node.value ?? "")} onChange={(event) => props.onChange({ ...props.node, value: event.target.value })} placeholder="Value" style={{ width: 140 }} />
+          {props.node.operator !== "exists" && props.node.operator !== "!exists" ? (
+            <InlineInput
+              value={String(props.node.value ?? "")}
+              onChange={(event) => props.onChange({ ...props.node, value: event.target.value })}
+              placeholder={props.node.operator === "in" || props.node.operator === "not_in" ? "a, b, c" : props.node.operator === "regex" ? "pattern" : "Value"}
+              style={{ width: 140 }}
+            />
+          ) : null}
+          {props.node.operator === "between" ? (
+            <InlineInput
+              value={String(props.node.value2 ?? "")}
+              onChange={(event) => props.onChange({ ...props.node, value2: event.target.value })}
+              placeholder="Upper"
+              style={{ width: 100 }}
+            />
+          ) : null}
         </div>
         <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <ConnectorIcon connectorId={connector?.id ?? "custom"} color={connector?.color} size={13} />
@@ -2343,20 +2435,30 @@ function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotif
                                 <InlineSelect
                                   value={node.operator ?? ">="}
                                   onChange={(event) => setNodes((items) => items.map((item) => (item.id === node.id ? { ...item, operator: event.target.value as RuleNodeRecord["operator"] } : item)))}
-                                  style={{ width: 78 }}
+                                  style={{ width: 96 }}
                                 >
-                                  {[">=", "<=", "==", ">", "<", "!="].map((operator) => (
-                                    <option key={operator} value={operator}>
-                                      {operator}
+                                  {RULE_OPERATORS.map((operator) => (
+                                    <option key={operator.value} value={operator.value}>
+                                      {operator.label}
                                     </option>
                                   ))}
                                 </InlineSelect>
-                                <InlineInput
-                                  value={node.value ?? ""}
-                                  onChange={(event) => setNodes((items) => items.map((item) => (item.id === node.id ? { ...item, value: event.target.value } : item)))}
-                                  placeholder="Value"
-                                  style={{ width: 110 }}
-                                />
+                                {node.operator !== "exists" && node.operator !== "!exists" ? (
+                                  <InlineInput
+                                    value={node.value ?? ""}
+                                    onChange={(event) => setNodes((items) => items.map((item) => (item.id === node.id ? { ...item, value: event.target.value } : item)))}
+                                    placeholder={node.operator === "in" || node.operator === "not_in" ? "a, b, c" : node.operator === "regex" ? "pattern" : "Value"}
+                                    style={{ width: 110 }}
+                                  />
+                                ) : null}
+                                {node.operator === "between" ? (
+                                  <InlineInput
+                                    value={node.value2 ?? ""}
+                                    onChange={(event) => setNodes((items) => items.map((item) => (item.id === node.id ? { ...item, value2: event.target.value } : item)))}
+                                    placeholder="Upper"
+                                    style={{ width: 90 }}
+                                  />
+                                ) : null}
                               </div>
                             ) : (
                               <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: palette.fg, flex: 1 }}>{spec.label}</div>
@@ -3116,18 +3218,100 @@ function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNo
               <div data-testid="policy-outcome" style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: execution.result.outcome === "approve" ? theme.success : execution.result.outcome === "review" ? theme.warning : theme.danger, textTransform: "uppercase", marginBottom: 10 }}>
                 {execution.result.outcome}
               </div>
-              <div style={{ display: "grid", gap: 8 }}>
-                {execution.result.trace.map((entry, index) => (
-                  <div key={index} style={{ background: theme.card, borderRadius: 10, padding: 10, border: "1px solid " + theme.border }}>
-                    <div style={{ fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>{String(entry.type).toUpperCase()} · {String(entry.label ?? entry.ref_id ?? "")}</div>
-                    <pre style={{ margin: "6px 0 0", fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-caption)", color: theme.muted, whiteSpace: "pre-wrap" }}>{JSON.stringify(entry, null, 2)}</pre>
-                  </div>
-                ))}
-              </div>
+              <DecisionFlow trace={execution.result.trace as unknown as Array<Record<string, any>>} outcome={String(execution.result.outcome)} />
             </div>
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function decisionStepStatus(entry: Record<string, any>): { key: string; label: string } {
+  if (entry.skipped) return { key: "skipped", label: "Skipped" };
+  if (entry.error) return { key: "error", label: "Error" };
+  const result = entry.result;
+  if (result && typeof result === "object") {
+    if (result.passed === true) return { key: "pass", label: "Pass" };
+    if (result.passed === false) return { key: "fail", label: "Fail" };
+    if (typeof result.outcome === "string") return { key: result.outcome, label: String(result.outcome) };
+    if (typeof result.score === "number") return { key: "info", label: "Scored" };
+  }
+  return { key: "neutral", label: "Done" };
+}
+
+// Node-wise decision-flow visualization: renders the execution trace as a
+// connected sequence of steps, showing where each check passed/failed and where
+// the final outcome was decided. Used by the Policy designer and Test Console.
+function DecisionFlow(props: { trace: Array<Record<string, any>>; outcome: string }) {
+  const theme = useTheme();
+  const colorFor = (key: string): string => {
+    if (key === "pass" || key === "approve") return theme.success;
+    if (key === "fail" || key === "reject" || key === "error") return theme.danger;
+    if (key === "review") return theme.warning;
+    if (key === "info") return theme.accent;
+    return theme.muted;
+  };
+  // The deciding step is the last one that set/merged the winning outcome.
+  const decidingIndex = (() => {
+    for (let i = props.trace.length - 1; i >= 0; i -= 1) {
+      const result = props.trace[i]?.result;
+      const stepType = props.trace[i]?.step?.type;
+      if (result && (result.outcome === props.outcome || (stepType === "outcome"))) return i;
+      if (result && result.passed === false && (props.outcome === "reject" || props.outcome === "review")) return i;
+    }
+    return props.trace.length - 1;
+  })();
+
+  return (
+    <div data-testid="decision-flow" style={{ display: "grid", gap: 0 }}>
+      {props.trace.map((entry, index) => {
+        const status = decisionStepStatus(entry);
+        const color = colorFor(status.key);
+        const step = entry.step ?? {};
+        const stepType = String(step.type ?? entry.type ?? "step");
+        const label = String(step.label ?? step.ref_id ?? entry.label ?? entry.ref_id ?? stepType);
+        const result = entry.result ?? {};
+        const conditions: Array<Record<string, any>> = Array.isArray(result.conditions) ? result.conditions : [];
+        const isDeciding = index === decidingIndex;
+        return (
+          <div key={index} style={{ display: "grid", gridTemplateColumns: "28px 1fr", gap: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+              <div style={{ width: 26, height: 26, borderRadius: "50%", background: color, color: "#fff", display: "grid", placeItems: "center", fontSize: 12, fontWeight: 700, flex: "none" }}>{index + 1}</div>
+              {index < props.trace.length - 1 ? <div style={{ width: 2, flex: 1, minHeight: 14, background: theme.border }} /> : null}
+            </div>
+            <div style={{ paddingBottom: 12 }}>
+              <div style={{ background: theme.card, border: "1px solid " + (isDeciding ? color : theme.border), borderRadius: 10, padding: "10px 12px", boxShadow: isDeciding ? "0 0 0 3px " + color + "22" : "none" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>
+                    <span style={{ textTransform: "uppercase", color: theme.muted, letterSpacing: "0.04em", fontSize: "var(--rm-fs-caption)" }}>{stepType}</span> · {label}
+                  </div>
+                  <span style={{ fontSize: "var(--rm-fs-caption)", fontWeight: 700, color, background: color + "1e", borderRadius: 999, padding: "2px 9px", textTransform: "uppercase" }}>{status.label}</span>
+                </div>
+                {typeof result.score === "number" ? (
+                  <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted, marginTop: 4, fontFamily: "var(--font-mono)" }}>score = {result.score}</div>
+                ) : null}
+                {entry.reason ? (
+                  <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.muted, marginTop: 4 }}>{String(entry.reason)}</div>
+                ) : null}
+                {conditions.length ? (
+                  <div style={{ display: "grid", gap: 4, marginTop: 8 }}>
+                    {conditions.map((cond, ci) => (
+                      <div key={ci} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-caption)" }}>
+                        <span style={{ color: theme.muted }}>{String(cond.variable_name ?? cond.variable_id ?? "")} {String(cond.operator ?? "")} {String(cond.threshold ?? "")}</span>
+                        <span style={{ color: cond.passed ? theme.success : theme.danger, fontWeight: 700 }}>{String(cond.value ?? "∅")} {cond.passed ? "✓" : "✗"}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {isDeciding ? (
+                  <div style={{ fontSize: "var(--rm-fs-caption)", color, marginTop: 8, fontWeight: 700 }}>→ Decision made here: {props.outcome.toUpperCase()}</div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -3325,11 +3509,7 @@ function TestingPage(props: { data: BootstrapPayload; onNotify: (message: string
               <div data-testid="policy-console-outcome" style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: policyResult.result.outcome === "approve" ? theme.success : policyResult.result.outcome === "review" ? theme.warning : theme.danger, textTransform: "uppercase" }}>
                 {policyResult.result.outcome}
               </div>
-              {policyResult.result.trace.map((entry, index) => (
-                <div key={index} style={{ fontSize: "var(--rm-fs-small)", color: theme.text }}>
-                  {String(entry.type).toUpperCase()} · {String(entry.label ?? entry.ref_id ?? "")}
-                </div>
-              ))}
+              <DecisionFlow trace={policyResult.result.trace as unknown as Array<Record<string, any>>} outcome={String(policyResult.result.outcome)} />
             </div>
           ) : null}
         </div>

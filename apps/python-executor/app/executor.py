@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import ast
 import copy
+import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -206,9 +208,39 @@ class ActionFailedError(RuntimeError):
     pass
 
 
+_DECISION_LOG_POOL: Optional[ThreadPoolExecutor] = None
+
+
+def _decision_log_pool() -> ThreadPoolExecutor:
+    """Shared background pool for fire-and-forget decision logging."""
+    global _DECISION_LOG_POOL
+    if _DECISION_LOG_POOL is None:
+        _DECISION_LOG_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("DECISION_LOG_WORKERS", "4")))
+    return _DECISION_LOG_POOL
+
+
 class PolicyExecutor:
     def __init__(self, storage: Storage):
         self.storage = storage
+        # Per-execution catalog cache. A PolicyExecutor is created fresh per
+        # request, so memoizing the tenant's connectors/variables/settings/secrets
+        # here removes the repeated DB round-trips that dominated decision latency
+        # (list_variables was previously queried on every rule/scorecard step, and
+        # secrets were re-fetched + decrypted on every step via _context_view).
+        self._catalog: Dict[str, Dict[str, Any]] = {}
+
+    def _catalog_for(self, tenant_id: str) -> Dict[str, Any]:
+        cat = self._catalog.get(tenant_id)
+        if cat is None:
+            variables = self.storage.list_variables(tenant_id=tenant_id)
+            cat = {
+                "connectors": {item["id"]: item for item in self.storage.list_connectors(tenant_id=tenant_id)},
+                "variables": variables,
+                "variable_lookup": {item["id"]: item for item in variables},
+                "settings": self.storage.get_settings(tenant_id=tenant_id),
+            }
+            self._catalog[tenant_id] = cat
+        return cat
 
     def _context_view(self, ctx: ExecutionContext) -> Dict[str, Any]:
         scorecards = {
@@ -229,17 +261,21 @@ class PolicyExecutor:
         }
 
     def _tenant_secrets(self, tenant_id: str) -> Dict[str, Any]:
+        cat = self._catalog_for(tenant_id)
+        if "secrets" in cat:
+            return cat["secrets"]
         secrets: Dict[str, Any] = {}
-        for connector in self.storage.list_connectors(tenant_id=tenant_id):
+        for connector in cat["connectors"].values():
             raw = self.storage.get_connector(connector["id"], include_secrets=True, tenant_id=tenant_id) or {}
             config = raw.get("config", {})
             for key, value in config.items():
                 if any(marker in key.lower() for marker in ("token", "secret", "password", "api_key", "apikey")):
                     secrets[key] = value
+        cat["secrets"] = secrets
         return secrets
 
     def _payloads_by_source(self, ctx: ExecutionContext) -> Dict[str, Dict[str, Any]]:
-        connectors = {item["id"]: item for item in self.storage.list_connectors(tenant_id=ctx.tenant_id)}
+        connectors = self._catalog_for(ctx.tenant_id)["connectors"]
         normalized: Dict[str, Dict[str, Any]] = {}
         for connector_id, connector in connectors.items():
             normalized[connector_id] = copy.deepcopy(connector.get("sample_payload", {}))
@@ -250,14 +286,58 @@ class PolicyExecutor:
             normalized["custom"] = copy.deepcopy(ctx.payload)
         return normalized
 
-    def _compute_variables(self, ctx: ExecutionContext) -> None:
-        connectors = {item["id"]: item for item in self.storage.list_connectors(tenant_id=ctx.tenant_id)}
+    @staticmethod
+    def _collect_condition_variable_ids(node: Any, out: set) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "condition" and node.get("variable"):
+                out.add(str(node["variable"]))
+            for value in node.values():
+                PolicyExecutor._collect_condition_variable_ids(value, out)
+        elif isinstance(node, list):
+            for item in node:
+                PolicyExecutor._collect_condition_variable_ids(item, out)
+
+    def _needed_variable_ids(self, policy: Dict[str, Any], rules: Dict[str, Any], scorecards: Dict[str, Any], tenant_id: str) -> set:
+        """Variable ids the policy uses, closed over inter-variable dependencies.
+
+        Over-inclusive by design (a substring match on variable code counts as a
+        dependency) so we never skip a variable a computation relies on.
+        """
+        direct: set = set()
+        for step in policy.get("steps", []):
+            ref_id = step.get("ref_id") or step.get("ref")
+            if step.get("type") == "rule" and ref_id in rules:
+                rule = rules[ref_id]
+                self._collect_condition_variable_ids(rule.get("tree"), direct)
+                self._collect_condition_variable_ids(rule.get("nodes"), direct)
+            elif step.get("type") == "scorecard" and ref_id in scorecards:
+                for factor in scorecards[ref_id].get("bins", []):
+                    if factor.get("variable_id"):
+                        direct.add(str(factor["variable_id"]))
+        by_id = {v["id"]: v for v in self._catalog_for(tenant_id)["variables"]}
+        needed: set = set()
+        stack = list(direct)
+        while stack:
+            vid = stack.pop()
+            if vid in needed or vid not in by_id:
+                continue
+            needed.add(vid)
+            code = str(by_id[vid].get("code", ""))
+            for other in by_id:
+                if other != vid and other not in needed and other in code:
+                    stack.append(other)
+        return needed
+
+    def _compute_variables(self, ctx: ExecutionContext, needed_ids: Optional[set] = None) -> None:
+        catalog = self._catalog_for(ctx.tenant_id)
         payloads = self._payloads_by_source(ctx)
-        limits = self.storage.get_settings(tenant_id=ctx.tenant_id).get("engine_config", {})
+        limits = catalog["settings"].get("engine_config", {})
         timeout_ms = int(limits.get("timeout_ms", 2000))
         memory_mb = int(limits.get("memory_mb", 128))
         values: Dict[str, Any] = {}
-        for variable in self.storage.list_variables(tenant_id=ctx.tenant_id):
+        for variable in catalog["variables"]:
+            if needed_ids is not None and variable["id"] not in needed_ids:
+                continue
             source_payload = payloads.get(variable["source_id"], {})
             execution = execute_variable(variable["code"], source_payload, values, timeout_ms=timeout_ms, memory_mb=memory_mb)
             values[variable["id"]] = execution.get("value")
@@ -288,7 +368,6 @@ class PolicyExecutor:
                 user_id=user_id,
                 started_at=datetime.utcnow(),
             )
-            self._compute_variables(ctx)
             start_step = 0
 
         assignment = resolve_experiment_assignment(self.storage, tenant_id, policy["id"], ctx.user_id or (ctx.payload.get("user_id") if isinstance(ctx.payload, dict) else None))
@@ -301,7 +380,17 @@ class PolicyExecutor:
         rules = {item["id"]: item for item in self.storage.list_rules(tenant_id=tenant_id)}
         rules = apply_experiment_overrides(rules, assignment)
         scorecards = {item["id"]: item for item in self.storage.list_scorecards(tenant_id=tenant_id)}
-        connectors = {item["id"]: item for item in self.storage.list_connectors(tenant_id=tenant_id)}
+        connectors = self._catalog_for(tenant_id)["connectors"]
+
+        # By default every tenant variable is computed (full parity + available for
+        # audit/downstream). Setting COMPUTE_ONLY_USED_VARS=1 restricts computation
+        # to the variables the policy actually uses (transitively) — a real latency
+        # win, but it changes the workload, so it is opt-in rather than default.
+        if not resume_from:
+            needed = None
+            if os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1":
+                needed = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
+            self._compute_variables(ctx, needed_ids=needed)
 
         steps = policy.get("steps", [])
         for index in range(start_step, len(steps)):
@@ -370,13 +459,32 @@ class PolicyExecutor:
             ctx.status = "completed"
         ctx.completed_at = datetime.utcnow()
         ctx.total_latency_ms = int((ctx.completed_at - ctx.started_at).total_seconds() * 1000)
-        self._persist_execution(ctx, trigger_type=source)
-        self._log_decision(
-            ctx,
-            source=source,
-            sdk_version=sdk_version,
-            experiment_variant=ctx.experiment_variant or experiment_variant,
+        # A WorkflowExecution row only exists so a paused execution can be resumed.
+        # A one-shot decision that never paused (and whose policy has no review
+        # gate) needs no such row — skipping this write roughly halves the DB
+        # writes per decision on the hot path. Resumable executions are always
+        # persisted at the pause point above.
+        needs_execution_row = (
+            ctx.paused_at_step is not None
+            or ctx.review_task_id is not None
+            or any(step.get("type") == "review_gate" for step in steps)
         )
+        if needs_execution_row:
+            self._persist_execution(ctx, trigger_type=source)
+        # Decision logging can be moved off the request's critical path. Gated by
+        # env so tests (which assert the decision immediately) stay deterministic;
+        # enable ASYNC_DECISION_LOG=1 in high-QPS deployments.
+        if os.getenv("ASYNC_DECISION_LOG", "0") == "1":
+            _decision_log_pool().submit(
+                self._log_decision, ctx, source, sdk_version, ctx.experiment_variant or experiment_variant
+            )
+        else:
+            self._log_decision(
+                ctx,
+                source=source,
+                sdk_version=sdk_version,
+                experiment_variant=ctx.experiment_variant or experiment_variant,
+            )
         return ctx
 
     def _persist_execution(self, ctx: ExecutionContext, trigger_type: str) -> None:
@@ -433,7 +541,7 @@ class PolicyExecutor:
         rule = rules.get(ref_id)
         if not rule:
             raise ValueError("Unknown rule: {0}".format(ref_id))
-        variable_lookup = {item["id"]: item for item in self.storage.list_variables(tenant_id=ctx.tenant_id)}
+        variable_lookup = self._catalog_for(ctx.tenant_id)["variable_lookup"]
         result = evaluate_rule_definition(rule, ctx.variables, variable_lookup)
         ctx.rule_results.append({"rule_id": ref_id, **copy.deepcopy(result)})
         ctx.rule_results[-1]["ruleId"] = ref_id
@@ -445,7 +553,7 @@ class PolicyExecutor:
         scorecard = scorecards.get(ref_id)
         if not scorecard:
             raise ValueError("Unknown scorecard: {0}".format(ref_id))
-        variable_lookup = {item["id"]: item for item in self.storage.list_variables(tenant_id=ctx.tenant_id)}
+        variable_lookup = self._catalog_for(ctx.tenant_id)["variable_lookup"]
         result = evaluate_scorecard(scorecard, ctx.variables, variable_lookup)
         ctx.scorecard_results[ref_id] = result
         return result

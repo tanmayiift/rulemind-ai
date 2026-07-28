@@ -47,6 +47,12 @@ except ImportError:
 # Cache for validated+compiled code to avoid re-parsing on every call
 _validated_code_cache: Dict[str, bool] = {}
 _compiled_code_cache: Dict[str, Any] = {}
+_param_count_cache: Dict[str, int] = {}
+# Cache of the *resolved callable* per source hash. A variable is a pure function
+# of (payload, variables); after the first exec we keep the function object and
+# reuse it on every subsequent call — no re-parse, no re-exec, no re-resolve.
+# This is the single biggest per-request win on the inline path.
+_function_cache: Dict[str, Any] = {}
 
 # Pre-warmed process pool (lazy-initialized)
 _pool: Optional[ProcessPoolExecutor] = None
@@ -151,19 +157,33 @@ def _execute_in_process(code: str, payload: Dict[str, Any], variables_map: Dict[
 
 
 def _execute_inline(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any]) -> Dict[str, Any]:
-    """Fast in-process execution for pre-validated code (no process spawn overhead)."""
+    """Fast in-process execution for pre-validated code.
+
+    On the first call for a given source we parse, validate, exec, and resolve the
+    variable function once; every later call reuses the cached function object.
+    """
     started = time.perf_counter()
     try:
-        validate_source(code)
-        namespace = {
-            "__builtins__": dict(SAFE_BUILTINS, __import__=restricted_import),
-            "variable": variable,
-            "json": json,
-        }
-        exec(code, namespace, namespace)  # pylint: disable=exec-used
-        function = resolve_callable(namespace)
-        signature = inspect.signature(function)
-        parameter_count = len(signature.parameters)
+        code_hash = hashlib.md5(code.encode()).hexdigest()
+        cached = _function_cache.get(code_hash)
+        if cached is not None:
+            function, parameter_count = cached
+        else:
+            validate_source(code)  # cached by source hash
+            compiled = _compiled_code_cache.get(code_hash)
+            if compiled is None:
+                compiled = compile(code, "<variable>", "exec")
+                _compiled_code_cache[code_hash] = compiled
+            namespace = {
+                "__builtins__": dict(SAFE_BUILTINS, __import__=restricted_import),
+                "variable": variable,
+                "json": json,
+            }
+            exec(compiled, namespace, namespace)  # pylint: disable=exec-used
+            function = resolve_callable(namespace)
+            parameter_count = len(inspect.signature(function).parameters)
+            _function_cache[code_hash] = (function, parameter_count)
+            _param_count_cache[code_hash] = parameter_count
         if parameter_count >= 3:
             result = function(payload, variables_map, {"connectors": {}})
         else:

@@ -605,6 +605,7 @@ private fun JourneyScreen(state: AppState, viewModel: RuleMindViewModel) {
                 AuditScreenBody(decision = decision, onFlush = { viewModel.flushPendingOperations(context, journey.id) })
             }
         }
+        state.error?.let { ErrorText(it) }
     }
 }
 
@@ -627,9 +628,10 @@ private fun SandboxScreen(state: AppState, viewModel: RuleMindViewModel) {
             Text("Policy", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             var expanded by remember { mutableStateOf(false) }
+            val selectedPolicy = policies.find { it.id == sandbox.selectedPolicyId }
             Box {
                 OutlinedTextField(
-                    value = sandbox.selectedPolicyId ?: "Select a policy...",
+                    value = selectedPolicy?.name ?: "Select a policy...",
                     onValueChange = {},
                     modifier = Modifier.fillMaxWidth().testTag("sandbox_policy_select"),
                     readOnly = true,
@@ -640,12 +642,10 @@ private fun SandboxScreen(state: AppState, viewModel: RuleMindViewModel) {
                 )
                 androidx.compose.material3.DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                     policies.forEach { policy ->
-                        val policyId = (policy as? Map<*, *>)?.get("id")?.toString()
-                            ?: policy.toString()
                         androidx.compose.material3.DropdownMenuItem(
-                            text = { Text(policyId) },
+                            text = { Text(policy.name) },
                             onClick = {
-                                viewModel.selectSandboxPolicy(policyId)
+                                viewModel.selectSandboxPolicy(policy.id)
                                 expanded = false
                             },
                         )

@@ -27,7 +27,8 @@ class RuleEvaluator {
       final actual = variables[variableId] ?? 0;
       final operator = condition["operator"]?.toString() ?? "==";
       final expected = condition["value"];
-      final passed = _compare(actual, operator, expected);
+      final passed = _compare(actual, operator, expected,
+          expected2: condition["value2"], fieldType: condition["fieldType"]?.toString());
       conditions.add(<String, dynamic>{
         "variable_id": variableId,
         "variable_name": variableId,
@@ -70,7 +71,8 @@ class RuleEvaluator {
         final actual = variables[variableId] ?? 0;
         final operator = node["operator"]?.toString() ?? "==";
         final expected = node["value"];
-        final passed = _compare(actual, operator, expected);
+        final passed = _compare(actual, operator, expected,
+            expected2: node["value2"], fieldType: node["fieldType"]?.toString());
         conditions.add(<String, dynamic>{
           "variable_id": variableId,
           "variable_name": variableId,
@@ -102,31 +104,109 @@ class RuleEvaluator {
     }
   }
 
-  bool _compare(dynamic actual, String operator, dynamic expected) {
-    switch (operator) {
-      case ">":
-        return _numeric(actual) > _numeric(expected);
-      case ">=":
-        return _numeric(actual) >= _numeric(expected);
-      case "<":
-        return _numeric(actual) < _numeric(expected);
-      case "<=":
-        return _numeric(actual) <= _numeric(expected);
-      case "!=":
-        return actual != expected;
-      default:
-        return actual == expected || _numeric(actual) == _numeric(expected);
+  /// Public entry point used by the cross-engine operator conformance suite
+  /// (packages/shared/operators.spec.json). Delegates to the private [_compare].
+  bool compareCondition(dynamic actual, String operator, dynamic expected,
+          {dynamic expected2, String? fieldType}) =>
+      _compare(actual, operator, expected, expected2: expected2, fieldType: fieldType);
+
+  /// Evaluate a single condition. Mirrors the canonical operator contract
+  /// (packages/shared/operators.spec.json) shared with the TS, Python, and
+  /// Kotlin engines: == != > >= < <= between in not_in regex exists !exists.
+  bool _compare(dynamic actual, String operator, dynamic expected,
+      {dynamic expected2, String? fieldType}) {
+    // Existence checks run before any missing-value handling.
+    if (operator == "exists") {
+      return actual != null && actual != "";
     }
+    if (operator == "!exists") {
+      return actual == null || actual == "";
+    }
+
+    // Set membership. `expected` may be a list or a comma-separated string.
+    if (operator == "in" || operator == "not_in") {
+      final options = _asOptionList(expected);
+      final matched = options.any((option) => _looseEqual(actual, option));
+      return operator == "in" ? matched : !matched;
+    }
+
+    // Regular-expression match against the string form of the value.
+    if (operator == "regex") {
+      if (actual == null) return false;
+      try {
+        return RegExp(expected.toString()).hasMatch(actual.toString());
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // Boolean-typed equality (only when the field is declared boolean).
+    if ((fieldType ?? "").toLowerCase() == "boolean" &&
+        (operator == "==" || operator == "!=")) {
+      final matched = _toBool(actual) == _toBool(expected);
+      return operator == "==" ? matched : !matched;
+    }
+
+    // Ordered comparisons and inclusive range operate on numbers.
+    if (operator == ">=" ||
+        operator == "<=" ||
+        operator == ">" ||
+        operator == "<" ||
+        operator == "between") {
+      final a = _numericOrNull(actual);
+      final e = _numericOrNull(expected);
+      if (a == null || e == null) return false;
+      switch (operator) {
+        case ">=":
+          return a >= e;
+        case "<=":
+          return a <= e;
+        case ">":
+          return a > e;
+        case "<":
+          return a < e;
+        case "between":
+          final upper = _numericOrNull(expected2);
+          if (upper == null) return false;
+          return a >= e && a <= upper;
+      }
+    }
+
+    if (operator == "==") return _looseEqual(actual, expected);
+    if (operator == "!=") return !_looseEqual(actual, expected);
+    return false;
   }
 
-  double _numeric(dynamic value) {
-    if (value is num) {
-      return value.toDouble();
-    }
-    if (value is String) {
-      return double.tryParse(value) ?? 0.0;
-    }
-    return 0.0;
+  double? _numericOrNull(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value);
+    return null;
+  }
+
+  bool _toBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    final s = value?.toString().trim().toLowerCase();
+    return s == "true" || s == "1" || s == "yes";
+  }
+
+  List<dynamic> _asOptionList(dynamic expected) {
+    if (expected is List) return expected;
+    if (expected == null) return const <dynamic>[];
+    return expected
+        .toString()
+        .split(",")
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList();
+  }
+
+  bool _looseEqual(dynamic a, dynamic b) {
+    if (a == b) return true;
+    final an = _numericOrNull(a);
+    final bn = _numericOrNull(b);
+    if (an != null && bn != null) return an == bn;
+    return a.toString() == b.toString();
   }
 }
 

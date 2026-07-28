@@ -12,3 +12,9 @@ PyYAML==6.0.2
 prometheus-client==0.21.1
 redis==5.2.1
 psycopg2-binary==2.9.9
+
+# Observability (optional at runtime; tracing activates when OTEL_EXPORTER_OTLP_ENDPOINT is set)
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp-proto-grpc>=1.27.0
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-sqlalchemy>=0.48b0

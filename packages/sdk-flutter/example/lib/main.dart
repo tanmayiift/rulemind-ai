@@ -808,6 +808,10 @@ class _JourneyView extends StatelessWidget {
           'outcome' => _OutcomeView(state: state, journey: journey, decision: decision),
           _ => _AuditView(state: state, decision: decision, journeyId: journey['id'] as String),
         },
+        if (state.error != null) ...<Widget>[
+          const SizedBox(height: 16),
+          Text(state.error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+        ],
       ],
     );
   }

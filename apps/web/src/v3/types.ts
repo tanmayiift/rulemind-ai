@@ -39,12 +39,30 @@ export interface VariableRecord {
   updated_at: string;
 }
 
+export type RuleOperator =
+  | "=="
+  | "!="
+  | ">"
+  | ">="
+  | "<"
+  | "<="
+  | "between"
+  | "in"
+  | "not_in"
+  | "regex"
+  | "exists"
+  | "!exists";
+
+export type RuleFieldType = "number" | "string" | "boolean" | "date";
+
 export interface RuleNodeRecord {
   id: string;
   type: "condition" | "and" | "or" | "approve" | "review" | "reject";
   variable?: string;
-  operator?: ">=" | "<=" | "==" | ">" | "<" | "!=";
+  operator?: RuleOperator;
   value?: string;
+  value2?: string;
+  fieldType?: RuleFieldType;
   label?: string;
 }
 
@@ -53,8 +71,10 @@ export interface RuleTreeNodeRecord {
   type: "group" | "condition" | "not";
   logic?: "AND" | "OR";
   variable?: string;
-  operator?: ">=" | "<=" | "==" | ">" | "<" | "!=";
+  operator?: RuleOperator;
   value?: string | number | boolean;
+  value2?: string | number | boolean;
+  fieldType?: RuleFieldType;
   children?: RuleTreeNodeRecord[];
   child?: RuleTreeNodeRecord;
   onPass?: "approve" | "review" | "reject";
