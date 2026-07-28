@@ -120,6 +120,46 @@ class WorkflowEngineTests(unittest.TestCase):
         self.assertEqual(resumed.json()["status"], "completed")
         self.assertEqual(resumed.json()["outcome"], "approve")
 
+    def test_provider_templates(self):
+        providers = self.client.get("/api/v1/providers", headers=self.headers).json()
+        ids = {p["id"] for p in providers}
+        self.assertIn("http_request", ids)  # the Postman-style generic step
+        self.assertIn("credit_bureau", ids)
+        bureau = self.client.get("/api/v1/providers/credit_bureau", headers=self.headers).json()
+        self.assertEqual(bureau["action"]["mode"], "async")
+        self.assertIn("bureau_token", bureau["credentials"])
+        # category filter
+        kyc = self.client.get("/api/v1/providers?category=kyc", headers=self.headers).json()
+        self.assertTrue(kyc and all(p["category"] == "kyc" for p in kyc))
+
+    def test_review_gate_routing_and_sla(self):
+        import asyncio
+
+        from app.executor import PolicyExecutor
+
+        pid = self._create_policy(
+            "Routed review",
+            [
+                {
+                    "type": "review_gate",
+                    "id": "rg1",
+                    "config": {"assignTo": "credit_l1", "role": "credit_manager", "priority": "high", "slaHours": 4},
+                },
+                {"type": "outcome", "ref_id": "approve"},
+            ],
+        )
+        policy = app_main.storage.get_policy(pid)
+        tenant = app_main.storage.default_tenant_id or "default"
+        ctx = asyncio.run(PolicyExecutor(app_main.storage).execute(policy=policy, payload={}, tenant_id=tenant, source="test"))
+        self.assertEqual(ctx.status, "paused")
+        tasks = self.client.get("/api/v1/reviews?queue=credit_l1", headers=self.headers).json()
+        self.assertTrue(tasks, "review task should be routed to credit_l1 queue")
+        task = tasks[0]
+        self.assertEqual(task["role"], "credit_manager")
+        self.assertEqual(task["priority"], "high")
+        self.assertIsNotNone(task["sla_at"])
+        self.assertIn("sla_breached", task)
+
     def test_monitor_fires_alert_and_schedules_reeval(self):
         pid = self._create_policy(
             "Monitored",

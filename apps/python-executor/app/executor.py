@@ -810,6 +810,14 @@ class PolicyExecutor:
         if condition and not evaluate_condition(condition, self._context_view(ctx)):
             return {"skipped": True, "reason": "Condition not met"}
         timeout_hours = int(config.get("timeoutHours", 48))
+        # Human routing + SLA (stored in the snapshot; no schema change needed).
+        sla_hours = config.get("slaHours")
+        routing = {
+            "queue": config.get("assignTo", "default"),
+            "role": config.get("role"),
+            "priority": config.get("priority", "normal"),
+            "sla_at": (datetime.utcnow() + timedelta(hours=int(sla_hours))).replace(microsecond=0).isoformat() + "Z" if sla_hours else None,
+        }
         task = self.storage.create_review_task(
             {
                 "tenant_id": ctx.tenant_id,
@@ -824,6 +832,7 @@ class PolicyExecutor:
                     "rule_results": copy.deepcopy(ctx.rule_results),
                     "scorecard_results": copy.deepcopy(ctx.scorecard_results),
                     "outcome_before_review": ctx.outcome,
+                    "routing": routing,
                 },
                 "timeout_at": datetime.utcnow() + timedelta(hours=timeout_hours),
             },
