@@ -62,7 +62,7 @@ test/                   TypeScript unit tests (34 tests: engine, SDK, auth, pari
 ### 1. Clone and Install
 
 ```bash
-git clone https://github.com/your-org/rulemind-ai.git
+git clone https://github.com/tanmayiift/rulemind-ai.git
 cd rulemind-ai
 pnpm install
 pip install -r apps/python-executor/requirements.txt
@@ -78,7 +78,7 @@ Edit `.env` to set your secrets. For local development, defaults work out of the
 
 ```bash
 AUTH_MODE=none              # Use 'apikey' or 'jwt' in production
-DATABASE_URL=sqlite:///.runtime/rulemind_v3.db
+DATABASE_URL=sqlite:///.runtime/rulemind_v4.db
 ```
 
 ### 3. Start Development Servers
@@ -92,7 +92,7 @@ This starts:
 - **API** at http://localhost:8080
 - **API docs** at http://localhost:8080/docs
 
-The backend auto-seeds sample data on first startup: 6 connectors, 15 variables, 2 rules, 1 scorecard, 1 policy.
+The backend auto-seeds a realistic sample tenant on first startup (connectors, ~55 variables, rules, scorecards, and several policies) so every screen has data immediately. The web app authenticates with the dev API key `rm_live_devlocaltenantkey000000000000` — set `NEXT_PUBLIC_RULEMIND_DEV_API_KEY` (or paste it in **Settings** in the dashboard).
 
 ## Docker Compose (Production)
 
@@ -132,6 +132,42 @@ This runs:
 | `RATE_LIMIT_RPM` | `100` | Requests per minute per tenant |
 
 See `.env.example` for the full list.
+
+## Operating RuleMind (setup by team)
+
+### The golden path — a live decision in 5 steps
+1. **Start it** — `pnpm dev` (local) or `docker compose up -d` (prod).
+2. **Get a key** — dev uses `rm_live_devlocaltenantkey000000000000`; prod: create one in the Admin Console (below).
+3. **Author** — in the dashboard: add a **Connector**, write **Variables**, build a **Rule** (12 operators), optionally a **Scorecard**, then compose a **Policy** (which can `branch`, call sub-**workflows**, run async provider **actions**, and **monitor**). The **MECE** gate blocks a policy with overlaps/gaps.
+4. **Test & promote** — use **Test Console** / **Simulation** (batch), then move the policy through its **Lifecycle** (Draft → In Review → Ready → Live) and **Deploy** dev → uat → prod.
+5. **Decide** — `POST /api/v1/decide` (or the SDKs). Inspect every decision in **Decision Explorer** (node-by-node trace + reason codes).
+
+### 👩‍💻 Developers
+- `pnpm dev` runs web (`:3000`) + API (`:8080`, docs at `/docs`). Auto-seeded data on first run.
+- Auth in dev: `AUTH_MODE=none`, or use the dev API key above. Point the web app at the API with `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_RULEMIND_DEV_API_KEY`.
+- Tests: `pnpm test` (TS/vitest), `python -m unittest discover -s apps/python-executor/tests` (Python), `cargo test --no-default-features` in `packages/rulemind-core-rs` (Rust core).
+- Fast local decisions: set `FAST_DECIDE=1` + `SANDBOX_MODE=inline` to serve pure-compute policies from the cached-bundle core (the Rust core is used automatically when built via `maturin develop`).
+
+### 🛠️ Platform / Infra
+- **Any SQL database** — set `DATABASE_URL` (SQLite for dev, Postgres in compose/prod; MySQL etc. via SQLAlchemy). Run migrations with `alembic upgrade head`.
+- **Kubernetes** — a Helm chart ships in `helm/rulemind/` (Deployments for web/api/worker, Service, Ingress, ConfigMap, Secret, migrate Job, HPA + PDB on the api). `helm install rulemind ./helm/rulemind -f my-values.yaml`.
+- **Scaling** — the decision path is **stateless**; run N api replicas behind the Ingress with the HPA on RPS/latency. For maximum throughput enable `FAST_DECIDE=1` (cached-bundle core) and, at the edge, the WASM core (`packages/rulemind-core-rs`, `./build-wasm.sh`).
+- **Secrets** — set `RULEMIND_CONFIG_KEY` (config-at-rest encryption), `RULEMIND_ADMIN_JWT_SECRET`, `RULEMIND_ADMIN_PASSWORD`, `POSTGRES_PASSWORD` (see the Docker Compose block for `openssl rand` examples). Connector credentials are Fernet-encrypted at rest.
+- **Observability** — Prometheus metrics are always at `/metrics`. For traces + dashboards: `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up` brings up **Grafana** (`:3001`), **Prometheus** (`:9090`), **Tempo**, and the OTel collector with a pre-provisioned dashboard. See [`observability/README.md`](observability/README.md).
+
+### 📊 Business / Risk Ops
+- **Admin Console** (`/admin`) — log in with `RULEMIND_ADMIN_EMAIL` / `RULEMIND_ADMIN_PASSWORD` to create **tenants** and generate **API keys** (shown once — see *Authentication & Credentials* below).
+- **Lifecycle & governance** — move policies Draft → In Review → Ready → Live; every change is in the **Audit Log**; promotions use maker/checker.
+- **Human-in-the-loop** — the **Review Queue** shows cases routed by queue/role with SLA flags; approve/reject with notes.
+- **A/B & Champion/Challenger** — run experiments with traffic ramps, guardrails, significance, and one-click promote/rollback.
+- **Monitoring** — decision volume, outcome mix, latency, and drift/anomaly signals.
+
+### 🏢 Hosting on your internal browser (enterprise)
+The dashboard is a standalone Next.js app that talks to the API over HTTP — host it on any internal URL:
+1. Build: `pnpm --filter @rulemind/web build` (or use the `web` image from `docker compose`).
+2. Point it at your API: `NEXT_PUBLIC_API_BASE_URL=https://rulemind-api.internal`.
+3. Set `CORS_ORIGINS` on the API to your dashboard's origin.
+4. Serve it behind your SSO/reverse proxy. Theme tokens (accent/CTA colours, background, surfaces) are centralised as CSS variables (`--rm-*`) for straightforward white-labelling; an admin-only branding panel to edit them without a rebuild is on the roadmap.
 
 ## API Overview
 
