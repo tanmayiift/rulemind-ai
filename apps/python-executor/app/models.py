@@ -360,6 +360,9 @@ class Setting(Base):
     # Admin-only, config-driven white-label branding (accent/CTA colour, background,
     # sidebar, brand name/logo, hidden nav items). Empty values fall back to theme defaults.
     branding: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # AI Copilot config: default provider + per-provider {key_encrypted, model}.
+    # Keys are Fernet-encrypted; never returned to the client (masked on read).
+    ai_config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 

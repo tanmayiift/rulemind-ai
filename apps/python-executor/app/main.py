@@ -2105,6 +2105,77 @@ def test_action(request: ActionTestRequest) -> Dict[str, Any]:
         return {"ok": False, "error": str(error), "latencyMs": round(latency, 1), "resolvedUrl": url, "resolvedMethod": method}
 
 
+# ── AI Copilot (BYO key, server-side, drafts only) ─────────────────────────────
+
+class AIConfigRequest(BaseModel):
+    default_provider: Optional[str] = None
+    anthropic: Optional[Dict[str, Any]] = None  # {"model": "...", "key": "sk-..."} ("__CLEAR__" to remove)
+    openai: Optional[Dict[str, Any]] = None
+
+
+class AITestRequest(BaseModel):
+    provider: Optional[str] = None
+
+
+class AIGenerateRuleRequest(BaseModel):
+    prompt: str
+    provider: Optional[str] = None
+
+
+@app.get("/api/v1/ai/config")
+def get_ai_config() -> Dict[str, Any]:
+    """Masked view — reports which providers are configured, never returns keys."""
+    return storage.get_ai_config_masked()
+
+
+@app.put("/api/v1/ai/config")
+def put_ai_config(request: AIConfigRequest) -> Dict[str, Any]:
+    return storage.set_ai_config(request.model_dump(exclude_none=True))
+
+
+@app.post("/api/v1/ai/test")
+def ai_test(request: AITestRequest) -> Dict[str, Any]:
+    from .ai import test_connection
+
+    creds = storage.get_ai_credentials(request.provider)
+    if not creds:
+        raise HTTPException(status_code=422, detail="No API key configured for that provider.")
+    return test_connection(creds["provider"], creds["api_key"], creds.get("model"))
+
+
+@app.post("/api/v1/ai/generate-rule")
+def ai_generate_rule(request: AIGenerateRuleRequest) -> Dict[str, Any]:
+    """NL → draft rule tree. Guardrails: an out-of-scope prompt is refused LOCALLY
+    (no token spent), and the result is a DRAFT that still passes MECE/test-gating
+    before it can be promoted — nothing is saved or deployed here."""
+    from .ai import AIError, OUT_OF_SCOPE_MESSAGE, generate_rule, is_in_scope
+
+    variables = storage.list_variables()
+    names = [v.get("name", "") for v in variables] + [v.get("id", "") for v in variables]
+    in_scope, reason = is_in_scope(request.prompt, names)
+    if not in_scope:
+        return {"in_scope": False, "reason": reason, "message": OUT_OF_SCOPE_MESSAGE}
+
+    creds = storage.get_ai_credentials(request.provider)
+    if not creds:
+        raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
+    try:
+        draft = generate_rule(creds["provider"], creds["api_key"], request.prompt, variables, model=creds.get("model"))
+    except AIError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+    # Validate the generated tree as a draft (not saved).
+    valid, validation_error = True, None
+    try:
+        if isinstance(draft.get("tree"), dict):
+            validate_rule_tree(draft["tree"])
+        else:
+            valid, validation_error = False, "Model did not return a tree."
+    except HTTPException as error:
+        valid, validation_error = False, error.detail
+    return {"in_scope": True, "provider": creds["provider"], "draft": draft, "valid": valid, "validation_error": validation_error}
+
+
 class WorkflowCallbackRequest(BaseModel):
     step_id: str
     data: Dict[str, Any] = Field(default_factory=dict)
