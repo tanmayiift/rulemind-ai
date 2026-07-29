@@ -90,6 +90,9 @@ EVENTS_INGESTED_TOTAL = Counter("rulemind_events_ingested_total", "RuleMind SDK 
 
 
 ALLOWED_NODE_TYPES = {"condition", "and", "or", "approve", "review", "reject"}
+# Outcomes a rule group may resolve to. Includes the gate markers "pass"/"fail"
+# (continue / stop) used by gate rules, which the executor evaluates natively.
+RULE_TREE_OUTCOMES = {"approve", "review", "reject", "pass", "fail"}
 ALLOWED_OPERATORS = {">=", "<=", "==", ">", "<", "!="}
 PROMOTION_FLOW = {"dev": "uat", "uat": "prod"}
 
@@ -585,10 +588,15 @@ def validate_rule_tree(tree: Dict[str, Any], depth: int = 0) -> None:
             if not isinstance(child, dict):
                 raise HTTPException(status_code=422, detail="Invalid child node in rule tree.")
             validate_rule_tree(child, depth + 1)
-        if tree.get("onPass") not in {"approve", "review", "reject"}:
-            raise HTTPException(status_code=422, detail="Rule tree onPass must be approve, review, or reject.")
-        if tree.get("onFail") not in {"approve", "review", "reject"}:
-            raise HTTPException(status_code=422, detail="Rule tree onFail must be approve, review, or reject.")
+        # Gate rules (the majority — Bureau Threshold, KYC Gate, Affordability…) use
+        # the continue-marker outcomes "pass"/"fail", which the runtime supports
+        # (see the outcome precedence map in executor._merge_outcome). Accepting only
+        # approve/review/reject made those rules un-editable: GET → PUT round-tripped
+        # to a 422. Allow the full outcome vocabulary the engine actually evaluates.
+        if tree.get("onPass") not in RULE_TREE_OUTCOMES:
+            raise HTTPException(status_code=422, detail="Rule tree onPass must be one of: {0}.".format(", ".join(sorted(RULE_TREE_OUTCOMES))))
+        if tree.get("onFail") not in RULE_TREE_OUTCOMES:
+            raise HTTPException(status_code=422, detail="Rule tree onFail must be one of: {0}.".format(", ".join(sorted(RULE_TREE_OUTCOMES))))
         return
     raise HTTPException(status_code=422, detail="Unsupported rule tree node type: {0}".format(node_type))
 
