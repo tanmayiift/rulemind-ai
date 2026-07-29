@@ -2313,8 +2313,15 @@ def import_config(request: ImportRequest) -> Dict[str, Any]:
 
 
 @app.get("/api/v1/audit/decisions")
-def audit_decisions() -> List[Dict[str, Any]]:
-    return storage.list_decisions()
+def audit_decisions(limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+    # Paginated — the decisions table is unbounded in production; an unpaged fetch
+    # of tens of thousands of full-context rows would time out and exhaust memory.
+    return storage.list_decisions(limit=limit, offset=offset)
+
+
+@app.get("/api/v1/audit/decisions/count")
+def audit_decisions_count() -> Dict[str, int]:
+    return {"total": storage.count_decisions()}
 
 
 @app.get("/api/v1/audit/promotions")
@@ -2323,8 +2330,8 @@ def audit_promotions() -> List[Dict[str, Any]]:
 
 
 @app.get("/api/v1/audit/errors")
-def audit_errors() -> List[Dict[str, Any]]:
-    return storage.list_error_events()
+def audit_errors(limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+    return storage.list_error_events(limit=limit, offset=offset)
 
 
 @app.get("/api/v1/settings")
