@@ -194,3 +194,67 @@ def experiment_analytics(storage: Storage, tenant_id: str, experiment_id: str) -
     }
     cache_set_json(cache_key, result, ttl_seconds=300)
     return result
+
+
+def rejection_drivers(decisions: List[Dict[str, Any]], focus_outcomes=("reject", "review")) -> Dict[str, Any]:
+    """Rank the conditions/predictors that most often FAIL on non-approved decisions.
+
+    Pure compute over decision traces — exact and cheap (no LLM). For each rule
+    condition in each decision, count failures on decisions whose outcome is in
+    `focus_outcomes`, plus total evaluations (for a fail rate). Answers "which
+    factor/predictor drives the most rejections".
+    """
+    focus = set(focus_outcomes)
+    agg: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"variable_name": "", "operator": "", "threshold": None, "fail_count": 0, "seen": 0, "example_value": None}
+    )
+    analyzed = 0
+    focus_count = 0
+    outcome_mix: Dict[str, int] = defaultdict(int)
+
+    for d in decisions:
+        analyzed += 1
+        outcome = d.get("outcome")
+        outcome_mix[str(outcome)] += 1
+        focused = outcome in focus
+        if focused:
+            focus_count += 1
+        for step in d.get("trace") or []:
+            if (step.get("step") or {}).get("type") != "rule":
+                continue
+            for c in ((step.get("result") or {}).get("conditions") or []):
+                vid = c.get("variable_id") or c.get("variable_name")
+                if not vid:
+                    continue
+                slot = agg[vid]
+                slot["variable_name"] = c.get("variable_name") or vid
+                slot["operator"] = c.get("operator", "")
+                slot["threshold"] = c.get("threshold")
+                slot["seen"] += 1
+                if focused and c.get("passed") is False:
+                    slot["fail_count"] += 1
+                    slot["example_value"] = c.get("value")
+
+    drivers: List[Dict[str, Any]] = []
+    for vid, s in agg.items():
+        seen = s["seen"] or 0
+        drivers.append({
+            "variable_id": vid,
+            "variable_name": s["variable_name"],
+            "operator": s["operator"],
+            "threshold": s["threshold"],
+            "fail_count": s["fail_count"],
+            "seen": seen,
+            "fail_rate": round(s["fail_count"] / seen, 4) if seen else 0.0,
+            "share_of_focus": round(s["fail_count"] / focus_count, 4) if focus_count else 0.0,
+            "example_value": s["example_value"],
+        })
+    drivers.sort(key=lambda x: (x["fail_count"], x["fail_rate"]), reverse=True)
+
+    return {
+        "analyzed": analyzed,
+        "focus_outcomes": list(focus_outcomes),
+        "focus_count": focus_count,
+        "outcome_mix": dict(outcome_mix),
+        "drivers": drivers,
+    }
