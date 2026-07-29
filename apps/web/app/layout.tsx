@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Plus_Jakarta_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { AppShell } from "../src/components/app-shell";
@@ -8,10 +8,11 @@ import { themeStyleBlock } from "../src/v3/theme";
 
 // Self-hosted via next/font: no render-blocking Google Fonts request, no layout
 // shift (size-adjust fallback), and the files are preloaded — better FCP/LCP.
-const inter = Inter({
+// Plus Jakarta Sans: a warm, premium geometric sans for the Stripe-refined look.
+const jakarta = Plus_Jakarta_Sans({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800", "900"],
-  variable: "--font-inter",
+  weight: ["400", "500", "600", "700", "800"],
+  variable: "--font-jakarta",
   display: "swap",
 });
 const jetbrainsMono = JetBrains_Mono({
@@ -46,7 +47,7 @@ const themeScript = `
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${jetbrainsMono.variable}`}>
+    <html lang="en" suppressHydrationWarning className={`${jakarta.variable} ${jetbrainsMono.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
