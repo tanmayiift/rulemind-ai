@@ -37,6 +37,7 @@ from .models import (
     EntityHistory,
     ErrorEvent,
     Experiment,
+    HostedModel,
     PlatformAdminUser,
     Policy,
     Promotion,
@@ -102,6 +103,21 @@ def decrypt_secret_text(value: Optional[str]) -> Optional[str]:
         return Fernet(fernet_key()).decrypt(value.encode("utf-8")).decode("utf-8")
     except Exception:
         return value
+
+
+def encrypt_model_blob(blob: bytes) -> bytes:
+    """Encrypt a hosted model's raw bytes at rest. The DB (and any dump / backup /
+    replica) only ever holds ciphertext — the model's weights are unreadable without
+    RULEMIND_CONFIG_KEY. Protects proprietary / black-box model IP."""
+    return Fernet(fernet_key()).encrypt(blob)
+
+
+def decrypt_model_blob(blob: bytes) -> bytes:
+    try:
+        return Fernet(fernet_key()).decrypt(blob)
+    except Exception:
+        # Tolerate a pre-encryption blob (defensive; shouldn't occur post-migration).
+        return blob
 
 
 def mask_secret_values(value: Any) -> Any:
@@ -2058,35 +2074,81 @@ class Storage:
         }
 
     # ───────────────────────────────────────────────────────────────────
-    # MODEL HOSTING (in-memory store for now, no DB migration needed)
+    # MODEL HOSTING — persisted in the DB (hosted_models). Must NOT live in
+    # process memory: the API runs multiple uvicorn workers / replicas, so an
+    # in-memory store makes uploads invisible to other workers (random 404s)
+    # and loses every model on restart.
     # ───────────────────────────────────────────────────────────────────
-    _models: Dict[str, Dict[str, Any]] = {}
+    def _hosted_model_to_dict(self, row: HostedModel, include_blob: bool = False) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "id": row.public_id,
+            "name": row.name,
+            "description": row.description,
+            "model_type": row.model_type,
+            "input_schema": copy.deepcopy(row.input_schema or {}),
+            "output_schema": copy.deepcopy(row.output_schema or {}),
+            "metrics": copy.deepcopy(row.metrics or {}),
+            "status": row.status,
+            "version": row.version,
+            "has_predict": row.has_predict,
+            "has_predict_proba": row.has_predict_proba,
+            "last_test_result": copy.deepcopy(row.last_test_result or {}),
+            "created_at": serialize_datetime(row.created_at),
+            "updated_at": serialize_datetime(row.updated_at),
+        }
+        if include_blob:
+            # Decrypt only for server-side execution; the blob is never sent over the API.
+            out["model_blob"] = decrypt_model_blob(row.model_blob)
+        return out
 
     def list_models(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        return [
-            {k: v for k, v in m.items() if k != "model_blob"}
-            for m in self._models.values()
-        ]
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(select(HostedModel).where(HostedModel.tenant_id == resolved).order_by(desc(HostedModel.created_at))).all()
+            return [self._hosted_model_to_dict(row) for row in rows]
 
     def get_model(self, model_id: str, include_blob: bool = False, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        model = self._models.get(model_id)
-        if model is None:
-            return None
-        if include_blob:
-            return copy.deepcopy(model)
-        return {k: v for k, v in model.items() if k != "model_blob"}
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(select(HostedModel).where(HostedModel.tenant_id == resolved, HostedModel.public_id == model_id))
+            return self._hosted_model_to_dict(row, include_blob=include_blob) if row else None
 
     def create_model(self, data: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        model_id = data["id"]
-        self._models[model_id] = copy.deepcopy(data)
-        return {k: v for k, v in data.items() if k != "model_blob"}
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = HostedModel(
+                tenant_id=resolved,
+                public_id=data["id"],
+                name=data["name"],
+                description=data.get("description"),
+                model_type=data.get("model_type", "sklearn"),
+                model_blob=encrypt_model_blob(data["model_blob"]),
+                input_schema=copy.deepcopy(data.get("input_schema") or {}),
+                output_schema=copy.deepcopy(data.get("output_schema") or {}),
+                metrics=copy.deepcopy(data.get("metrics") or {}),
+                status=data.get("status", "dev"),
+                version=int(data.get("version", 1)),
+                has_predict=bool(data.get("has_predict", True)),
+                has_predict_proba=bool(data.get("has_predict_proba", False)),
+                last_test_result={},
+            )
+            session.add(row)
+            session.flush()
+            return self._hosted_model_to_dict(row)
 
     def update_model(self, model_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        if model_id not in self._models:
-            return None
-        self._models[model_id].update(patch)
-        model = self._models[model_id]
-        return {k: v for k, v in model.items() if k != "model_blob"}
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(select(HostedModel).where(HostedModel.tenant_id == resolved, HostedModel.public_id == model_id))
+            if not row:
+                return None
+            for key in ("name", "description", "model_type", "input_schema", "output_schema", "metrics", "status", "version", "has_predict", "has_predict_proba", "last_test_result"):
+                if key in patch:
+                    setattr(row, key, patch[key])
+            return self._hosted_model_to_dict(row)
 
     def delete_model(self, model_id: str, tenant_id: Optional[str] = None) -> bool:
-        return self._models.pop(model_id, None) is not None
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            result = session.execute(delete(HostedModel).where(HostedModel.tenant_id == resolved, HostedModel.public_id == model_id))
+            return result.rowcount > 0

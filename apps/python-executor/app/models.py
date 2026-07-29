@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -360,4 +360,31 @@ class Setting(Base):
     # Admin-only, config-driven white-label branding (accent/CTA colour, background,
     # sidebar, brand name/logo, hidden nav items). Empty values fall back to theme defaults.
     branding: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class HostedModel(Base):
+    """A hosted ML model (pickled sklearn/xgboost/…) usable as a policy "model" step.
+    Persisted in the DB (not in-process memory) so it survives restarts and is
+    consistent across uvicorn workers / replicas."""
+
+    __tablename__ = "hosted_models"
+    __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_hosted_models_tenant_public"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    public_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    model_type: Mapped[str] = mapped_column(String(64), default="sklearn", nullable=False)
+    model_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    input_schema: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    output_schema: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="dev", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    has_predict: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    has_predict_proba: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_test_result: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
