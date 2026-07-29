@@ -2176,6 +2176,78 @@ def ai_generate_rule(request: AIGenerateRuleRequest) -> Dict[str, Any]:
     return {"in_scope": True, "provider": creds["provider"], "draft": draft, "valid": valid, "validation_error": validation_error}
 
 
+class AIGeneratePolicyRequest(BaseModel):
+    prompt: str
+    provider: Optional[str] = None
+
+
+@app.post("/api/v1/ai/generate-policy")
+def ai_generate_policy(request: AIGeneratePolicyRequest) -> Dict[str, Any]:
+    """NL → draft policy steps (draft only; still validated + test-gated before promotion)."""
+    from .ai import AIError, OUT_OF_SCOPE_MESSAGE, generate_policy, is_in_scope
+
+    connectors = storage.list_connectors()
+    rules = storage.list_rules()
+    scorecards = storage.list_scorecards()
+    names = [x.get("name", "") for x in connectors + rules + scorecards]
+    in_scope, reason = is_in_scope(request.prompt, names)
+    if not in_scope:
+        return {"in_scope": False, "reason": reason, "message": OUT_OF_SCOPE_MESSAGE}
+    creds = storage.get_ai_credentials(request.provider)
+    if not creds:
+        raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
+    try:
+        draft = generate_policy(creds["provider"], creds["api_key"], request.prompt, connectors, rules, scorecards, model=creds.get("model"))
+    except AIError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    valid, validation_error = True, None
+    try:
+        validate_policy_steps(draft.get("steps") or [])
+    except HTTPException as error:
+        valid, validation_error = False, error.detail
+    return {"in_scope": True, "provider": creds["provider"], "draft": draft, "valid": valid, "validation_error": validation_error}
+
+
+class AIExplainRequest(BaseModel):
+    decision_id: str
+    provider: Optional[str] = None
+
+
+@app.post("/api/v1/ai/explain-decision")
+def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
+    """Plain-English explanation + adverse-action reason codes for one decision."""
+    from .ai import AIError, explain_decision
+
+    decision = find_by_id(storage.list_decisions(limit=1000), request.decision_id)
+    if not decision:
+        raise HTTPException(status_code=404, detail="Decision not found.")
+    creds = storage.get_ai_credentials(request.provider)
+    if not creds:
+        raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
+    try:
+        result = explain_decision(creds["provider"], creds["api_key"], decision, model=creds.get("model"))
+    except AIError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    return {"decision_id": request.decision_id, "outcome": decision.get("outcome"), **result}
+
+
+class RejectionDriversRequest(BaseModel):
+    policy_id: Optional[str] = None
+    limit: int = 500
+
+
+@app.post("/api/v1/analytics/rejection-drivers")
+def analytics_rejection_drivers(request: RejectionDriversRequest) -> Dict[str, Any]:
+    """Which predictor/condition drives the most rejections — pure compute over the
+    decision log (no LLM, no key). Optionally scoped to one policy."""
+    from .analytics import rejection_drivers
+
+    decisions = storage.list_decisions(limit=max(1, min(request.limit, 1000)))
+    if request.policy_id:
+        decisions = [d for d in decisions if d.get("policy_id") == request.policy_id]
+    return rejection_drivers(decisions)
+
+
 class WorkflowCallbackRequest(BaseModel):
     step_id: str
     data: Dict[str, Any] = Field(default_factory=dict)

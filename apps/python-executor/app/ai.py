@@ -181,3 +181,61 @@ def generate_rule(provider: str, api_key: str, prompt: str, variables: List[Dict
     if not isinstance(obj, dict) or "tree" not in obj:
         raise AIError("Model output was not a valid rule object.")
     return obj
+
+
+# ---- feature: NL -> policy steps ---------------------------------------------
+
+_POLICY_SYSTEM = """You are RuleMind's policy copilot. Translate a plain-English
+decisioning requirement into a RuleMind POLICY: an ordered list of steps, using ONLY
+the connector/rule/scorecard ids provided. Output STRICT JSON, no prose.
+
+Each step: {"id":"s1","type":"connector"|"rule"|"scorecard"|"outcome","ref_id":"<id, omit for outcome>","label":"<short>","outcome":"approve"|"review"|"reject" (only for type outcome)}
+Rules:
+- Use ONLY ids from the provided lists. Never invent ids.
+- Typical order: pull connector(s) → evaluate rule(s)/scorecard(s) → end with an outcome step.
+- Return: {"name":"<short>","steps":[...]}
+"""
+
+
+def generate_policy(provider: str, api_key: str, prompt: str, connectors: List[Dict[str, Any]],
+                    rules: List[Dict[str, Any]], scorecards: List[Dict[str, Any]], model: Optional[str] = None) -> Dict[str, Any]:
+    def ids(items):
+        return "\n".join(f"- {i.get('id')} ({i.get('name','')})" for i in items[:80]) or "  (none)"
+    user = (f"Connectors:\n{ids(connectors)}\n\nRules:\n{ids(rules)}\n\nScorecards:\n{ids(scorecards)}\n\n"
+            f"Requirement:\n{prompt}\n\nReturn the JSON now.")
+    raw = complete(provider, api_key, _POLICY_SYSTEM, user, model=model, max_tokens=1800, temperature=0.1)
+    obj = extract_json(raw)
+    if not isinstance(obj, dict) or not isinstance(obj.get("steps"), list):
+        raise AIError("Model output was not a valid policy object.")
+    return obj
+
+
+# ---- feature: explain a decision (plain English + reason codes) --------------
+
+_EXPLAIN_SYSTEM = """You are RuleMind's decision explainer for a credit/risk team.
+Given a decision's outcome and the conditions that were evaluated (each with pass/fail,
+the variable, operator, threshold, and actual value), explain in plain English WHY the
+outcome happened. Then list concise adverse-action style reason codes for any FAILED
+conditions (the drivers of a decline/review). Be factual, reference the numbers, and do
+NOT invent conditions. Output STRICT JSON: {"summary":"<2-4 sentences>","reason_codes":["<short reason>", ...]}"""
+
+
+def explain_decision(provider: str, api_key: str, decision: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Any]:
+    lines: List[str] = [f"Outcome: {decision.get('outcome')}"]
+    for step in decision.get("trace") or []:
+        s = step.get("step") or {}
+        if s.get("type") == "rule":
+            for c in ((step.get("result") or {}).get("conditions") or []):
+                status = "PASS" if c.get("passed") else "FAIL"
+                lines.append(f"[{status}] {c.get('variable_name')} {c.get('operator')} {c.get('threshold')} (actual={c.get('value')})")
+        elif s.get("type") == "scorecard":
+            res = step.get("result") or {}
+            if "score" in res:
+                lines.append(f"Scorecard {s.get('label') or s.get('ref_id')}: score={res.get('score')}")
+    user = "Decision evidence:\n" + "\n".join(lines[:120]) + "\n\nReturn the JSON now."
+    raw = complete(provider, api_key, _EXPLAIN_SYSTEM, user, model=model, max_tokens=800, temperature=0.2)
+    obj = extract_json(raw)
+    if not isinstance(obj, dict) or "summary" not in obj:
+        raise AIError("Model output was not a valid explanation.")
+    obj.setdefault("reason_codes", [])
+    return obj

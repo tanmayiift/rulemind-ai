@@ -96,6 +96,7 @@ export default function SimulationPage() {
   const [selected, setSelected] = React.useState<number | null>(null);
   const [detail, setDetail] = React.useState<DecideResult | null>(null);
   const [detailBusy, setDetailBusy] = React.useState(false);
+  const [drivers, setDrivers] = React.useState<Array<{ variable_name: string; operator: string; threshold: unknown; fail_count: number; fail_rate: number; share_of_focus: number }> | null>(null);
 
   React.useEffect(() => {
     (async () => {
@@ -173,6 +174,11 @@ export default function SimulationPage() {
       );
       setRows(res.rows);
       setWallMs(performance.now() - t0);
+      // pure-compute analytic: which predictor drives the most rejections
+      try {
+        const da = await apiJson<{ drivers: typeof drivers }>(apiBaseUrl, "/api/v1/analytics/rejection-drivers", { method: "POST", body: JSON.stringify({ policy_id: policyId, limit: 1000 }) }, apiKey);
+        setDrivers((da.drivers || []).filter((d) => d.fail_count > 0).slice(0, 8));
+      } catch { setDrivers(null); }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Simulation failed.");
     } finally {
@@ -295,6 +301,31 @@ export default function SimulationPage() {
               <Stat label="p95" value={`${Math.round(pct(latencies, 0.95))}ms`} />
               <Stat label="p99" value={`${Math.round(pct(latencies, 0.99))}ms`} />
             </div>
+          ) : null}
+
+          {rows && drivers && drivers.length > 0 ? (
+            <Card>
+              <SectionTitle>Top rejection drivers</SectionTitle>
+              <div style={{ fontSize: 12.5, color: "var(--rm-dim)", marginBottom: 12 }}>
+                Conditions failing most often on non-approved decisions — exact counts from the decision log (no AI).
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {drivers.map((d, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <span style={{ width: 20, color: "var(--rm-dim)", fontSize: 12, fontFamily: "var(--font-mono)" }}>{i + 1}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+                        <span style={{ fontWeight: 600, color: "var(--rm-text)" }}>{d.variable_name} <span style={{ color: "var(--rm-dim)", fontFamily: "var(--font-mono)" }}>{d.operator} {String(d.threshold ?? "")}</span></span>
+                        <span className="rm-mono" style={{ color: "var(--rm-muted)" }}>{d.fail_count} fails · {Math.round(d.share_of_focus * 100)}% of rejects</span>
+                      </div>
+                      <div style={{ height: 7, borderRadius: 999, background: "var(--rm-hover)", overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${Math.round(d.share_of_focus * 100)}%`, background: "var(--rm-danger)", borderRadius: 999 }} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
           ) : null}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" }}>

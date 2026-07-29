@@ -49,6 +49,18 @@ export default function DecisionExplorerPage() {
   const [query, setQuery] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [explain, setExplain] = React.useState<{ summary?: string; reason_codes?: string[]; error?: string } | null>(null);
+  const [explaining, setExplaining] = React.useState(false);
+
+  const runExplain = React.useCallback(async (id: string) => {
+    setExplaining(true); setExplain(null);
+    try {
+      const r = await apiJson<{ summary?: string; reason_codes?: string[] }>(apiBaseUrl, "/api/v1/ai/explain-decision", { method: "POST", body: JSON.stringify({ decision_id: id }) }, apiKey);
+      setExplain(r);
+    } catch (e) {
+      setExplain({ error: e instanceof Error ? e.message : "Explain failed — add an AI key in the AI Copilot page." });
+    } finally { setExplaining(false); }
+  }, [apiBaseUrl, apiKey]);
 
   React.useEffect(() => {
     let active = true;
@@ -137,10 +149,32 @@ export default function DecisionExplorerPage() {
 
           {selected ? (
             <div style={{ ...card, padding: 18, position: isMobile ? "static" : "sticky", top: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
                 {pill(selected.outcome)}
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: theme.muted }}>{selected.id}</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: theme.muted, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{selected.id}</span>
+                <button onClick={() => runExplain(selected.id)} disabled={explaining}
+                  style={{ border: "1px solid " + theme.border, background: theme.accentBg, color: theme.accent, borderRadius: 8, padding: "6px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  ✦ {explaining ? "Explaining…" : "Explain (AI)"}
+                </button>
               </div>
+              {explain ? (
+                <div style={{ marginBottom: 14, padding: 12, borderRadius: 10, background: theme.accentBg, border: "1px solid " + theme.border }}>
+                  {explain.error ? (
+                    <div style={{ fontSize: 12.5, color: theme.danger }}>{explain.error}</div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 13, color: theme.text, lineHeight: 1.5 }}>{explain.summary}</div>
+                      {explain.reason_codes && explain.reason_codes.length ? (
+                        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {explain.reason_codes.map((rc, i) => (
+                            <span key={i} style={{ fontSize: 11, fontWeight: 600, color: theme.warning, background: theme.warningBg, borderRadius: 999, padding: "3px 9px" }}>{rc}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              ) : null}
               <h3 style={{ fontSize: 13, margin: "0 0 8px" }}>Decision flow</h3>
               <div style={{ display: "grid", gap: 0 }}>
                 {(selected.trace ?? []).map((entry, i) => {

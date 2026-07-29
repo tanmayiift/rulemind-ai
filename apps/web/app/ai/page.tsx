@@ -17,7 +17,7 @@ type GenResult = {
   provider?: string;
   valid?: boolean;
   validation_error?: string | null;
-  draft?: { name?: string; tree?: unknown };
+  draft?: { name?: string; tree?: unknown; steps?: Array<Record<string, unknown>> };
 };
 
 const PROVIDER_LABEL: Record<string, string> = { anthropic: "Anthropic (Claude)", openai: "OpenAI (GPT)" };
@@ -34,6 +34,7 @@ export default function AICopilotPage() {
   const [testMsg, setTestMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = React.useState(false);
 
+  const [genMode, setGenMode] = React.useState<"rule" | "policy">("rule");
   const [prompt, setPrompt] = React.useState("Approve when the bureau score is at least 720 and DTI ratio is below 0.4, otherwise send to review.");
   const [gen, setGen] = React.useState<GenResult | null>(null);
   const [generating, setGenerating] = React.useState(false);
@@ -80,7 +81,8 @@ export default function AICopilotPage() {
   const generate = async () => {
     setGenerating(true); setGen(null); setError(null);
     try {
-      const r = await apiJson<GenResult>(apiBaseUrl, "/api/v1/ai/generate-rule", { method: "POST", body: JSON.stringify({ prompt, provider }) }, apiKey);
+      const path = genMode === "policy" ? "/api/v1/ai/generate-policy" : "/api/v1/ai/generate-rule";
+      const r = await apiJson<GenResult>(apiBaseUrl, path, { method: "POST", body: JSON.stringify({ prompt, provider }) }, apiKey);
       setGen(r);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed.");
@@ -131,9 +133,18 @@ export default function AICopilotPage() {
 
         {/* rule generator */}
         <Card>
-          <SectionTitle right={<Wand2 size={16} style={{ color: "var(--rm-accent)" }} />}>Draft a rule from English</SectionTitle>
+          <SectionTitle right={<Wand2 size={16} style={{ color: "var(--rm-accent)" }} />}>Draft from English</SectionTitle>
           <div style={{ display: "grid", gap: 12 }}>
-            <textarea className="rm-textarea" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder="e.g. Reject if there are any delinquencies in the last 2 years, else approve." />
+            <div style={{ display: "flex", gap: 4, padding: 4, background: "var(--rm-hover)", borderRadius: 10, width: "fit-content" }}>
+              {(["rule", "policy"] as const).map((m) => (
+                <button key={m} onClick={() => { setGenMode(m); setGen(null); }}
+                  style={{ padding: "6px 16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 600, textTransform: "capitalize",
+                    background: genMode === m ? "var(--rm-card)" : "transparent", color: genMode === m ? "var(--rm-text)" : "var(--rm-muted)", boxShadow: genMode === m ? "var(--rm-shadow-sm)" : "none" }}>
+                  {m}
+                </button>
+              ))}
+            </div>
+            <textarea className="rm-textarea" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder={genMode === "policy" ? "e.g. Pull the loan connector, run the bureau and KYC gates, then approve." : "e.g. Reject if there are any delinquencies in the last 2 years, else approve."} />
             <div>
               <Button variant="primary" onClick={generate} disabled={generating || !configured}><Sparkles size={15} /> {generating ? "Generating…" : "Generate draft"}</Button>
               {!configured ? <span style={{ marginLeft: 10, fontSize: 12, color: "var(--rm-dim)" }}>Add a key first.</span> : null}
@@ -147,14 +158,26 @@ export default function AICopilotPage() {
               ) : (
                 <div style={{ display: "grid", gap: 10 }}>
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <strong style={{ fontSize: 14, color: "var(--rm-text)" }}>{gen.draft?.name || "Draft rule"}</strong>
-                    <Badge tone={gen.valid ? "success" : "danger"}>{gen.valid ? "MECE-valid draft" : "needs fixes"}</Badge>
+                    <strong style={{ fontSize: 14, color: "var(--rm-text)" }}>{gen.draft?.name || (genMode === "policy" ? "Draft policy" : "Draft rule")}</strong>
+                    <Badge tone={gen.valid ? "success" : "danger"}>{gen.valid ? "valid draft" : "needs fixes"}</Badge>
                     {gen.provider ? <Badge tone="accent">{gen.provider}</Badge> : null}
                   </div>
                   {gen.validation_error ? <div style={{ fontSize: 12.5, color: "var(--rm-danger)" }}>{gen.validation_error}</div> : null}
-                  <pre style={{ margin: 0, padding: 12, background: "var(--rm-editor)", border: "1px solid var(--rm-border)", borderRadius: 10, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--rm-code-text)", whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto" }}>
-                    {JSON.stringify(gen.draft?.tree ?? {}, null, 2)}
-                  </pre>
+                  {genMode === "policy" && gen.draft?.steps ? (
+                    <div style={{ display: "grid", gap: 6 }}>
+                      {gen.draft.steps.map((s, i) => (
+                        <div key={i} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 10px", background: "var(--rm-card-alt)", borderRadius: 8, fontSize: 12.5 }}>
+                          <span style={{ color: "var(--rm-dim)", width: 16, fontFamily: "var(--font-mono)" }}>{i + 1}</span>
+                          <Badge tone="accent">{String(s.type)}</Badge>
+                          <span style={{ color: "var(--rm-text)" }}>{String(s.label || s.ref_id || s.outcome || "")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <pre style={{ margin: 0, padding: 12, background: "var(--rm-editor)", border: "1px solid var(--rm-border)", borderRadius: 10, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--rm-code-text)", whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto" }}>
+                      {JSON.stringify(gen.draft?.tree ?? {}, null, 2)}
+                    </pre>
+                  )}
                   <div style={{ fontSize: 12, color: "var(--rm-dim)" }}>This is a draft — review it, then recreate it in the Rules builder and run its tests before promoting. AI never deploys on its own.</div>
                 </div>
               )

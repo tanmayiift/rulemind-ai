@@ -41,6 +41,13 @@ class AITests(unittest.TestCase):
 
         def fake(api_key, model, system, user, max_tokens, temperature):
             self.calls["n"] += 1
+            if "POLICY" in system:
+                return json.dumps({"name": "Loan flow", "steps": [
+                    {"id": "s1", "type": "rule", "ref_id": "rule_loan_bureau_gate", "label": "Bureau"},
+                    {"id": "s2", "type": "outcome", "outcome": "approve", "label": "Approve"}]})
+            if "explainer" in system.lower():
+                return json.dumps({"summary": "Approved because the bureau score cleared the threshold.",
+                                   "reason_codes": ["Bureau score above cutoff"]})
             return _RULE_JSON
         self._orig = dict(ai._PROVIDERS)
         ai._PROVIDERS["anthropic"] = fake
@@ -100,6 +107,36 @@ class AITests(unittest.TestCase):
         self.assertTrue(ai.is_in_scope("why was applicant rejected?")[0])
         self.assertFalse(ai.is_in_scope("write me a poem about the ocean")[0])
         self.assertFalse(ai.is_in_scope("hi")[0])
+
+    def test_generate_policy_draft(self) -> None:
+        self._set_key()
+        resp = self.client.post("/api/v1/ai/generate-policy", headers=self.headers,
+                                json={"prompt": "run the bureau gate rule then approve"}).json()
+        self.assertTrue(resp["in_scope"])
+        self.assertEqual(resp["draft"]["steps"][0]["type"], "rule")
+        self.assertTrue(resp["valid"])
+
+    def test_rejection_drivers_endpoint(self) -> None:
+        # produce a couple of rejecting decisions on the seeded bureau-gate policy
+        for score in (400, 420, 800):
+            self.client.post("/api/v1/decide", headers=self.headers,
+                             json={"policyId": "policy_instant_personal_loan", "payload": {"loan": {"bureau_score": score}}})
+        resp = self.client.post("/api/v1/analytics/rejection-drivers", headers=self.headers, json={"limit": 100}).json()
+        self.assertGreaterEqual(resp["analyzed"], 3)
+        self.assertIsInstance(resp["drivers"], list)
+        # no LLM key needed for this (pure compute)
+        self.assertEqual(self.calls["n"], 0)
+
+    def test_explain_decision(self) -> None:
+        self._set_key()
+        dec = self.client.post("/api/v1/decide", headers=self.headers,
+                               json={"policyId": "policy_instant_personal_loan", "payload": {"loan": {"bureau_score": 780}}}).json()
+        # find the stored decision id
+        decisions = self.client.get("/api/v1/audit/decisions?limit=5", headers=self.headers).json()
+        did = decisions[0]["id"]
+        resp = self.client.post("/api/v1/ai/explain-decision", headers=self.headers, json={"decision_id": did}).json()
+        self.assertIn("summary", resp)
+        self.assertIn("reason_codes", resp)
 
 
 if __name__ == "__main__":
