@@ -318,12 +318,85 @@ function Inspector({ theme, step, refs, onPatch }: { theme: ThemeTokens; step: S
         </Field>
       ) : null}
       {step.type === "branch" ? (
-        <div style={{ fontSize: 12, color: theme.muted, lineHeight: 1.5 }}>
-          Branch routing runs the first branch whose condition matches, else the default lane.
-          Edit nested branch steps in the policy editor; this canvas shows the structure and lets you
-          reorder the branch node within the flow.
-        </div>
+        <BranchEditor
+          theme={theme}
+          refs={refs}
+          config={(step.config as BranchConfig) ?? { branches: [], default: [] }}
+          onChange={(cfg) => onPatch({ config: cfg as unknown as Record<string, unknown> })}
+        />
       ) : null}
+    </div>
+  );
+}
+
+// ---- branch editor (fully editable: add/remove branches, condition, nested steps) ----
+
+type Branch = { label?: string; condition?: string; steps?: Step[] };
+type BranchConfig = { branches?: Branch[]; default?: Step[] };
+
+function BranchEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; refs: { connector: Ref[]; rule: Ref[]; scorecard: Ref[] }; config: BranchConfig; onChange: (c: BranchConfig) => void }) {
+  const branches = config.branches ?? [];
+  const setBranches = (b: Branch[]) => onChange({ ...config, branches: b });
+  const patchBranch = (i: number, p: Partial<Branch>) => setBranches(branches.map((b, j) => (j === i ? { ...b, ...p } : b)));
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div style={{ fontSize: 12, color: theme.muted, lineHeight: 1.5 }}>
+        Runs the first branch whose condition is true, else the default lane. Condition is a Python
+        expression over <span style={{ fontFamily: "var(--font-mono)" }}>variables</span> / <span style={{ fontFamily: "var(--font-mono)" }}>payload</span> (e.g. <span style={{ fontFamily: "var(--font-mono)" }}>{`variables['credit_score'] >= 700`}</span>).
+      </div>
+      {branches.map((b, i) => (
+        <div key={i} style={{ border: `1px solid ${theme.border}`, borderLeft: `3px solid ${theme.warning}`, borderRadius: 8, padding: 10, display: "grid", gap: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: theme.warning }}>BRANCH {i + 1}</span>
+            <button onClick={() => setBranches(branches.filter((_, j) => j !== i))} style={{ ...ghostStyle(theme), padding: "4px 8px", fontSize: 11 }}>Remove</button>
+          </div>
+          <input value={b.label ?? ""} onChange={(e) => patchBranch(i, { label: e.target.value })} placeholder="Label" style={{ ...inputStyle(theme), fontSize: 12 }} />
+          <input value={b.condition ?? ""} onChange={(e) => patchBranch(i, { condition: e.target.value })} placeholder="variables['x'] >= 700" style={{ ...inputStyle(theme), fontFamily: "var(--font-mono)", fontSize: 12 }} />
+          <StepRows theme={theme} refs={refs} steps={b.steps ?? []} onChange={(s) => patchBranch(i, { steps: s })} />
+        </div>
+      ))}
+      <button onClick={() => setBranches([...branches, { label: `Branch ${branches.length + 1}`, condition: "", steps: [] }])} style={ghostStyle(theme)}>+ Add branch</button>
+      <div style={{ borderTop: `1px dashed ${theme.border}`, paddingTop: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: theme.dim, marginBottom: 6 }}>DEFAULT LANE (else)</div>
+        <StepRows theme={theme} refs={refs} steps={config.default ?? []} onChange={(s) => onChange({ ...config, default: s })} />
+      </div>
+    </div>
+  );
+}
+
+function StepRows({ theme, refs, steps, onChange }: { theme: ThemeTokens; refs: { connector: Ref[]; rule: Ref[]; scorecard: Ref[] }; steps: Step[]; onChange: (s: Step[]) => void }) {
+  const [addType, setAddType] = React.useState("rule");
+  const patch = (i: number, p: Partial<Step>) => onChange(steps.map((s, j) => (j === i ? { ...s, ...p } : s)));
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      {steps.map((s, i) => {
+        const needsRef = PALETTE.find((p) => p.type === s.type)?.needsRef;
+        return (
+          <div key={s.id || i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ width: 7, height: 7, borderRadius: 2, background: toneColor(theme, s.type), flexShrink: 0 }} />
+            <span style={{ fontSize: 11, color: theme.muted, width: 62, flexShrink: 0 }}>{s.type}</span>
+            {needsRef ? (
+              <select value={s.ref_id ?? ""} onChange={(e) => patch(i, { ref_id: e.target.value })} style={{ ...selectStyle(theme), fontSize: 12, flex: 1 }}>
+                <option value="">— ref —</option>
+                {refs[needsRef].map((o) => <option key={o.id} value={o.id}>{o.name || o.label || o.id}</option>)}
+              </select>
+            ) : s.type === "outcome" ? (
+              <select value={s.outcome ?? "review"} onChange={(e) => patch(i, { outcome: e.target.value })} style={{ ...selectStyle(theme), fontSize: 12, flex: 1 }}>
+                {["approve", "review", "reject"].map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            ) : (
+              <input value={s.label ?? ""} onChange={(e) => patch(i, { label: e.target.value })} placeholder="label" style={{ ...inputStyle(theme), fontSize: 12, flex: 1 }} />
+            )}
+            <button onClick={() => onChange(steps.filter((_, j) => j !== i))} style={{ ...ghostStyle(theme), padding: "4px 7px", fontSize: 11 }}>×</button>
+          </div>
+        );
+      })}
+      <div style={{ display: "flex", gap: 6 }}>
+        <select value={addType} onChange={(e) => setAddType(e.target.value)} style={{ ...selectStyle(theme), fontSize: 12, flex: 1 }}>
+          {PALETTE.filter((p) => p.type !== "branch").map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
+        </select>
+        <button onClick={() => onChange([...steps, { id: newId(addType), type: addType, label: PALETTE.find((p) => p.type === addType)?.label, ...(addType === "outcome" ? { outcome: "review" } : {}) }])} style={{ ...ghostStyle(theme), fontSize: 12 }}>Add step</button>
+      </div>
     </div>
   );
 }
