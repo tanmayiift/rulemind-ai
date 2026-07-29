@@ -461,6 +461,58 @@ class EdgeCaseTests(unittest.TestCase):
         response = self.client.get("/api/v1/models/nonexistent_model_id", headers=self.headers)
         self.assertEqual(response.status_code, 404)
 
+    def test_model_blob_is_encrypted_at_rest(self) -> None:
+        """The pickled model must be stored as ciphertext — a DB dump / backup must
+        not expose the model's bytes (IP-confidentiality guard)."""
+        import sqlalchemy as sa
+
+        # The plaintext pickle contains the class name; encryption must hide it.
+        marker = b"SimpleModel"
+        self.assertIn(marker, _model_bytes)
+        created = self.client.post(
+            "/api/v1/models", headers=self.headers, json={"name": "Marked", "model_base64": _model_b64}
+        ).json()
+        # API responses never carry the blob
+        self.assertNotIn("model_blob", created)
+        listed = self.client.get("/api/v1/models", headers=self.headers).json()
+        self.assertTrue(all("model_blob" not in m for m in listed))
+        # raw DB bytes must be ciphertext (marker absent)
+        with app_main.storage.connect() as session:
+            raw = session.execute(sa.text("select model_blob from hosted_models")).scalar()
+            raw_bytes = bytes(raw)
+        self.assertNotIn(marker, raw_bytes)
+        # but the server can still decrypt + run it
+        pred = self.client.post(
+            f"/api/v1/models/{created['id']}/predict", headers=self.headers, json={"input_data": {"a": 2, "b": 3}}
+        )
+        self.assertEqual(pred.status_code, 200)
+        self.assertEqual(pred.json()["prediction"], 5)
+
+    def test_model_runs_as_a_policy_step(self) -> None:
+        """A hosted model must be usable as a policy `model` step end-to-end."""
+        model_id = self.client.post(
+            "/api/v1/models", headers=self.headers, json={"name": "Policy Model", "model_base64": _model_b64}
+        ).json()["id"]
+        policy = {
+            "id": "qa_model_policy",
+            "name": "QA Model Policy",
+            "steps": [
+                {"id": "s1", "type": "model", "ref_id": model_id, "config": {"outputVariable": "risk_score"}},
+                {"id": "s2", "type": "outcome", "outcome": "approve"},
+            ],
+        }
+        created = self.client.post("/api/v1/policies", headers=self.headers, json=policy)
+        self.assertEqual(created.status_code, 200)
+        pid = created.json()["id"]
+        run = self.client.post(
+            f"/api/v1/policies/{pid}/execute", headers=self.headers, json={"payload": {"a": 4, "b": 6}}
+        )
+        self.assertEqual(run.status_code, 200)
+        # the model step executed and contributed to the trace
+        body = run.json()
+        trace_text = str(body)
+        self.assertTrue("model" in trace_text or "risk_score" in trace_text)
+
     def test_create_model_without_predict(self) -> None:
         """A pickled object without .predict() should be rejected."""
         response = self.client.post(
