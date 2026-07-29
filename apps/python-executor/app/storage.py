@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, desc, select, update
+from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.orm import Session
 
 from .auth import (
@@ -1166,11 +1166,20 @@ class Storage:
             session.flush()
             return self._decision_to_dict(decision)
 
-    def list_decisions(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
-            rows = session.scalars(select(Decision).where(Decision.tenant_id == resolved).order_by(desc(Decision.created_at))).all()
+            # Bounded by default: the decisions table grows without limit in
+            # production (every /decide writes a row), so an unpaged fetch would
+            # load tens of thousands of full-context rows and time out / OOM.
+            query = select(Decision).where(Decision.tenant_id == resolved).order_by(desc(Decision.created_at)).limit(max(1, min(limit, 1000))).offset(max(0, offset))
+            rows = session.scalars(query).all()
             return [self._decision_to_dict(row) for row in rows]
+
+    def count_decisions(self, tenant_id: Optional[str] = None) -> int:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            return int(session.scalar(select(func.count()).select_from(Decision).where(Decision.tenant_id == resolved)) or 0)
 
     def add_promotion(self, entity_type: str, entity_id: str, from_status: str, to_status: str, promoted_by: str, reason: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id)
@@ -1211,10 +1220,11 @@ class Storage:
             session.flush()
             return self._error_event_to_dict(model)
 
-    def list_error_events(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_error_events(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
-            rows = session.scalars(select(ErrorEvent).where(ErrorEvent.tenant_id == resolved).order_by(desc(ErrorEvent.created_at))).all()
+            query = select(ErrorEvent).where(ErrorEvent.tenant_id == resolved).order_by(desc(ErrorEvent.created_at)).limit(max(1, min(limit, 1000))).offset(max(0, offset))
+            rows = session.scalars(query).all()
             return [self._error_event_to_dict(row) for row in rows]
 
     def add_audit_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:

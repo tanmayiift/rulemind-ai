@@ -4,7 +4,8 @@ import * as React from "react";
 import type { Route } from "next";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, Moon, Sun, X } from "lucide-react";
+import { Menu, Moon, Sun, X, Search } from "lucide-react";
+import { CommandPalette, type Command } from "../v3/command-palette";
 import { useRuleMindStore } from "../lib/store";
 import { apiJson } from "../lib/api";
 import { ENVIRONMENT_ACCENT, THEMES, themeStyleBlock } from "../v3/theme";
@@ -65,6 +66,8 @@ const NAVIGATION: ReadonlyArray<{
     ],
   },
 ];
+
+const COMMANDS: Command[] = NAVIGATION.flatMap((g) => g.items.map((i) => ({ label: i.label, group: g.group, href: i.href })));
 
 const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/": { title: "RuleMind", subtitle: "Generic decisioning engine for variables, rules, scorecards, policies, and audit trace." },
@@ -369,6 +372,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, flexShrink: 0 }}>
+            {!isMobile && (
+              <button
+                type="button"
+                aria-label="Open command palette"
+                onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 8,
+                  background: theme.hover, border: "1px solid " + theme.border, borderRadius: 8,
+                  padding: "6px 10px 6px 11px", color: theme.dim, cursor: "pointer", fontSize: 12.5,
+                }}
+              >
+                <Search size={14} />
+                <span style={{ color: theme.muted }}>Search</span>
+                <kbd style={{ fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: theme.dim, background: theme.card, border: "1px solid " + theme.border, borderRadius: 5, padding: "1px 5px" }}>⌘K</kbd>
+              </button>
+            )}
             <div style={{ display: "flex", gap: 4 }}>
               {(["dev", "uat", "prod"] as const).map((item) => (
                 <button
@@ -440,6 +459,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <main style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{children}</main>
       </div>
+      <CommandPalette commands={COMMANDS} />
     </div>
   );
 }
