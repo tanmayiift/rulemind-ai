@@ -1,0 +1,20 @@
+# Keep the Docker build context lean — these are rebuilt inside the image or
+# are host-only artifacts. Sending them bloats the context and fills the VM disk.
+**/node_modules
+**/.next
+**/dist
+**/build
+**/.gradle
+**/.dart_tool
+packages/sdk-flutter/example/build
+packages/sdk-android/**/build
+packages/rulemind-core-rs/target
+packages/rulemind-core-rs/pkg
+**/__pycache__
+**/*.pyc
+**/*.tsbuildinfo
+.git
+.runtime
+**/.runtime
+.venv
+**/coverage
