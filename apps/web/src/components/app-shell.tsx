@@ -36,6 +36,7 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/scorecards" as Route, label: "Scorecards", icon: "scorecards" },
       { href: "/policies" as Route, label: "Policies", icon: "policies" },
       { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
+      { href: "/models" as Route, label: "ML Models", icon: "variables" },
     ],
   },
   {
@@ -86,6 +87,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/settings": { title: "Settings", subtitle: "Persist API, engine, audit, source, SDK, and environment defaults." },
   "/branding": { title: "Branding", subtitle: "Admin-only white-label theming — CTA colour, backgrounds, brand name, and visible tabs." },
   "/workflow-builder": { title: "Workflow Builder", subtitle: "Drag-and-drop canvas for policy steps — connectors, rules, branches, sub-workflows, monitors, and outcomes." },
+  "/models": { title: "ML Models", subtitle: "Upload, host, test, and run Python models (.pkl / joblib) as policy steps." },
 };
 
 export function AppShell({ children }: { children: React.ReactNode }) {
