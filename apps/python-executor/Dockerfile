@@ -4,6 +4,13 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# libgomp1 = OpenMP runtime, hard-required by xgboost / lightgbm (the ML model
+# hosting stack). The slim base image doesn't ship it, so importing them fails
+# with "libgomp.so.1: cannot open shared object file" without this.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libgomp1 \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY apps/python-executor/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
