@@ -35,7 +35,10 @@ export default function ModelsPage() {
   const [uploading, setUploading] = React.useState(false);
 
   const [predictId, setPredictId] = React.useState<string | null>(null);
-  const [predictInput, setPredictInput] = React.useState('{\n  "features": [1, 2, 3, 4]\n}');
+  // Flat feature→value map (one row). The executor builds a single input row from
+  // these values in order — a nested array like {"features":[...]} would be read as
+  // an extra dimension and rejected by the model.
+  const [predictInput, setPredictInput] = React.useState('{\n  "feature_0": 0.9,\n  "feature_1": 0.1,\n  "feature_2": 0.2,\n  "feature_3": 0.3\n}');
   const [predictOut, setPredictOut] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
@@ -139,6 +142,7 @@ export default function ModelsPage() {
               </div>
               {predictId === m.id ? (
                 <div style={{ display: "grid", gap: 8, borderTop: "1px solid var(--rm-border)", paddingTop: 10 }}>
+                  <div style={{ fontSize: 11.5, color: "var(--rm-dim)" }}>Flat feature → value map (one row, values used in order).</div>
                   <Textarea mono rows={4} value={predictInput} onChange={(e) => setPredictInput(e.target.value)} style={{ fontSize: 12 }} />
                   <Button variant="primary" size="sm" onClick={() => runPredict(m.id)} style={{ justifySelf: "start" }}>Run predict</Button>
                   {predictOut ? <pre style={{ margin: 0, padding: 10, background: "var(--rm-editor)", border: "1px solid var(--rm-border)", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--rm-code-text)", whiteSpace: "pre-wrap", maxHeight: 180, overflow: "auto" }}>{predictOut}</pre> : null}
