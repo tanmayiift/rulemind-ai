@@ -398,6 +398,7 @@ class Storage:
                 audit_retention_days=DEFAULT_SETTINGS["audit_retention_days"],
                 theme_mode=DEFAULT_SETTINGS["theme_mode"],
                 branding=copy.deepcopy(DEFAULT_SETTINGS["branding"]),
+                ai_config=copy.deepcopy(DEFAULT_SETTINGS.get("ai_config", {})),
             )
         )
 
@@ -1327,6 +1328,60 @@ class Storage:
             row.branding = copy.deepcopy(next_value.get("branding") or {})
             row.updated_at = datetime.utcnow()
         return self.get_settings(tenant_id=resolved)
+
+    # ── AI Copilot config (BYO key) ────────────────────────────────────
+    def _ai_config_row(self, session: Session, tenant_id: str) -> Setting:
+        self._ensure_settings(session, tenant_id)
+        return session.scalar(select(Setting).where(Setting.tenant_id == tenant_id))
+
+    def get_ai_config_masked(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """UI-safe view — never exposes keys, only whether each provider is configured."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            cfg = (self._ai_config_row(session, resolved).ai_config or {})
+        providers = cfg.get("providers", {}) or {}
+        return {
+            "default_provider": cfg.get("default_provider", "anthropic"),
+            "providers": {
+                name: {"configured": bool((providers.get(name) or {}).get("key_encrypted")),
+                       "model": (providers.get(name) or {}).get("model", "")}
+                for name in ("anthropic", "openai")
+            },
+        }
+
+    def set_ai_config(self, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = self._ai_config_row(session, resolved)
+            cfg = copy.deepcopy(row.ai_config or {})
+            cfg.setdefault("providers", {})
+            if patch.get("default_provider") in ("anthropic", "openai"):
+                cfg["default_provider"] = patch["default_provider"]
+            for name in ("anthropic", "openai"):
+                ppatch = patch.get(name) or {}
+                slot = cfg["providers"].setdefault(name, {})
+                if "model" in ppatch:
+                    slot["model"] = ppatch["model"]
+                key = ppatch.get("key")
+                if key == "__CLEAR__":
+                    slot.pop("key_encrypted", None)
+                elif key:  # a new plaintext key → encrypt at rest; empty string = leave as-is
+                    slot["key_encrypted"] = encrypt_secret_text(key)
+            row.ai_config = cfg
+            row.updated_at = datetime.utcnow()
+        return self.get_ai_config_masked(tenant_id=resolved)
+
+    def get_ai_credentials(self, provider: Optional[str] = None, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Server-side only — decrypts the key for an outbound LLM call."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            cfg = (self._ai_config_row(session, resolved).ai_config or {})
+        prov = provider or cfg.get("default_provider", "anthropic")
+        slot = (cfg.get("providers", {}) or {}).get(prov) or {}
+        enc = slot.get("key_encrypted")
+        if not enc:
+            return None
+        return {"provider": prov, "api_key": decrypt_secret_text(enc), "model": slot.get("model") or None}
 
     def replace_all(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> None:
         resolved = self._tenant_id(tenant_id)

@@ -1302,6 +1302,8 @@ DEFAULT_SETTINGS = {
         "sidebar": "",         # sidebar background (hex)
         "hiddenNav": [],       # nav item hrefs to hide (e.g. "/experiments")
     },
+    # AI Copilot — BYO key. Keys stored encrypted under providers.<name>.key_encrypted.
+    "ai_config": {},
 }
 
 
