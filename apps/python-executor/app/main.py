@@ -1744,6 +1744,38 @@ def get_policy(policy_id: str) -> Dict[str, Any]:
     return ensure_exists(storage.get_policy(policy_id), "policy", policy_id)
 
 
+@app.get("/api/v1/policies/{policy_id}/input-schema")
+def policy_input_schema(policy_id: str) -> Dict[str, Any]:
+    """The real input fields this policy reads — the union of the schema fields of
+    the connector sources it references, with a sample value per field. Powers
+    accurate simulation: synthetic/uploaded cases must populate THESE fields (e.g.
+    `bureau_score`), not arbitrary ones, or they never reach the policy's rules."""
+    policy = ensure_exists(storage.get_policy(policy_id), "policy", policy_id)
+    connectors = {c["id"]: c for c in storage.list_connectors()}
+    sources: List[Dict[str, Any]] = []
+    fields: List[Dict[str, Any]] = []
+    seen_sources: set = set()
+    seen_fields: set = set()
+    for step in policy.get("steps", []):
+        if step.get("type") != "connector":
+            continue
+        cid = step.get("ref_id") or step.get("ref")
+        connector = connectors.get(cid)
+        if not connector or cid in seen_sources:
+            continue
+        seen_sources.add(cid)
+        sample = connector.get("sample_payload", {}) or {}
+        source_fields = []
+        for name in connector.get("schema_paths", []) or []:
+            entry = {"name": name, "sample": sample.get(name), "source_id": cid}
+            source_fields.append(entry)
+            if name not in seen_fields:
+                seen_fields.add(name)
+                fields.append(entry)
+        sources.append({"source_id": cid, "name": connector.get("name", cid), "fields": source_fields})
+    return {"policy_id": policy_id, "sources": sources, "fields": fields}
+
+
 @app.post("/api/v1/policies")
 def create_policy(request: PolicyUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
     steps = [item.model_dump() for item in request.steps]

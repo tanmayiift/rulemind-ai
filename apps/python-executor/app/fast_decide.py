@@ -102,11 +102,22 @@ def _serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dic
 def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     connectors = bundle["connectors"]
     payloads: Dict[str, Any] = {cid: dict(sample) for cid, sample in connectors.items()}
+    flat_fields: Dict[str, Any] = {}
     for key, value in payload.items():
         if key in connectors and isinstance(value, dict):
-            payloads[key] = value
-    if not any(key in connectors for key in payload):
-        payloads["custom"] = payload
+            payloads[key] = dict(value)
+        else:
+            flat_fields[key] = value
+    # Field-level override so a flat input (bureau_score=590) drives the source's
+    # variables instead of the source silently keeping its approving sample.
+    # (A connector's sample keys are its field set here.) Mirrors the executor.
+    if flat_fields:
+        for cid, sample in payloads.items():
+            if isinstance(sample, dict):
+                for field, value in flat_fields.items():
+                    if field in sample:
+                        sample[field] = value
+    payloads["custom"] = dict(flat_fields) if flat_fields else dict(payload)
     values: Dict[str, Any] = {}
     for variable in bundle["variables"]:
         source_payload = payloads.get(variable.get("source_id"), {})
