@@ -21,6 +21,7 @@ if str(APP_ROOT) not in sys.path:
 
 os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
 os.environ.setdefault("RULEMIND_ADMIN_JWT_SECRET", "rulemind-test-admin-secret")
+os.environ.setdefault("RULEMIND_SEED_DEMO", "1")  # this QA report decides against the sample lending inventory
 
 import app.main as app_main  # noqa: E402
 from app.storage import Storage  # noqa: E402
