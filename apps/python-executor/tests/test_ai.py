@@ -40,7 +40,7 @@ class AITests(unittest.TestCase):
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
         self.calls = {"n": 0}
 
-        def fake(api_key, model, system, user, max_tokens, temperature):
+        async def fake(api_key, model, system, user, max_tokens, temperature):
             self.calls["n"] += 1
             if "POLICY" in system:
                 return json.dumps({"name": "Loan flow", "steps": [
@@ -176,7 +176,9 @@ class AITests(unittest.TestCase):
     def test_models_live_fetch_merges_when_key_set(self) -> None:
         self._set_key(provider="anthropic")
         orig = dict(ai._LIVE_FETCHERS)
-        ai._LIVE_FETCHERS["anthropic"] = lambda key: ["claude-brand-new-9", "claude-sonnet-5"]
+        async def _live_a(key):
+            return ["claude-brand-new-9", "claude-sonnet-5"]
+        ai._LIVE_FETCHERS["anthropic"] = _live_a
         try:
             r = self.client.get("/api/v1/ai/models?provider=anthropic", headers=self.headers).json()
         finally:
@@ -187,7 +189,7 @@ class AITests(unittest.TestCase):
     def test_models_fall_back_to_curated_on_fetch_error(self) -> None:
         self._set_key(provider="openai")
         orig = dict(ai._LIVE_FETCHERS)
-        def boom(_key):
+        async def boom(_key):
             raise RuntimeError("rate limited")
         ai._LIVE_FETCHERS["openai"] = boom
         try:
