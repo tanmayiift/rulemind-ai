@@ -1191,6 +1191,19 @@ async def startup() -> None:
         return
 
 
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    # Relinquish scheduler leadership on graceful shutdown so a surviving replica
+    # takes over immediately instead of waiting for the lease to expire.
+    try:
+        from .scheduler import _OWNER_ID, is_leader
+
+        if is_leader():
+            storage.release_scheduler_lease(_OWNER_ID)
+    except Exception:  # pragma: no cover - best effort
+        pass
+
+
 @app.get("/health")
 @app.get("/api/v1/health")
 def health() -> Dict[str, str]:
@@ -3642,8 +3655,15 @@ def update_report(report_id: str, request: ReportRequest) -> Dict[str, Any]:
 
 @app.delete("/api/v1/reports/{report_id}")
 def delete_report(report_id: str) -> Dict[str, Any]:
-    if not storage.delete_report(report_id):
+    tenant_id = active_tenant_id()
+    if not storage.delete_report(report_id, tenant_id=tenant_id):
         raise HTTPException(status_code=404, detail="Report not found.")
+    try:  # stop its scheduled delivery job so it doesn't keep firing
+        from .scheduler import unschedule_report_job
+
+        unschedule_report_job(tenant_id, report_id)
+    except Exception:  # pragma: no cover - best effort
+        pass
     return {"deleted": True, "id": report_id}
 
 

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
+import os
+import socket
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -12,8 +16,56 @@ from apscheduler.triggers.cron import CronTrigger
 from .executor import PolicyExecutor
 from .storage import Storage
 
+logger = logging.getLogger("rulemind.scheduler")
 
 scheduler = AsyncIOScheduler()
+
+# Leader election across replicas: every process renews a DB lease on a short
+# interval; only the current lease holder actually runs the scheduled jobs, so a
+# report/cron fires exactly once no matter how many pods are running.
+_OWNER_ID = "{0}:{1}".format(socket.gethostname(), uuid.uuid4().hex[:8])
+_LEASE_TTL_SECONDS = int(os.getenv("SCHEDULER_LEASE_TTL", "30"))
+_LEASE_RENEW_SECONDS = max(5, _LEASE_TTL_SECONDS // 3)
+_IS_LEADER = False
+
+
+def is_leader() -> bool:
+    return _IS_LEADER
+
+
+def _renew_leadership(storage: Storage) -> None:
+    global _IS_LEADER
+    try:
+        was_leader = _IS_LEADER
+        _IS_LEADER = storage.try_acquire_scheduler_lease(_OWNER_ID, _LEASE_TTL_SECONDS)
+        if _IS_LEADER and not was_leader:
+            logger.info("scheduler: acquired leadership (%s)", _OWNER_ID)
+        elif was_leader and not _IS_LEADER:
+            logger.warning("scheduler: lost leadership (%s)", _OWNER_ID)
+    except Exception as exc:  # never let a lease hiccup crash the loop
+        logger.warning("scheduler: lease renewal failed: %s", exc)
+        _IS_LEADER = False
+
+
+# ── Leader-gated wrappers — used ONLY for scheduler-triggered runs, so a job
+# fires on exactly one replica. Manual endpoints (run-now, send) call the
+# underlying functions directly and are never gated. ──────────────────────────
+async def _scheduled_cron(storage: Storage, schedule: Dict[str, Any]) -> Dict[str, Any]:
+    if not _IS_LEADER:
+        return {"skipped": "not_leader"}
+    return await execute_cron_policy(storage, schedule)
+
+
+async def _scheduled_report(storage: Storage, report_id: str, tenant_id: str) -> Dict[str, Any]:
+    if not _IS_LEADER:
+        return {"skipped": "not_leader"}
+    return await deliver_scheduled_report(storage, report_id, tenant_id)
+
+
+async def _scheduled_review_timeouts(storage: Storage) -> None:
+    if not _IS_LEADER:
+        return
+    await check_review_timeouts(storage)
 
 
 async def fetch_batch_items(payload_source: Dict[str, Any], tenant_id: str) -> List[Dict[str, Any]]:
@@ -127,6 +179,15 @@ async def deliver_scheduled_report(storage: Storage, report_id: str, tenant_id: 
     return delivery
 
 
+def unschedule_report_job(tenant_id: str, report_id: str) -> None:
+    """Remove a report's delivery job (called on delete so it stops firing)."""
+    if not scheduler.running:
+        return
+    job_id = "report:{0}:{1}".format(tenant_id or "", report_id)
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+
 def schedule_report_job(storage: Storage, report: Dict[str, Any]) -> None:
     """(Re)register a report's delivery job from its schedule. Safe to call at
     runtime on create/update; a disabled/blank schedule removes the job."""
@@ -142,7 +203,7 @@ def schedule_report_job(storage: Storage, report: Dict[str, Any]) -> None:
     except Exception:
         return
     scheduler.add_job(
-        deliver_scheduled_report, trigger, id=job_id,
+        _scheduled_report, trigger, id=job_id,
         args=[storage, report["id"], report.get("tenant_id", "")], replace_existing=True,
     )
 
@@ -150,9 +211,14 @@ def schedule_report_job(storage: Storage, report: Dict[str, Any]) -> None:
 def init_scheduler(storage: Storage) -> None:
     if scheduler.running:
         return
+    # Establish leadership synchronously at boot, then renew on an interval so
+    # exactly one replica runs the jobs below (all replicas register them).
+    _renew_leadership(storage)
+    scheduler.add_job(_renew_leadership, "interval", seconds=_LEASE_RENEW_SECONDS,
+                      id="scheduler-leader-renew", args=[storage], replace_existing=True)
     for schedule in storage.list_active_schedules():
         scheduler.add_job(
-            execute_cron_policy,
+            _scheduled_cron,
             CronTrigger.from_crontab(schedule["cron_expression"]),
             id=schedule["id"],
             args=[storage, schedule],
@@ -165,7 +231,7 @@ def init_scheduler(storage: Storage) -> None:
         except Exception:
             continue
         scheduler.add_job(
-            deliver_scheduled_report, trigger,
+            _scheduled_report, trigger,
             id="report:{0}:{1}".format(report.get("tenant_id", ""), report["id"]),
             args=[storage, report["id"], report.get("tenant_id", "")], replace_existing=True,
         )
