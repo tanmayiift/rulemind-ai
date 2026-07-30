@@ -2249,6 +2249,19 @@ def access_list_keys() -> List[Dict[str, Any]]:
     return keys
 
 
+def _audit_access(event_type: str, tenant_id: str, entity_id: Optional[str], detail: str, metadata: Dict[str, Any]) -> None:
+    """Write an access-management audit event (key issue/revoke) — a compliance
+    requirement for regulated tenants. Best-effort; never fails the request."""
+    try:
+        storage.add_audit_event({
+            "tenant_id": tenant_id, "event_type": event_type, "entity_type": "api_key",
+            "entity_id": entity_id or "", "detail": detail,
+            "metadata": {**metadata, "actor_api_key_id": get_current_api_key_id(), "actor_role": active_role()},
+        }, tenant_id=tenant_id)
+    except Exception:  # pragma: no cover - audit best effort
+        pass
+
+
 @app.post("/api/v1/access/keys")
 def access_create_key(request: AccessKeyRequest) -> Dict[str, Any]:
     """Issue a new role-scoped API key for this workspace (requires manage_access)."""
@@ -2256,21 +2269,30 @@ def access_create_key(request: AccessKeyRequest) -> Dict[str, Any]:
 
     if request.role not in ASSIGNABLE_ROLES:
         raise HTTPException(status_code=422, detail="Role must be one of: {0}".format(", ".join(ASSIGNABLE_ROLES)))
-    return storage.generate_api_key_for_tenant(
-        active_tenant_id(), environment=request.environment, label=request.label, role=request.role,
+    tenant_id = active_tenant_id()
+    created = storage.generate_api_key_for_tenant(
+        tenant_id, environment=request.environment, label=request.label, role=request.role,
     )
+    _audit_access("api_key_issued", tenant_id, created.get("kid"),
+                  "Issued {0} key '{1}' ({2})".format(request.role, request.label or "—", created.get("kid")),
+                  {"role": request.role, "environment": request.environment})
+    return created
 
 
 @app.delete("/api/v1/access/keys/{kid}")
 def access_revoke_key(kid: str) -> Dict[str, Any]:
     """Revoke an API key by its kid (requires manage_access). Cannot revoke the key
     used for this very request."""
-    keys = storage.list_api_keys(active_tenant_id())
+    tenant_id = active_tenant_id()
+    keys = storage.list_api_keys(tenant_id)
     current = next((k for k in keys if k.get("id") == get_current_api_key_id()), None)
     if current and current.get("kid") == kid:
         raise HTTPException(status_code=409, detail="You cannot revoke the key you are currently using.")
-    if not storage.revoke_api_key(active_tenant_id(), kid):
+    revoked = next((k for k in keys if k.get("kid") == kid), None)
+    if not storage.revoke_api_key(tenant_id, kid):
         raise HTTPException(status_code=404, detail="Key not found or already revoked.")
+    _audit_access("api_key_revoked", tenant_id, kid,
+                  "Revoked key '{0}'".format(kid), {"role": (revoked or {}).get("role")})
     return {"revoked": True, "kid": kid}
 
 
@@ -3179,17 +3201,24 @@ def get_webhook(webhook_id: str) -> Dict[str, Any]:
 
 @app.post("/api/v1/webhooks")
 def create_webhook(request: WebhookUpsertRequest) -> Dict[str, Any]:
+    import secrets as _secrets
+
     endpoint_id = "wh_" + uuid.uuid4().hex[:12]
-    return storage.create_webhook(
+    # Always require a signing secret so an inbound webhook is HMAC-authenticated —
+    # auto-generate one when the caller doesn't supply it (returned once here).
+    secret = request.secret or _secrets.token_urlsafe(32)
+    created = storage.create_webhook(
         {
             "id": endpoint_id,
             "policy_id": request.policy_id,
             "endpoint_path": "/api/v1/webhooks/{0}".format(endpoint_id),
             "is_active": request.is_active,
-            "secret_hash": request.secret,
+            "secret_hash": secret,
             "payload_mapping": request.payload_mapping,
         }
     )
+    created["secret"] = secret  # shown once — the caller signs requests with it (x-webhook-signature)
+    return created
 
 
 @app.put("/api/v1/webhooks/{webhook_id}")
