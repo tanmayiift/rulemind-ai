@@ -129,7 +129,7 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple
     return values, payloads
 
 
-def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], tenant_id: str) -> Dict[str, Any]:
+def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], tenant_id: str, log: bool = True) -> Dict[str, Any]:
     started = time.perf_counter()
     bundle = _serving_bundle(storage, tenant_id, policy)
     values, resolved_payload = _compute_variables(bundle, payload or {})
@@ -159,7 +159,8 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
         "trace": result.get("trace", []),
         "latency_ms": latency_ms,
     }
-    _log_decision(storage, tenant_id, decision, resolved_payload, values)
+    if log:
+        _log_decision(storage, tenant_id, decision, resolved_payload, values)
     return decision
 
 

@@ -8,7 +8,8 @@ import { Button, Card, Field, Select, Textarea, Stat, Badge, EmptyState, PageHea
 
 type Policy = { id: string; name: string };
 type BatchRow = { index: number; result: { outcome: string; latency_ms?: number; error?: string } };
-type BatchResponse = { rows: BatchRow[]; count: number };
+type Performance = { server_ms: number; throughput_tps: number | null; avg_ms: number | null; path: "fast" | "full_executor"; workers: number };
+type BatchResponse = { rows: BatchRow[]; count: number; performance?: Performance };
 type DecideResult = { outcome?: string; score?: number; explanation?: unknown; trace_id?: string; [k: string]: unknown };
 type Mode = "synthetic" | "upload" | "json";
 
@@ -128,6 +129,7 @@ export default function SimulationPage() {
 
   const [rows, setRows] = React.useState<BatchRow[] | null>(null);
   const [wallMs, setWallMs] = React.useState<number | null>(null);
+  const [perf, setPerf] = React.useState<Performance | null>(null);
   const [running, setRunning] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<number | null>(null);
@@ -222,6 +224,7 @@ export default function SimulationPage() {
       );
       setRows(res.rows);
       setWallMs(performance.now() - t0);
+      setPerf(res.performance ?? null);
       // pure-compute analytic: which predictor drives the most rejections
       try {
         const da = await apiJson<{ drivers: typeof drivers }>(apiBaseUrl, "/api/v1/analytics/rejection-drivers", { method: "POST", body: JSON.stringify({ policy_id: policyId, limit: 1000 }) }, apiKey);
@@ -254,7 +257,11 @@ export default function SimulationPage() {
   const latencies = (rows ?? []).map((r) => r.result.latency_ms ?? 0).filter((x) => x > 0);
   const errors = (rows ?? []).filter((r) => r.result.error || r.result.outcome === "error").length;
   const successRate = total ? ((total - errors) / total) * 100 : 0;
-  const tps = wallMs && wallMs > 0 ? (total / wallMs) * 1000 : 0;
+  // Prefer the server-measured compute throughput; the client wall time also
+  // includes network transfer + JSON parsing of the whole batch, so it understates.
+  const serverTps = perf?.throughput_tps ?? null;
+  const wallTps = wallMs && wallMs > 0 ? (total / wallMs) * 1000 : 0;
+  const tps = serverTps ?? wallTps;
 
   return (
     <div style={{ padding: 24 }}>
@@ -341,14 +348,25 @@ export default function SimulationPage() {
         {/* ---- results ---- */}
         <div style={{ display: "grid", gap: 18 }}>
           {rows ? (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 12 }}>
-              <Stat label="Cases" value={total.toLocaleString()} />
-              <Stat label="Success" value={`${successRate.toFixed(successRate === 100 ? 0 : 1)}%`} tone={errors ? "warning" : "success"} />
-              <Stat label="Throughput" value={`${Math.round(tps)} TPS`} />
-              <Stat label="p50" value={`${Math.round(pct(latencies, 0.5))}ms`} />
-              <Stat label="p95" value={`${Math.round(pct(latencies, 0.95))}ms`} />
-              <Stat label="p99" value={`${Math.round(pct(latencies, 0.99))}ms`} />
-            </div>
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 12 }}>
+                <Stat label="Cases" value={total.toLocaleString()} />
+                <Stat label="Success" value={`${successRate.toFixed(successRate === 100 ? 0 : 1)}%`} tone={errors ? "warning" : "success"} />
+                <Stat label="Throughput" value={`${Math.round(tps)} TPS`} tone="accent" />
+                <Stat label="p50" value={`${Math.round(pct(latencies, 0.5))}ms`} />
+                <Stat label="p95" value={`${Math.round(pct(latencies, 0.95))}ms`} />
+                <Stat label="p99" value={`${Math.round(pct(latencies, 0.99))}ms`} />
+              </div>
+              {perf ? (
+                <div style={{ fontSize: 12, color: "var(--rm-muted)", lineHeight: 1.5 }}>
+                  {Math.round(tps).toLocaleString()} decisions/sec measured server-side ({perf.avg_ms}ms avg · {perf.workers} workers ·{" "}
+                  <Badge tone={perf.path === "fast" ? "success" : "accent"}>{perf.path === "fast" ? "fast path (cached bundle + Rust core)" : "full executor"}</Badge>).
+                  {perf.path === "full_executor"
+                    ? " This policy runs the full workflow engine (connector callbacks, scorecard, review gate, sandboxed features), so per-node cost is higher; throughput scales linearly with replicas (K8s HPA). Lean rules-only policies use the fast path at much higher TPS."
+                    : " Rules-only policies serve from the cached bundle via the stateless core."}
+                </div>
+              ) : null}
+            </>
           ) : null}
 
           {rows && drivers && drivers.length > 0 ? (
