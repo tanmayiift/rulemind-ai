@@ -17,6 +17,9 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+import os as _os
+_os.environ.setdefault("RULEMIND_SEED_DEMO", "1")  # tests use the sample lending inventory
+
 from app.excel_functions import (
     EXCEL_FUNCTIONS,
     # Math & Trig
