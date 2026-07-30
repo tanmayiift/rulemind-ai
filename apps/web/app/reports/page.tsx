@@ -13,7 +13,7 @@ type Report = {
   filters: { days?: number; outcomes?: string[]; sources?: string[] };
   timezone: string; schedule?: Schedule | null; last_run?: { generated_at?: string; row_count?: number; delivery?: { transport?: string } } | null; version?: number;
 };
-type RunResult = { columns: Column[]; rows: Record<string, unknown>[]; row_count: number; timezone: string };
+type RunResult = { columns: Column[]; rows: Record<string, unknown>[]; row_count: number; timezone: string; truncated?: boolean };
 type EmailCfg = { host?: string; from_addr?: string; username?: string; configured?: boolean; password_set?: boolean };
 
 const TIMEZONES = ["UTC", "Asia/Kolkata", "America/New_York", "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Asia/Singapore", "Australia/Sydney"];
@@ -99,8 +99,8 @@ export default function ReportsPage() {
     if (!draft.id) { setError("Save the report first."); return; }
     setStatus(null); setError(null);
     try {
-      const res = await apiJson<{ row_count: number; delivery: { transport?: string; note?: string } }>(apiBaseUrl, `/api/v1/reports/${draft.id}/send`, { method: "POST" }, apiKey);
-      setStatus(res.delivery.transport === "smtp" ? `Emailed ${res.row_count} rows.` : (res.delivery.note || "Report generated (no SMTP configured yet)."));
+      const res = await apiJson<{ row_count: number; status: string }>(apiBaseUrl, `/api/v1/reports/${draft.id}/send`, { method: "POST" }, apiKey);
+      setStatus(`Generating ${res.row_count} rows and sending in the background. If SMTP isn't configured, it's queued and retried automatically.`);
     } catch (e) { setError(e instanceof Error ? e.message : "Send failed."); }
   };
 
@@ -165,6 +165,7 @@ export default function ReportsPage() {
             {preview ? (
               <div style={{ overflowX: "auto", maxHeight: 320 }}>
                 <div style={{ fontSize: 12, color: "var(--rm-muted)", marginBottom: 8 }}>{preview.row_count} rows · {preview.timezone}</div>
+                {preview.truncated ? <div style={{ fontSize: 12, color: "var(--rm-warning)", marginBottom: 8 }}>⚠ Capped at the row limit — narrow the time window or filters for a complete report.</div> : null}
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                   <thead><tr>{draft.columns.map((c) => <th key={c.path} style={{ textAlign: "left", padding: "6px 8px", borderBottom: "2px solid var(--rm-border)", fontSize: 11, textTransform: "uppercase", color: "var(--rm-muted)" }}>{c.label || c.key}</th>)}</tr></thead>
                   <tbody>

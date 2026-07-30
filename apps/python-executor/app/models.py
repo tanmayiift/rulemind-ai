@@ -454,3 +454,24 @@ class SchedulerLease(Base):
     owner: Mapped[str] = mapped_column(String(64), nullable=False)
     lease_until: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class EmailOutbox(Base):
+    """Durable outbox for report emails. A message is enqueued here when SMTP is
+    unconfigured or a send fails, and a leader-gated retry job drains it — so a
+    scheduled report is never silently lost (unlike an in-process list)."""
+
+    __tablename__ = "email_outbox"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    recipients: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    subject: Mapped[str] = mapped_column(String(512), nullable=False)
+    body: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    csv_content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    csv_filename: Mapped[str] = mapped_column(String(255), default="report.csv", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

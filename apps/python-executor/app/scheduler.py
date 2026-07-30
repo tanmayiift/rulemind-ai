@@ -6,7 +6,7 @@ import logging
 import os
 import socket
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import httpx
@@ -155,28 +155,100 @@ async def check_review_timeouts(storage: Storage) -> None:
         await executor.execute(policy=policy, payload=ctx.payload, tenant_id=task["tenant_id"], resume_from=ctx, source="review")
 
 
-async def deliver_scheduled_report(storage: Storage, report_id: str, tenant_id: str) -> Dict[str, Any]:
-    """Generate a scheduled report and email it to its recipients (CSV attached)."""
-    from .mailer import send_report_email
+def _report_window_cutoff(report: Dict[str, Any]) -> Any:
+    days = (report.get("filters") or {}).get("days")
+    if not days:
+        return None
+    try:
+        return datetime.utcnow() - timedelta(days=float(days))
+    except (TypeError, ValueError):
+        return None
+
+
+def generate_report_for(storage: Storage, report: Dict[str, Any], tenant_id: str) -> Dict[str, Any]:
+    """Fetch the report's decisions windowed + paginated (no silent 1000-row cap)
+    and render it. Returns the report result with a `truncated` flag."""
     from .reports import generate_report
 
+    decisions, truncated = storage.iter_decisions_window(
+        tenant_id=tenant_id, since=_report_window_cutoff(report),
+        max_rows=int(os.getenv("REPORT_MAX_ROWS", "100000")),
+    )
+    result = generate_report(report, decisions)
+    result["truncated"] = truncated
+    return result
+
+
+async def deliver_scheduled_report(storage: Storage, report_id: str, tenant_id: str) -> Dict[str, Any]:
+    """Generate a scheduled report and email it (CSV attached). A failed or
+    unconfigured send is enqueued to the durable outbox for retry, never dropped."""
     report = storage.get_report(report_id, tenant_id=tenant_id)
     if not report:
         return {"delivered": False, "error": "report not found"}
-    decisions = storage.list_decisions(tenant_id=tenant_id, limit=1000)
-    result = generate_report(report, decisions)
+    result = generate_report_for(storage, report, tenant_id)
     recipients = (report.get("schedule") or {}).get("recipients") or []
-    delivery = send_report_email(
-        storage.get_email_credentials(tenant_id=tenant_id), recipients,
-        subject="[RuleMind] {0} — {1} rows".format(report["name"], result["row_count"]),
-        body='Your scheduled report "{0}" is attached ({1} rows, timezone {2}).'.format(
-            report["name"], result["row_count"], result["timezone"]),
-        csv_content=result["csv"], csv_filename="{0}.csv".format(report_id),
-    )
+    delivery = deliver_report_result(storage, tenant_id, report, result, recipients)
     storage.update_report(report_id, {"last_run": {
-        "generated_at": result["generated_at"], "row_count": result["row_count"], "delivery": delivery,
+        "generated_at": result["generated_at"], "row_count": result["row_count"],
+        "truncated": result.get("truncated", False), "delivery": delivery,
     }}, tenant_id=tenant_id)
     return delivery
+
+
+def deliver_report_result(storage: Storage, tenant_id: str, report: Dict[str, Any],
+                           result: Dict[str, Any], recipients: List[str]) -> Dict[str, Any]:
+    """Attempt delivery; on failure/unconfigured, enqueue to the durable outbox.
+    Emits an audit event either way. Shared by the scheduled + manual paths."""
+    from .mailer import send_report_email
+
+    subject = "[RuleMind] {0} — {1} rows".format(report["name"], result["row_count"])
+    body = 'Your report "{0}" is attached ({1} rows, timezone {2}).'.format(
+        report["name"], result["row_count"], result["timezone"])
+    filename = "{0}.csv".format(report["id"])
+    delivery = send_report_email(storage.get_email_credentials(tenant_id=tenant_id), recipients,
+                                 subject=subject, body=body, csv_content=result["csv"], csv_filename=filename)
+    if not delivery.get("delivered") and delivery.get("transport") in {"unconfigured", "failed"} and recipients:
+        queued = storage.enqueue_email({
+            "tenant_id": tenant_id, "recipients": recipients, "subject": subject, "body": body,
+            "csv_content": result["csv"], "csv_filename": filename,
+            "attempts": 1 if delivery["transport"] == "failed" else 0,
+            "last_error": delivery.get("error"),
+        }, tenant_id=tenant_id)
+        delivery["outbox_id"] = queued["id"]
+    try:
+        storage.add_audit_event({
+            "tenant_id": tenant_id, "event_type": "report_delivered",
+            "entity_type": "report", "entity_id": report["id"],
+            "detail": "Report '{0}' → {1} ({2})".format(report["name"], delivery.get("transport"), len(recipients)),
+            "metadata": {"row_count": result["row_count"], "delivered": delivery.get("delivered"),
+                         "transport": delivery.get("transport"), "truncated": result.get("truncated", False)},
+        }, tenant_id=tenant_id)
+    except Exception:  # pragma: no cover - audit best effort
+        pass
+    return delivery
+
+
+async def retry_outbox(storage: Storage, max_attempts: int = 5) -> Dict[str, Any]:
+    """Leader-gated: drain the durable email outbox. Each pending message is retried
+    until it sends or hits max_attempts (then marked failed for operator attention)."""
+    if not _IS_LEADER:
+        return {"skipped": "not_leader"}
+    from .mailer import send_report_email
+
+    sent = failed = 0
+    for msg in storage.list_pending_emails(max_attempts=max_attempts):
+        creds = storage.get_email_credentials(tenant_id=msg["tenant_id"])
+        delivery = send_report_email(creds, msg["recipients"], msg["subject"], msg["body"],
+                                     msg["csv_content"], msg["csv_filename"])
+        if delivery.get("delivered"):
+            storage.mark_email(msg["id"], "sent")
+            sent += 1
+        else:
+            attempts = msg["attempts"] + 1
+            status = "failed" if attempts >= max_attempts else "pending"
+            storage.mark_email(msg["id"], status, error=delivery.get("error") or delivery.get("note"), increment_attempt=True)
+            failed += 1
+    return {"sent": sent, "retried": failed}
 
 
 def unschedule_report_job(tenant_id: str, report_id: str) -> None:
@@ -235,5 +307,7 @@ def init_scheduler(storage: Storage) -> None:
             id="report:{0}:{1}".format(report.get("tenant_id", ""), report["id"]),
             args=[storage, report["id"], report.get("tenant_id", "")], replace_existing=True,
         )
-    scheduler.add_job(check_review_timeouts, "interval", minutes=5, id="review-timeouts", args=[storage], replace_existing=True)
+    scheduler.add_job(_scheduled_review_timeouts, "interval", minutes=5, id="review-timeouts", args=[storage], replace_existing=True)
+    scheduler.add_job(retry_outbox, "interval", seconds=int(os.getenv("OUTBOX_RETRY_SECONDS", "60")),
+                      id="email-outbox-retry", args=[storage], replace_existing=True)
     scheduler.start()
