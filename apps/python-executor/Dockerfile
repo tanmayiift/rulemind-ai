@@ -14,7 +14,7 @@ RUN apt-get update \
 COPY apps/python-executor/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY alembic.ini ./alembic.ini
+COPY apps/python-executor/alembic.ini ./alembic.ini
 COPY apps/python-executor/app ./app
 COPY apps/python-executor/alembic ./alembic
 COPY apps/python-executor/package.json ./package.json
