@@ -14,6 +14,7 @@ from .runtime import rate_limit_allow
 EXEMPT_PATHS = {
     "/health",
     "/api/v1/health",
+    "/api/v1/onboarding/signup",
     "/ready",
     "/metrics",
     "/docs",
