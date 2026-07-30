@@ -646,7 +646,7 @@ def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
             raise HTTPException(status_code=422, detail="Unknown scorecard in policy: {0}".format(ref_id))
         if step_type == "workflow" and not ref_id:
             raise HTTPException(status_code=422, detail="Sub-workflow step requires a ref_id (target policy).")
-        if step_type not in {"connector", "rule", "scorecard", "decision_table", "outcome", "transform", "action", "review_gate", "model", "branch", "workflow", "monitor"}:
+        if step_type not in {"connector", "rule", "scorecard", "decision_table", "outcome", "transform", "action", "review_gate", "model", "branch", "loop", "workflow", "monitor"}:
             raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
 
 
@@ -2367,6 +2367,38 @@ def workflow_callback(execution_id: str, request: WorkflowCallbackRequest) -> Di
     }
 
 
+class LoopDebugRequest(BaseModel):
+    """Evaluate a single loop step against a payload and return its per-iteration
+    trace, without persisting a decision."""
+    over: Optional[Any] = None
+    items: Optional[List[Any]] = None
+    as_: Optional[str] = Field(default=None, alias="as")
+    indexAs: Optional[str] = None
+    steps: List[Dict[str, Any]] = []
+    maxIterations: int = 1000
+    payload: Dict[str, Any] = {}
+    variable_values: Optional[Dict[str, Any]] = None
+
+    model_config = {"populate_by_name": True}
+
+
+@app.post("/api/v1/workflows/loop-debug")
+def workflow_loop_debug(request: LoopDebugRequest) -> Dict[str, Any]:
+    config: Dict[str, Any] = {"steps": request.steps, "maxIterations": request.maxIterations}
+    if request.over is not None:
+        config["over"] = request.over
+    if request.items is not None:
+        config["items"] = request.items
+    if request.as_:
+        config["as"] = request.as_
+    if request.indexAs:
+        config["indexAs"] = request.indexAs
+    loop_step = {"type": "loop", "id": "debug_loop", "config": config}
+    return asyncio.run(workflow_executor().debug_loop(
+        loop_step, request.payload, active_tenant_id(), variable_values=request.variable_values,
+    ))
+
+
 @app.post("/api/v1/decide/batch")
 def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
     if not request.targetId:
@@ -2481,7 +2513,7 @@ def _validate_import_entity(entity_type: str, entity: Dict[str, Any], existing_c
     elif entity_type == "policy":
         if not entity.get("steps"):
             issues.append("Policy has no steps")
-        valid_step_types = {"connector", "rule", "scorecard", "decision_table", "outcome", "action", "review_gate", "transform", "model", "branch", "workflow", "monitor"}
+        valid_step_types = {"connector", "rule", "scorecard", "decision_table", "outcome", "action", "review_gate", "transform", "model", "branch", "loop", "workflow", "monitor"}
         for step in entity.get("steps", []):
             st = step.get("type", "")
             if st not in valid_step_types:

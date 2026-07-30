@@ -156,6 +156,9 @@ class ExecutionContext:
     decision_table_results: Dict[str, Any] = field(default_factory=dict)
     transform_outputs: Dict[str, Any] = field(default_factory=dict)
     action_results: List[Dict[str, Any]] = field(default_factory=list)
+    # Innermost active loop bindings (item + index names -> values); exposed in the
+    # context view so loop-body steps and conditions can reference the current item.
+    loop_scope: Dict[str, Any] = field(default_factory=dict)
     pending_operations: List[Dict[str, Any]] = field(default_factory=list)
     outcome: str = "pending"
     status: str = "running"
@@ -193,6 +196,7 @@ class ExecutionContext:
             decision_table_results=copy.deepcopy(payload.get("decision_table_results", {})),
             transform_outputs=copy.deepcopy(payload.get("transform_outputs", {})),
             action_results=copy.deepcopy(payload.get("action_results", [])),
+            loop_scope=copy.deepcopy(payload.get("loop_scope", {})),
             pending_operations=copy.deepcopy(payload.get("pending_operations", [])),
             outcome=str(payload.get("outcome", "pending")),
             status=str(payload.get("status", "running")),
@@ -263,6 +267,10 @@ class PolicyExecutor:
             "variables": ctx.variables,
             "scorecard": scorecards,
             "decision_table": {tid: r.get("outputs", {}) for tid, r in ctx.decision_table_results.items()},
+            # Loop bindings live at the top level (referenceable by their `as`/`indexAs`
+            # names) plus under a stable `loop` key for JSONPath resolution.
+            "loop": dict(ctx.loop_scope),
+            **ctx.loop_scope,
             "computed": computed or combined,
             "transforms": ctx.transform_outputs,
             "outcome": ctx.outcome,
@@ -416,6 +424,8 @@ class PolicyExecutor:
         if step_type == "outcome":
             ctx.outcome = _merge_outcome(ctx.outcome, step.get("ref_id") or config.get("outcome") or step.get("label") or "review")
             return {"outcome": ctx.outcome}, None
+        if step_type == "loop":
+            return await self._execute_loop(step, ctx, rules, scorecards, connectors, source, depth), None
         if step_type == "branch":
             return await self._execute_branch(step, ctx, rules, scorecards, connectors, source, depth), None
         if step_type == "workflow":
@@ -466,6 +476,83 @@ class PolicyExecutor:
                 result["scheduled"] = False
         return result
 
+    def _resolve_collection(self, over: Any, ctx: ExecutionContext) -> Any:
+        """Resolve a loop's iterable from config: a literal list, a `$.`-JSONPath,
+        or a dotted path (e.g. `payload.line_items`) into the context view."""
+        if isinstance(over, list):
+            return over
+        if not isinstance(over, str) or not over:
+            return None
+        view = self._context_view(ctx)
+        if over.startswith("$."):
+            return resolve_jsonpath(over, view)
+        current: Any = view
+        for token in over.split("."):
+            if isinstance(current, dict):
+                current = current.get(token)
+            elif isinstance(current, list) and token.isdigit():
+                idx = int(token)
+                current = current[idx] if 0 <= idx < len(current) else None
+            else:
+                return None
+        return current
+
+    async def _execute_loop(self, step, ctx, rules, scorecards, connectors, source, depth):
+        """Iterate a set of sub-steps over a collection (or a map's items). Each
+        iteration exposes the current item + index under the configured names, and
+        a per-iteration summary is captured for the loop-debug endpoint. Bubbles a
+        durable pause up (mid-loop resume is a later phase)."""
+        if depth >= _MAX_WORKFLOW_DEPTH:
+            raise ValueError("Max loop/workflow nesting depth ({0}) exceeded".format(_MAX_WORKFLOW_DEPTH))
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        as_name = str(config.get("as", "item"))
+        index_name = str(config.get("indexAs", "index"))
+        sub_steps = config.get("steps", []) or []
+        hard_cap = 10000
+        try:
+            max_iterations = min(int(config.get("maxIterations", 1000)), hard_cap)
+        except (TypeError, ValueError):
+            max_iterations = 1000
+
+        collection = self._resolve_collection(config.get("over", config.get("items")), ctx)
+        # Map objects iterate as {key, value} pairs; anything non-iterable is a no-op.
+        if isinstance(collection, dict):
+            items: List[Any] = [{"key": k, "value": v} for k, v in collection.items()]
+        elif isinstance(collection, list):
+            items = collection
+        else:
+            items = []
+
+        outer_scope = ctx.loop_scope
+        iterations: List[Dict[str, Any]] = []
+        truncated = len(items) > max_iterations
+        for idx, item in enumerate(items[:max_iterations]):
+            ctx.loop_scope = {**outer_scope, as_name: item, index_name: idx}
+            outcome_before = ctx.outcome
+            trace_start = len(ctx.step_trace)
+            await self._run_steps(sub_steps, ctx, rules, scorecards, connectors, source, depth + 1)
+            iterations.append({
+                "index": idx,
+                "item": copy.deepcopy(item),
+                "outcome_before": outcome_before,
+                "outcome_after": ctx.outcome,
+                "steps": copy.deepcopy(ctx.step_trace[trace_start:]),
+                "paused": ctx.status == "paused",
+                "failed": ctx.status == "failed",
+            })
+            if ctx.status in {"paused", "failed"}:
+                break
+        ctx.loop_scope = outer_scope
+
+        return {
+            "loop": step.get("id") or step.get("name") or "loop",
+            "over": config.get("over"),
+            "count": len(items),
+            "iterations_run": len(iterations),
+            "truncated": truncated,
+            "iterations": iterations,
+        }
+
     async def _execute_branch(self, step, ctx, rules, scorecards, connectors, source, depth):
         """Multi-branch routing: run the first branch whose condition matches (or
         `default`). Branches are lists of steps evaluated with the live context."""
@@ -499,6 +586,38 @@ class PolicyExecutor:
         self._visited_workflows.add(ref_id)
         await self._run_steps(sub_policy.get("steps", []) or [], ctx, rules, scorecards, connectors, source, depth + 1)
         return {"workflow": ref_id, "outcome": ctx.outcome}
+
+    async def debug_loop(
+        self,
+        loop_step: Dict[str, Any],
+        payload: Dict[str, Any],
+        tenant_id: str,
+        variable_values: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate a single loop step against a payload and return its full
+        per-iteration trace, without persisting a decision. Powers the loop-debug
+        endpoint. If `variable_values` is given they are used verbatim; otherwise
+        the tenant's variables are computed from the payload."""
+        ctx = ExecutionContext(
+            payload=copy.deepcopy(payload or {}),
+            tenant_id=tenant_id,
+            policy_id="__loop_debug__",
+            execution_id=str(uuid.uuid4()),
+            started_at=datetime.utcnow(),
+        )
+        rules = {item["id"]: item for item in self.storage.list_rules(tenant_id=tenant_id)}
+        scorecards = {item["id"]: item for item in self.storage.list_scorecards(tenant_id=tenant_id)}
+        self._decision_tables = {item["id"]: item for item in self.storage.list_decision_tables(tenant_id=tenant_id)}
+        connectors = self._catalog_for(tenant_id)["connectors"]
+        self._visited_workflows = {"__loop_debug__"}
+        if variable_values is not None:
+            ctx.variables = dict(variable_values)
+        else:
+            self._compute_variables(ctx)
+        result = await self._execute_loop(loop_step, ctx, rules, scorecards, connectors, "loop_debug", depth=0)
+        result["outcome"] = ctx.outcome
+        result["status"] = ctx.status
+        return result
 
     async def execute(
         self,

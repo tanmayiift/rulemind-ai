@@ -27,6 +27,7 @@ const PALETTE: Array<{ type: string; label: string; needsRef?: "connector" | "ru
   { type: "scorecard", label: "Scorecard", needsRef: "scorecard", tone: "purple" },
   { type: "transform", label: "Transform", tone: "accent" },
   { type: "branch", label: "Branch", tone: "warning" },
+  { type: "loop", label: "Loop", tone: "warning" },
   { type: "workflow", label: "Sub-workflow", tone: "accent" },
   { type: "model", label: "ML model", tone: "purple" },
   { type: "action", label: "Action", tone: "accent" },
@@ -99,6 +100,7 @@ export default function WorkflowBuilderPage() {
     const step: Step = { id: newId(type), type, label: PALETTE.find((p) => p.type === type)?.label ?? type };
     if (type === "outcome") step.outcome = "review";
     if (type === "branch") step.config = { branches: [], default: [] };
+    if (type === "loop") step.config = { over: "", as: "item", indexAs: "index", maxIterations: 1000, steps: [] };
     mutate([...steps, step]);
     setSelected(step.id);
   };
@@ -325,6 +327,48 @@ function Inspector({ theme, step, refs, onPatch }: { theme: ThemeTokens; step: S
           onChange={(cfg) => onPatch({ config: cfg as unknown as Record<string, unknown> })}
         />
       ) : null}
+      {step.type === "loop" ? (
+        <LoopEditor
+          theme={theme}
+          refs={refs}
+          config={(step.config as LoopConfig) ?? { steps: [] }}
+          onChange={(cfg) => onPatch({ config: cfg as unknown as Record<string, unknown> })}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ---- loop editor (iterate a collection variable over a body of steps) ----
+
+type LoopConfig = { over?: string; as?: string; indexAs?: string; maxIterations?: number; steps?: Step[] };
+
+function LoopEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; refs: { connector: Ref[]; rule: Ref[]; scorecard: Ref[] }; config: LoopConfig; onChange: (c: LoopConfig) => void }) {
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div style={{ fontSize: 12, color: theme.muted, lineHeight: 1.5 }}>
+        Iterates the body once per item in a collection. Point <span style={{ fontFamily: "var(--font-mono)" }}>over</span> at a
+        variable that returns a list or map (e.g. <span style={{ fontFamily: "var(--font-mono)" }}>variables.line_items</span>).
+        Each item is exposed under the <span style={{ fontFamily: "var(--font-mono)" }}>as</span> name to body steps and conditions.
+      </div>
+      <Field theme={theme} label="Over (collection path)">
+        <input value={config.over ?? ""} onChange={(e) => onChange({ ...config, over: e.target.value })} placeholder="variables.line_items" style={{ ...inputStyle(theme), fontFamily: "var(--font-mono)", fontSize: 12 }} />
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+        <Field theme={theme} label="Item name">
+          <input value={config.as ?? "item"} onChange={(e) => onChange({ ...config, as: e.target.value })} style={{ ...inputStyle(theme), fontSize: 12 }} />
+        </Field>
+        <Field theme={theme} label="Index name">
+          <input value={config.indexAs ?? "index"} onChange={(e) => onChange({ ...config, indexAs: e.target.value })} style={{ ...inputStyle(theme), fontSize: 12 }} />
+        </Field>
+        <Field theme={theme} label="Max iters">
+          <input type="number" value={config.maxIterations ?? 1000} onChange={(e) => onChange({ ...config, maxIterations: Number(e.target.value) })} style={{ ...inputStyle(theme), fontSize: 12 }} />
+        </Field>
+      </div>
+      <div style={{ borderTop: `1px dashed ${theme.border}`, paddingTop: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: theme.dim, marginBottom: 6 }}>LOOP BODY (per item)</div>
+        <StepRows theme={theme} refs={refs} steps={config.steps ?? []} onChange={(s) => onChange({ ...config, steps: s })} />
+      </div>
     </div>
   );
 }
@@ -393,7 +437,7 @@ function StepRows({ theme, refs, steps, onChange }: { theme: ThemeTokens; refs: 
       })}
       <div style={{ display: "flex", gap: 6 }}>
         <select value={addType} onChange={(e) => setAddType(e.target.value)} style={{ ...selectStyle(theme), fontSize: 12, flex: 1 }}>
-          {PALETTE.filter((p) => p.type !== "branch").map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
+          {PALETTE.filter((p) => p.type !== "branch" && p.type !== "loop").map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
         </select>
         <button onClick={() => onChange([...steps, { id: newId(addType), type: addType, label: PALETTE.find((p) => p.type === addType)?.label, ...(addType === "outcome" ? { outcome: "review" } : {}) }])} style={{ ...ghostStyle(theme), fontSize: 12 }}>Add step</button>
       </div>
