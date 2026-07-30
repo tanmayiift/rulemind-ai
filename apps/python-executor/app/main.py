@@ -2186,7 +2186,7 @@ def put_ai_config(request: AIConfigRequest) -> Dict[str, Any]:
 
 
 @app.get("/api/v1/ai/models")
-def list_ai_models(provider: str = Query(default="anthropic")) -> Dict[str, Any]:
+async def list_ai_models(provider: str = Query(default="anthropic")) -> Dict[str, Any]:
     """Selectable models for a provider. Live-fetches from the provider's /models
     API when a key is configured (so new model launches appear automatically),
     else returns the curated list."""
@@ -2194,17 +2194,17 @@ def list_ai_models(provider: str = Query(default="anthropic")) -> Dict[str, Any]
 
     creds = storage.get_ai_credentials(provider)
     api_key = creds.get("api_key") if creds else None
-    return list_models(provider, api_key)
+    return await list_models(provider, api_key)
 
 
 @app.post("/api/v1/ai/test")
-def ai_test(request: AITestRequest) -> Dict[str, Any]:
+async def ai_test(request: AITestRequest) -> Dict[str, Any]:
     from .ai import test_connection
 
     creds = storage.get_ai_credentials(request.provider)
     if not creds:
         raise HTTPException(status_code=422, detail="No API key configured for that provider.")
-    return test_connection(creds["provider"], creds["api_key"], creds.get("model"))
+    return await test_connection(creds["provider"], creds["api_key"], creds.get("model"))
 
 
 # ── Access & Roles (RBAC) ──────────────────────────────────────────────────────
@@ -2297,7 +2297,7 @@ def access_revoke_key(kid: str) -> Dict[str, Any]:
 
 
 @app.post("/api/v1/ai/generate-rule")
-def ai_generate_rule(request: AIGenerateRuleRequest) -> Dict[str, Any]:
+async def ai_generate_rule(request: AIGenerateRuleRequest) -> Dict[str, Any]:
     """NL → draft rule tree. Guardrails: an out-of-scope prompt is refused LOCALLY
     (no token spent), and the result is a DRAFT that still passes MECE/test-gating
     before it can be promoted — nothing is saved or deployed here."""
@@ -2313,7 +2313,7 @@ def ai_generate_rule(request: AIGenerateRuleRequest) -> Dict[str, Any]:
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        draft = generate_rule(creds["provider"], creds["api_key"], request.prompt, variables, model=creds.get("model"))
+        draft = await generate_rule(creds["provider"], creds["api_key"], request.prompt, variables, model=creds.get("model"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error))
 
@@ -2335,7 +2335,7 @@ class AIGeneratePolicyRequest(BaseModel):
 
 
 @app.post("/api/v1/ai/generate-policy")
-def ai_generate_policy(request: AIGeneratePolicyRequest) -> Dict[str, Any]:
+async def ai_generate_policy(request: AIGeneratePolicyRequest) -> Dict[str, Any]:
     """NL → draft policy steps (draft only; still validated + test-gated before promotion)."""
     from .ai import AIError, OUT_OF_SCOPE_MESSAGE, generate_policy, is_in_scope
 
@@ -2350,7 +2350,7 @@ def ai_generate_policy(request: AIGeneratePolicyRequest) -> Dict[str, Any]:
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        draft = generate_policy(creds["provider"], creds["api_key"], request.prompt, connectors, rules, scorecards, model=creds.get("model"))
+        draft = await generate_policy(creds["provider"], creds["api_key"], request.prompt, connectors, rules, scorecards, model=creds.get("model"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error))
     valid, validation_error = True, None
@@ -2367,7 +2367,7 @@ class AIExplainRequest(BaseModel):
 
 
 @app.post("/api/v1/ai/explain-decision")
-def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
+async def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
     """Plain-English explanation + adverse-action reason codes for one decision."""
     from .ai import AIError, explain_decision
 
@@ -2378,7 +2378,7 @@ def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        result = explain_decision(creds["provider"], creds["api_key"], decision, model=creds.get("model"))
+        result = await explain_decision(creds["provider"], creds["api_key"], decision, model=creds.get("model"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error))
     return {"decision_id": request.decision_id, "outcome": decision.get("outcome"), **result}
