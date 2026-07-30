@@ -1505,9 +1505,10 @@ class Storage:
             tenant.updated_at = now
             return True
 
-    def generate_api_key_for_tenant(self, tenant_id: str) -> Dict[str, Any]:
+    def generate_api_key_for_tenant(self, tenant_id: str, environment: str = "prod", label: Optional[str] = None) -> Dict[str, Any]:
         plaintext = generate_api_key()
         lookup_hash = key_lookup_hash(plaintext)
+        env = environment if environment in ("dev", "prod", "sandbox") else "prod"
         with self.connect() as session:
             tenant = session.get(Tenant, tenant_id)
             if not tenant:
@@ -1519,6 +1520,8 @@ class Storage:
                 lookup_hash=lookup_hash,
                 key_hash=bcrypt_hash(plaintext),
                 is_active=True,
+                environment=env,
+                label=label,
             )
             session.add(model)
             tenant.api_key_hash = lookup_hash
@@ -1528,8 +1531,38 @@ class Storage:
                 "kid": model.kid,
                 "masked_key": model.masked_key,
                 "plaintext": plaintext,
+                "environment": env,
+                "label": label,
                 "created_at": serialize_datetime(model.created_at),
             }
+
+    def seed_sample_inventory(self, tenant_id: str) -> None:
+        """Populate a new workspace with the sample connectors/variables/rules/
+        scorecards/policies so an onboarding client can try a decision immediately."""
+        with self.connect() as session:
+            self._ensure_seed_inventory(session, tenant_id)
+
+    # ── Onboarding state (stored on tenant.config["onboarding"]) ────────
+    def get_onboarding(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            cfg = (tenant.config or {}) if tenant else {}
+        return copy.deepcopy(cfg.get("onboarding") or {})
+
+    def update_onboarding(self, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            if not tenant:
+                raise ValueError("Tenant not found")
+            cfg = copy.deepcopy(tenant.config or {})
+            ob = cfg.get("onboarding") or {}
+            ob.update(patch)
+            cfg["onboarding"] = ob
+            tenant.config = cfg
+            session.flush()
+            return copy.deepcopy(ob)
 
     def list_api_keys(self, tenant_id: str) -> List[Dict[str, Any]]:
         with self.connect() as session:

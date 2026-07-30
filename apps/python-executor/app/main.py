@@ -2248,6 +2248,93 @@ def analytics_rejection_drivers(request: RejectionDriversRequest) -> Dict[str, A
     return rejection_drivers(decisions)
 
 
+# ── Onboarding journey (self-serve: details → dev key → verify → prod key) ─────
+
+class OnboardingSignupRequest(BaseModel):
+    company: str
+    contact_email: str
+    use_case: Optional[str] = None
+    plan: str = "standard"
+
+
+class OnboardingAIRequest(BaseModel):
+    opted_in: bool
+
+
+def _onboarding_view(tenant_id: str) -> Dict[str, Any]:
+    ob = storage.get_onboarding(tenant_id=tenant_id)
+    ai_cfg = storage.get_ai_config_masked(tenant_id=tenant_id)
+    ai_configured = any(p.get("configured") for p in ai_cfg.get("providers", {}).values())
+    decision_count = storage.count_decisions(tenant_id=tenant_id)
+    steps = {
+        "org": bool(ob.get("org")),
+        "dev_key": bool(ob.get("dev_key_issued")),
+        "verified": bool(ob.get("verified")) or decision_count > 0,
+        "ai": bool(ob.get("ai_choice_made")) or ai_configured,
+        "prod_key": bool(ob.get("prod_key_issued")),
+    }
+    return {
+        "onboarding": ob,
+        "ai_configured": ai_configured,
+        "decision_count": decision_count,
+        "steps": steps,
+        "complete": all(steps[k] for k in ("org", "dev_key", "verified", "ai", "prod_key")),
+    }
+
+
+@app.post("/api/v1/onboarding/signup")
+def onboarding_signup(request: OnboardingSignupRequest) -> Dict[str, Any]:
+    """Public: create a workspace + issue a DEV key (shown once). Prod key comes later,
+    after the client verifies their integration. (In production, gate this behind email
+    verification / CAPTCHA — it is intentionally open here for self-serve onboarding.)"""
+    tenant = storage.create_tenant(name=request.company, plan=request.plan,
+                                   config={"onboarding": {"org": {"company": request.company, "contact_email": request.contact_email, "use_case": request.use_case}}})
+    storage.seed_sample_inventory(tenant["id"])  # so they can try a decision immediately
+    key = storage.generate_api_key_for_tenant(tenant["id"], environment="dev", label="Onboarding dev key")
+    storage.update_onboarding({"dev_key_issued": True}, tenant_id=tenant["id"])
+    return {"tenant_id": tenant["id"], "company": request.company,
+            "api_key": key["plaintext"], "environment": "dev",
+            "status": _onboarding_view(tenant["id"])}
+
+
+@app.get("/api/v1/onboarding/status")
+def onboarding_status() -> Dict[str, Any]:
+    return _onboarding_view(active_tenant_id())
+
+
+@app.post("/api/v1/onboarding/verify")
+def onboarding_verify() -> Dict[str, Any]:
+    """Mark the integration verified once the workspace has made its first decision."""
+    tenant_id = active_tenant_id()
+    if storage.count_decisions(tenant_id=tenant_id) < 1:
+        raise HTTPException(status_code=409, detail="Make at least one decision (POST /api/v1/decide) with your dev key first.")
+    storage.update_onboarding({"verified": True}, tenant_id=tenant_id)
+    return _onboarding_view(tenant_id)
+
+
+@app.post("/api/v1/onboarding/ai")
+def onboarding_ai(request: OnboardingAIRequest) -> Dict[str, Any]:
+    """Record the AI opt-in decision. AI features stay hidden unless a key is set
+    (via /ai/config); this just marks the choice so onboarding can proceed."""
+    tenant_id = active_tenant_id()
+    storage.update_onboarding({"ai_choice_made": True, "ai_opted_in": bool(request.opted_in)}, tenant_id=tenant_id)
+    return _onboarding_view(tenant_id)
+
+
+@app.post("/api/v1/onboarding/request-prod")
+def onboarding_request_prod() -> Dict[str, Any]:
+    """Issue the PROD key — only after the dev integration is verified."""
+    tenant_id = active_tenant_id()
+    view = _onboarding_view(tenant_id)
+    if not view["steps"]["verified"]:
+        raise HTTPException(status_code=409, detail="Verify your dev integration before requesting a production key.")
+    if storage.get_onboarding(tenant_id=tenant_id).get("prod_key_issued"):
+        raise HTTPException(status_code=409, detail="A production key was already issued for this workspace.")
+    key = storage.generate_api_key_for_tenant(tenant_id, environment="prod", label="Production key")
+    storage.update_onboarding({"prod_key_issued": True, "completed": True}, tenant_id=tenant_id)
+    return {"api_key": key["plaintext"], "environment": "prod", "status": _onboarding_view(tenant_id)}
+
+
 class WorkflowCallbackRequest(BaseModel):
     step_id: str
     data: Dict[str, Any] = Field(default_factory=dict)

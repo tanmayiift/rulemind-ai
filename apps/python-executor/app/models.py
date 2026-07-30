@@ -44,6 +44,9 @@ class ApiKey(Base, TimestampMixin):
     lookup_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
     key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Environment this key is scoped to (dev / prod / sandbox) + a human label.
+    environment: Mapped[str] = mapped_column(String(16), default="prod", nullable=False)
+    label: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
