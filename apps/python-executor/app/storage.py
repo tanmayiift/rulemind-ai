@@ -42,6 +42,7 @@ from .models import (
     PlatformAdminUser,
     Policy,
     Promotion,
+    ReportDefinition,
     ReviewTask,
     Rule,
     Scorecard,
@@ -1551,6 +1552,55 @@ class Storage:
                 "created_at": serialize_datetime(model.created_at),
             }
 
+    # ── Email (SMTP) config for scheduled report delivery ───────────────
+    def set_email_config(self, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            if not tenant:
+                raise ValueError("Tenant not found")
+            cfg = copy.deepcopy(tenant.config or {})
+            email = cfg.get("email") or {}
+            for key in ("host", "port", "username", "from_addr", "use_tls", "use_ssl"):
+                if key in patch:
+                    email[key] = patch[key]
+            pw = patch.get("password")
+            if pw == "__CLEAR__":
+                email.pop("password_encrypted", None)
+            elif pw:
+                email["password_encrypted"] = encrypt_secret_text(pw)
+            cfg["email"] = email
+            tenant.config = cfg
+            session.flush()
+        return self.get_email_config_masked(tenant_id=resolved)
+
+    def get_email_config_masked(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            email = ((tenant.config or {}).get("email") or {}) if tenant else {}
+        return {
+            "host": email.get("host", ""),
+            "port": email.get("port", 587),
+            "username": email.get("username", ""),
+            "from_addr": email.get("from_addr", ""),
+            "use_tls": email.get("use_tls", True),
+            "use_ssl": email.get("use_ssl", False),
+            "password_set": bool(email.get("password_encrypted")),
+            "configured": bool(email.get("host") and email.get("from_addr")),
+        }
+
+    def get_email_credentials(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Server-side only — decrypts the SMTP password for an outbound send."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            email = copy.deepcopy((tenant.config or {}).get("email") or {}) if tenant else {}
+        enc = email.pop("password_encrypted", None)
+        if enc:
+            email["password"] = decrypt_secret_text(enc)
+        return email
+
     def seed_sample_inventory(self, tenant_id: str) -> None:
         """Populate a new workspace with the sample connectors/variables/rules/
         scorecards/policies so an onboarding client can try a decision immediately."""
@@ -2340,4 +2390,87 @@ class Storage:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             result = session.execute(delete(DecisionTable).where(DecisionTable.tenant_id == resolved, DecisionTable.public_id == table_id))
+            return result.rowcount > 0
+
+    # ---- Report definitions ------------------------------------------------ #
+    @staticmethod
+    def _report_to_dict(row: ReportDefinition) -> Dict[str, Any]:
+        return {
+            "id": row.public_id,
+            "name": row.name,
+            "description": row.description,
+            "columns": copy.deepcopy(row.columns or []),
+            "filters": copy.deepcopy(row.filters or {}),
+            "timezone": row.timezone,
+            "schedule": copy.deepcopy(row.schedule) if row.schedule else None,
+            "last_run": copy.deepcopy(row.last_run) if row.last_run else None,
+            "version": row.version,
+            "created_at": serialize_datetime(row.created_at),
+            "updated_at": serialize_datetime(row.updated_at),
+        }
+
+    def list_reports(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(select(ReportDefinition).where(ReportDefinition.tenant_id == resolved).order_by(ReportDefinition.name)).all()
+            return [self._report_to_dict(row) for row in rows]
+
+    def list_scheduled_reports(self) -> List[Dict[str, Any]]:
+        """All reports (across tenants) with an enabled schedule — for the scheduler."""
+        with self.connect() as session:
+            rows = session.scalars(select(ReportDefinition)).all()
+            out = []
+            for row in rows:
+                sched = row.schedule or {}
+                if sched.get("enabled") and sched.get("cron"):
+                    d = self._report_to_dict(row)
+                    d["tenant_id"] = row.tenant_id
+                    out.append(d)
+            return out
+
+    def get_report(self, report_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(select(ReportDefinition).where(ReportDefinition.tenant_id == resolved, ReportDefinition.public_id == report_id))
+            return self._report_to_dict(row) if row else None
+
+    def create_report(self, data: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        now = datetime.utcnow()
+        with self.connect() as session:
+            row = ReportDefinition(
+                tenant_id=resolved,
+                public_id=data["id"],
+                name=data["name"],
+                description=data.get("description"),
+                columns=copy.deepcopy(data.get("columns") or []),
+                filters=copy.deepcopy(data.get("filters") or {}),
+                timezone=data.get("timezone", "UTC"),
+                schedule=copy.deepcopy(data.get("schedule")),
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            session.flush()
+            return self._report_to_dict(row)
+
+    def update_report(self, report_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(select(ReportDefinition).where(ReportDefinition.tenant_id == resolved, ReportDefinition.public_id == report_id))
+            if not row:
+                return None
+            for key in ("name", "description", "columns", "filters", "timezone", "schedule", "last_run"):
+                if key in patch:
+                    setattr(row, key, copy.deepcopy(patch[key]))
+            if any(k in patch for k in ("name", "columns", "filters", "timezone", "schedule")):
+                row.version = (row.version or 1) + 1
+            row.updated_at = datetime.utcnow()
+            return self._report_to_dict(row)
+
+    def delete_report(self, report_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            result = session.execute(delete(ReportDefinition).where(ReportDefinition.tenant_id == resolved, ReportDefinition.public_id == report_id))
             return result.rowcount > 0

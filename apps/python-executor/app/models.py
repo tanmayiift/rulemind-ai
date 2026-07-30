@@ -114,6 +114,26 @@ class Rule(Base, TimestampMixin):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
+class ReportDefinition(Base, TimestampMixin):
+    """A saved report over the decision log: dynamic columns + filters + timezone,
+    optionally delivered on a schedule by email."""
+
+    __tablename__ = "report_definitions"
+    __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_reports_tenant_public"),)
+
+    pk: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    public_id: Mapped[str] = mapped_column("public_id", String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    columns: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    filters: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC", nullable=False)
+    schedule: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    last_run: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
 class Scorecard(Base, TimestampMixin):
     __tablename__ = "scorecards"
     __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_scorecards_tenant_public_id"),)
