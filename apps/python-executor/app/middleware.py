@@ -30,6 +30,19 @@ EXEMPT_PATHS = {
     "/openapi.json",
 }
 
+# The human-auth endpoints manage their own identity: login/OTP establish it,
+# session/logout validate the bearer token themselves. None should be gated by the
+# API-key check (login runs before any key/session exists, and a viewer must still
+# be able to read their own session and log out).
+UNAUTH_AUTH_PREFIXES = ("/api/v1/auth/",)
+
+
+def _bearer_token(request: Request) -> str:
+    header = request.headers.get("authorization") or ""
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return ""
+
 
 class TenantContextMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, storage) -> None:
@@ -50,22 +63,44 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if not (path.startswith("/api/v1") or path.startswith("/sdk/v1")):
             return await call_next(request)
 
+        # Login / OTP endpoints establish identity — no key or session yet.
+        if any(path.startswith(prefix) for prefix in UNAUTH_AUTH_PREFIXES):
+            return await call_next(request)
+
         if os.getenv("AUTH_MODE") == "none":
             return await call_next(request)
 
         if request.method == "POST" and path.startswith("/api/v1/webhooks/") and not path.endswith("/test"):
             return await call_next(request)
 
+        storage = self.storage() if callable(self.storage) else self.storage
+
+        # Two ways to authenticate: a machine API key (x-api-key) or a human login
+        # session (Authorization: Bearer). Both resolve to a tenant + an RBAC role
+        # and are enforced by the same capability check below.
         api_key = request.headers.get("x-api-key")
-        if not api_key:
+        session_token = "" if api_key else _bearer_token(request)
+        actor_kind = "api_key"
+        session_id = None
+        if api_key:
+            resolved = storage.get_tenant_by_api_key(api_key)
+            if not resolved:
+                return JSONResponse(status_code=401, content={"error": "Invalid API key"})
+            tenant = resolved["tenant"]
+            role = resolved["api_key"].get("role", "owner")
+            api_key_id = resolved["api_key"]["id"]
+        elif session_token:
+            resolved = storage.resolve_member_session(session_token)
+            if not resolved:
+                return JSONResponse(status_code=401, content={"error": "Invalid or expired session"})
+            tenant = resolved["tenant"]
+            role = resolved.get("role", "viewer")
+            actor_kind = "member"
+            session_id = resolved.get("session_id")
+            api_key_id = "member:{0}".format(resolved.get("member", {}).get("id", ""))
+        else:
             return JSONResponse(status_code=401, content={"error": "Missing API key"})
 
-        storage = self.storage() if callable(self.storage) else self.storage
-        resolved = storage.get_tenant_by_api_key(api_key)
-        if not resolved:
-            return JSONResponse(status_code=401, content={"error": "Invalid API key"})
-
-        tenant = resolved["tenant"]
         if not tenant.get("is_active", True):
             return JSONResponse(status_code=403, content={"error": "Tenant is inactive"})
 
@@ -74,8 +109,7 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if not allowed:
             return JSONResponse(status_code=429, headers={"Retry-After": str(retry_after)}, content={"error": "Rate limit exceeded"})
 
-        # RBAC: the key's role must hold the capability this request needs.
-        role = resolved["api_key"].get("role", "owner")
+        # RBAC: the caller's role must hold the capability this request needs.
         if not is_allowed(role, request.method, path):
             return JSONResponse(status_code=403, content={
                 "error": "Forbidden",
@@ -83,10 +117,12 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
             })
 
         request.state.tenant_id = tenant["id"]
-        request.state.api_key_id = resolved["api_key"]["id"]
+        request.state.api_key_id = api_key_id
         request.state.role = role
+        request.state.actor_kind = actor_kind
+        request.state.session_id = session_id
         tenant_token = set_current_tenant_id(tenant["id"])
-        api_key_token = set_current_api_key_id(resolved["api_key"]["id"])
+        api_key_token = set_current_api_key_id(api_key_id)
         role_token = set_current_role(role)
         try:
             response = await call_next(request)

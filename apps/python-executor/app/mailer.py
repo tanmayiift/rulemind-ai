@@ -44,6 +44,41 @@ def build_message(email_config: Optional[Dict[str, Any]], recipients: List[str],
     return message
 
 
+def send_text_email(
+    email_config: Optional[Dict[str, Any]],
+    recipients: List[str],
+    subject: str,
+    body: str,
+) -> Dict[str, Any]:
+    """One SMTP attempt for a plain-text message (no attachment) — used for login
+    OTP / transactional email. Returns a delivery record; when SMTP is unconfigured
+    the caller falls back to surfacing the code in a dev/debug channel."""
+    recipients = [r for r in (recipients or []) if r]
+    if not recipients:
+        return {"delivered": False, "transport": "none", "error": "no recipients"}
+    if not is_configured(email_config):
+        return {"delivered": False, "transport": "unconfigured", "recipients": recipients}
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = (email_config or {}).get("from_addr", "no-reply@rulemind.local")
+    message["To"] = ", ".join(recipients)
+    message.set_content(body)
+    factory = _SMTP_FACTORY or _default_smtp
+    try:
+        client = factory(email_config)
+        try:
+            client.send_message(message)
+        finally:
+            try:
+                client.quit()
+            except Exception:  # pragma: no cover
+                pass
+        return {"delivered": True, "transport": "smtp", "recipients": recipients}
+    except Exception as exc:
+        return {"delivered": False, "transport": "failed", "recipients": recipients, "error": str(exc)}
+
+
 def send_report_email(
     email_config: Optional[Dict[str, Any]],
     recipients: List[str],

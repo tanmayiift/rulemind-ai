@@ -2215,6 +2215,41 @@ class AccessKeyRequest(BaseModel):
     environment: str = "prod"
 
 
+class MemberCreateRequest(BaseModel):
+    email: str
+    name: Optional[str] = None
+    role: str = "viewer"
+    password: Optional[str] = None
+
+
+class MemberUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
+
+class KeyRoleRequest(BaseModel):
+    role: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+    tenant_id: Optional[str] = None
+
+
+class OtpRequestRequest(BaseModel):
+    email: str
+    tenant_id: Optional[str] = None
+
+
+class OtpVerifyRequest(BaseModel):
+    email: str
+    code: str
+    tenant_id: Optional[str] = None
+
+
 @app.get("/api/v1/access/me")
 def access_me() -> Dict[str, Any]:
     """The caller's own role + capabilities — lets the UI adapt to permissions."""
@@ -2294,6 +2329,175 @@ def access_revoke_key(kid: str) -> Dict[str, Any]:
     _audit_access("api_key_revoked", tenant_id, kid,
                   "Revoked key '{0}'".format(kid), {"role": (revoked or {}).get("role")})
     return {"revoked": True, "kid": kid}
+
+
+@app.patch("/api/v1/access/keys/{kid}/role")
+def access_update_key_role(kid: str, request: KeyRoleRequest) -> Dict[str, Any]:
+    """Change an API key's role in place (requires manage_access). Cannot change the
+    role of the key used for this request (avoids self-lockout mid-session)."""
+    from .rbac import ASSIGNABLE_ROLES
+
+    if request.role not in ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=422, detail="Role must be one of: {0}".format(", ".join(ASSIGNABLE_ROLES)))
+    tenant_id = active_tenant_id()
+    keys = storage.list_api_keys(tenant_id)
+    current = next((k for k in keys if k.get("id") == get_current_api_key_id()), None)
+    if current and current.get("kid") == kid:
+        raise HTTPException(status_code=409, detail="You cannot change the role of the key you are currently using.")
+    updated = storage.update_api_key_role(tenant_id, kid, request.role)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Key not found or revoked.")
+    _audit_access("api_key_role_changed", tenant_id, kid,
+                  "Changed key '{0}' role to {1}".format(kid, request.role), {"role": request.role})
+    return updated
+
+
+# ── Workspace members (human accounts with RBAC roles) ───────────────────
+def _audit_member(event_type: str, tenant_id: str, member_id: Optional[str], detail: str, metadata: Dict[str, Any]) -> None:
+    try:
+        storage.add_audit_event({
+            "tenant_id": tenant_id, "event_type": event_type, "entity_type": "member",
+            "entity_id": member_id or "", "detail": detail,
+            "metadata": {**metadata, "actor_api_key_id": get_current_api_key_id(), "actor_role": active_role()},
+        }, tenant_id=tenant_id)
+    except Exception:  # pragma: no cover - audit best effort
+        pass
+
+
+@app.get("/api/v1/access/members")
+def access_list_members() -> List[Dict[str, Any]]:
+    """List the workspace's human members and their roles (requires manage_access)."""
+    return storage.list_members(active_tenant_id())
+
+
+@app.post("/api/v1/access/members")
+def access_create_member(request: MemberCreateRequest) -> Dict[str, Any]:
+    """Invite/create a human member with a role (requires manage_access)."""
+    from .rbac import ASSIGNABLE_ROLES
+
+    if request.role not in ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=422, detail="Role must be one of: {0}".format(", ".join(ASSIGNABLE_ROLES)))
+    tenant_id = active_tenant_id()
+    try:
+        member = storage.create_member(tenant_id, request.email, request.name or request.email,
+                                        request.role, password=request.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    _audit_member("member_created", tenant_id, member["id"],
+                  "Created member '{0}' ({1})".format(member["email"], request.role), {"role": request.role})
+    return member
+
+
+@app.patch("/api/v1/access/members/{member_id}")
+def access_update_member(member_id: str, request: MemberUpdateRequest) -> Dict[str, Any]:
+    """Change a member's role/status/name/password in place (requires manage_access).
+    A role change takes effect on the member's next request (session cache is cleared)."""
+    from .rbac import ASSIGNABLE_ROLES
+
+    if request.role is not None and request.role not in ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=422, detail="Role must be one of: {0}".format(", ".join(ASSIGNABLE_ROLES)))
+    tenant_id = active_tenant_id()
+    patch = {k: v for k, v in request.model_dump().items() if v is not None}
+    updated = storage.update_member(tenant_id, member_id, patch)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Member not found.")
+    _audit_member("member_updated", tenant_id, member_id,
+                  "Updated member '{0}'".format(updated["email"]),
+                  {k: patch[k] for k in ("role", "is_active") if k in patch})
+    return updated
+
+
+@app.delete("/api/v1/access/members/{member_id}")
+def access_deactivate_member(member_id: str) -> Dict[str, Any]:
+    """Deactivate a member (requires manage_access). Their sessions stop working
+    immediately. Soft-disable rather than hard-delete, preserving the audit trail."""
+    tenant_id = active_tenant_id()
+    updated = storage.update_member(tenant_id, member_id, {"is_active": False})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Member not found.")
+    _audit_member("member_deactivated", tenant_id, member_id,
+                  "Deactivated member '{0}'".format(updated["email"]), {})
+    return {"deactivated": True, "id": member_id}
+
+
+# ── Human login (password + email OTP; SSO lands in a follow-up) ─────────
+def _bearer_from_request(http_request: Request) -> str:
+    header = http_request.headers.get("authorization") or ""
+    return header[7:].strip() if header.lower().startswith("bearer ") else ""
+
+
+@app.post("/api/v1/auth/login")
+def member_login(request: LoginRequest) -> Dict[str, Any]:
+    """Password login for a workspace member. Returns a bearer session token to send
+    as `Authorization: Bearer <token>` on subsequent requests."""
+    member = storage.get_member_by_email(request.email, tenant_id=request.tenant_id)
+    if not member or not member.get("is_active"):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if not storage.verify_member_password(member["id"], request.password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    session = storage.create_member_session(member["tenant_id"], member["id"])
+    _audit_member("member_login", member["tenant_id"], member["id"],
+                  "Password login by '{0}'".format(member["email"]), {"method": "password"})
+    return {"token": session["token"], "expires_at": session["expires_at"], "member": member}
+
+
+@app.post("/api/v1/auth/otp/request")
+def member_otp_request(request: OtpRequestRequest) -> Dict[str, Any]:
+    """Email a one-time login code. Always returns the same shape whether or not the
+    email maps to a member (no account enumeration). The code is emailed when SMTP is
+    configured; in a dev workspace (AUTH_MODE!=production) it is also returned inline."""
+    member = storage.get_member_by_email(request.email, tenant_id=request.tenant_id)
+    response: Dict[str, Any] = {"requested": True}
+    if not member or not member.get("is_active"):
+        return response
+    code = storage.issue_member_otp(member["tenant_id"], member["email"])
+    body = "Your RuleMind login code is {0}. It expires in 10 minutes.".format(code)
+    try:
+        email_cfg = storage.get_email_credentials(tenant_id=member["tenant_id"])
+        from . import mailer
+        delivery = mailer.send_text_email(email_cfg, [member["email"]], "Your RuleMind login code", body)
+    except Exception:  # pragma: no cover - delivery best effort
+        delivery = {"delivered": False, "transport": "error"}
+    response["delivered"] = bool(delivery.get("delivered"))
+    # Dev convenience: surface the code inline when email isn't wired up and we're
+    # not in a production deployment, so login is testable end-to-end.
+    if not delivery.get("delivered") and os.getenv("AUTH_MODE") != "production":
+        response["debug_code"] = code
+    return response
+
+
+@app.post("/api/v1/auth/otp/verify")
+def member_otp_verify(request: OtpVerifyRequest) -> Dict[str, Any]:
+    """Exchange a valid OTP for a bearer session token."""
+    member = storage.get_member_by_email(request.email, tenant_id=request.tenant_id)
+    if not member or not member.get("is_active"):
+        raise HTTPException(status_code=401, detail="Invalid or expired code.")
+    if not storage.verify_member_otp(member["tenant_id"], member["email"], request.code):
+        raise HTTPException(status_code=401, detail="Invalid or expired code.")
+    session = storage.create_member_session(member["tenant_id"], member["id"])
+    _audit_member("member_login", member["tenant_id"], member["id"],
+                  "OTP login by '{0}'".format(member["email"]), {"method": "otp"})
+    return {"token": session["token"], "expires_at": session["expires_at"], "member": member}
+
+
+@app.get("/api/v1/auth/session")
+def member_session(http_request: Request) -> Dict[str, Any]:
+    """The current member for a bearer session token, with role + capabilities."""
+    from .rbac import capabilities_for
+
+    resolved = storage.resolve_member_session(_bearer_from_request(http_request))
+    if not resolved:
+        raise HTTPException(status_code=401, detail="Invalid or expired session.")
+    role = resolved.get("role", "viewer")
+    return {"member": resolved.get("member"), "role": role, "capabilities": sorted(capabilities_for(role))}
+
+
+@app.post("/api/v1/auth/logout")
+def member_logout(http_request: Request) -> Dict[str, Any]:
+    """Revoke the current bearer session."""
+    token = _bearer_from_request(http_request)
+    revoked = storage.revoke_member_session(token) if token else False
+    return {"logged_out": bool(revoked)}
 
 
 @app.post("/api/v1/ai/generate-rule")

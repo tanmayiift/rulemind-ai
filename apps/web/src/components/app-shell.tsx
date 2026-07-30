@@ -3,7 +3,7 @@
 import * as React from "react";
 import type { Route } from "next";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Menu, Moon, Sun, X, Search } from "lucide-react";
 import { CommandPalette, type Command } from "../v3/command-palette";
 import { useRuleMindStore } from "../lib/store";
@@ -118,7 +118,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setIsMobile,
     setMobileMenuOpen,
     setSidebarOpen,
+    member,
+    sessionToken,
+    clearSession,
   } = useRuleMindStore();
+  const router = useRouter();
   const [branding, setBranding] = React.useState<Branding | undefined>(undefined);
   // AI features stay hidden until the tenant configures an OpenAI/Anthropic key
   // (and the admin hasn't switched AI off). Undefined = not yet known.
@@ -166,7 +170,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => mq.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
   }, [setIsMobile, setSidebarOpen]);
 
-  if ((pathname ?? "").startsWith("/admin")) {
+  if ((pathname ?? "").startsWith("/admin") || (pathname ?? "").startsWith("/login")) {
     return (
       <div style={{ minHeight: "100vh", background: theme.bg, color: theme.text }}>
         {children}
@@ -460,6 +464,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </button>
             )}
 
+            {!isMobile && member ? (
+              <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.2 }}>
+                <span style={{ fontSize: "var(--rm-fs-small)", fontWeight: 600, color: theme.text }}>{member.name || member.email}</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try { await apiJson(apiBaseUrl, "/api/v1/auth/logout", { method: "POST" }, apiKey); } catch { /* best effort */ }
+                    clearSession();
+                    router.push("/login");
+                  }}
+                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: theme.muted, fontSize: 11 }}
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : !isMobile && !sessionToken ? (
+              <button
+                type="button"
+                onClick={() => router.push("/login")}
+                style={{ background: theme.hover, border: "1px solid " + theme.border, borderRadius: 8, padding: "6px 11px", color: theme.text, fontSize: "var(--rm-fs-small)", cursor: "pointer" }}
+              >
+                Sign in
+              </button>
+            ) : null}
+
             <div
               onClick={isMobile ? toggleThemeMode : undefined}
               style={{
@@ -475,7 +504,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 cursor: isMobile ? "pointer" : "default",
               }}
             >
-              U
+              {(member?.name || member?.email || "U").charAt(0).toUpperCase()}
             </div>
           </div>
         </header>

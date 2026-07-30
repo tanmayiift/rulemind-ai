@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import hmac
 import json
 import os
 import time as _time
@@ -20,8 +21,12 @@ from .auth import (
     bcrypt_hash,
     bcrypt_verify,
     generate_api_key,
+    generate_otp_code,
+    generate_session_token,
     key_lookup_hash,
     mask_api_key,
+    otp_code_hash,
+    session_token_hash,
 )
 from .context import get_current_tenant_id
 from .db import engine_for, session_factory
@@ -41,6 +46,8 @@ from .models import (
     ErrorEvent,
     Experiment,
     HostedModel,
+    MemberOtp,
+    MemberSession,
     PlatformAdminUser,
     Policy,
     Promotion,
@@ -55,6 +62,7 @@ from .models import (
     Variable,
     Webhook,
     WorkflowExecution,
+    WorkspaceMember,
     uuid4_str,
 )
 from .seed_data import CONNECTORS, DEFAULT_SETTINGS, POLICIES, RULES, SCORECARDS, VARIABLES
@@ -151,6 +159,10 @@ class Storage:
         # it on the instance keeps it correct in prod (Storage is a singleton) and
         # isolated in tests (each Storage/DB gets its own cache).
         self._api_key_cache: Dict[str, Any] = {}
+        # Resolved human-login sessions (token_hash -> (result, expiry)). Same
+        # rationale as the API-key cache; role is read live so a role change /
+        # deactivation takes effect within the TTL (and eagerly, see _invalidate_member).
+        self._member_session_cache: Dict[str, Any] = {}
         self.default_admin_email = os.getenv("RULEMIND_ADMIN_EMAIL", "admin@rulemind.local")
         self.default_admin_password = os.getenv("RULEMIND_ADMIN_PASSWORD", "rulemind-admin")
         self.seed_if_empty()
@@ -1750,6 +1762,221 @@ class Storage:
         if _API_KEY_CACHE_TTL > 0:
             self._api_key_cache[api_key] = (result, now + _API_KEY_CACHE_TTL)
         return result
+
+    def update_api_key_role(self, tenant_id: str, kid: str, role: str) -> Optional[Dict[str, Any]]:
+        """Change a key's role in place (role-change-in-place). Eagerly clears the
+        verified-key cache so the new role takes effect on the next request."""
+        from .rbac import normalize_role
+
+        resolved_role = normalize_role(role)
+        with self.connect() as session:
+            row = session.scalar(select(ApiKey).where(ApiKey.tenant_id == tenant_id, ApiKey.kid == kid, ApiKey.is_active.is_(True)))
+            if not row:
+                return None
+            row.role = resolved_role
+            self._api_key_cache.clear()
+            return {"kid": row.kid, "role": resolved_role}
+
+    # ── Workspace members (human accounts with RBAC roles) ───────────────
+    def _member_to_dict(self, row: WorkspaceMember) -> Dict[str, Any]:
+        return {
+            "id": row.id,
+            "tenant_id": row.tenant_id,
+            "email": row.email,
+            "name": row.name,
+            "role": row.role,
+            "auth_provider": row.auth_provider,
+            "is_active": row.is_active,
+            "has_password": bool(row.password_hash),
+            "last_login_at": serialize_datetime(row.last_login_at),
+            "created_at": serialize_datetime(row.created_at),
+        }
+
+    def _invalidate_member(self, member_id: str) -> None:
+        """Drop cached sessions for a member so a role change / deactivation is
+        honoured immediately rather than only after the TTL."""
+        for token_hash in [k for k, v in self._member_session_cache.items()
+                           if isinstance(v, tuple) and v[0] and v[0].get("member", {}).get("id") == member_id]:
+            self._member_session_cache.pop(token_hash, None)
+
+    def list_members(self, tenant_id: str) -> List[Dict[str, Any]]:
+        with self.connect() as session:
+            rows = session.scalars(
+                select(WorkspaceMember).where(WorkspaceMember.tenant_id == tenant_id).order_by(WorkspaceMember.created_at)
+            ).all()
+            return [self._member_to_dict(row) for row in rows]
+
+    def get_member(self, tenant_id: str, member_id: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as session:
+            row = session.get(WorkspaceMember, member_id)
+            if not row or row.tenant_id != tenant_id:
+                return None
+            return self._member_to_dict(row)
+
+    def get_member_by_email(self, email: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Resolve a member by email. If tenant_id is given, scope to it; otherwise
+        return the single match (None if the email is ambiguous across workspaces)."""
+        normalized = (email or "").lower().strip()
+        with self.connect() as session:
+            stmt = select(WorkspaceMember).where(func.lower(WorkspaceMember.email) == normalized)
+            if tenant_id:
+                stmt = stmt.where(WorkspaceMember.tenant_id == tenant_id)
+            rows = session.scalars(stmt).all()
+            if len(rows) != 1:
+                return None
+            return self._member_to_dict(rows[0])
+
+    def create_member(self, tenant_id: str, email: str, name: str, role: str,
+                      password: Optional[str] = None, auth_provider: str = "password",
+                      external_id: Optional[str] = None) -> Dict[str, Any]:
+        from .rbac import normalize_role
+
+        normalized = (email or "").lower().strip()
+        with self.connect() as session:
+            existing = session.scalar(
+                select(WorkspaceMember).where(WorkspaceMember.tenant_id == tenant_id,
+                                              func.lower(WorkspaceMember.email) == normalized)
+            )
+            if existing:
+                raise ValueError("A member with this email already exists in the workspace.")
+            row = WorkspaceMember(
+                tenant_id=tenant_id,
+                email=normalized,
+                name=name or normalized,
+                role=normalize_role(role),
+                password_hash=bcrypt_hash(password) if password else None,
+                auth_provider=auth_provider,
+                external_id=external_id,
+                is_active=True,
+            )
+            session.add(row)
+            session.flush()
+            return self._member_to_dict(row)
+
+    def update_member(self, tenant_id: str, member_id: str, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        from .rbac import normalize_role
+
+        with self.connect() as session:
+            row = session.get(WorkspaceMember, member_id)
+            if not row or row.tenant_id != tenant_id:
+                return None
+            if "name" in patch and patch["name"]:
+                row.name = patch["name"]
+            if "role" in patch and patch["role"]:
+                row.role = normalize_role(patch["role"])
+            if "is_active" in patch:
+                row.is_active = bool(patch["is_active"])
+            pw = patch.get("password")
+            if pw == "__CLEAR__":
+                row.password_hash = None
+            elif pw:
+                row.password_hash = bcrypt_hash(pw)
+            result = self._member_to_dict(row)
+        # Role/active change must take effect now, not after the session-cache TTL.
+        self._invalidate_member(member_id)
+        return result
+
+    def verify_member_password(self, member_id: str, password: str) -> bool:
+        with self.connect() as session:
+            row = session.get(WorkspaceMember, member_id)
+            if not row or not row.is_active or not row.password_hash:
+                return False
+            return bcrypt_verify(password, row.password_hash)
+
+    def ensure_member(self, tenant_id: str, email: str, name: str, role: str,
+                      password: Optional[str] = None) -> Dict[str, Any]:
+        """Idempotent member bootstrap (used by dev seeding / tests)."""
+        existing = self.get_member_by_email(email, tenant_id=tenant_id)
+        if existing:
+            return existing
+        return self.create_member(tenant_id, email, name, role, password=password)
+
+    # ── Member login sessions ────────────────────────────────────────────
+    def create_member_session(self, tenant_id: str, member_id: str, ttl_hours: int = 12) -> Dict[str, Any]:
+        token = generate_session_token()
+        expires_at = datetime.utcnow() + timedelta(hours=ttl_hours)
+        with self.connect() as session:
+            member = session.get(WorkspaceMember, member_id)
+            if member:
+                member.last_login_at = datetime.utcnow()
+            session.add(MemberSession(
+                tenant_id=tenant_id, member_id=member_id,
+                token_hash=session_token_hash(token), expires_at=expires_at,
+            ))
+        return {"token": token, "expires_at": serialize_datetime(expires_at)}
+
+    def resolve_member_session(self, token: str) -> Optional[Dict[str, Any]]:
+        """Resolve a bearer session token to its tenant + member + LIVE role. Cached
+        for a short TTL; the role is re-read from the member so admin changes apply
+        promptly (and eagerly via _invalidate_member)."""
+        if not token:
+            return None
+        token_hash = session_token_hash(token)
+        now = _time.time()
+        cached = self._member_session_cache.get(token_hash)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+        with self.connect() as session:
+            row = session.scalar(select(MemberSession).where(MemberSession.token_hash == token_hash))
+            if not row or row.revoked or row.expires_at < datetime.utcnow():
+                return None
+            member = session.get(WorkspaceMember, row.member_id)
+            if not member or not member.is_active:
+                return None
+            last_seen = row.last_seen_at
+            if last_seen is None or (datetime.utcnow() - last_seen).total_seconds() > 60:
+                row.last_seen_at = datetime.utcnow()
+            result = {
+                "tenant": {"id": member.tenant_id},
+                "member": {"id": member.id, "email": member.email, "name": member.name, "role": member.role},
+                "role": member.role,
+                "session_id": row.id,
+            }
+        if _API_KEY_CACHE_TTL > 0:
+            self._member_session_cache[token_hash] = (result, now + min(_API_KEY_CACHE_TTL, 60.0))
+        return result
+
+    def revoke_member_session(self, token: str) -> bool:
+        token_hash = session_token_hash(token)
+        with self.connect() as session:
+            row = session.scalar(select(MemberSession).where(MemberSession.token_hash == token_hash))
+            if not row:
+                self._member_session_cache.pop(token_hash, None)
+                return False
+            row.revoked = True
+        self._member_session_cache.pop(token_hash, None)
+        return True
+
+    # ── Email login OTP ──────────────────────────────────────────────────
+    def issue_member_otp(self, tenant_id: str, email: str, ttl_minutes: int = 10) -> str:
+        """Create a one-time passcode (returns the plaintext code for delivery)."""
+        normalized = (email or "").lower().strip()
+        code = generate_otp_code()
+        with self.connect() as session:
+            session.add(MemberOtp(
+                tenant_id=tenant_id, email=normalized,
+                code_hash=otp_code_hash(tenant_id, normalized, code),
+                expires_at=datetime.utcnow() + timedelta(minutes=ttl_minutes),
+            ))
+        return code
+
+    def verify_member_otp(self, tenant_id: str, email: str, code: str, max_attempts: int = 5) -> bool:
+        normalized = (email or "").lower().strip()
+        target = otp_code_hash(tenant_id, normalized, code)
+        with self.connect() as session:
+            row = session.scalar(
+                select(MemberOtp).where(
+                    MemberOtp.tenant_id == tenant_id, MemberOtp.email == normalized,
+                    MemberOtp.consumed.is_(False),
+                ).order_by(desc(MemberOtp.created_at))
+            )
+            if not row or row.expires_at < datetime.utcnow() or row.attempts >= max_attempts:
+                return False
+            row.attempts += 1
+            if not hmac.compare_digest(row.code_hash, target):
+                return False
+            row.consumed = True
+            return True
 
     def get_platform_admin_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         with self.connect() as session:

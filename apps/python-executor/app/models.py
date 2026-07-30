@@ -63,6 +63,64 @@ class PlatformAdminUser(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class WorkspaceMember(Base, TimestampMixin):
+    """A human account scoped to a workspace (tenant), carrying an RBAC role.
+
+    Roles are the same capability roles the API keys use (owner/admin/policy_maker/
+    reviewer/viewer) — a member logs in (password or email OTP; SSO later) and their
+    session is authorised exactly like a role-scoped key. `password_hash` is nullable
+    so SSO-only members can exist without a local password."""
+
+    __tablename__ = "workspace_members"
+    __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_members_tenant_email"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), default="viewer", nullable=False)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # How this member authenticates: password / oidc / saml (SSO providers land later).
+    auth_provider: Mapped[str] = mapped_column(String(16), default="password", nullable=False)
+    external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class MemberSession(Base):
+    """A logged-in member's bearer session. The token is stored hashed (never in
+    plaintext); resolving a session reads the member's role LIVE, so an admin's
+    role change or deactivation takes effect immediately (bounded by a short cache
+    TTL, and eagerly on change)."""
+
+    __tablename__ = "member_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    member_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class MemberOtp(Base):
+    """A one-time passcode for email login. Stored hashed with a short expiry and a
+    small attempt budget; consumed on first successful verify."""
+
+    __tablename__ = "member_otps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class Connector(Base, TimestampMixin):
     __tablename__ = "connectors"
     __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_connectors_tenant_public_id"),)
