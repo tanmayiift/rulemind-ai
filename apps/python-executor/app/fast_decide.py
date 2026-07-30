@@ -179,12 +179,9 @@ def _log_decision(storage: Any, tenant_id: str, decision: Dict[str, Any], payloa
         "source": "api_fast",
         "created_at": now_iso(),
     }
-    if os.getenv("ASYNC_DECISION_LOG", "0") == "1":
-        from .executor import _decision_log_pool
+    from . import decision_log
 
-        _decision_log_pool().submit(_safe_add_decision, storage, record, tenant_id)
-    else:
-        _safe_add_decision(storage, record, tenant_id)
+    decision_log.submit(_safe_add_decision, storage, record, tenant_id)
 
 
 def _safe_add_decision(storage: Any, record: Dict[str, Any], tenant_id: str) -> None:
