@@ -646,7 +646,7 @@ def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
             raise HTTPException(status_code=422, detail="Unknown scorecard in policy: {0}".format(ref_id))
         if step_type == "workflow" and not ref_id:
             raise HTTPException(status_code=422, detail="Sub-workflow step requires a ref_id (target policy).")
-        if step_type not in {"connector", "rule", "scorecard", "outcome", "transform", "action", "review_gate", "model", "branch", "workflow", "monitor"}:
+        if step_type not in {"connector", "rule", "scorecard", "decision_table", "outcome", "transform", "action", "review_gate", "model", "branch", "workflow", "monitor"}:
             raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
 
 
@@ -2481,7 +2481,7 @@ def _validate_import_entity(entity_type: str, entity: Dict[str, Any], existing_c
     elif entity_type == "policy":
         if not entity.get("steps"):
             issues.append("Policy has no steps")
-        valid_step_types = {"connector", "rule", "scorecard", "outcome", "action", "review_gate", "transform", "model"}
+        valid_step_types = {"connector", "rule", "scorecard", "decision_table", "outcome", "action", "review_gate", "transform", "model", "branch", "workflow", "monitor"}
         for step in entity.get("steps", []):
             st = step.get("type", "")
             if st not in valid_step_types:
@@ -3242,6 +3242,115 @@ def delete_model(model_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Model not found.")
     storage.delete_model(model_id)
     return {"deleted": True, "id": model_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DECISION TABLES (grid authoring + optimiser)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class DecisionTableRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    hit_policy: str = "first"
+    inputs: List[Dict[str, Any]] = []
+    outputs: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
+    default_row: Optional[Dict[str, Any]] = None
+    status: str = "dev"
+
+
+class DecisionTableDraft(BaseModel):
+    """A full (possibly unsaved) table for analyze/evaluate without persisting."""
+    hit_policy: str = "first"
+    inputs: List[Dict[str, Any]] = []
+    outputs: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
+    default_row: Optional[Dict[str, Any]] = None
+
+
+class DecisionTableEvaluateRequest(BaseModel):
+    variable_values: Dict[str, Any] = {}
+
+
+@app.get("/api/v1/decision-tables")
+def list_decision_tables() -> List[Dict[str, Any]]:
+    return storage.list_decision_tables()
+
+
+@app.get("/api/v1/decision-tables/{table_id}")
+def get_decision_table(table_id: str) -> Dict[str, Any]:
+    table = storage.get_decision_table(table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Decision table not found.")
+    return table
+
+
+@app.post("/api/v1/decision-tables")
+def create_decision_table(request: DecisionTableRequest) -> Dict[str, Any]:
+    from .decision_tables import analyze_decision_table
+
+    table_id = slugify(request.name)
+    existing_ids = {t["id"] for t in storage.list_decision_tables()}
+    if table_id in existing_ids:
+        table_id = f"{table_id}_{uuid.uuid4().hex[:6]}"
+    data = request.model_dump()
+    data["id"] = table_id
+    created = storage.create_decision_table(data)
+    created["analysis"] = analyze_decision_table(created)
+    return created
+
+
+@app.put("/api/v1/decision-tables/{table_id}")
+def update_decision_table(table_id: str, request: DecisionTableRequest) -> Dict[str, Any]:
+    from .decision_tables import analyze_decision_table
+
+    updated = storage.update_decision_table(table_id, request.model_dump())
+    if not updated:
+        raise HTTPException(status_code=404, detail="Decision table not found.")
+    updated["analysis"] = analyze_decision_table(updated)
+    return updated
+
+
+@app.delete("/api/v1/decision-tables/{table_id}")
+def delete_decision_table(table_id: str) -> Dict[str, Any]:
+    if not storage.delete_decision_table(table_id):
+        raise HTTPException(status_code=404, detail="Decision table not found.")
+    return {"deleted": True, "id": table_id}
+
+
+@app.post("/api/v1/decision-tables/analyze")
+def analyze_decision_table_draft(draft: DecisionTableDraft) -> Dict[str, Any]:
+    """Run the optimiser on an unsaved draft — conflicts, gaps, unreachable rows,
+    invalid values. Powers the live authoring overlay."""
+    from .decision_tables import analyze_decision_table
+
+    return analyze_decision_table(draft.model_dump())
+
+
+@app.post("/api/v1/decision-tables/{table_id}/analyze")
+def analyze_saved_decision_table(table_id: str) -> Dict[str, Any]:
+    from .decision_tables import analyze_decision_table
+
+    table = storage.get_decision_table(table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Decision table not found.")
+    return analyze_decision_table(table)
+
+
+@app.post("/api/v1/decision-tables/{table_id}/evaluate")
+def evaluate_saved_decision_table(table_id: str, request: DecisionTableEvaluateRequest) -> Dict[str, Any]:
+    from .decision_tables import evaluate_decision_table
+
+    table = storage.get_decision_table(table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Decision table not found.")
+    result = evaluate_decision_table(table, request.variable_values)
+    storage.update_decision_table(table_id, {"last_test_result": {
+        "outcome": result.get("outcome"),
+        "winning_row_id": result.get("winning_row_id"),
+        "tested_at": now_iso(),
+    }})
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════

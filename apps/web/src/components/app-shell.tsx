@@ -36,6 +36,7 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/connectors" as Route, label: "Connectors", icon: "connectors" },
       { href: "/variables" as Route, label: "Variables", icon: "variables" },
       { href: "/rules" as Route, label: "Rules", icon: "rules" },
+      { href: "/decision-tables" as Route, label: "Decision Tables", icon: "rules" },
       { href: "/scorecards" as Route, label: "Scorecards", icon: "scorecards" },
       { href: "/policies" as Route, label: "Policies", icon: "policies" },
       { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
@@ -92,6 +93,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/branding": { title: "Branding", subtitle: "Admin-only white-label theming — CTA colour, backgrounds, brand name, and visible tabs." },
   "/workflow-builder": { title: "Workflow Builder", subtitle: "Drag-and-drop canvas for policy steps — connectors, rules, branches, sub-workflows, monitors, and outcomes." },
   "/models": { title: "ML Models", subtitle: "Upload, host, test, and run Python models (.pkl / joblib) as policy steps." },
+  "/decision-tables": { title: "Decision Tables", subtitle: "Grid-authored decision logic — condition columns, rows, hit policies, with a live optimiser flagging conflicts, gaps, unreachable rows, and invalid values." },
 };
 
 export function AppShell({ children }: { children: React.ReactNode }) {

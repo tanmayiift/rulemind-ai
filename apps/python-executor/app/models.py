@@ -394,3 +394,27 @@ class HostedModel(Base):
     last_test_result: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class DecisionTable(Base, TimestampMixin):
+    """Spreadsheet-style decision table: input columns bound to variables, rows
+    stating a condition per input and the output(s) to emit. Compiles to the
+    same executable semantics as rules; runnable as a policy "decision_table"
+    step. Authoring artifact — persisted, versioned, MECE/optimiser-checked."""
+
+    __tablename__ = "decision_tables"
+    __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_decision_tables_tenant_public"),)
+
+    pk: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    public_id: Mapped[str] = mapped_column("public_id", String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    hit_policy: Mapped[str] = mapped_column(String(16), default="first", nullable=False)
+    inputs: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    outputs: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    rows: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    default_row: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="dev", nullable=False, index=True)
+    last_test_result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
