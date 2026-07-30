@@ -27,6 +27,7 @@ const NAVIGATION: ReadonlyArray<{
     group: "Overview",
     items: [
       { href: "/" as Route, label: "Dashboard", icon: "dashboard" },
+      { href: "/onboarding" as Route, label: "Get started", icon: "testing" },
       { href: "/ai" as Route, label: "AI Copilot", icon: "variables" },
     ],
   },
@@ -79,6 +80,7 @@ const COMMANDS: Command[] = NAVIGATION.flatMap((g) => g.items.map((i) => ({ labe
 const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/": { title: "RuleMind", subtitle: "Generic decisioning engine for variables, rules, scorecards, policies, and audit trace." },
   "/ai": { title: "AI Copilot", subtitle: "Bring your own OpenAI/Anthropic key — draft rules from plain English, with a token-saving scope guardrail." },
+  "/onboarding": { title: "Get started", subtitle: "A guided path to your first live decision — connect a source, create a variable, author a rule, assemble a policy, and run it." },
   "/connectors": { title: "Connectors", subtitle: "Data source connectivity, schemas, auth setup, and sample payload controls." },
   "/variables": { title: "Variables", subtitle: "Sandboxed Python feature creation with testing, lifecycle, and dependency visibility." },
   "/rules": { title: "Rules", subtitle: "Simple and advanced rule authoring with nested logic and inline execution results." },

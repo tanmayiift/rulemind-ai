@@ -13,6 +13,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
+os.environ.setdefault("RULEMIND_SEED_DEMO", "1")  # tests use the sample lending inventory
 
 import app.main as app_main
 from app.main import BatchSimulationRequest, ConnectorUpdateRequest, PromoteRequest, RuleUpsertRequest, TestPayloadRequest

@@ -238,11 +238,18 @@ class Storage:
                 tenant = session.get(Tenant, self.default_tenant_id) or tenant
             self._seed_default_admin(session)
 
-            connector_count = session.scalar(select(Connector).where(Connector.tenant_id == tenant.id).count()) if False else None
             existing_variable = session.scalar(select(Variable).where(Variable.tenant_id == tenant.id).limit(1))
             if existing_variable:
                 self._ensure_settings(session, tenant.id)
                 self._ensure_seed_inventory(session, tenant.id)
+                return
+
+            # Demo inventory (sample connectors/variables/rules/scorecards/policies)
+            # is OPT-IN: a fresh clone starts clean so a new customer builds their own
+            # via guided onboarding. Set RULEMIND_SEED_DEMO=1 to load the samples (the
+            # test suite sets it per-file). Workspace settings always exist regardless.
+            if os.getenv("RULEMIND_SEED_DEMO", "0") != "1":
+                self._ensure_settings(session, tenant.id)
                 return
 
             now = datetime.utcnow()
