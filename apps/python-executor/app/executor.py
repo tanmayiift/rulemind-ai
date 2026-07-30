@@ -298,11 +298,30 @@ class PolicyExecutor:
         normalized: Dict[str, Dict[str, Any]] = {}
         for connector_id, connector in connectors.items():
             normalized[connector_id] = copy.deepcopy(connector.get("sample_payload", {}))
+
+        # A source-keyed dict (e.g. {"loan": {...}}) replaces that source wholesale;
+        # everything else is a flat top-level field.
+        flat_fields: Dict[str, Any] = {}
         for key, value in ctx.payload.items():
             if key in connectors and isinstance(value, dict):
                 normalized[key] = copy.deepcopy(value)
-        if not any(key in connectors for key in ctx.payload.keys()):
-            normalized["custom"] = copy.deepcopy(ctx.payload)
+            else:
+                flat_fields[key] = value
+
+        # Field-level override: a flat top-level field drives EVERY source that
+        # declares it in its schema. Without this, an uploaded/synthetic/JSON case
+        # like {"bureau_score": 590} never reached the loan source's variables — the
+        # source silently kept its (approving) sample_payload, so every case looked
+        # identical. This is the fix for "all cases approve regardless of input".
+        if flat_fields:
+            for connector_id, connector in connectors.items():
+                for field in connector.get("schema_paths", []) or []:
+                    if field in flat_fields:
+                        normalized[connector_id][field] = flat_fields[field]
+
+        # `custom` always carries the flat fields so custom-source variables work
+        # whether or not a source-keyed dict was also supplied.
+        normalized["custom"] = copy.deepcopy(flat_fields) if flat_fields else copy.deepcopy(ctx.payload)
         return normalized
 
     @staticmethod

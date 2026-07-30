@@ -55,18 +55,54 @@ function parseCsv(text: string): Record<string, unknown>[] {
   });
 }
 
-// customer_id + 20 decision variables — matches the 10k-customer sim spec.
-function makeCase(i: number): Record<string, unknown> {
-  const r = (n: number) => Math.abs(Math.sin(i * 12.9898 + n * 78.233) * 43758.5453) % 1;
+type SchemaField = { name: string; sample: unknown; source_id: string };
+
+// Deterministic pseudo-random in [0,1) for reproducible synthetic runs.
+const rand = (i: number, n: number) => Math.abs(Math.sin(i * 12.9898 + n * 78.233) * 43758.5453) % 1;
+
+// Generate a realistic value for one policy input field, spanning decision
+// boundaries so outcomes actually vary (e.g. bureau_score across 500–850).
+function synthValue(field: SchemaField, i: number, n: number): unknown {
+  const name = field.name.toLowerCase();
+  const s = field.sample;
+  const r = rand(i, n);
+  if (typeof s === "boolean") return r > 0.5;
+  if (typeof s === "string") return s;
+  if (typeof s === "number" || s === null || s === undefined) {
+    if (name.includes("flag") || name.endsWith("_verified") || (s === 0 || s === 1)) return r > 0.5 ? 1 : 0;
+    if (name.includes("score")) {
+      // bureau/credit/CIBIL scores span 500–850 (~half below a 700 cutoff);
+      // other scores (0–100 style) span their natural 0–100 range.
+      if (typeof s === "number" && s > 0 && s <= 100) return Math.round(r * 100 * 10) / 10;
+      return 500 + Math.floor(r * 350);
+    }
+    if (name.includes("ratio") || (typeof s === "number" && s > 0 && s < 1)) return Math.round(r * 100) / 100;
+    if (name.includes("income") || name.includes("balance") || name.includes("amount") || name.includes("inr")) {
+      const base = typeof s === "number" && s > 0 ? s : 100000;
+      return Math.floor(base * (0.3 + r * 1.6));
+    }
+    if (name.includes("age")) return 21 + Math.floor(r * 45);
+    const base = typeof s === "number" && s !== 0 ? s : 50;
+    return Math.round(base * (0.4 + r * 1.4) * 100) / 100;
+  }
+  return s;
+}
+
+// Policy-aware synthetic case: populates the policy's REAL input fields (so they
+// actually reach its rules). Falls back to a generic set when a policy has no
+// connector-declared inputs.
+function makeCase(i: number, fields: SchemaField[]): Record<string, unknown> {
+  const base: Record<string, unknown> = { customer_id: `SIM-${String(i).padStart(6, "0")}` };
+  if (fields.length) {
+    fields.forEach((f, idx) => { base[f.name] = synthValue(f, i, idx + 1); });
+    return base;
+  }
+  const r = (n: number) => rand(i, n);
   return {
-    customer_id: `SIM-${String(i).padStart(6, "0")}`,
+    ...base,
     credit_score: 500 + Math.floor(r(1) * 350), annual_income: 20000 + Math.floor(r(2) * 180000),
-    age: 21 + Math.floor(r(3) * 45), employment_years: Math.floor(r(4) * 25), existing_loans: Math.floor(r(5) * 6),
-    dti_ratio: Math.round(r(6) * 60) / 100, delinquencies_2y: Math.floor(r(7) * 4), credit_utilization: Math.round(r(8) * 100) / 100,
-    num_inquiries: Math.floor(r(9) * 8), oldest_account_months: Math.floor(r(10) * 240), loan_amount: 1000 + Math.floor(r(11) * 49000),
-    home_owner: r(12) > 0.5, kyc_verified: r(13) > 0.1, device_risk_score: Math.round(r(14) * 100) / 100,
-    bank_balance: Math.floor(r(15) * 40000), monthly_expenses: 500 + Math.floor(r(16) * 6000), savings_rate: Math.round(r(17) * 40) / 100,
-    prior_defaults: Math.floor(r(18) * 2), region_risk: ["low", "medium", "high"][Math.floor(r(19) * 3)], channel: ["web", "mobile", "branch"][Math.floor(r(20) * 3)],
+    age: 21 + Math.floor(r(3) * 45), dti_ratio: Math.round(r(6) * 60) / 100,
+    loan_amount: 1000 + Math.floor(r(11) * 49000), kyc_verified: r(13) > 0.1,
   };
 }
 
@@ -81,6 +117,7 @@ export default function SimulationPage() {
 
   const [policies, setPolicies] = React.useState<Policy[]>([]);
   const [policyId, setPolicyId] = React.useState("");
+  const [schemaFields, setSchemaFields] = React.useState<SchemaField[]>([]);
   const [mode, setMode] = React.useState<Mode>("synthetic");
   const [count, setCount] = React.useState(500);
   const [jsonText, setJsonText] = React.useState('[\n  { "customer_id": "sim-1", "credit_score": 720 }\n]');
@@ -110,10 +147,21 @@ export default function SimulationPage() {
     })();
   }, [apiBaseUrl, apiKey]);
 
+  // Fetch the selected policy's real input fields so synthetic cases actually
+  // drive its rules (e.g. bureau_score), not arbitrary columns.
+  React.useEffect(() => {
+    if (!policyId) { setSchemaFields([]); return; }
+    let active = true;
+    apiJson<{ fields: SchemaField[] }>(apiBaseUrl, `/api/v1/policies/${policyId}/input-schema`, {}, apiKey)
+      .then((s) => { if (active) setSchemaFields(s.fields || []); })
+      .catch(() => { if (active) setSchemaFields([]); });
+    return () => { active = false; };
+  }, [apiBaseUrl, apiKey, policyId]);
+
   // keep `cases` in sync with the active input mode
   React.useEffect(() => {
     if (mode === "synthetic") {
-      setCases(Array.from({ length: Math.max(1, Math.min(count, 5000)) }, (_, i) => makeCase(i + 1)));
+      setCases(Array.from({ length: Math.max(1, Math.min(count, 5000)) }, (_, i) => makeCase(i + 1, schemaFields)));
       setParseError(null);
     } else if (mode === "json") {
       try {
@@ -126,7 +174,7 @@ export default function SimulationPage() {
         setParseError(e instanceof Error ? e.message : "Invalid JSON.");
       }
     }
-  }, [mode, count, jsonText]);
+  }, [mode, count, jsonText, schemaFields]);
 
   const ingestFile = async (file: File) => {
     setParseError(null);
