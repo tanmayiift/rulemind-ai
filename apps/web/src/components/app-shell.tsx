@@ -34,13 +34,12 @@ const NAVIGATION: ReadonlyArray<{
   {
     group: "Build",
     items: [
+      { href: "/studio" as Route, label: "Build Studio", icon: "policies" },
       { href: "/connectors" as Route, label: "Connectors", icon: "connectors" },
       { href: "/variables" as Route, label: "Variables", icon: "variables" },
       { href: "/rules" as Route, label: "Rules", icon: "rules" },
       { href: "/decision-tables" as Route, label: "Decision Tables", icon: "rules" },
       { href: "/scorecards" as Route, label: "Scorecards", icon: "scorecards" },
-      { href: "/policies" as Route, label: "Policies", icon: "policies" },
-      { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
       { href: "/models" as Route, label: "ML Models", icon: "variables" },
     ],
   },
@@ -86,6 +85,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/rules": { title: "Rules", subtitle: "Simple and advanced rule authoring with nested logic and inline execution results." },
   "/scorecards": { title: "Scorecards", subtitle: "Points-based scoring with editable ranges and live factor breakdown." },
   "/policies": { title: "Policies", subtitle: "Execution pipelines across connectors, rules, scorecards, and final decisions." },
+  "/studio": { title: "Build Studio", subtitle: "One canvas to assemble a decision policy — drop nodes, edit rules inline, and wire connectors, decision tables, scorecards, branches, and outcomes into a flow." },
   "/test-console": { title: "Test Console", subtitle: "Single-run, batch simulation, and production API preview workflows." },
   "/api-console": { title: "API Console", subtitle: "Postman-style console for workflow action steps — resolve templates and send requests server-side." },
   "/review-queue": { title: "Review Queue", subtitle: "Pending human-in-the-loop reviews with decision context and queue state." },
