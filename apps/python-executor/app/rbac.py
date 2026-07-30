@@ -63,6 +63,7 @@ _WRITE_PREFIX_CAPABILITY = [
     ("/api/v1/access", MANAGE_ACCESS),
     ("/api/v1/settings", MANAGE_ACCESS),
     ("/api/v1/branding", MANAGE_ACCESS),
+    ("/api/v1/reports/email-config", MANAGE_ACCESS),
     ("/api/v1/reviews", REVIEW),
     ("/api/v1/promotions", DEPLOY),
     ("/api/v1/deploy", DEPLOY),

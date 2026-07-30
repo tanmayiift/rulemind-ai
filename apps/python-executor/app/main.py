@@ -3492,6 +3492,169 @@ def evaluate_saved_decision_table(table_id: str, request: DecisionTableEvaluateR
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# REPORTS BUILDER (dynamic columns, filters, timezone, scheduled email delivery)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ReportRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    columns: List[Dict[str, Any]] = []
+    filters: Dict[str, Any] = {}
+    timezone: str = "UTC"
+    schedule: Optional[Dict[str, Any]] = None
+
+
+class ReportDraft(BaseModel):
+    columns: List[Dict[str, Any]] = []
+    filters: Dict[str, Any] = {}
+    timezone: str = "UTC"
+
+
+class EmailConfigRequest(BaseModel):
+    host: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None  # "__CLEAR__" to remove
+    from_addr: Optional[str] = None
+    use_tls: Optional[bool] = None
+    use_ssl: Optional[bool] = None
+
+
+def _decisions_for_report(limit: int = 1000) -> List[Dict[str, Any]]:
+    return storage.list_decisions(tenant_id=active_tenant_id(), limit=limit)
+
+
+def _sync_report_schedule(report: Dict[str, Any]) -> None:
+    """Register/refresh this report's delivery job (best-effort; no-op if the
+    scheduler isn't running, e.g. under tests)."""
+    try:
+        from .scheduler import schedule_report_job
+
+        schedule_report_job(storage, {**report, "tenant_id": active_tenant_id()})
+    except Exception:  # pragma: no cover - scheduling is best-effort
+        pass
+
+
+@app.get("/api/v1/reports")
+def list_reports() -> List[Dict[str, Any]]:
+    return storage.list_reports()
+
+
+@app.get("/api/v1/reports/column-suggestions")
+def report_column_suggestions() -> Dict[str, Any]:
+    from .reports import suggest_columns
+
+    return {"columns": suggest_columns(_decisions_for_report(limit=100))}
+
+
+@app.get("/api/v1/reports/email-config")
+def get_report_email_config() -> Dict[str, Any]:
+    return storage.get_email_config_masked()
+
+
+@app.put("/api/v1/reports/email-config")
+def put_report_email_config(request: EmailConfigRequest) -> Dict[str, Any]:
+    return storage.set_email_config(request.model_dump(exclude_none=True))
+
+
+@app.post("/api/v1/reports/preview")
+def preview_report(draft: ReportDraft) -> Dict[str, Any]:
+    from .reports import generate_report
+
+    result = generate_report(draft.model_dump(), _decisions_for_report())
+    result.pop("csv", None)  # preview is JSON rows; CSV is a separate download
+    return result
+
+
+@app.get("/api/v1/reports/{report_id}")
+def get_report(report_id: str) -> Dict[str, Any]:
+    report = storage.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return report
+
+
+@app.post("/api/v1/reports")
+def create_report(request: ReportRequest) -> Dict[str, Any]:
+    report_id = slugify(request.name)
+    existing = {r["id"] for r in storage.list_reports()}
+    if report_id in existing:
+        report_id = f"{report_id}_{uuid.uuid4().hex[:6]}"
+    data = request.model_dump()
+    data["id"] = report_id
+    created = storage.create_report(data)
+    _sync_report_schedule(created)
+    return created
+
+
+@app.put("/api/v1/reports/{report_id}")
+def update_report(report_id: str, request: ReportRequest) -> Dict[str, Any]:
+    updated = storage.update_report(report_id, request.model_dump())
+    if not updated:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    _sync_report_schedule(updated)
+    return updated
+
+
+@app.delete("/api/v1/reports/{report_id}")
+def delete_report(report_id: str) -> Dict[str, Any]:
+    if not storage.delete_report(report_id):
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"deleted": True, "id": report_id}
+
+
+@app.post("/api/v1/reports/{report_id}/run")
+def run_report(report_id: str) -> Dict[str, Any]:
+    from .reports import generate_report
+
+    report = storage.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    result = generate_report(report, _decisions_for_report())
+    result.pop("csv", None)
+    return result
+
+
+@app.get("/api/v1/reports/{report_id}/export.csv")
+def export_report_csv(report_id: str) -> Response:
+    from .reports import generate_report
+
+    report = storage.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    result = generate_report(report, _decisions_for_report())
+    return Response(
+        content=result["csv"],
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{report_id}.csv"'},
+    )
+
+
+@app.post("/api/v1/reports/{report_id}/send")
+def send_report_now(report_id: str) -> Dict[str, Any]:
+    """Generate the report and email it to the schedule's recipients now."""
+    from .reports import generate_report
+    from .mailer import send_report_email
+
+    report = storage.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    result = generate_report(report, _decisions_for_report())
+    recipients = (report.get("schedule") or {}).get("recipients") or []
+    email_config = storage.get_email_credentials()
+    delivery = send_report_email(
+        email_config, recipients,
+        subject=f"[RuleMind] {report['name']} — {result['row_count']} rows",
+        body=f"Your scheduled report \"{report['name']}\" is attached ({result['row_count']} rows, timezone {result['timezone']}).",
+        csv_content=result["csv"], csv_filename=f"{report_id}.csv",
+    )
+    storage.update_report(report_id, {"last_run": {
+        "generated_at": result["generated_at"], "row_count": result["row_count"], "delivery": delivery,
+    }})
+    return {"row_count": result["row_count"], "delivery": delivery}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # EXCEL FUNCTIONS INFO ENDPOINT
 # ═══════════════════════════════════════════════════════════════════════════
 

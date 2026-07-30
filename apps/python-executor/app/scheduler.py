@@ -103,6 +103,50 @@ async def check_review_timeouts(storage: Storage) -> None:
         await executor.execute(policy=policy, payload=ctx.payload, tenant_id=task["tenant_id"], resume_from=ctx, source="review")
 
 
+async def deliver_scheduled_report(storage: Storage, report_id: str, tenant_id: str) -> Dict[str, Any]:
+    """Generate a scheduled report and email it to its recipients (CSV attached)."""
+    from .mailer import send_report_email
+    from .reports import generate_report
+
+    report = storage.get_report(report_id, tenant_id=tenant_id)
+    if not report:
+        return {"delivered": False, "error": "report not found"}
+    decisions = storage.list_decisions(tenant_id=tenant_id, limit=1000)
+    result = generate_report(report, decisions)
+    recipients = (report.get("schedule") or {}).get("recipients") or []
+    delivery = send_report_email(
+        storage.get_email_credentials(tenant_id=tenant_id), recipients,
+        subject="[RuleMind] {0} — {1} rows".format(report["name"], result["row_count"]),
+        body='Your scheduled report "{0}" is attached ({1} rows, timezone {2}).'.format(
+            report["name"], result["row_count"], result["timezone"]),
+        csv_content=result["csv"], csv_filename="{0}.csv".format(report_id),
+    )
+    storage.update_report(report_id, {"last_run": {
+        "generated_at": result["generated_at"], "row_count": result["row_count"], "delivery": delivery,
+    }}, tenant_id=tenant_id)
+    return delivery
+
+
+def schedule_report_job(storage: Storage, report: Dict[str, Any]) -> None:
+    """(Re)register a report's delivery job from its schedule. Safe to call at
+    runtime on create/update; a disabled/blank schedule removes the job."""
+    if not scheduler.running:
+        return
+    job_id = "report:{0}:{1}".format(report.get("tenant_id", ""), report["id"])
+    scheduler.remove_job(job_id) if scheduler.get_job(job_id) else None
+    sched = report.get("schedule") or {}
+    if not (sched.get("enabled") and sched.get("cron")):
+        return
+    try:
+        trigger = CronTrigger.from_crontab(sched["cron"], timezone=report.get("timezone") or "UTC")
+    except Exception:
+        return
+    scheduler.add_job(
+        deliver_scheduled_report, trigger, id=job_id,
+        args=[storage, report["id"], report.get("tenant_id", "")], replace_existing=True,
+    )
+
+
 def init_scheduler(storage: Storage) -> None:
     if scheduler.running:
         return
@@ -113,6 +157,17 @@ def init_scheduler(storage: Storage) -> None:
             id=schedule["id"],
             args=[storage, schedule],
             replace_existing=True,
+        )
+    for report in storage.list_scheduled_reports():
+        sched = report.get("schedule") or {}
+        try:
+            trigger = CronTrigger.from_crontab(sched["cron"], timezone=report.get("timezone") or "UTC")
+        except Exception:
+            continue
+        scheduler.add_job(
+            deliver_scheduled_report, trigger,
+            id="report:{0}:{1}".format(report.get("tenant_id", ""), report["id"]),
+            args=[storage, report["id"], report.get("tenant_id", "")], replace_existing=True,
         )
     scheduler.add_job(check_review_timeouts, "interval", minutes=5, id="review-timeouts", args=[storage], replace_existing=True)
     scheduler.start()
