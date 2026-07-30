@@ -1,13 +1,13 @@
 # RuleMind Mobile E2E Closeout
 
-Generated at: `2026-04-04T15:51:09.931997+00:00`
+Generated at: `2026-07-30T16:27:37.479220+00:00`
 
 ## Summary
 
 - Scenario pass rate: **12/12**
-- Median live SDK latency: **29 ms**
-- P95 live SDK latency: **39 ms**
-- Max live SDK latency: **45 ms**
+- Median live SDK latency: **23 ms**
+- P95 live SDK latency: **24 ms**
+- Max live SDK latency: **752 ms**
 - Capabilities covered: auditability, callback_queueing, decisioning, explainability, review_gates, review_resume, rules, scorecards, traceability, workflow_orchestration
 
 ## Screen To Route Map
@@ -50,18 +50,18 @@ Generated at: `2026-04-04T15:51:09.931997+00:00`
 
 | Scenario | Journey | Expected | Observed | Latency (ms) | Trace Steps | Pending Callbacks | Passed |
 | --- | --- | --- | --- | ---: | ---: | ---: | --- |
-| travel_happy_path | travel_guard | approve/completed | approve/completed | 39 | 8 | 1 | True |
-| travel_senior_review | travel_guard | review/paused | review/paused | 27 | 7 | 1 | True |
-| travel_passport_failure | travel_guard | reject/completed | reject/completed | 29 | 8 | 1 | True |
-| loan_prime_approved | instant_personal_loan | approve/completed | approve/completed | 29 | 9 | 1 | True |
-| loan_borderline_review | instant_personal_loan | review/paused | review/paused | 27 | 8 | 1 | True |
-| loan_high_foir_reject | instant_personal_loan | reject/completed | reject/completed | 29 | 9 | 1 | True |
-| loan_fraud_review | instant_personal_loan | review/paused | review/paused | 27 | 8 | 1 | True |
-| loan_kyc_reject | instant_personal_loan | reject/completed | reject/completed | 29 | 9 | 1 | True |
-| sme_instant_quote | sme_underwriting | approve/completed | approve/completed | 45 | 10 | 2 | True |
-| sme_claims_review | sme_underwriting | review/paused | review/paused | 28 | 8 | 1 | True |
-| sme_census_failure | sme_underwriting | review/paused | review/paused | 29 | 8 | 1 | True |
-| sme_compliance_hold | sme_underwriting | review/paused | review/paused | 29 | 8 | 1 | True |
+| travel_happy_path | travel_guard | approve/completed | approve/completed | 752 | 8 | 1 | True |
+| travel_senior_review | travel_guard | review/paused | review/paused | 23 | 7 | 1 | True |
+| travel_passport_failure | travel_guard | reject/completed | reject/completed | 22 | 8 | 1 | True |
+| loan_prime_approved | instant_personal_loan | approve/completed | approve/completed | 24 | 9 | 1 | True |
+| loan_borderline_review | instant_personal_loan | review/paused | review/paused | 23 | 8 | 1 | True |
+| loan_high_foir_reject | instant_personal_loan | reject/completed | reject/completed | 23 | 9 | 1 | True |
+| loan_fraud_review | instant_personal_loan | review/paused | review/paused | 23 | 8 | 1 | True |
+| loan_kyc_reject | instant_personal_loan | reject/completed | reject/completed | 22 | 9 | 1 | True |
+| sme_instant_quote | sme_underwriting | approve/completed | approve/completed | 23 | 10 | 2 | True |
+| sme_claims_review | sme_underwriting | review/paused | review/paused | 23 | 8 | 1 | True |
+| sme_census_failure | sme_underwriting | review/paused | review/paused | 23 | 8 | 1 | True |
+| sme_compliance_hold | sme_underwriting | review/paused | review/paused | 22 | 8 | 1 | True |
 
 ## Scenario Capability Matrix
 

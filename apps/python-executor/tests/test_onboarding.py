@@ -18,6 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
+os.environ.setdefault("RULEMIND_SEED_DEMO", "1")  # tests use the sample lending inventory
 os.environ.setdefault("RULEMIND_ADMIN_JWT_SECRET", "rulemind-test-admin-secret")
 os.environ.pop("AUTH_MODE", None)  # apikey mode so issued keys resolve to their tenant
 
@@ -99,6 +100,46 @@ class OnboardingTests(unittest.TestCase):
     def test_signup_is_public(self) -> None:
         resp = self.client.post("/api/v1/onboarding/signup", json={"company": "Public Co", "contact_email": "p@co.com"})
         self.assertEqual(resp.status_code, 200)
+
+
+class CleanInstallActivationTests(unittest.TestCase):
+    """A fresh clone (RULEMIND_SEED_DEMO unset) starts with an empty workspace and a
+    guided activation checklist; 'load samples' populates it on demand."""
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("RULEMIND_SEED_DEMO")
+        os.environ["RULEMIND_SEED_DEMO"] = "0"  # simulate a fresh clone
+        app_main.storage = Storage(path=os.path.join(self.tempdir.name, "clean.db"))
+        self.client = TestClient(app_main.app)
+        self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
+
+    def tearDown(self) -> None:
+        self.client.close()
+        if self._prev is None:
+            os.environ.pop("RULEMIND_SEED_DEMO", None)
+        else:
+            os.environ["RULEMIND_SEED_DEMO"] = self._prev
+        self.tempdir.cleanup()
+
+    def test_fresh_workspace_is_clean(self) -> None:
+        tid = app_main.storage.default_tenant_id
+        self.assertEqual(len(app_main.storage.list_connectors(tenant_id=tid)), 0)
+        self.assertEqual(len(app_main.storage.list_policies(tenant_id=tid)), 0)
+        self.assertTrue(app_main.storage.default_api_key)  # infra still provisioned
+
+    def test_activation_checklist_starts_incomplete(self) -> None:
+        act = self.client.get("/api/v1/onboarding/activation", headers=self.headers).json()
+        self.assertEqual([s["done"] for s in act["steps"]], [False] * 5)
+        self.assertFalse(act["activated"])
+        self.assertFalse(act["has_data"])
+
+    def test_load_samples_populates_and_advances_activation(self) -> None:
+        act = self.client.post("/api/v1/onboarding/load-samples", headers=self.headers).json()
+        by_key = {s["key"]: s for s in act["steps"]}
+        self.assertTrue(by_key["connector"]["done"])
+        self.assertTrue(by_key["policy"]["done"])
+        self.assertTrue(act["has_data"])
 
 
 if __name__ == "__main__":

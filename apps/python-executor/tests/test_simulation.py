@@ -13,6 +13,9 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+import os as _os
+_os.environ.setdefault("RULEMIND_SEED_DEMO", "1")  # tests use the sample lending inventory
+
 from simulation.harness import (  # noqa: E402
     build_credit_bundle,
     generate_customers,

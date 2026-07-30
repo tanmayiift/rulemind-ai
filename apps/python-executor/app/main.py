@@ -2433,6 +2433,45 @@ def onboarding_status() -> Dict[str, Any]:
     return _onboarding_view(active_tenant_id())
 
 
+@app.get("/api/v1/onboarding/activation")
+def onboarding_activation() -> Dict[str, Any]:
+    """Build-first activation checklist with live completion — connect a source →
+    create a variable → author a rule → assemble a policy → run a decision. Powers
+    the guided onboarding for a clean (unseeded) workspace."""
+    tid = active_tenant_id()
+    counts = {
+        "connectors": len(storage.list_connectors(tenant_id=tid)),
+        "variables": len(storage.list_variables(tenant_id=tid)),
+        "rules": len(storage.list_rules(tenant_id=tid)),
+        "policies": len(storage.list_policies(tenant_id=tid)),
+        "decisions": storage.count_decisions(tenant_id=tid),
+    }
+    steps = [
+        {"key": "connector", "label": "Connect a data source", "href": "/connectors",
+         "hint": "Add the payload your decisions read from (bureau, bank, KYC, or a custom API).", "count": counts["connectors"], "done": counts["connectors"] > 0},
+        {"key": "variable", "label": "Create a variable", "href": "/variables",
+         "hint": "Compute a feature from that payload (e.g. a score or ratio) in sandboxed Python.", "count": counts["variables"], "done": counts["variables"] > 0},
+        {"key": "rule", "label": "Author a rule", "href": "/rules",
+         "hint": "Gate on your variables — approve / review / reject.", "count": counts["rules"], "done": counts["rules"] > 0},
+        {"key": "policy", "label": "Assemble a policy", "href": "/workflow-builder",
+         "hint": "Chain connectors, variables, rules and scorecards into a decision flow.", "count": counts["policies"], "done": counts["policies"] > 0},
+        {"key": "decision", "label": "Run your first decision", "href": "/simulation",
+         "hint": "Send a payload through the policy and inspect the full trace.", "count": counts["decisions"], "done": counts["decisions"] > 0},
+    ]
+    completed = sum(1 for s in steps if s["done"])
+    return {"steps": steps, "completed": completed, "total": len(steps),
+            "activated": completed == len(steps), "has_data": counts["connectors"] > 0 or counts["policies"] > 0}
+
+
+@app.post("/api/v1/onboarding/load-samples")
+def onboarding_load_samples() -> Dict[str, Any]:
+    """Load the sample lending inventory into this workspace so the user can explore
+    before building their own (the fresh-clone default is a clean workspace)."""
+    storage.seed_sample_inventory(active_tenant_id())
+    maybe_compile_bundle(active_tenant_id())
+    return onboarding_activation()
+
+
 @app.post("/api/v1/onboarding/verify")
 def onboarding_verify() -> Dict[str, Any]:
     """Mark the integration verified once the workspace has made its first decision."""
