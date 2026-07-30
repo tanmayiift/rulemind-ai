@@ -218,17 +218,6 @@ class ActionFailedError(RuntimeError):
     pass
 
 
-_DECISION_LOG_POOL: Optional[ThreadPoolExecutor] = None
-
-
-def _decision_log_pool() -> ThreadPoolExecutor:
-    """Shared background pool for fire-and-forget decision logging."""
-    global _DECISION_LOG_POOL
-    if _DECISION_LOG_POOL is None:
-        _DECISION_LOG_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("DECISION_LOG_WORKERS", "4")))
-    return _DECISION_LOG_POOL
-
-
 _MAX_WORKFLOW_DEPTH = 10
 
 
@@ -723,20 +712,14 @@ class PolicyExecutor:
         )
         if needs_execution_row:
             self._persist_execution(ctx, trigger_type=source)
-        # Decision logging can be moved off the request's critical path. Gated by
-        # env so tests (which assert the decision immediately) stay deterministic;
-        # enable ASYNC_DECISION_LOG=1 in high-QPS deployments.
-        if os.getenv("ASYNC_DECISION_LOG", "0") == "1":
-            _decision_log_pool().submit(
-                self._log_decision, ctx, source, sdk_version, ctx.experiment_variant or experiment_variant
-            )
-        else:
-            self._log_decision(
-                ctx,
-                source=source,
-                sdk_version=sdk_version,
-                experiment_variant=ctx.experiment_variant or experiment_variant,
-            )
+        # Decision logging runs off the request's critical path by default (the
+        # single biggest per-decision latency tax). Reads flush pending writes for
+        # in-process read-after-write; ASYNC_DECISION_LOG=0 forces synchronous.
+        from . import decision_log
+
+        decision_log.submit(
+            self._log_decision, ctx, source, sdk_version, ctx.experiment_variant or experiment_variant,
+        )
         return ctx
 
     def _persist_execution(self, ctx: ExecutionContext, trigger_type: str) -> None:

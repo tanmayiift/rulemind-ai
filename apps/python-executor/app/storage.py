@@ -1196,6 +1196,8 @@ class Storage:
             return self._decision_to_dict(decision)
 
     def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+        from . import decision_log
+        decision_log.flush()  # read-after-write: see any just-submitted async writes
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             # Bounded by default: the decisions table grows without limit in
@@ -1206,6 +1208,8 @@ class Storage:
             return [self._decision_to_dict(row) for row in rows]
 
     def count_decisions(self, tenant_id: Optional[str] = None) -> int:
+        from . import decision_log
+        decision_log.flush()
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             return int(session.scalar(select(func.count()).select_from(Decision).where(Decision.tenant_id == resolved)) or 0)
@@ -1221,6 +1225,8 @@ class Storage:
         report is complete (no silent 1000-row truncation) while memory stays
         bounded. The date filter is pushed into the query; returns
         (decisions, truncated) where truncated=True means max_rows was hit."""
+        from . import decision_log
+        decision_log.flush()
         resolved = self._tenant_id(tenant_id)
         collected: List[Dict[str, Any]] = []
         truncated = False
