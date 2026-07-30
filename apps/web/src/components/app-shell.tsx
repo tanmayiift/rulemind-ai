@@ -114,6 +114,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setSidebarOpen,
   } = useRuleMindStore();
   const [branding, setBranding] = React.useState<Branding | undefined>(undefined);
+  // AI features stay hidden until the tenant configures an OpenAI/Anthropic key
+  // (and the admin hasn't switched AI off). Undefined = not yet known.
+  const [aiEnabled, setAiEnabled] = React.useState<boolean | undefined>(undefined);
   const theme = withBranding(THEMES[themeMode], branding);
   const page = PAGE_COPY[pathname ?? "/"] ?? PAGE_COPY["/"];
 
@@ -126,6 +129,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (!cancelled) setBranding(settings.branding ?? undefined);
       } catch {
         /* branding is optional — stock theme is a fine fallback */
+      }
+      try {
+        const ai = await apiJson<{ enabled?: boolean }>(apiBaseUrl, "/api/v1/ai/config", {}, apiKey);
+        if (!cancelled) setAiEnabled(Boolean(ai.enabled));
+      } catch {
+        if (!cancelled) setAiEnabled(false);
       }
     })();
     return () => {
@@ -269,7 +278,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <nav style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
-            {NAVIGATION.map((group) => ({ ...group, items: group.items.filter((item) => !isNavHidden(branding, item.href)) }))
+            {NAVIGATION.map((group) => ({ ...group, items: group.items.filter((item) => !isNavHidden(branding, item.href) && !((item.href as string) === "/ai" && aiEnabled === false)) }))
               .filter((group) => group.items.length > 0)
               .map((group) => (
               <div key={group.group} style={{ marginBottom: 10 }}>

@@ -216,6 +216,8 @@ function BrandingEditor({
               })}
             </div>
           </Section>
+
+          <AiAssistantSection theme={theme} apiBaseUrl={apiBaseUrl} apiKey={apiKey} />
         </div>
 
         {/* Live preview */}
@@ -247,6 +249,94 @@ function BrandingEditor({
         </div>
       </div>
     </div>
+  );
+}
+
+// ---- AI Assistant enablement (admin master switch + BYO key) ------------------
+
+type AiMasked = {
+  default_provider: string;
+  enabled: boolean;
+  any_configured: boolean;
+  providers: Record<string, { configured: boolean; model: string }>;
+};
+
+function AiAssistantSection({ theme, apiBaseUrl, apiKey }: { theme: (typeof THEMES)["light"]; apiBaseUrl: string; apiKey: string }) {
+  const [cfg, setCfg] = React.useState<AiMasked | null>(null);
+  const [provider, setProvider] = React.useState("anthropic");
+  const [key, setKey] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState<string | null>(null);
+  const [err, setErr] = React.useState<string | null>(null);
+
+  const load = React.useCallback(async () => {
+    try {
+      const c = await apiJson<AiMasked>(apiBaseUrl, "/api/v1/ai/config", {}, apiKey);
+      setCfg(c); setProvider(c.default_provider || "anthropic");
+    } catch (e) { setErr(e instanceof Error ? e.message : "Unable to load AI config."); }
+  }, [apiBaseUrl, apiKey]);
+  React.useEffect(() => { void load(); }, [load]);
+
+  const providerConfigured = cfg?.providers?.[provider]?.configured;
+
+  const saveKey = async () => {
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      await apiJson(apiBaseUrl, "/api/v1/ai/config", { method: "PUT", body: JSON.stringify({
+        default_provider: provider, [provider]: { key }, enabled: true,
+      }) }, apiKey);
+      setKey(""); setMsg("AI enabled — the AI Copilot now appears in the sidebar for this workspace.");
+      await load();
+    } catch (e) { setErr(e instanceof Error ? e.message : "Save failed."); }
+    finally { setBusy(false); }
+  };
+
+  const toggleEnabled = async (next: boolean) => {
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      await apiJson(apiBaseUrl, "/api/v1/ai/config", { method: "PUT", body: JSON.stringify({ enabled: next }) }, apiKey);
+      setMsg(next ? "AI features enabled." : "AI features turned off (key kept, hidden from the app).");
+      await load();
+    } catch (e) { setErr(e instanceof Error ? e.message : "Update failed."); }
+    finally { setBusy(false); }
+  };
+
+  const test = async () => {
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      const r = await apiJson<{ ok?: boolean; error?: string }>(apiBaseUrl, "/api/v1/ai/test", { method: "POST", body: JSON.stringify({ provider }) }, apiKey);
+      setMsg(r.ok ? "Connection OK." : `Test failed: ${r.error ?? "unknown"}`);
+    } catch (e) { setErr(e instanceof Error ? e.message : "Test failed."); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Section theme={theme} title="AI Assistant" subtitle="Off by default. Add an OpenAI or Anthropic key to turn on AI features (rule/policy drafting, decision explanations). Without a key the AI Copilot stays hidden across the app.">
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 13, color: theme.text }}>Status:</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: cfg?.enabled ? theme.success : theme.muted, background: cfg?.enabled ? theme.success + "22" : theme.border, padding: "3px 10px", borderRadius: 999 }}>
+          {cfg?.enabled ? "ENABLED" : cfg?.any_configured ? "KEY SET · OFF" : "NOT CONFIGURED"}
+        </span>
+        {cfg?.any_configured ? (
+          <button onClick={() => toggleEnabled(!cfg.enabled)} disabled={busy} style={ghostStyle(theme)}>{cfg.enabled ? "Turn off" : "Turn on"}</button>
+        ) : null}
+      </div>
+      <Field theme={theme} label="Provider">
+        <select style={inputStyle(theme)} value={provider} onChange={(e) => setProvider(e.target.value)}>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI</option>
+        </select>
+      </Field>
+      <Field theme={theme} label={providerConfigured ? "Replace API key" : "API key"} hint={providerConfigured ? "A key is already stored (encrypted). Leave blank to keep it." : "Stored encrypted at rest; never shown again."}>
+        <input style={inputStyle(theme)} type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={provider === "anthropic" ? "sk-ant-…" : "sk-…"} />
+      </Field>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button onClick={saveKey} disabled={busy || !key} style={ctaStyle(theme, busy || !key)}>{busy ? "Saving…" : "Save key & enable"}</button>
+        <button onClick={test} disabled={busy || !providerConfigured} style={ghostStyle(theme)}>Test connection</button>
+      </div>
+      {msg ? <div style={{ color: theme.success, fontSize: 12 }}>{msg}</div> : null}
+      {err ? <div style={{ color: theme.danger, fontSize: 12 }}>{err}</div> : null}
+    </Section>
   );
 }
 
