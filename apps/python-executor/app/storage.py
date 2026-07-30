@@ -34,6 +34,7 @@ from .models import (
     Connector,
     CronSchedule,
     Decision,
+    DecisionTable,
     EntityHistory,
     ErrorEvent,
     Experiment,
@@ -2239,4 +2240,86 @@ class Storage:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             result = session.execute(delete(HostedModel).where(HostedModel.tenant_id == resolved, HostedModel.public_id == model_id))
+            return result.rowcount > 0
+
+    # ---- Decision tables --------------------------------------------------- #
+    @staticmethod
+    def _decision_table_to_dict(row: DecisionTable) -> Dict[str, Any]:
+        return {
+            "id": row.public_id,
+            "name": row.name,
+            "description": row.description,
+            "hit_policy": row.hit_policy,
+            "inputs": copy.deepcopy(row.inputs or []),
+            "outputs": copy.deepcopy(row.outputs or []),
+            "rows": copy.deepcopy(row.rows or []),
+            "default_row": copy.deepcopy(row.default_row) if row.default_row else None,
+            "status": row.status,
+            "version": row.version,
+            "last_test_result": copy.deepcopy(row.last_test_result) if row.last_test_result else None,
+            "created_at": serialize_datetime(row.created_at),
+            "updated_at": serialize_datetime(row.updated_at),
+        }
+
+    def list_decision_tables(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(select(DecisionTable).where(DecisionTable.tenant_id == resolved).order_by(DecisionTable.name)).all()
+            return [self._decision_table_to_dict(row) for row in rows]
+
+    def get_decision_table(self, table_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(select(DecisionTable).where(DecisionTable.tenant_id == resolved, DecisionTable.public_id == table_id))
+            return self._decision_table_to_dict(row) if row else None
+
+    def create_decision_table(self, data: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        now = datetime.utcnow()
+        with self.connect() as session:
+            row = DecisionTable(
+                tenant_id=resolved,
+                public_id=data["id"],
+                name=data["name"],
+                description=data.get("description"),
+                hit_policy=data.get("hit_policy", "first"),
+                inputs=copy.deepcopy(data.get("inputs") or []),
+                outputs=copy.deepcopy(data.get("outputs") or []),
+                rows=copy.deepcopy(data.get("rows") or []),
+                default_row=copy.deepcopy(data.get("default_row")),
+                status=data.get("status", "dev"),
+                version=int(data.get("version", 1)),
+                last_test_result=copy.deepcopy(data.get("last_test_result")),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            session.add(EntityHistory(
+                tenant_id=resolved, entity_type="decision_table", entity_id=data["id"],
+                version=1, snapshot=self._decision_table_to_dict(row), created_at=now,
+            ))
+            session.flush()
+            return self._decision_table_to_dict(row)
+
+    def update_decision_table(self, table_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(select(DecisionTable).where(DecisionTable.tenant_id == resolved, DecisionTable.public_id == table_id))
+            if not row:
+                return None
+            for key in ("name", "description", "hit_policy", "inputs", "outputs", "rows", "default_row", "status", "last_test_result"):
+                if key in patch:
+                    setattr(row, key, copy.deepcopy(patch[key]))
+            row.version = (row.version or 1) + 1
+            row.updated_at = datetime.utcnow()
+            session.add(EntityHistory(
+                tenant_id=resolved, entity_type="decision_table", entity_id=table_id,
+                version=row.version, snapshot=self._decision_table_to_dict(row), created_at=row.updated_at,
+            ))
+            return self._decision_table_to_dict(row)
+
+    def delete_decision_table(self, table_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            result = session.execute(delete(DecisionTable).where(DecisionTable.tenant_id == resolved, DecisionTable.public_id == table_id))
             return result.rowcount > 0

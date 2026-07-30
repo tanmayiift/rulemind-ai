@@ -153,6 +153,7 @@ class ExecutionContext:
     variables: Dict[str, Any] = field(default_factory=dict)
     rule_results: List[Dict[str, Any]] = field(default_factory=list)
     scorecard_results: Dict[str, Any] = field(default_factory=dict)
+    decision_table_results: Dict[str, Any] = field(default_factory=dict)
     transform_outputs: Dict[str, Any] = field(default_factory=dict)
     action_results: List[Dict[str, Any]] = field(default_factory=list)
     pending_operations: List[Dict[str, Any]] = field(default_factory=list)
@@ -189,6 +190,7 @@ class ExecutionContext:
             variables=copy.deepcopy(payload.get("variables", {})),
             rule_results=copy.deepcopy(payload.get("rule_results", [])),
             scorecard_results=copy.deepcopy(payload.get("scorecard_results", {})),
+            decision_table_results=copy.deepcopy(payload.get("decision_table_results", {})),
             transform_outputs=copy.deepcopy(payload.get("transform_outputs", {})),
             action_results=copy.deepcopy(payload.get("action_results", [])),
             pending_operations=copy.deepcopy(payload.get("pending_operations", [])),
@@ -260,6 +262,7 @@ class PolicyExecutor:
             "payload": ctx.payload,
             "variables": ctx.variables,
             "scorecard": scorecards,
+            "decision_table": {tid: r.get("outputs", {}) for tid, r in ctx.decision_table_results.items()},
             "computed": computed or combined,
             "transforms": ctx.transform_outputs,
             "outcome": ctx.outcome,
@@ -400,6 +403,8 @@ class PolicyExecutor:
             return self._execute_rule(step, ctx, rules), None
         if step_type == "scorecard":
             return self._execute_scorecard(step, ctx, scorecards), None
+        if step_type == "decision_table":
+            return self._execute_decision_table(step, ctx), None
         if step_type == "transform":
             return await self._execute_transform(step, ctx), None
         if step_type == "action":
@@ -531,6 +536,7 @@ class PolicyExecutor:
         rules = {item["id"]: item for item in self.storage.list_rules(tenant_id=tenant_id)}
         rules = apply_experiment_overrides(rules, assignment)
         scorecards = {item["id"]: item for item in self.storage.list_scorecards(tenant_id=tenant_id)}
+        self._decision_tables = {item["id"]: item for item in self.storage.list_decision_tables(tenant_id=tenant_id)}
         connectors = self._catalog_for(tenant_id)["connectors"]
 
         # By default every tenant variable is computed (full parity + available for
@@ -642,6 +648,20 @@ class PolicyExecutor:
         ctx.rule_results.append({"rule_id": ref_id, **copy.deepcopy(result)})
         ctx.rule_results[-1]["ruleId"] = ref_id
         ctx.outcome = _merge_outcome(ctx.outcome, result.get("outcome"))
+        return result
+
+    def _execute_decision_table(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
+        from .decision_tables import evaluate_decision_table
+
+        ref_id = step.get("ref_id") or step.get("ref")
+        table = getattr(self, "_decision_tables", {}).get(ref_id)
+        if not table:
+            raise ValueError("Unknown decision table: {0}".format(ref_id))
+        variable_lookup = self._catalog_for(ctx.tenant_id)["variable_lookup"]
+        result = evaluate_decision_table(table, ctx.variables, variable_lookup)
+        ctx.decision_table_results[ref_id] = result
+        if result.get("outcome"):
+            ctx.outcome = _merge_outcome(ctx.outcome, str(result["outcome"]))
         return result
 
     def _execute_scorecard(self, step: Dict[str, Any], ctx: ExecutionContext, scorecards: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
