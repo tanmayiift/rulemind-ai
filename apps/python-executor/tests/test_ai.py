@@ -138,6 +138,33 @@ class AITests(unittest.TestCase):
         self.assertIn("summary", resp)
         self.assertIn("reason_codes", resp)
 
+    # ---- AI-feature gating (turn-on-later with a key) ----
+    def test_ai_disabled_until_a_key_is_configured(self) -> None:
+        cfg = self.client.get("/api/v1/ai/config", headers=self.headers).json()
+        self.assertFalse(cfg["any_configured"])
+        self.assertFalse(cfg["enabled"])  # no key -> AI stays hidden
+
+    def test_ai_enabled_once_a_key_is_set(self) -> None:
+        self._set_key()
+        cfg = self.client.get("/api/v1/ai/config", headers=self.headers).json()
+        self.assertTrue(cfg["any_configured"])
+        self.assertTrue(cfg["enabled"])
+
+    def test_admin_can_turn_ai_off_while_keeping_the_key(self) -> None:
+        self._set_key()
+        self.client.put("/api/v1/ai/config", headers=self.headers, json={"enabled": False})
+        cfg = self.client.get("/api/v1/ai/config", headers=self.headers).json()
+        self.assertTrue(cfg["any_configured"])   # key still stored
+        self.assertFalse(cfg["enabled"])          # but AI is off
+        # re-enable
+        self.client.put("/api/v1/ai/config", headers=self.headers, json={"enabled": True})
+        self.assertTrue(self.client.get("/api/v1/ai/config", headers=self.headers).json()["enabled"])
+
+    def test_enabled_flag_cannot_be_true_without_a_key(self) -> None:
+        # enabling with no key configured must not report AI as on
+        self.client.put("/api/v1/ai/config", headers=self.headers, json={"enabled": True})
+        self.assertFalse(self.client.get("/api/v1/ai/config", headers=self.headers).json()["enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()

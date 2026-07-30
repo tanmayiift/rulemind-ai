@@ -2111,6 +2111,7 @@ class AIConfigRequest(BaseModel):
     default_provider: Optional[str] = None
     anthropic: Optional[Dict[str, Any]] = None  # {"model": "...", "key": "sk-..."} ("__CLEAR__" to remove)
     openai: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None  # admin master switch (AI still needs a key to be "on")
 
 
 class AITestRequest(BaseModel):

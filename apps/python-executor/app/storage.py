@@ -1341,13 +1341,20 @@ class Storage:
         with self.connect() as session:
             cfg = (self._ai_config_row(session, resolved).ai_config or {})
         providers = cfg.get("providers", {}) or {}
+        provider_view = {
+            name: {"configured": bool((providers.get(name) or {}).get("key_encrypted")),
+                   "model": (providers.get(name) or {}).get("model", "")}
+            for name in ("anthropic", "openai")
+        }
+        any_configured = any(p["configured"] for p in provider_view.values())
+        # AI is "on" only when a key is present AND the admin hasn't explicitly
+        # turned it off. No key -> never on (features stay hidden in the UI).
+        enabled = any_configured and bool(cfg.get("enabled", True))
         return {
             "default_provider": cfg.get("default_provider", "anthropic"),
-            "providers": {
-                name: {"configured": bool((providers.get(name) or {}).get("key_encrypted")),
-                       "model": (providers.get(name) or {}).get("model", "")}
-                for name in ("anthropic", "openai")
-            },
+            "providers": provider_view,
+            "any_configured": any_configured,
+            "enabled": enabled,
         }
 
     def set_ai_config(self, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1358,6 +1365,8 @@ class Storage:
             cfg.setdefault("providers", {})
             if patch.get("default_provider") in ("anthropic", "openai"):
                 cfg["default_provider"] = patch["default_provider"]
+            if "enabled" in patch:  # admin can turn AI off even while a key stays stored
+                cfg["enabled"] = bool(patch["enabled"])
             for name in ("anthropic", "openai"):
                 ppatch = patch.get(name) or {}
                 slot = cfg["providers"].setdefault(name, {})

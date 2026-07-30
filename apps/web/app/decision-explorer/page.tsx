@@ -51,6 +51,16 @@ export default function DecisionExplorerPage() {
   const [loading, setLoading] = React.useState(true);
   const [explain, setExplain] = React.useState<{ summary?: string; reason_codes?: string[]; error?: string } | null>(null);
   const [explaining, setExplaining] = React.useState(false);
+  // AI-powered actions only surface when the tenant has enabled AI (key present).
+  const [aiEnabled, setAiEnabled] = React.useState(false);
+
+  React.useEffect(() => {
+    let active = true;
+    apiJson<{ enabled?: boolean }>(apiBaseUrl, "/api/v1/ai/config", {}, apiKey)
+      .then((c) => { if (active) setAiEnabled(Boolean(c.enabled)); })
+      .catch(() => { if (active) setAiEnabled(false); });
+    return () => { active = false; };
+  }, [apiBaseUrl, apiKey]);
 
   const runExplain = React.useCallback(async (id: string) => {
     setExplaining(true); setExplain(null);
@@ -152,10 +162,12 @@ export default function DecisionExplorerPage() {
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
                 {pill(selected.outcome)}
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: theme.muted, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{selected.id}</span>
-                <button onClick={() => runExplain(selected.id)} disabled={explaining}
-                  style={{ border: "1px solid " + theme.border, background: theme.accentBg, color: theme.accent, borderRadius: 8, padding: "6px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  ✦ {explaining ? "Explaining…" : "Explain (AI)"}
-                </button>
+                {aiEnabled ? (
+                  <button onClick={() => runExplain(selected.id)} disabled={explaining}
+                    style={{ border: "1px solid " + theme.border, background: theme.accentBg, color: theme.accent, borderRadius: 8, padding: "6px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    ✦ {explaining ? "Explaining…" : "Explain (AI)"}
+                  </button>
+                ) : null}
               </div>
               {explain ? (
                 <div style={{ marginBottom: 14, padding: 12, borderRadius: 10, background: theme.accentBg, border: "1px solid " + theme.border }}>
