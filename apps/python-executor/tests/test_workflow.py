@@ -170,11 +170,13 @@ class RuleMindWorkflowTests(unittest.TestCase):
 
     def test_webhook_review_resume_executes_action_and_persists_trace(self) -> None:
         policy_id = self._create_review_policy()
-        webhook = self.client.post("/api/v1/webhooks", headers=self.headers, json={"policy_id": policy_id, "payload_mapping": {}})
+        webhook = self.client.post("/api/v1/webhooks", headers=self.headers, json={"policy_id": policy_id, "secret": "wh-secret", "payload_mapping": {}})
         self.assertEqual(webhook.status_code, 200)
         webhook_id = webhook.json()["id"]
 
-        paused = self.client.post(f"/api/v1/webhooks/{webhook_id}", json={"application_id": "app-42", "user_id": "user-42"})
+        body = b'{"application_id":"app-42","user_id":"user-42"}'  # compact + sorted (matches server signing)
+        paused = self.client.post(f"/api/v1/webhooks/{webhook_id}", data=body,
+                                  headers={"content-type": "application/json", "x-webhook-signature": hmac_signature("wh-secret", body)})
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused.json()["status"], "paused")
 
@@ -297,9 +299,11 @@ class RuleMindWorkflowTests(unittest.TestCase):
 
     def test_review_timeout_worker_resumes_execution(self) -> None:
         policy_id = self._create_review_policy()
-        webhook = self.client.post("/api/v1/webhooks", headers=self.headers, json={"policy_id": policy_id, "payload_mapping": {}})
+        webhook = self.client.post("/api/v1/webhooks", headers=self.headers, json={"policy_id": policy_id, "secret": "wh-secret", "payload_mapping": {}})
         self.assertEqual(webhook.status_code, 200)
-        paused = self.client.post(f"/api/v1/webhooks/{webhook.json()['id']}", json={"application_id": "app-timeout"})
+        body = b'{"application_id":"app-timeout"}'
+        paused = self.client.post(f"/api/v1/webhooks/{webhook.json()['id']}", data=body,
+                                  headers={"content-type": "application/json", "x-webhook-signature": hmac_signature("wh-secret", body)})
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused.json()["status"], "paused")
 

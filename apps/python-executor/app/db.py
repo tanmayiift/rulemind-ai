@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -33,10 +33,40 @@ def engine_for(path: Optional[str] = None) -> Engine:
     engine = _engine_cache.get(url)
     if engine is not None:
         return engine
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    engine = create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
+    is_sqlite = url.startswith("sqlite")
+    if is_sqlite:
+        # check_same_thread=False so the FastAPI threadpool can share connections.
+        engine = create_engine(url, future=True, pool_pre_ping=True,
+                               connect_args={"check_same_thread": False})
+        _enable_sqlite_wal(engine)
+    else:
+        # Tunable connection pool for the target QPS (defaults suit a single
+        # replica; raise for higher concurrency, keeping total <= DB max_connections).
+        engine = create_engine(
+            url, future=True, pool_pre_ping=True,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "20")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
+            pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
+            pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
+        )
     _engine_cache[url] = engine
     return engine
+
+
+def _enable_sqlite_wal(engine: Engine) -> None:
+    """WAL lets readers run concurrently with a writer and cuts 'database is locked'
+    contention under the concurrent request/simulation load; a busy_timeout makes a
+    brief writer collision wait instead of erroring."""
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_conn, _record):  # pragma: no cover - trivial pragma setup
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
 
 
 def session_factory(path: Optional[str] = None) -> sessionmaker[Session]:
