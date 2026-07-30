@@ -104,6 +104,54 @@ def _call_openai(api_key: str, model: str, system: str, user: str, max_tokens: i
 _PROVIDERS = {"anthropic": _call_anthropic, "openai": _call_openai}
 
 
+# Curated fallback lists — shown when no key is set, or the live /models call
+# fails. Kept current with releases; the live fetch below supersedes these when a
+# key is configured, so newly launched models appear without a code change.
+CURATED_MODELS = {
+    "anthropic": ["claude-opus-4-1", "claude-sonnet-4-5", "claude-sonnet-5", "claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"],
+    "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini", "o1"],
+}
+
+
+def _fetch_live_models_anthropic(api_key: str) -> List[str]:
+    with httpx.Client(timeout=15) as client:
+        resp = client.get("https://api.anthropic.com/v1/models",
+                          headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+    resp.raise_for_status()
+    return [m["id"] for m in resp.json().get("data", []) if m.get("id")]
+
+
+def _fetch_live_models_openai(api_key: str) -> List[str]:
+    with httpx.Client(timeout=15) as client:
+        resp = client.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+    resp.raise_for_status()
+    # Keep only chat-capable GPT/o-series models; drop embeddings/tts/whisper/etc.
+    ids = [m["id"] for m in resp.json().get("data", []) if m.get("id")]
+    return sorted(m for m in ids if (m.startswith("gpt-") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4"))
+                  and not any(x in m for x in ("audio", "realtime", "transcribe", "tts", "embedding", "moderation", "search")))
+
+
+_LIVE_FETCHERS = {"anthropic": _fetch_live_models_anthropic, "openai": _fetch_live_models_openai}
+
+
+def list_models(provider: str, api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Return the selectable models for a provider. Live-fetches from the provider's
+    /models API when a key is available (so new launches show up automatically),
+    falling back to the curated list on any error or when no key is set."""
+    provider = (provider or "anthropic").lower()
+    curated = CURATED_MODELS.get(provider, [])
+    default = DEFAULT_MODELS.get(provider, curated[0] if curated else "")
+    if not api_key:
+        return {"provider": provider, "models": curated, "default": default, "live": False}
+    try:
+        live = _LIVE_FETCHERS[provider](api_key)
+        # Merge: keep curated ordering first (recommended), then any extra live ids.
+        merged = list(dict.fromkeys([*curated, *live])) if live else curated
+        return {"provider": provider, "models": merged, "default": default, "live": bool(live)}
+    except Exception as exc:  # network / auth / rate-limit -> curated fallback
+        return {"provider": provider, "models": curated, "default": default, "live": False, "error": str(exc)[:200]}
+
+
 def complete(provider: str, api_key: str, system: str, user: str, model: Optional[str] = None,
              max_tokens: int = 1500, temperature: float = 0.2) -> str:
     provider = (provider or "anthropic").lower()

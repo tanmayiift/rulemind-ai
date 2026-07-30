@@ -2185,6 +2185,18 @@ def put_ai_config(request: AIConfigRequest) -> Dict[str, Any]:
     return storage.set_ai_config(request.model_dump(exclude_none=True))
 
 
+@app.get("/api/v1/ai/models")
+def list_ai_models(provider: str = Query(default="anthropic")) -> Dict[str, Any]:
+    """Selectable models for a provider. Live-fetches from the provider's /models
+    API when a key is configured (so new model launches appear automatically),
+    else returns the curated list."""
+    from .ai import list_models
+
+    creds = storage.get_ai_credentials(provider)
+    api_key = creds.get("api_key") if creds else None
+    return list_models(provider, api_key)
+
+
 @app.post("/api/v1/ai/test")
 def ai_test(request: AITestRequest) -> Dict[str, Any]:
     from .ai import test_connection

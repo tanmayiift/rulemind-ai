@@ -165,6 +165,37 @@ class AITests(unittest.TestCase):
         self.client.put("/api/v1/ai/config", headers=self.headers, json={"enabled": True})
         self.assertFalse(self.client.get("/api/v1/ai/config", headers=self.headers).json()["enabled"])
 
+    # ---- model dropdown: curated fallback + live fetch ----
+    def test_models_curated_without_key(self) -> None:
+        r = self.client.get("/api/v1/ai/models?provider=anthropic", headers=self.headers).json()
+        self.assertFalse(r["live"])
+        self.assertIn("claude-sonnet-5", r["models"])  # curated default present
+        self.assertEqual(r["default"], "claude-sonnet-5")
+
+    def test_models_live_fetch_merges_when_key_set(self) -> None:
+        self._set_key(provider="anthropic")
+        orig = dict(ai._LIVE_FETCHERS)
+        ai._LIVE_FETCHERS["anthropic"] = lambda key: ["claude-brand-new-9", "claude-sonnet-5"]
+        try:
+            r = self.client.get("/api/v1/ai/models?provider=anthropic", headers=self.headers).json()
+        finally:
+            ai._LIVE_FETCHERS.clear(); ai._LIVE_FETCHERS.update(orig)
+        self.assertTrue(r["live"])
+        self.assertIn("claude-brand-new-9", r["models"])  # newly launched model surfaced automatically
+
+    def test_models_fall_back_to_curated_on_fetch_error(self) -> None:
+        self._set_key(provider="openai")
+        orig = dict(ai._LIVE_FETCHERS)
+        def boom(_key):
+            raise RuntimeError("rate limited")
+        ai._LIVE_FETCHERS["openai"] = boom
+        try:
+            r = self.client.get("/api/v1/ai/models?provider=openai", headers=self.headers).json()
+        finally:
+            ai._LIVE_FETCHERS.clear(); ai._LIVE_FETCHERS.update(orig)
+        self.assertFalse(r["live"])
+        self.assertIn("gpt-4o", r["models"])  # curated fallback
+
 
 if __name__ == "__main__":
     unittest.main()
