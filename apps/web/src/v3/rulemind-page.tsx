@@ -1286,7 +1286,7 @@ function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onN
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
             <div style={{ background: theme.hover, borderRadius: 12, padding: 12 }}>
               <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.dim, marginBottom: 8 }}>INPUT PREVIEW</div>
-              <pre data-testid="variable-input-preview" style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-code)", color: theme.muted, whiteSpace: "pre-wrap", maxHeight: 320, overflow: "auto" }}>
+              <pre data-testid="variable-input-preview" style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "var(--rm-fs-code)", color: theme.muted, whiteSpace: "pre-wrap", height: 340, minHeight: 160, maxHeight: 640, overflow: "auto", resize: "vertical", background: theme.card, border: "1px solid " + theme.border, borderRadius: 8, padding: 10 }}>
                 {JSON.stringify(connectorMap[sourceId]?.sample_payload ?? {}, null, 2)}
               </pre>
             </div>

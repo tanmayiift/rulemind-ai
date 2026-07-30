@@ -30,6 +30,8 @@ export default function AICopilotPage() {
   const [provider, setProvider] = React.useState("anthropic");
   const [key, setKey] = React.useState("");
   const [model, setModel] = React.useState("");
+  const [modelList, setModelList] = React.useState<{ models: string[]; default: string; live: boolean }>({ models: [], default: "", live: false });
+  const [modelsBusy, setModelsBusy] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState<string | null>(null);
   const [testMsg, setTestMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -52,6 +54,20 @@ export default function AICopilotPage() {
   }, [apiBaseUrl, apiKey]);
 
   React.useEffect(() => { void loadConfig(); }, [loadConfig]);
+
+  // Load the selectable models for the current provider (live from the provider's
+  // /models API when a key is set, else curated) whenever the provider changes.
+  const loadModels = React.useCallback(async (prov: string) => {
+    setModelsBusy(true);
+    try {
+      const r = await apiJson<{ models: string[]; default: string; live: boolean }>(apiBaseUrl, `/api/v1/ai/models?provider=${prov}`, {}, apiKey);
+      setModelList(r);
+      setModel((m) => (m && r.models.includes(m) ? m : (r.default || r.models[0] || "")));
+    } catch { /* keep whatever we have */ }
+    finally { setModelsBusy(false); }
+  }, [apiBaseUrl, apiKey]);
+
+  React.useEffect(() => { void loadModels(provider); }, [loadModels, provider]);
 
   const saveKey = async () => {
     setBusy(true); setSavedMsg(null); setTestMsg(null); setError(null);
@@ -109,8 +125,14 @@ export default function AICopilotPage() {
                 ))}
               </Select>
             </Field>
-            <Field label="Model" hint={`Default: ${DEFAULT_MODEL[provider]}`}>
-              <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={DEFAULT_MODEL[provider]} />
+            <Field label="Model" hint={modelList.live ? "Live from provider — new models appear automatically." : "Curated list (add a key to fetch the live list)."}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Select value={model} onChange={(e) => setModel(e.target.value)} style={{ flex: 1 }}>
+                  {modelList.models.length === 0 ? <option value="">{DEFAULT_MODEL[provider]}</option> : null}
+                  {modelList.models.map((m) => <option key={m} value={m}>{m}{m === modelList.default ? " · default" : ""}</option>)}
+                </Select>
+                <Button variant="secondary" onClick={() => loadModels(provider)} disabled={modelsBusy} title="Refresh model list">{modelsBusy ? "…" : "↻"}</Button>
+              </div>
             </Field>
             <Field label={configured ? "Replace API key" : "API key"} hint={configured ? "Leave blank to keep the current key." : "Stored encrypted; never shown again."}>
               <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={provider === "anthropic" ? "sk-ant-…" : "sk-…"} autoComplete="off" />
