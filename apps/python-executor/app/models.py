@@ -47,6 +47,8 @@ class ApiKey(Base, TimestampMixin):
     # Environment this key is scoped to (dev / prod / sandbox) + a human label.
     environment: Mapped[str] = mapped_column(String(16), default="prod", nullable=False)
     label: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # RBAC role governing what this key may do (owner/admin/policy_maker/reviewer/viewer).
+    role: Mapped[str] = mapped_column(String(32), default="owner", nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 

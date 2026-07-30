@@ -1515,10 +1515,13 @@ class Storage:
             tenant.updated_at = now
             return True
 
-    def generate_api_key_for_tenant(self, tenant_id: str, environment: str = "prod", label: Optional[str] = None) -> Dict[str, Any]:
+    def generate_api_key_for_tenant(self, tenant_id: str, environment: str = "prod", label: Optional[str] = None, role: str = "owner") -> Dict[str, Any]:
+        from .rbac import normalize_role
+
         plaintext = generate_api_key()
         lookup_hash = key_lookup_hash(plaintext)
         env = environment if environment in ("dev", "prod", "sandbox") else "prod"
+        resolved_role = normalize_role(role)
         with self.connect() as session:
             tenant = session.get(Tenant, tenant_id)
             if not tenant:
@@ -1532,6 +1535,7 @@ class Storage:
                 is_active=True,
                 environment=env,
                 label=label,
+                role=resolved_role,
             )
             session.add(model)
             tenant.api_key_hash = lookup_hash
@@ -1543,6 +1547,7 @@ class Storage:
                 "plaintext": plaintext,
                 "environment": env,
                 "label": label,
+                "role": resolved_role,
                 "created_at": serialize_datetime(model.created_at),
             }
 
@@ -1583,6 +1588,9 @@ class Storage:
                     "kid": row.kid,
                     "masked_key": row.masked_key,
                     "is_active": row.is_active,
+                    "environment": row.environment,
+                    "label": row.label,
+                    "role": row.role,
                     "revoked_at": serialize_datetime(row.revoked_at),
                     "last_used_at": serialize_datetime(row.last_used_at),
                     "created_at": serialize_datetime(row.created_at),
@@ -1636,6 +1644,7 @@ class Storage:
                     "id": row.id,
                     "kid": row.kid,
                     "masked_key": row.masked_key,
+                    "role": row.role,
                 },
             }
         if _API_KEY_CACHE_TTL > 0:

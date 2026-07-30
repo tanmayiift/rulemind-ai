@@ -26,8 +26,7 @@ os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
 
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
-
-HEAD = "20260730_0007"
+from alembic.script import ScriptDirectory  # noqa: E402
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -35,6 +34,15 @@ def _alembic_config(db_url: str) -> Config:
     cfg.set_main_option("script_location", str(APP_ROOT / "alembic"))
     cfg.set_main_option("sqlalchemy.url", db_url)
     return cfg
+
+
+# Derive the expected head from the migration scripts so this never needs a manual
+# bump when a new migration is added (and a broken/branched chain fails loudly).
+def _expected_head() -> str:
+    return ScriptDirectory.from_config(_alembic_config("sqlite://")).get_current_head()
+
+
+HEAD = _expected_head()
 
 
 class MigrationChainTests(unittest.TestCase):

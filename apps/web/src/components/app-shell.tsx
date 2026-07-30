@@ -67,6 +67,7 @@ const NAVIGATION: ReadonlyArray<{
     group: "System",
     items: [
       { href: "/settings" as Route, label: "Settings", icon: "settings" },
+      { href: "/access" as Route, label: "Access & Roles", icon: "settings" },
       { href: "/branding" as Route, label: "Branding", icon: "settings" },
     ],
   },
@@ -91,6 +92,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/exports": { title: "Exports", subtitle: "Download, validate, and restore complete RuleMind configurations." },
   "/settings": { title: "Settings", subtitle: "Persist API, engine, audit, source, SDK, and environment defaults." },
   "/branding": { title: "Branding", subtitle: "Admin-only white-label theming — CTA colour, backgrounds, brand name, and visible tabs." },
+  "/access": { title: "Access & Roles", subtitle: "Issue role-scoped API keys (admin, policy maker, reviewer, viewer) and control what each teammate or integration can do." },
   "/workflow-builder": { title: "Workflow Builder", subtitle: "Drag-and-drop canvas for policy steps — connectors, rules, branches, sub-workflows, monitors, and outcomes." },
   "/models": { title: "ML Models", subtitle: "Upload, host, test, and run Python models (.pkl / joblib) as policy steps." },
   "/decision-tables": { title: "Decision Tables", subtitle: "Grid-authored decision logic — condition columns, rows, hit policies, with a live optimiser flagging conflicts, gaps, unreachable rows, and invalid values." },

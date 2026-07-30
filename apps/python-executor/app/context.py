@@ -8,6 +8,19 @@ from typing import Iterator, Optional
 _current_tenant_id: ContextVar[Optional[str]] = ContextVar("rulemind_current_tenant_id", default=None)
 _current_api_key_id: ContextVar[Optional[str]] = ContextVar("rulemind_current_api_key_id", default=None)
 _current_platform_admin_id: ContextVar[Optional[str]] = ContextVar("rulemind_current_platform_admin_id", default=None)
+_current_role: ContextVar[Optional[str]] = ContextVar("rulemind_current_role", default=None)
+
+
+def get_current_role() -> Optional[str]:
+    return _current_role.get()
+
+
+def set_current_role(value: Optional[str]) -> Token:
+    return _current_role.set(value)
+
+
+def reset_current_role(token: Token) -> None:
+    _current_role.reset(token)
 
 
 def get_current_tenant_id() -> Optional[str]:
