@@ -185,7 +185,7 @@ class ReportApiTests(unittest.TestCase):
 
     def test_scheduled_delivery_records_last_run(self):
         import asyncio
-        from app.scheduler import deliver_scheduled_report
+        from app.scheduler import deliver_scheduled_report  # manual/direct call is never leader-gated
 
         self._seed_decisions()
         rid = self._create(schedule={"enabled": True, "cron": "0 9 * * *", "recipients": ["ops@acme.com"]})["id"]

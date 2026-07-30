@@ -11,7 +11,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, desc, func, select, update
+from sqlalchemy import delete, desc, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import (
@@ -45,6 +46,7 @@ from .models import (
     ReportDefinition,
     ReviewTask,
     Rule,
+    SchedulerLease,
     Scorecard,
     SdkEvent,
     Setting,
@@ -2474,3 +2476,43 @@ class Storage:
         with self.connect() as session:
             result = session.execute(delete(ReportDefinition).where(ReportDefinition.tenant_id == resolved, ReportDefinition.public_id == report_id))
             return result.rowcount > 0
+
+    # ---- Scheduler leader lease (multi-replica single-fire) --------------- #
+    def try_acquire_scheduler_lease(self, owner: str, ttl_seconds: int = 30) -> bool:
+        """Atomically acquire or renew the singleton scheduler lease. Returns True
+        iff this owner now holds it. Race-free across replicas: the conditional
+        UPDATE is serialised by the DB, so at most one owner wins per interval."""
+        now = datetime.utcnow()
+        until = now + timedelta(seconds=ttl_seconds)
+        with self.connect() as session:
+            # Take (or keep) leadership if we already own it, or the lease expired.
+            updated = session.execute(
+                update(SchedulerLease)
+                .where(SchedulerLease.id == "singleton",
+                       or_(SchedulerLease.owner == owner, SchedulerLease.lease_until < now))
+                .values(owner=owner, lease_until=until, updated_at=now)
+            )
+            if updated.rowcount and updated.rowcount > 0:
+                return True
+            # No row updated: either it exists and is held by someone else, or it
+            # has never been created. Try to create it (first replica to boot wins).
+            if session.get(SchedulerLease, "singleton") is None:
+                try:
+                    session.add(SchedulerLease(id="singleton", owner=owner, lease_until=until, updated_at=now))
+                    session.flush()
+                    return True
+                except IntegrityError:
+                    session.rollback()  # another replica created it first
+                    return False
+            return False
+
+    def release_scheduler_lease(self, owner: str) -> None:
+        """Relinquish leadership on graceful shutdown so another replica takes over
+        immediately instead of waiting for the lease to expire."""
+        now = datetime.utcnow()
+        with self.connect() as session:
+            session.execute(
+                update(SchedulerLease)
+                .where(SchedulerLease.id == "singleton", SchedulerLease.owner == owner)
+                .values(lease_until=now, updated_at=now)
+            )

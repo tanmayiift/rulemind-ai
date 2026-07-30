@@ -440,3 +440,17 @@ class DecisionTable(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(16), default="dev", nullable=False, index=True)
     last_test_result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+class SchedulerLease(Base):
+    """Single-row leader lease so that, across N API replicas, exactly one runs the
+    scheduled jobs (cron policies, report delivery, review timeouts). A replica
+    holds leadership only while its lease is unexpired; acquisition is a race-free
+    atomic UPDATE (see storage.try_acquire_scheduler_lease)."""
+
+    __tablename__ = "scheduler_lease"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="singleton")
+    owner: Mapped[str] = mapped_column(String(64), nullable=False)
+    lease_until: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
