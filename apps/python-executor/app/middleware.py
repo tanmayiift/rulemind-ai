@@ -7,7 +7,15 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .context import reset_current_api_key_id, reset_current_tenant_id, set_current_api_key_id, set_current_tenant_id
+from .context import (
+    reset_current_api_key_id,
+    reset_current_role,
+    reset_current_tenant_id,
+    set_current_api_key_id,
+    set_current_role,
+    set_current_tenant_id,
+)
+from .rbac import is_allowed
 from .runtime import rate_limit_allow
 
 
@@ -66,14 +74,25 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if not allowed:
             return JSONResponse(status_code=429, headers={"Retry-After": str(retry_after)}, content={"error": "Rate limit exceeded"})
 
+        # RBAC: the key's role must hold the capability this request needs.
+        role = resolved["api_key"].get("role", "owner")
+        if not is_allowed(role, request.method, path):
+            return JSONResponse(status_code=403, content={
+                "error": "Forbidden",
+                "detail": "Role '{0}' is not permitted to {1} {2}.".format(role, request.method, path),
+            })
+
         request.state.tenant_id = tenant["id"]
         request.state.api_key_id = resolved["api_key"]["id"]
+        request.state.role = role
         tenant_token = set_current_tenant_id(tenant["id"])
         api_key_token = set_current_api_key_id(resolved["api_key"]["id"])
+        role_token = set_current_role(role)
         try:
             response = await call_next(request)
             return response
         finally:
+            reset_current_role(role_token)
             reset_current_api_key_id(api_key_token)
             reset_current_tenant_id(tenant_token)
 

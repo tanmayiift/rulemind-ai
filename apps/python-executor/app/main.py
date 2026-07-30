@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .auth import JWT_COOKIE_NAME, bcrypt_verify, create_admin_jwt, decode_admin_jwt
 from .analytics import decision_analytics, experiment_analytics, latency_analytics, sdk_analytics
 from .compiler import BundleCompilationError, NoProductionAssetsError, compile_bundle, render_bundle_response
-from .context import get_current_tenant_id
+from .context import get_current_api_key_id, get_current_role, get_current_tenant_id
 from .experience_studio import ADMIN_ENTITY_SCHEMAS, build_experience_manifest
 from .executor import ExecutionContext, PolicyExecutor
 from .logic import (
@@ -941,6 +941,12 @@ def active_tenant_id(request: Optional[Request] = None) -> str:
     if get_current_tenant_id():
         return str(get_current_tenant_id())
     return str(storage.default_tenant_id or "")
+
+
+def active_role(request: Optional[Request] = None) -> str:
+    if request is not None and getattr(request.state, "role", None):
+        return str(request.state.role)
+    return str(get_current_role() or "owner")
 
 
 def public_api_base_url(request: Optional[Request] = None) -> str:
@@ -2142,6 +2148,73 @@ def ai_test(request: AITestRequest) -> Dict[str, Any]:
     if not creds:
         raise HTTPException(status_code=422, detail="No API key configured for that provider.")
     return test_connection(creds["provider"], creds["api_key"], creds.get("model"))
+
+
+# ── Access & Roles (RBAC) ──────────────────────────────────────────────────────
+
+class AccessKeyRequest(BaseModel):
+    role: str
+    label: Optional[str] = None
+    environment: str = "prod"
+
+
+@app.get("/api/v1/access/me")
+def access_me() -> Dict[str, Any]:
+    """The caller's own role + capabilities — lets the UI adapt to permissions."""
+    from .rbac import capabilities_for
+
+    role = active_role()
+    return {"role": role, "capabilities": sorted(capabilities_for(role))}
+
+
+@app.get("/api/v1/access/roles")
+def access_roles() -> Dict[str, Any]:
+    """Reference: the assignable roles, their capabilities, and descriptions."""
+    from .rbac import ASSIGNABLE_ROLES, ROLE_CAPABILITIES, ROLE_DESCRIPTIONS
+
+    return {
+        "assignable": ASSIGNABLE_ROLES,
+        "roles": [
+            {"role": r, "capabilities": sorted(ROLE_CAPABILITIES[r]), "description": ROLE_DESCRIPTIONS.get(r, "")}
+            for r in ["owner", *ASSIGNABLE_ROLES]
+        ],
+    }
+
+
+@app.get("/api/v1/access/keys")
+def access_list_keys() -> List[Dict[str, Any]]:
+    """List this workspace's API keys with their roles (keys are masked)."""
+    key_id = get_current_api_key_id()
+    keys = storage.list_api_keys(active_tenant_id())
+    for k in keys:
+        if key_id and k.get("id") == key_id:
+            k["is_current"] = True
+    return keys
+
+
+@app.post("/api/v1/access/keys")
+def access_create_key(request: AccessKeyRequest) -> Dict[str, Any]:
+    """Issue a new role-scoped API key for this workspace (requires manage_access)."""
+    from .rbac import ASSIGNABLE_ROLES
+
+    if request.role not in ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=422, detail="Role must be one of: {0}".format(", ".join(ASSIGNABLE_ROLES)))
+    return storage.generate_api_key_for_tenant(
+        active_tenant_id(), environment=request.environment, label=request.label, role=request.role,
+    )
+
+
+@app.delete("/api/v1/access/keys/{kid}")
+def access_revoke_key(kid: str) -> Dict[str, Any]:
+    """Revoke an API key by its kid (requires manage_access). Cannot revoke the key
+    used for this very request."""
+    keys = storage.list_api_keys(active_tenant_id())
+    current = next((k for k in keys if k.get("id") == get_current_api_key_id()), None)
+    if current and current.get("kid") == kid:
+        raise HTTPException(status_code=409, detail="You cannot revoke the key you are currently using.")
+    if not storage.revoke_api_key(active_tenant_id(), kid):
+        raise HTTPException(status_code=404, detail="Key not found or already revoked.")
+    return {"revoked": True, "kid": kid}
 
 
 @app.post("/api/v1/ai/generate-rule")
