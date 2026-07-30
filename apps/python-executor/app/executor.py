@@ -648,7 +648,13 @@ class PolicyExecutor:
         source: str = "api",
         sdk_version: Optional[str] = None,
         experiment_variant: Optional[str] = None,
+        simulate: bool = False,
     ) -> ExecutionContext:
+        # Simulation/backtest mode: compute the outcome without any side effects —
+        # no decision log, no WorkflowExecution row, and review gates resolve to a
+        # terminal "review" instead of pausing + creating a task. Lets a batch of
+        # thousands of what-if cases run concurrently without DB write contention.
+        self._simulate = simulate
         if resume_from:
             ctx = resume_from
             ctx.status = "running"
@@ -683,7 +689,9 @@ class PolicyExecutor:
         # win, but it changes the workload, so it is opt-in rather than default.
         if not resume_from:
             needed = None
-            if os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1":
+            # Simulation only needs the variables the policy actually reads —
+            # computing the full catalog per case is the dominant backtest cost.
+            if simulate or os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1":
                 needed = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
             self._compute_variables(ctx, needed_ids=needed)
 
@@ -692,13 +700,17 @@ class PolicyExecutor:
         self._visited_workflows = {policy["id"]}
         await self._run_steps(steps, ctx, rules, scorecards, connectors, source, depth=0, start_index=start_step)
         if ctx.status == "paused":
-            self._persist_execution(ctx, trigger_type=source)
+            if not self._simulate:
+                self._persist_execution(ctx, trigger_type=source)
             return ctx
 
         if ctx.status == "running":
             ctx.status = "completed"
         ctx.completed_at = datetime.utcnow()
         ctx.total_latency_ms = int((ctx.completed_at - ctx.started_at).total_seconds() * 1000)
+        # Simulation is a pure what-if: no decision log, no execution row.
+        if self._simulate:
+            return ctx
         # A WorkflowExecution row only exists so a paused execution can be resumed.
         # A one-shot decision that never paused (and whose policy has no review
         # gate) needs no such row — skipping this write roughly halves the DB
@@ -967,6 +979,11 @@ class PolicyExecutor:
         condition = config.get("condition")
         if condition and not evaluate_condition(condition, self._context_view(ctx)):
             return {"skipped": True, "reason": "Condition not met"}
+        # In simulation, a review gate is a terminal "review" outcome — never pause
+        # or create a human task (that would persist rows and stall a backtest).
+        if getattr(self, "_simulate", False):
+            ctx.outcome = _merge_outcome(ctx.outcome, "review")
+            return {"simulated": True, "outcome": "review"}
         timeout_hours = int(config.get("timeoutHours", 48))
         # Human routing + SLA (stored in the snapshot; no schema change needed).
         sla_hours = config.get("slaHours")

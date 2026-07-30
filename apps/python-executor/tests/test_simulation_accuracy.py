@@ -89,6 +89,26 @@ class SimulationAccuracyTests(unittest.TestCase):
         outcomes = {(row.get("result") or {}).get("outcome") or row.get("outcome") for row in res["rows"]}
         self.assertGreater(len(outcomes), 1, res)
 
+    def test_batch_reports_throughput_and_does_not_persist(self):
+        # Simulation is a pure what-if: it returns real throughput and logs nothing.
+        before = self.client.get("/api/v1/audit/decisions?limit=1", headers=self.headers).json()
+        payloads = [self._case(700 + (i % 100)) for i in range(60)]
+        res = self.client.post("/api/v1/decide/batch", headers=self.headers,
+                               json={"targetType": "decide", "targetId": POLICY, "payloads": payloads}).json()
+        perf = res["performance"]
+        self.assertIn(perf["path"], {"fast", "full_executor"})
+        self.assertIsNotNone(perf["throughput_tps"])
+        self.assertGreaterEqual(perf["workers"], 4)
+        # no simulated decision was written to the audit log
+        after = self.client.get("/api/v1/audit/decisions?limit=1", headers=self.headers).json()
+        self.assertEqual(len(before), len(after))
+
+    def test_batch_rows_preserve_input_order(self):
+        payloads = [self._case(s) for s in (520, 800, 610)]
+        res = self.client.post("/api/v1/decide/batch", headers=self.headers,
+                               json={"targetType": "decide", "targetId": POLICY, "payloads": payloads}).json()
+        self.assertEqual([r["index"] for r in res["rows"]], [0, 1, 2])
+
 
 class FastPathAccuracyTests(unittest.TestCase):
     def test_flat_field_overrides_sample_on_fast_path(self):

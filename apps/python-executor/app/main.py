@@ -2507,12 +2507,56 @@ def workflow_loop_debug(request: LoopDebugRequest) -> Dict[str, Any]:
 
 @app.post("/api/v1/decide/batch")
 def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
+    """Backtest a policy over many cases. Runs concurrently and in *simulation*
+    mode — no decision is logged and review gates don't pause — so thousands of
+    what-if cases execute without DB-write contention. Uses the fast (cached-bundle
+    / Rust) path for pure-compute policies, the full executor otherwise. Returns a
+    `performance` block with real server-side throughput."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .fast_decide import fast_decide, is_fast_servable
+
     if not request.targetId:
         raise HTTPException(status_code=422, detail="targetId is required for decision batches.")
-    rows = []
-    for index, payload in enumerate(request.payloads):
-        rows.append({"index": index, "result": decide(DecideRequest(policy_id=request.targetId, payload=payload))})
-    return {"targetType": "decide", "targetId": request.targetId, "rows": rows, "count": len(rows)}
+    # Resolve tenant + policy in the request thread (worker threads have no context).
+    tenant_id = active_tenant_id()
+    policy = ensure_exists(storage.get_policy(request.targetId, tenant_id=tenant_id), "policy", request.targetId)
+    use_fast = is_fast_servable(policy)
+    payloads = request.payloads or []
+    workers = min(int(os.getenv("SIM_MAX_WORKERS", "32")), max(4, (os.cpu_count() or 4) * 4))
+    default_outcome = policy.get("defaultOutcome") or "review"
+
+    def _one(item: tuple) -> tuple:
+        index, payload = item
+        try:
+            if use_fast:
+                d = fast_decide(storage, policy, payload or {}, tenant_id, log=False)
+                return index, {"index": index, "result": {"policy_id": policy["id"], "outcome": d["outcome"], "latency_ms": d.get("latency_ms")}}
+            ctx = asyncio.run(PolicyExecutor(storage).execute(
+                policy=policy, payload=payload or {}, tenant_id=tenant_id, source="simulation", simulate=True))
+            outcome = ctx.outcome if ctx.outcome != "pending" else default_outcome
+            return index, {"index": index, "result": {"policy_id": policy["id"], "outcome": outcome, "latency_ms": ctx.total_latency_ms}}
+        except Exception as exc:  # a bad case must not sink the batch
+            return index, {"index": index, "result": {"policy_id": policy["id"], "outcome": "error", "error": str(exc)}}
+
+    rows: List[Optional[Dict[str, Any]]] = [None] * len(payloads)
+    started = time.perf_counter()
+    if payloads:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for index, row in pool.map(_one, enumerate(payloads)):
+                rows[index] = row
+    elapsed = time.perf_counter() - started
+    tps = round(len(payloads) / elapsed) if elapsed > 0 and payloads else None
+    return {
+        "targetType": "decide", "targetId": request.targetId, "rows": rows, "count": len(rows),
+        "performance": {
+            "server_ms": round(elapsed * 1000, 1),
+            "throughput_tps": tps,
+            "avg_ms": round(elapsed * 1000 / len(payloads), 3) if payloads else None,
+            "path": "fast" if use_fast else "full_executor",
+            "workers": workers,
+        },
+    }
 
 
 @app.get("/api/v1/deploy/status")
