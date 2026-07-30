@@ -8,7 +8,7 @@ import os
 import time as _time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, Iterator, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, desc, func, or_, select, update
@@ -36,6 +36,7 @@ from .models import (
     CronSchedule,
     Decision,
     DecisionTable,
+    EmailOutbox,
     EntityHistory,
     ErrorEvent,
     Experiment,
@@ -1201,6 +1202,40 @@ class Storage:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             return int(session.scalar(select(func.count()).select_from(Decision).where(Decision.tenant_id == resolved)) or 0)
+
+    def iter_decisions_window(
+        self,
+        tenant_id: Optional[str] = None,
+        since: Optional[datetime] = None,
+        max_rows: int = 100000,
+        page_size: int = 2000,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Fetch decisions within a time window, paginated at the DB level so a
+        report is complete (no silent 1000-row truncation) while memory stays
+        bounded. The date filter is pushed into the query; returns
+        (decisions, truncated) where truncated=True means max_rows was hit."""
+        resolved = self._tenant_id(tenant_id)
+        collected: List[Dict[str, Any]] = []
+        truncated = False
+        with self.connect() as session:
+            base = select(Decision).where(Decision.tenant_id == resolved)
+            if since is not None:
+                base = base.where(Decision.created_at >= since)
+            base = base.order_by(desc(Decision.created_at))
+            offset = 0
+            while len(collected) < max_rows:
+                rows = session.scalars(base.limit(page_size).offset(offset)).all()
+                if not rows:
+                    break
+                for row in rows:
+                    collected.append(self._decision_to_dict(row))
+                    if len(collected) >= max_rows:
+                        truncated = True
+                        break
+                if len(rows) < page_size:
+                    break
+                offset += page_size
+        return collected, truncated
 
     def add_promotion(self, entity_type: str, entity_id: str, from_status: str, to_status: str, promoted_by: str, reason: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id)
@@ -2476,6 +2511,63 @@ class Storage:
         with self.connect() as session:
             result = session.execute(delete(ReportDefinition).where(ReportDefinition.tenant_id == resolved, ReportDefinition.public_id == report_id))
             return result.rowcount > 0
+
+    # ---- Durable email outbox (report delivery) -------------------------- #
+    @staticmethod
+    def _outbox_to_dict(row: EmailOutbox) -> Dict[str, Any]:
+        return {
+            "id": row.id, "tenant_id": row.tenant_id, "recipients": list(row.recipients or []),
+            "subject": row.subject, "body": row.body, "csv_content": row.csv_content,
+            "csv_filename": row.csv_filename, "status": row.status, "attempts": row.attempts,
+            "last_error": row.last_error, "created_at": serialize_datetime(row.created_at),
+        }
+
+    def enqueue_email(self, data: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id or data.get("tenant_id"))
+        with self.connect() as session:
+            row = EmailOutbox(
+                tenant_id=resolved,
+                recipients=copy.deepcopy(data.get("recipients") or []),
+                subject=data.get("subject", ""),
+                body=data.get("body", ""),
+                csv_content=data.get("csv_content", ""),
+                csv_filename=data.get("csv_filename", "report.csv"),
+                status=data.get("status", "pending"),
+                attempts=int(data.get("attempts", 0)),
+                last_error=data.get("last_error"),
+            )
+            session.add(row)
+            session.flush()
+            return self._outbox_to_dict(row)
+
+    def list_pending_emails(self, max_attempts: int = 5, limit: int = 100) -> List[Dict[str, Any]]:
+        with self.connect() as session:
+            rows = session.scalars(
+                select(EmailOutbox).where(EmailOutbox.status == "pending", EmailOutbox.attempts < max_attempts)
+                .order_by(EmailOutbox.created_at).limit(limit)
+            ).all()
+            return [self._outbox_to_dict(row) for row in rows]
+
+    def mark_email(self, email_id: str, status: str, error: Optional[str] = None, increment_attempt: bool = False) -> None:
+        with self.connect() as session:
+            row = session.get(EmailOutbox, email_id)
+            if not row:
+                return
+            row.status = status
+            if error is not None:
+                row.last_error = error
+            if increment_attempt:
+                row.attempts = (row.attempts or 0) + 1
+            row.updated_at = datetime.utcnow()
+
+    def count_outbox(self, status: Optional[str] = None, tenant_id: Optional[str] = None) -> int:
+        with self.connect() as session:
+            stmt = select(func.count()).select_from(EmailOutbox)
+            if tenant_id:
+                stmt = stmt.where(EmailOutbox.tenant_id == self._tenant_id(tenant_id))
+            if status:
+                stmt = stmt.where(EmailOutbox.status == status)
+            return int(session.scalar(stmt) or 0)
 
     # ---- Scheduler leader lease (multi-replica single-fire) --------------- #
     def try_acquire_scheduler_lease(self, owner: str, ttl_seconds: int = 30) -> bool:

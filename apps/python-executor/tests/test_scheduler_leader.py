@@ -88,7 +88,7 @@ class JobGatingTests(unittest.TestCase):
                                     "schedule": {"enabled": True, "cron": "0 9 * * *", "recipients": ["a@b.com"]}},
                                    tenant_id=tenant)
         out = asyncio.run(self.sched._scheduled_report(self.storage, "r2", tenant))
-        self.assertIn(out.get("transport"), {"outbox", "smtp"})
+        self.assertIn(out.get("transport"), {"unconfigured", "smtp"})
 
     def test_manual_delivery_is_never_gated(self):
         # deliver_scheduled_report (used by manual paths) runs regardless of leadership.
@@ -99,7 +99,7 @@ class JobGatingTests(unittest.TestCase):
                                     "schedule": {"enabled": True, "cron": "0 9 * * *", "recipients": ["a@b.com"]}},
                                    tenant_id=tenant)
         out = asyncio.run(self.sched.deliver_scheduled_report(self.storage, "r4", tenant))
-        self.assertIn(out.get("transport"), {"outbox", "smtp"})
+        self.assertIn(out.get("transport"), {"unconfigured", "smtp"})
 
     def test_delete_report_is_scoped_and_safe(self):
         tenant = self.storage.default_tenant_id

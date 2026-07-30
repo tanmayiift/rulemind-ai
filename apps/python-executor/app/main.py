@@ -3616,9 +3616,9 @@ def put_report_email_config(request: EmailConfigRequest) -> Dict[str, Any]:
 
 @app.post("/api/v1/reports/preview")
 def preview_report(draft: ReportDraft) -> Dict[str, Any]:
-    from .reports import generate_report
+    from .scheduler import generate_report_for
 
-    result = generate_report(draft.model_dump(), _decisions_for_report())
+    result = generate_report_for(storage, draft.model_dump(), active_tenant_id())
     result.pop("csv", None)  # preview is JSON rows; CSV is a separate download
     return result
 
@@ -3669,24 +3669,24 @@ def delete_report(report_id: str) -> Dict[str, Any]:
 
 @app.post("/api/v1/reports/{report_id}/run")
 def run_report(report_id: str) -> Dict[str, Any]:
-    from .reports import generate_report
+    from .scheduler import generate_report_for
 
     report = storage.get_report(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found.")
-    result = generate_report(report, _decisions_for_report())
+    result = generate_report_for(storage, report, active_tenant_id())
     result.pop("csv", None)
     return result
 
 
 @app.get("/api/v1/reports/{report_id}/export.csv")
 def export_report_csv(report_id: str) -> Response:
-    from .reports import generate_report
+    from .scheduler import generate_report_for
 
     report = storage.get_report(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found.")
-    result = generate_report(report, _decisions_for_report())
+    result = generate_report_for(storage, report, active_tenant_id())
     return Response(
         content=result["csv"],
         media_type="text/csv",
@@ -3694,28 +3694,31 @@ def export_report_csv(report_id: str) -> Response:
     )
 
 
-@app.post("/api/v1/reports/{report_id}/send")
-def send_report_now(report_id: str) -> Dict[str, Any]:
-    """Generate the report and email it to the schedule's recipients now."""
-    from .reports import generate_report
-    from .mailer import send_report_email
+def _send_report_and_record(report_id: str, tenant_id: str, report: Dict[str, Any], result: Dict[str, Any], recipients: List[str]) -> None:
+    """Background task: the blocking SMTP send + last_run write, off the request path."""
+    from .scheduler import deliver_report_result
 
-    report = storage.get_report(report_id)
+    delivery = deliver_report_result(storage, tenant_id, report, result, recipients)
+    storage.update_report(report_id, {"last_run": {
+        "generated_at": result["generated_at"], "row_count": result["row_count"],
+        "truncated": result.get("truncated", False), "delivery": delivery,
+    }}, tenant_id=tenant_id)
+
+
+@app.post("/api/v1/reports/{report_id}/send")
+def send_report_now(report_id: str, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    """Generate the report now and email it in the background (SMTP never blocks the
+    request). Delivery is durable: a failed/unconfigured send is queued + retried."""
+    from .scheduler import generate_report_for
+
+    tenant_id = active_tenant_id()
+    report = storage.get_report(report_id, tenant_id=tenant_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found.")
-    result = generate_report(report, _decisions_for_report())
+    result = generate_report_for(storage, report, tenant_id)
     recipients = (report.get("schedule") or {}).get("recipients") or []
-    email_config = storage.get_email_credentials()
-    delivery = send_report_email(
-        email_config, recipients,
-        subject=f"[RuleMind] {report['name']} — {result['row_count']} rows",
-        body=f"Your scheduled report \"{report['name']}\" is attached ({result['row_count']} rows, timezone {result['timezone']}).",
-        csv_content=result["csv"], csv_filename=f"{report_id}.csv",
-    )
-    storage.update_report(report_id, {"last_run": {
-        "generated_at": result["generated_at"], "row_count": result["row_count"], "delivery": delivery,
-    }})
-    return {"row_count": result["row_count"], "delivery": delivery}
+    background_tasks.add_task(_send_report_and_record, report_id, tenant_id, report, result, recipients)
+    return {"row_count": result["row_count"], "truncated": result.get("truncated", False), "status": "sending"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -79,18 +79,25 @@ class ReportUnitTests(unittest.TestCase):
 
 class MailerUnitTests(unittest.TestCase):
     def setUp(self):
-        mailer.OUTBOX.clear()
         self._orig = mailer._SMTP_FACTORY
 
     def tearDown(self):
         mailer._SMTP_FACTORY = self._orig
-        mailer.OUTBOX.clear()
 
-    def test_outbox_when_not_configured(self):
+    def test_unconfigured_reports_transport(self):
+        # No SMTP -> not delivered, flagged so the caller queues it durably.
         res = mailer.send_report_email(None, ["a@b.com"], "S", "B", "col\n1\n")
         self.assertFalse(res["delivered"])
-        self.assertEqual(res["transport"], "outbox")
-        self.assertEqual(len(mailer.OUTBOX), 1)
+        self.assertEqual(res["transport"], "unconfigured")
+
+    def test_failed_send_reports_transport(self):
+        def boom(cfg):
+            raise RuntimeError("connection refused")
+        mailer._SMTP_FACTORY = boom
+        res = mailer.send_report_email({"host": "smtp.x", "from_addr": "r@x.com"}, ["a@b.com"], "S", "B", "x")
+        self.assertFalse(res["delivered"])
+        self.assertEqual(res["transport"], "failed")
+        self.assertIn("connection refused", res["error"])
 
     def test_smtp_send_with_injected_transport(self):
         sent = {}
@@ -118,7 +125,6 @@ class ReportApiTests(unittest.TestCase):
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "rep.db"))
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
-        mailer.OUTBOX.clear()
 
     def tearDown(self):
         self.client.close()
@@ -166,13 +172,15 @@ class ReportApiTests(unittest.TestCase):
         sug = self.client.get("/api/v1/reports/column-suggestions", headers=self.headers).json()
         self.assertTrue(any(c["path"] == "outcome" for c in sug["columns"]))
 
-    def test_send_uses_outbox_without_smtp(self):
+    def test_send_queues_to_durable_outbox_without_smtp(self):
         self._seed_decisions()
         rid = self._create(schedule={"enabled": True, "cron": "0 9 * * *", "recipients": ["ops@acme.com"]})["id"]
+        # TestClient runs the background task after the response, so by return the
+        # send has been attempted and (no SMTP) durably queued.
         res = self.client.post(f"/api/v1/reports/{rid}/send", headers=self.headers).json()
-        self.assertEqual(res["delivery"]["transport"], "outbox")  # no SMTP configured
-        self.assertEqual(mailer.OUTBOX[-1]["to"], ["ops@acme.com"])
-        # last_run recorded
+        self.assertEqual(res["status"], "sending")
+        tenant = app_main.storage.default_tenant_id
+        self.assertEqual(app_main.storage.count_outbox(status="pending", tenant_id=tenant), 1)
         self.assertIsNotNone(self.client.get(f"/api/v1/reports/{rid}", headers=self.headers).json()["last_run"])
 
     def test_email_config_roundtrip_masks_password(self):
@@ -191,8 +199,43 @@ class ReportApiTests(unittest.TestCase):
         rid = self._create(schedule={"enabled": True, "cron": "0 9 * * *", "recipients": ["ops@acme.com"]})["id"]
         tenant = app_main.storage.default_tenant_id
         delivery = asyncio.run(deliver_scheduled_report(app_main.storage, rid, tenant))
-        self.assertIn(delivery["transport"], {"outbox", "smtp"})
+        self.assertIn(delivery["transport"], {"unconfigured", "smtp"})
         self.assertIsNotNone(app_main.storage.get_report(rid, tenant_id=tenant)["last_run"])
+        # no SMTP -> durably queued for retry
+        self.assertEqual(app_main.storage.count_outbox(status="pending", tenant_id=tenant), 1)
+
+    def test_report_is_not_truncated_beyond_1000_rows(self):
+        # Regression for the silent 1000-row cap: a window wider than 1000 decisions
+        # must include them all.
+        tenant = app_main.storage.default_tenant_id
+        for i in range(1050):
+            app_main.storage.add_decision({
+                "id": f"d{i}", "policy_id": "p", "outcome": "approve", "latency_ms": 1,
+                "source": "api", "payload_preview": {}, "computed_variables": {}, "rule_results": [], "trace": [],
+            }, tenant_id=tenant)
+        report = self._create()  # 30-day window, id+outcome columns
+        run = self.client.post(f"/api/v1/reports/{report['id']}/run", headers=self.headers).json()
+        self.assertGreaterEqual(run["row_count"], 1050)
+        self.assertFalse(run.get("truncated", False))
+
+    def test_outbox_retry_drains_when_smtp_becomes_available(self):
+        import asyncio
+        import app.mailer as mailer_mod
+        import app.scheduler as sched
+
+        sched._IS_LEADER = True
+        self.addCleanup(setattr, sched, "_IS_LEADER", False)
+        tenant = app_main.storage.default_tenant_id
+        app_main.storage.enqueue_email({"tenant_id": tenant, "recipients": ["a@b.com"], "subject": "S",
+                                        "body": "B", "csv_content": "x", "csv_filename": "r.csv"}, tenant_id=tenant)
+        # configure SMTP + a working fake transport, then drain
+        app_main.storage.set_email_config({"host": "smtp.x", "from_addr": "r@x.com", "password": "p"}, tenant_id=tenant)
+        sent = []
+        mailer_mod._SMTP_FACTORY = lambda cfg: type("F", (), {"send_message": lambda self, m: sent.append(m["To"]), "quit": lambda self: None})()
+        self.addCleanup(setattr, mailer_mod, "_SMTP_FACTORY", None)
+        out = asyncio.run(sched.retry_outbox(app_main.storage))
+        self.assertEqual(out["sent"], 1)
+        self.assertEqual(app_main.storage.count_outbox(status="pending", tenant_id=tenant), 0)
 
 
 if __name__ == "__main__":
