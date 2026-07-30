@@ -1,12 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Trash2, Copy, ShieldCheck, KeyRound } from "lucide-react";
+import { Plus, Trash2, Copy, ShieldCheck, KeyRound, UserPlus, Users } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { Button, Card, Field, Input, Select, Badge, EmptyState, PageHeader, SectionTitle } from "../../src/v3/ui";
 
 type ApiKey = { id: string; kid: string; masked_key: string; role: string; label?: string; environment?: string; is_active: boolean; is_current?: boolean; created_at?: string };
+type Member = { id: string; email: string; name: string; role: string; is_active: boolean; has_password: boolean; auth_provider: string; last_login_at?: string | null };
 type RoleRef = { role: string; capabilities: string[]; description: string };
 type Me = { role: string; capabilities: string[] };
 type RolesResp = { assignable: string[]; roles: RoleRef[] };
@@ -28,6 +29,11 @@ export default function AccessPage() {
   const [newLabel, setNewLabel] = React.useState("");
   const [newEnv, setNewEnv] = React.useState("prod");
   const [issued, setIssued] = React.useState<{ plaintext: string; role: string } | null>(null);
+  const [members, setMembers] = React.useState<Member[]>([]);
+  const [mEmail, setMEmail] = React.useState("");
+  const [mName, setMName] = React.useState("");
+  const [mRole, setMRole] = React.useState("viewer");
+  const [mPassword, setMPassword] = React.useState("");
 
   const canManage = me?.capabilities?.includes("manage_access") ?? false;
 
@@ -40,6 +46,7 @@ export default function AccessPage() {
       setMe(m); setRoles(r);
       setNewRole(r.assignable[r.assignable.length - 1] ?? "viewer");
       try { setKeys(await apiJson<ApiKey[]>(apiBaseUrl, "/api/v1/access/keys", {}, apiKey)); } catch { /* read may be limited */ }
+      try { setMembers(await apiJson<Member[]>(apiBaseUrl, "/api/v1/access/members", {}, apiKey)); } catch { /* read may be limited */ }
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to load access settings.");
@@ -67,7 +74,36 @@ export default function AccessPage() {
     } catch (e) { setError(e instanceof Error ? e.message : "Revoke failed."); }
   };
 
+  const createMember = async () => {
+    setError(null);
+    try {
+      await apiJson(apiBaseUrl, "/api/v1/access/members", {
+        method: "POST",
+        body: JSON.stringify({ email: mEmail, name: mName || undefined, role: mRole, password: mPassword || undefined }),
+      }, apiKey);
+      setMEmail(""); setMName(""); setMPassword("");
+      await load();
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not add member."); }
+  };
+
+  const changeMemberRole = async (id: string, role: string) => {
+    setError(null);
+    try {
+      await apiJson(apiBaseUrl, `/api/v1/access/members/${id}`, { method: "PATCH", body: JSON.stringify({ role }) }, apiKey);
+      await load();
+    } catch (e) { setError(e instanceof Error ? e.message : "Role change failed."); }
+  };
+
+  const deactivateMember = async (id: string) => {
+    setError(null);
+    try {
+      await apiJson(apiBaseUrl, `/api/v1/access/members/${id}`, { method: "DELETE" }, apiKey);
+      await load();
+    } catch (e) { setError(e instanceof Error ? e.message : "Deactivate failed."); }
+  };
+
   const activeKeys = keys.filter((k) => k.is_active);
+  const assignable = roles?.assignable ?? [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -87,6 +123,68 @@ export default function AccessPage() {
           </div>
         </Card>
       ) : null}
+
+      {/* Team members (human accounts with roles) */}
+      <Card>
+        <SectionTitle
+          right={<span style={{ fontSize: 12, color: "var(--rm-muted)" }}>{members.filter((m) => m.is_active).length} active</span>}
+        >
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Users size={15} /> Team members</span>
+        </SectionTitle>
+        <div style={{ fontSize: 12.5, color: "var(--rm-muted)", marginBottom: 12 }}>
+          People who sign in to this workspace. Each member carries a role; they log in with a password or an emailed one-time code at <code style={{ fontFamily: "monospace" }}>/login</code>.
+        </div>
+        {canManage ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px 1fr auto", gap: 10, alignItems: "end", marginBottom: 14 }}>
+            <Field label="Email"><Input value={mEmail} onChange={(e) => setMEmail(e.target.value)} placeholder="teammate@company.com" /></Field>
+            <Field label="Name"><Input value={mName} onChange={(e) => setMName(e.target.value)} placeholder="Full name" /></Field>
+            <Field label="Role">
+              <Select value={mRole} onChange={(e) => setMRole(e.target.value)}>
+                {assignable.map((r) => <option key={r} value={r}>{ROLE_LABEL[r] ?? r}</option>)}
+              </Select>
+            </Field>
+            <Field label="Temp password (optional)"><Input type="password" value={mPassword} onChange={(e) => setMPassword(e.target.value)} placeholder="blank = OTP-only" /></Field>
+            <Button onClick={createMember} disabled={!mEmail}><UserPlus size={15} /> Add</Button>
+          </div>
+        ) : null}
+        {members.length === 0 ? (
+          <EmptyState icon={<Users size={20} />} title="No members yet" hint="Add a teammate so they can sign in with their own role." />
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>{["Member", "Role", "Sign-in", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "8px 6px", fontSize: 11, fontWeight: 700, color: "var(--rm-muted)", textTransform: "uppercase", letterSpacing: 0.4, borderBottom: "2px solid var(--rm-border)" }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {members.map((m) => (
+                  <tr key={m.id} style={{ borderBottom: "1px solid var(--rm-border)", opacity: m.is_active ? 1 : 0.5 }}>
+                    <td style={{ padding: "8px 6px" }}>
+                      <div style={{ fontWeight: 600 }}>{m.name}</div>
+                      <div style={{ fontSize: 12, color: "var(--rm-muted)" }}>{m.email}</div>
+                    </td>
+                    <td style={{ padding: "8px 6px" }}>
+                      {canManage && m.is_active ? (
+                        <Select value={m.role} onChange={(e) => changeMemberRole(m.id, e.target.value)} style={{ minWidth: 130 }}>
+                          {assignable.map((r) => <option key={r} value={r}>{ROLE_LABEL[r] ?? r}</option>)}
+                        </Select>
+                      ) : <Badge tone={ROLE_TONE[m.role] ?? "neutral"}>{ROLE_LABEL[m.role] ?? m.role}</Badge>}
+                    </td>
+                    <td style={{ padding: "8px 6px", color: "var(--rm-muted)", fontSize: 12 }}>{m.has_password ? "Password + OTP" : "OTP only"}</td>
+                    <td style={{ padding: "8px 6px" }}>{m.is_active ? <Badge tone="success">Active</Badge> : <Badge tone="neutral">Disabled</Badge>}</td>
+                    <td style={{ padding: "8px 6px", textAlign: "right" }}>
+                      {canManage && m.is_active ? (
+                        <button onClick={() => deactivateMember(m.id)} title="Deactivate" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--rm-muted)" }}><Trash2 size={15} /></button>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 340px", gap: 20, alignItems: "start" }}>
         {/* Keys */}

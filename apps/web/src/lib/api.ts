@@ -1,5 +1,23 @@
 "use client";
 
+// A human-login session bearer token, when one is active. It takes precedence over
+// the (dev) API key: a logged-in member acts as themselves with their own role, so
+// we send Authorization: Bearer and omit x-api-key. Kept in sync with the store.
+let _bearerToken = "";
+
+export function setBearerToken(token: string): void {
+  _bearerToken = token || "";
+}
+
+export function getBearerToken(): string {
+  return _bearerToken;
+}
+
+function authHeaders(apiKey: string): Record<string, string> {
+  if (_bearerToken) return { Authorization: `Bearer ${_bearerToken}` };
+  return apiKey ? { "x-api-key": apiKey } : {};
+}
+
 export async function apiJson<T>(
   apiBaseUrl: string,
   path: string,
@@ -12,7 +30,7 @@ export async function apiJson<T>(
       ...init,
       headers: {
         ...(init.body ? { "content-type": "application/json" } : {}),
-        ...(apiKey ? { "x-api-key": apiKey } : {}),
+        ...authHeaders(apiKey),
         ...(init.headers ?? {}),
       },
       cache: "no-store",
@@ -40,7 +58,7 @@ export async function apiText(
     response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}${path}`, {
       ...init,
       headers: {
-        ...(apiKey ? { "x-api-key": apiKey } : {}),
+        ...authHeaders(apiKey),
         ...(init.headers ?? {}),
       },
       cache: "no-store",

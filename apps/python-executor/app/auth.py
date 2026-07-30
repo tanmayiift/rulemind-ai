@@ -76,6 +76,26 @@ def generate_rsa_keypair_material() -> Dict[str, str]:
     return {"public": seed, "private": seed}
 
 
+def generate_session_token() -> str:
+    """Opaque bearer token for a human login session (stored hashed server-side)."""
+    return "rms_" + secrets.token_urlsafe(32)
+
+
+def session_token_hash(token: str) -> str:
+    return sha256_hex(token)
+
+
+def generate_otp_code(digits: int = 6) -> str:
+    """A numeric one-time passcode. secrets-backed, zero-padded to `digits`."""
+    upper = 10 ** digits
+    return str(secrets.randbelow(upper)).zfill(digits)
+
+
+def otp_code_hash(tenant_id: str, email: str, code: str) -> str:
+    # Salt the hash with tenant+email so a leaked hash can't be replayed elsewhere.
+    return sha256_hex("{0}:{1}:{2}".format(tenant_id, email.lower().strip(), code))
+
+
 def hmac_signature(secret: str, body: bytes) -> str:
     return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 

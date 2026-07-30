@@ -3,12 +3,23 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { setBearerToken } from "./api";
+
 export type ThemeMode = "light" | "dark";
 export type EnvironmentName = "dev" | "uat" | "prod";
+
+export interface SessionMember {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+}
 
 interface RuleMindUiState {
   apiBaseUrl: string;
   apiKey: string;
+  sessionToken: string;
+  member: SessionMember | null;
   environment: EnvironmentName;
   themeMode: ThemeMode;
   sidebarOpen: boolean;
@@ -17,6 +28,8 @@ interface RuleMindUiState {
   mobileMenuOpen: boolean;
   setApiBaseUrl: (value: string) => void;
   setApiKey: (value: string) => void;
+  setSession: (token: string, member: SessionMember | null) => void;
+  clearSession: () => void;
   setEnvironment: (value: EnvironmentName) => void;
   setThemeMode: (value: ThemeMode) => void;
   toggleThemeMode: () => void;
@@ -32,6 +45,8 @@ export const useRuleMindStore = create<RuleMindUiState>()(
     (set, get) => ({
       apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080",
       apiKey: process.env.NEXT_PUBLIC_RULEMIND_DEV_API_KEY ?? "",
+      sessionToken: "",
+      member: null,
       environment: "dev",
       themeMode: "light",
       sidebarOpen: true,
@@ -40,6 +55,14 @@ export const useRuleMindStore = create<RuleMindUiState>()(
       mobileMenuOpen: false,
       setApiBaseUrl: (value) => set({ apiBaseUrl: value }),
       setApiKey: (value) => set({ apiKey: value }),
+      setSession: (token, member) => {
+        setBearerToken(token);
+        set({ sessionToken: token, member });
+      },
+      clearSession: () => {
+        setBearerToken("");
+        set({ sessionToken: "", member: null });
+      },
       setEnvironment: (value) => set({ environment: value }),
       setThemeMode: (value) => set({ themeMode: value }),
       toggleThemeMode: () => set({ themeMode: get().themeMode === "light" ? "dark" : "light" }),
@@ -54,11 +77,17 @@ export const useRuleMindStore = create<RuleMindUiState>()(
       partialize: (state) => ({
         apiBaseUrl: state.apiBaseUrl,
         apiKey: state.apiKey,
+        sessionToken: state.sessionToken,
+        member: state.member,
         environment: state.environment,
         themeMode: state.themeMode,
         sidebarOpen: state.sidebarOpen,
         activeConnectorFilter: state.activeConnectorFilter,
       }),
+      onRehydrateStorage: () => (state) => {
+        // Re-arm the in-memory bearer token from the persisted session on reload.
+        if (state?.sessionToken) setBearerToken(state.sessionToken);
+      },
     }
   )
 );
