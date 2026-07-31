@@ -17,7 +17,7 @@ type Table = {
   version?: number;
 };
 type Diagnostic = { type: string; severity: string; description: string; rows?: string[]; shadowedBy?: string };
-type Analysis = { diagnostics: Diagnostic[]; ok: boolean; hasConflicts: boolean; hasGaps: boolean; hasInvalidValues: boolean; hasUnreachableRows: boolean; rowCount: number; hitPolicy: string };
+type Analysis = { diagnostics: Diagnostic[]; ok: boolean; hasConflicts: boolean; hasGaps: boolean; hasInvalidValues: boolean; hasUnreachableRows: boolean; hasUnanalyzableRows?: boolean; rowCount: number; hitPolicy: string };
 type Variable = { id: string; name: string; field_type?: string };
 
 const OPERATORS = ["any", "==", "!=", ">", ">=", "<", "<=", "between", "in", "not_in", "regex", "exists", "!exists"];
@@ -350,7 +350,7 @@ export default function DecisionTablesPage() {
                     <div key={idx} style={{ background: tone.bg, borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
                       <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2 }}>
                         <AlertTriangle size={12} color={tone.fg} />
-                        <span style={{ color: tone.fg, fontWeight: 700, textTransform: "uppercase", fontSize: 10, letterSpacing: 0.4 }}>{d.type} · {d.severity}</span>
+                        <span style={{ color: tone.fg, fontWeight: 700, textTransform: "uppercase", fontSize: 10, letterSpacing: 0.4 }}>{d.type.replace(/_/g, " ")} · {d.severity}</span>
                       </div>
                       <div style={{ color: "var(--rm-text)" }}>{d.description}</div>
                     </div>

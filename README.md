@@ -153,7 +153,20 @@ See `.env.example` for the full list.
 - **Kubernetes** — a Helm chart ships in `helm/rulemind/` (Deployments for web/api/worker, Service, Ingress, ConfigMap, Secret, migrate Job, HPA + PDB on the api). `helm install rulemind ./helm/rulemind -f my-values.yaml`.
 - **Scaling** — the decision path is **stateless**; run N api replicas behind the Ingress with the HPA on RPS/latency. For maximum throughput enable `FAST_DECIDE=1` (cached-bundle core) and, at the edge, the WASM core (`packages/rulemind-core-rs`, `./build-wasm.sh`).
 - **Secrets** — set `RULEMIND_CONFIG_KEY` (config-at-rest encryption), `RULEMIND_ADMIN_JWT_SECRET`, `RULEMIND_ADMIN_PASSWORD`, `POSTGRES_PASSWORD` (see the Docker Compose block for `openssl rand` examples). Connector credentials are Fernet-encrypted at rest.
-- **Observability** — Prometheus metrics are always at `/metrics`. For traces + dashboards: `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up` brings up **Grafana** (`:3001`), **Prometheus** (`:9090`), **Tempo**, and the OTel collector with a pre-provisioned dashboard. See [`observability/README.md`](observability/README.md).
+- **Observability** — Prometheus metrics are always at `/metrics`. For traces + dashboards in **one command**, run **`make observability`**: it turns tracing on (sets the OTLP endpoint) and brings up **Grafana** (`:3001`), **Prometheus** (`:9090`), **Tempo**, and the OTel collector with a pre-provisioned dashboard. (Equivalent to `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up`.) See [`observability/README.md`](observability/README.md).
+
+### ⚡ Throughput & scaling (what to expect)
+Sizing guidance for buyers — measured on the reference stack, honest about the trade-offs:
+
+| Policy shape | Path | Throughput / node | Notes |
+|---|---|---|---|
+| Rules-only (lean) | `FAST_DECIDE=1`, Rust core | **thousands of decisions/s** | Cached-bundle serving via the native core; no per-request DB writes on the hot path. |
+| Rules + scorecards / decision tables | `FAST_DECIDE=1`, Python core | **high hundreds/s** | Pure-compute, served from the cached bundle. |
+| Heavy multi-step (connector I/O, review gates, ML) | full `PolicyExecutor` | **~100/s** (GIL-bound) | Per-step trace + live I/O; scale **horizontally**. |
+
+- **Scale out, not up.** The decision path is **stateless**, so real scale is N api replicas behind the Ingress with the **HPA** on RPS/latency (Helm chart ships it). A single Python process is GIL-bound (~100 TPS for heavy policies); ten pods ≈ ten times that.
+- **Async by default.** Decision logging, email, and AI calls run off the request path; the DB pool is tunable (`DB_POOL_SIZE` / `DB_MAX_OVERFLOW`) and SQLite uses WAL — so the request thread isn't blocked on I/O.
+- **Fast path & edge.** `FAST_DECIDE=1` serves pure-compute policies from the cached-bundle core; the same core compiles to **WASM** (`packages/rulemind-core-rs`, `./build-wasm.sh`) for edge/on-device evaluation.
 
 ### 📊 Business / Risk Ops
 - **Admin Console** (`/admin`) — log in with `RULEMIND_ADMIN_EMAIL` / `RULEMIND_ADMIN_PASSWORD` to create **tenants** and generate **API keys** (shown once — see *Authentication & Credentials* below).

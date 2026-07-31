@@ -130,6 +130,23 @@ class DecisionTableUnitTests(unittest.TestCase):
         # score bands cover (-inf,600),[600,749],[750,inf) with a default -> no errors
         self.assertTrue(analyze_decision_table(_table(default_row={"outputs": {"out_decision": "review"}}))["ok"])
 
+    def test_opaque_row_flagged_as_not_analyzable(self):
+        # A regex cell can't be reasoned about for reachability — surfaced (info), not
+        # silently treated as safe, and never a blocking error.
+        t = _table(rows=[
+            {"id": "r_regex", "cells": {"in_flag": {"operator": "regex", "value": "^A.*"}}, "outputs": {"out_decision": "review"}},
+            {"id": "r_num", "cells": {"in_score": {"operator": ">=", "value": 700}}, "outputs": {"out_decision": "approve"}},
+        ], default_row={"outputs": {"out_decision": "review"}})
+        a = analyze_decision_table(t)
+        self.assertTrue(a["hasUnanalyzableRows"])
+        note = next(d for d in a["diagnostics"] if d["type"] == "not_analyzable")
+        self.assertEqual(note["severity"], "info")
+        self.assertIn("r_regex", note["rows"])
+        self.assertTrue(a["ok"])  # info-only, not a blocking error
+
+    def test_plain_numeric_table_has_no_unanalyzable_note(self):
+        self.assertFalse(analyze_decision_table(_table())["hasUnanalyzableRows"])
+
 
 class DecisionTableApiTests(unittest.TestCase):
     def setUp(self):
