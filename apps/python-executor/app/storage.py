@@ -75,6 +75,20 @@ SECRET_FIELD_MARKERS = ("token", "secret", "password", "api_key", "apikey", "cli
 _API_KEY_CACHE_TTL = float(os.getenv("API_KEY_CACHE_TTL", "300"))
 
 
+def _parse_client_datetime(value: Any) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp sent by an SDK (e.g. an on-device decision time),
+    returning a naive UTC datetime, or None if absent/unparseable."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(tz=None).replace(tzinfo=None)
+    return parsed
+
+
 def serialize_datetime(value: Optional[datetime]) -> Optional[str]:
     if value is None:
         return None
@@ -1206,6 +1220,59 @@ class Storage:
             session.add(decision)
             session.flush()
             return self._decision_to_dict(decision)
+
+    def add_decisions_batch(self, decisions: List[Dict[str, Any]], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Idempotently ingest a batch of (device-originated) decisions.
+
+        Dedupe is by the client-supplied stable ``id``: a decision whose id already
+        exists — or repeats within the same batch — is acknowledged but NOT re-inserted,
+        so an at-least-once client retry never double-counts (same guarantee as the
+        /decide single-log fix). Every id in the batch is returned in ``acked`` so the
+        device can safely clear its local outbox for exactly those rows.
+
+        Returns {received, inserted, duplicates, acked:[id,...]}.
+        """
+        resolved = self._tenant_id(tenant_id)
+        # Client ids are required for idempotency; a decision without one gets a server
+        # id and is always inserted (can't be deduped, but also can't be safely retried).
+        client_ids = [str(d["id"]) for d in decisions if d.get("id")]
+        acked: List[str] = []
+        inserted = 0
+        duplicates = 0
+        with self.connect() as session:
+            existing: set = set()
+            if client_ids:
+                existing = set(session.scalars(select(Decision.id).where(Decision.id.in_(client_ids))).all())
+            seen: set = set()
+            for record in decisions:
+                did = str(record.get("id") or uuid4_str())
+                acked.append(did)
+                if did in existing or did in seen:
+                    duplicates += 1
+                    continue
+                seen.add(did)
+                preview = copy.deepcopy(record.get("payload", {}))
+                payload_hash = record.get("payload_hash") or hashlib.sha256(json_dumps(preview).encode("utf-8")).hexdigest()
+                session.add(Decision(
+                    id=did,
+                    tenant_id=resolved,
+                    policy_id=record.get("policy_id") or record.get("policyId"),
+                    payload_hash=payload_hash,
+                    payload_preview=preview,
+                    computed_variables=copy.deepcopy(record.get("computed_variables", {})),
+                    rule_results=copy.deepcopy(record.get("rule_results", [])),
+                    scorecard_result=copy.deepcopy(record.get("scorecard_result")),
+                    trace=copy.deepcopy(record.get("trace", [])),
+                    outcome=record.get("outcome", "pending"),
+                    latency_ms=int(record.get("latency_ms", record.get("latencyMs", 0)) or 0),
+                    source=record.get("source", "on_device"),
+                    sdk_version=record.get("sdk_version") or record.get("sdkVersion"),
+                    experiment_variant=record.get("experiment_variant") or record.get("experimentVariant"),
+                    # Preserve the on-device decision time when supplied.
+                    created_at=_parse_client_datetime(record.get("created_at") or record.get("createdAt")) or datetime.utcnow(),
+                ))
+                inserted += 1
+        return {"received": len(decisions), "inserted": inserted, "duplicates": duplicates, "acked": acked}
 
     def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
         from . import decision_log

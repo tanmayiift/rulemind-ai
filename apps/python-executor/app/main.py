@@ -108,6 +108,10 @@ DECISIONS_TOTAL = Counter("rulemind_decisions_total", "RuleMind decisions", ["ou
 DECISION_LATENCY = Histogram("rulemind_decision_latency_seconds", "RuleMind decision latency", ["source"])
 BUNDLE_SYNCS_TOTAL = Counter("rulemind_bundle_syncs_total", "RuleMind bundle syncs", ["status"])
 EVENTS_INGESTED_TOTAL = Counter("rulemind_events_ingested_total", "RuleMind SDK events ingested")
+DECISIONS_INGESTED_TOTAL = Counter("rulemind_sdk_decisions_ingested_total", "On-device decisions ingested", ["result"])
+
+# Max decisions accepted per /sdk/v1/decisions batch (config so limits move without code).
+SDK_DECISIONS_BATCH_MAX = int(os.getenv("SDK_DECISIONS_BATCH_MAX", "1000"))
 
 
 ALLOWED_NODE_TYPES = {"condition", "and", "or", "approve", "review", "reject"}
@@ -349,6 +353,12 @@ class SdkDecideRequest(BaseModel):
 
 class SdkEventsRequest(BaseModel):
     events: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class SdkDecisionsBatchRequest(BaseModel):
+    """A batch of on-device decisions drained from a device's local outbox. Each
+    decision carries a client-stable `id` for idempotent, retry-safe ingestion."""
+    decisions: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class SdkExecutionSyncRequest(BaseModel):
@@ -3601,6 +3611,27 @@ def sdk_events(request: SdkEventsRequest) -> Dict[str, int]:
     count = storage.add_sdk_events(request.events)
     EVENTS_INGESTED_TOTAL.inc(count)
     return {"received": count, "processed": count}
+
+
+@app.post("/sdk/v1/decisions")
+def sdk_decisions_batch(request: SdkDecisionsBatchRequest) -> Dict[str, Any]:
+    """Ingest a batch of on-device decisions from a device's local outbox.
+
+    Idempotent and retry-safe: a decision whose client-stable `id` already exists (or
+    repeats within the batch) is acknowledged but NOT duplicated — so a device can retry
+    with exponential backoff without ever double-counting. The response's `acked` list is
+    exactly the ids the device may now clear locally. Requires the `decide` capability."""
+    if len(request.decisions) > SDK_DECISIONS_BATCH_MAX:
+        raise HTTPException(status_code=413, detail=f"Batch exceeds the maximum of {SDK_DECISIONS_BATCH_MAX} decisions.")
+    result = storage.add_decisions_batch(request.decisions, tenant_id=active_tenant_id())
+    DECISIONS_INGESTED_TOTAL.labels(result="inserted").inc(result["inserted"])
+    DECISIONS_INGESTED_TOTAL.labels(result="duplicate").inc(result["duplicates"])
+    return {
+        "received": result["received"],
+        "inserted": result["inserted"],
+        "duplicates": result["duplicates"],
+        "acked": result["acked"],
+    }
 
 
 @app.get("/api/v1/webhooks")
