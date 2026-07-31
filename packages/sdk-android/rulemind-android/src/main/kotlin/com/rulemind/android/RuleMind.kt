@@ -2,6 +2,9 @@ package com.rulemind.android
 
 import android.content.Context
 import com.rulemind.core.DecisionCache
+import com.rulemind.core.DecisionOutbox
+import com.rulemind.core.DecisionSyncer
+import com.rulemind.core.PendingDecision
 import com.rulemind.core.RuleMindEngine
 import com.rulemind.core.models.Bundle
 import com.rulemind.core.models.Decision
@@ -9,7 +12,17 @@ import com.rulemind.core.models.ExperimentVariant
 import com.rulemind.core.models.ReviewDecision
 import com.rulemind.core.models.RuleMindConfig
 import com.rulemind.core.models.ServerDecisionRequest
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -23,6 +36,9 @@ object RuleMind {
     private var engine: RuleMindEngine = RuleMindEngine()
     private var cache = DecisionCache(256, 300_000)
     private var executionStore: ExecutionStore? = null
+    private var decisionOutbox: DecisionOutbox? = null
+    private var decisionSyncer: DecisionSyncer? = null
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun initialize(context: Context, config: RuleMindConfig) = lock.write {
         val appContext = context.applicationContext
@@ -34,6 +50,14 @@ object RuleMind {
         this.eventLogger = EventLogger(appContext, config, client)
         this.cache = DecisionCache(config.decisionCacheMaxEntries, config.decisionCacheTtlMs)
         this.executionStore = ExecutionStore(appContext)
+        // Durable on-device decision outbox (SQLite) + its syncer. The uploader POSTs a batch
+        // to /sdk/v1/decisions off the main thread; the background SyncWorker drains it 1–2×/day.
+        val outbox = SqliteDecisionOutbox(appContext)
+        this.decisionOutbox = outbox
+        this.decisionSyncer = DecisionSyncer(
+            outbox = outbox,
+            uploader = { batch -> withContext(Dispatchers.IO) { client.uploadDecisions(batch) } },
+        )
         SyncWorker.schedule(appContext, config.bundleSyncIntervalMinutes)
     }
 
@@ -75,7 +99,15 @@ object RuleMind {
         if (decision.status == "completed" && decision.pendingOperations.isEmpty()) {
             cache.put(policyId, cacheKey, decision)
         }
-        syncDecision(decision)
+        // A completed decision goes to the durable outbox (batched, deduped, retried by the
+        // background sync). A paused/resumable execution keeps the execution-state sync so it
+        // can be resumed. Routing completed decisions through the deduped batch path avoids the
+        // old double-log.
+        if (decision.status == "completed") {
+            enqueueForSync(decision)
+        } else {
+            syncDecision(decision)
+        }
         return decision
     }
 
@@ -179,6 +211,43 @@ object RuleMind {
             return
         }
         runCatching { networkClient?.syncExecution(decision) }
+    }
+
+    /** Durably queue a completed decision for later batch sync (write happens off the main thread). */
+    private fun enqueueForSync(decision: Decision) {
+        val outbox = decisionOutbox ?: return
+        if (decision.executionId.isNullOrBlank() || decision.policyId.isNullOrBlank()) return
+        val pending = toPending(decision)
+        ioScope.launch { runCatching { outbox.enqueue(pending) } }
+    }
+
+    /** Drain the durable decision outbox now (called by the background SyncWorker + on demand). */
+    suspend fun syncPendingDecisions() {
+        decisionSyncer?.sync()
+    }
+
+    private fun toPending(decision: Decision): PendingDecision {
+        val now = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(Date())
+        val record = JSONObject()
+            .put("id", decision.executionId)
+            .put("policy_id", decision.policyId)
+            .put("outcome", decision.outcome)
+            .put("payload", JSONObject(decision.payload))
+            .put("computed_variables", JSONObject(decision.variables))
+            .put("rule_results", JSONArray(decision.ruleResults.map { JSONObject(it) }))
+            .put("latency_ms", decision.latencyMs)
+            .put("source", "on_device")
+            .put("sdk_version", config?.sdkVersion)
+            .put("created_at", now)
+        return PendingDecision(
+            id = decision.executionId!!,
+            policyId = decision.policyId,
+            outcome = decision.outcome,
+            payloadJson = record.toString(),
+            createdAt = now,
+        )
     }
 
     private fun canonicalJson(payload: Map<String, Any?>): String = JSONObject(payload).toString()

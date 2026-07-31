@@ -23,25 +23,28 @@ data class PendingDecision(
  * behaviour (batching, exponential backoff, clear-on-ack, capacity) lives in
  * [DecisionSyncer], so every implementation gets it for free.
  */
+// Every method is `suspend` — durable stores (SQLite) do I/O, which MUST run off the main
+// thread (the Room/raw-SQLite adapter uses Dispatchers.IO) so a decision write on evaluate()
+// never blocks the UI and never triggers an ANR. The in-memory impl completes immediately.
 interface DecisionOutbox {
     /** Persist a new decision as pending (idempotent on id — enqueuing the same id twice is a no-op). */
-    fun enqueue(decision: PendingDecision)
+    suspend fun enqueue(decision: PendingDecision)
 
     /** Up to [limit] decisions eligible to send now (nextAttemptAtMs <= nowMs), oldest first. */
-    fun pending(limit: Int, nowMs: Long): List<PendingDecision>
+    suspend fun pending(limit: Int, nowMs: Long): List<PendingDecision>
 
     /** Delete the given ids after the server acknowledged them — reclaims local space. */
-    fun markSynced(ids: List<String>)
+    suspend fun markSynced(ids: List<String>)
 
     /** Record a failed attempt: bump attempts and defer each id until nextAttemptAtMs. */
-    fun recordFailure(ids: List<String>, nextAttemptAtMs: Long)
+    suspend fun recordFailure(ids: List<String>, nextAttemptAtMs: Long)
 
     /** Total pending rows. */
-    fun size(): Int
+    suspend fun size(): Int
 
     /**
      * Enforce a hard cap so a long sync outage can't grow the local store without bound.
      * Drops the OLDEST rows beyond [maxRows]; returns how many were dropped.
      */
-    fun trimToCapacity(maxRows: Int): Int
+    suspend fun trimToCapacity(maxRows: Int): Int
 }

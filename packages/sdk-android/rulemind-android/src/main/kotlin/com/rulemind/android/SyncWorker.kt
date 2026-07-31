@@ -18,6 +18,7 @@ class SyncWorker(
         return runCatching {
             RuleMind.syncNow()
             RuleMind.flushEvents()
+            RuleMind.syncPendingDecisions() // drain the durable on-device decision outbox
             Result.success()
         }.getOrElse { Result.retry() }
     }

@@ -13,6 +13,8 @@ kotlin {
 dependencies {
     testImplementation(kotlin("test"))
     testImplementation("org.json:json:20240303")
+    // runBlocking for the suspend-based DecisionSyncer/outbox tests.
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
 }
 
 publishing {

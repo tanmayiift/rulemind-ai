@@ -1,6 +1,7 @@
 package com.rulemind.core
 
 import java.util.Random
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -11,7 +12,7 @@ class DecisionSyncerTest {
     )
 
     @Test
-    fun uploadsAllPendingThenEmptiesTheOutbox() {
+    fun uploadsAllPendingThenEmptiesTheOutbox() = runBlocking {
         val outbox = InMemoryDecisionOutbox()
         (0 until 5).forEach { outbox.enqueue(decision("d$it")) }
         val syncer = DecisionSyncer(outbox, uploader = { batch -> UploadResult.success(batch.map { it.id }) })
@@ -21,7 +22,7 @@ class DecisionSyncerTest {
     }
 
     @Test
-    fun enqueueIsIdempotentOnId() {
+    fun enqueueIsIdempotentOnId() = runBlocking {
         val outbox = InMemoryDecisionOutbox()
         outbox.enqueue(decision("dup"))
         outbox.enqueue(decision("dup"))
@@ -29,7 +30,7 @@ class DecisionSyncerTest {
     }
 
     @Test
-    fun failureKeepsRowsAndDefersWithBackoff() {
+    fun failureKeepsRowsAndDefersWithBackoff() = runBlocking {
         val outbox = InMemoryDecisionOutbox()
         (0 until 3).forEach { outbox.enqueue(decision("d$it")) }
         var now = 1_000_000L
@@ -50,7 +51,7 @@ class DecisionSyncerTest {
     }
 
     @Test
-    fun onlyAckedIdsAreCleared() {
+    fun onlyAckedIdsAreCleared() = runBlocking {
         val outbox = InMemoryDecisionOutbox()
         (0 until 4).forEach { outbox.enqueue(decision("d$it")) }
         // Server acks a subset (e.g. partial write); the rest must remain for retry.
@@ -73,7 +74,7 @@ class DecisionSyncerTest {
     }
 
     @Test
-    fun capacityTrimDropsOldestFirst() {
+    fun capacityTrimDropsOldestFirst() = runBlocking {
         val outbox = InMemoryDecisionOutbox()
         (0 until 10).forEach { outbox.enqueue(decision("d$it")) }
         val dropped = outbox.trimToCapacity(6)
@@ -83,7 +84,7 @@ class DecisionSyncerTest {
     }
 
     @Test
-    fun largeBacklogDrainsInBatches() {
+    fun largeBacklogDrainsInBatches() = runBlocking {
         val outbox = InMemoryDecisionOutbox()
         (0 until 1000).forEach { outbox.enqueue(decision("d$it")) }
         var batches = 0

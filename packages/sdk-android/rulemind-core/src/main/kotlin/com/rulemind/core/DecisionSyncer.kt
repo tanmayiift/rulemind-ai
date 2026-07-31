@@ -36,12 +36,12 @@ data class DecisionSyncConfig(
  */
 class DecisionSyncer(
     private val outbox: DecisionOutbox,
-    private val uploader: (List<PendingDecision>) -> UploadResult,
+    private val uploader: suspend (List<PendingDecision>) -> UploadResult,
     private val config: DecisionSyncConfig = DecisionSyncConfig(),
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val random: Random = Random(),
 ) {
-    fun sync(): SyncStats {
+    suspend fun sync(): SyncStats {
         val dropped = outbox.trimToCapacity(config.capacity)
         var uploaded = 0
         var failed = 0
