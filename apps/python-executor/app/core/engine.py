@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 # Pure primitives only. Do NOT add storage/db imports here.
+from ..decision_tables import evaluate_decision_table
 from ..experiments import apply_experiment_overrides, assign_variant
 from ..logic import evaluate_rule_definition, evaluate_scorecard
 
@@ -20,7 +21,7 @@ _OUTCOME_PRECEDENCE = {"pending": 0, "pass": 1, "approve": 2, "review": 3, "reje
 # Step types the pure core evaluates. Side-effectful steps (connector fetch,
 # outbound action, human review gate) are the host's responsibility and are
 # recorded as "deferred" rather than executed.
-_PURE_STEP_TYPES = {"rule", "scorecard", "outcome"}
+_PURE_STEP_TYPES = {"rule", "scorecard", "outcome", "decision_table"}
 _DEFERRED_STEP_TYPES = {"connector", "action", "review_gate", "transform", "model"}
 
 
@@ -220,6 +221,7 @@ def decide(
         result.experiment_variant = assignment["variant"].get("id")
         rules = apply_experiment_overrides(rules, assignment)
     scorecards = _as_map(bundle.get("scorecards"))
+    decision_tables = _as_map(bundle.get("decision_tables"))
 
     for index, step in enumerate(policy.get("steps", [])):
         step_type = step.get("type")
@@ -247,6 +249,15 @@ def decide(
             candidate = ref_id or (step.get("config") or {}).get("outcome") or step.get("label") or "review"
             result.outcome = _merge_outcome(result.outcome, candidate)
             result.trace.append({"step": step, "result": {"outcome": result.outcome}})
+        elif step_type == "decision_table":
+            table = decision_tables.get(ref_id)
+            if not table:
+                result.trace.append({"step": step, "error": f"unknown decision table {ref_id}"})
+                continue
+            table_result = evaluate_decision_table(table, variables, variable_lookup)
+            if table_result.get("outcome"):
+                result.outcome = _merge_outcome(result.outcome, table_result["outcome"])
+            result.trace.append({"step": step, "result": table_result})
         elif step_type in _DEFERRED_STEP_TYPES:
             # The pure core does not perform I/O; the host resolves these.
             result.trace.append({"step": step, "deferred": True})

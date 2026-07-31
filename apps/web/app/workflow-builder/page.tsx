@@ -341,7 +341,7 @@ function Inspector({ theme, step, refs, onPatch }: { theme: ThemeTokens; step: S
 
 // ---- loop editor (iterate a collection variable over a body of steps) ----
 
-type LoopConfig = { over?: string; as?: string; indexAs?: string; maxIterations?: number; steps?: Step[] };
+type LoopConfig = { over?: string; as?: string; indexAs?: string; maxIterations?: number; mode?: string; concurrency?: number; steps?: Step[] };
 
 function LoopEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; refs: { connector: Ref[]; rule: Ref[]; scorecard: Ref[] }; config: LoopConfig; onChange: (c: LoopConfig) => void }) {
   return (
@@ -365,6 +365,24 @@ function LoopEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; ref
           <input type="number" value={config.maxIterations ?? 1000} onChange={(e) => onChange({ ...config, maxIterations: Number(e.target.value) })} style={{ ...inputStyle(theme), fontSize: 12 }} />
         </Field>
       </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, alignItems: "end" }}>
+        <Field theme={theme} label="Execution">
+          <select value={config.mode ?? "sequential"} onChange={(e) => onChange({ ...config, mode: e.target.value })} style={{ ...inputStyle(theme), fontSize: 12 }}>
+            <option value="sequential">Sequential (one at a time)</option>
+            <option value="parallel">Parallel (concurrent map)</option>
+          </select>
+        </Field>
+        {config.mode === "parallel" ? (
+          <Field theme={theme} label="Max concurrency">
+            <input type="number" min={1} max={32} value={config.concurrency ?? 8} onChange={(e) => onChange({ ...config, concurrency: Number(e.target.value) })} style={{ ...inputStyle(theme), fontSize: 12 }} />
+          </Field>
+        ) : <div />}
+      </div>
+      {config.mode === "parallel" ? (
+        <div style={{ fontSize: 11, color: theme.muted, lineHeight: 1.5 }}>
+          Iterations run concurrently on isolated contexts — the latency win for I/O-heavy bodies (a connector call per item). Iterations must be independent; review gates aren&apos;t supported inside a parallel loop.
+        </div>
+      ) : null}
       <div style={{ borderTop: `1px dashed ${theme.border}`, paddingTop: 10 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: theme.dim, marginBottom: 6 }}>LOOP BODY (per item)</div>
         <StepRows theme={theme} refs={refs} steps={config.steps ?? []} onChange={(s) => onChange({ ...config, steps: s })} />
