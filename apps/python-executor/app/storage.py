@@ -8,7 +8,7 @@ import json
 import os
 import time as _time
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from cryptography.fernet import Fernet
@@ -85,7 +85,9 @@ def _parse_client_datetime(value: Any) -> Optional[datetime]:
     except (ValueError, TypeError):
         return None
     if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(tz=None).replace(tzinfo=None)
+        # Normalize to naive UTC (not naive *local*): stored created_at is naive UTC and
+        # serialize_datetime treats naive values as UTC, so the round-trip must too.
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
     return parsed
 
 
@@ -1328,6 +1330,41 @@ class Storage:
                     break
                 offset += page_size
         return collected, truncated
+
+    def decisions_after(
+        self,
+        tenant_id: Optional[str] = None,
+        after: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Return decisions created strictly after `after`, oldest-first.
+
+        Backs the live SSE feed: each poll asks for rows newer than the last one it saw, so
+        the stream advances a monotonic cursor without re-sending. `after=None` returns the
+        most recent `limit` rows (flipped to oldest-first) as the stream's opening backlog.
+        The (tenant_id, created_at) index keeps each poll cheap even as the table grows.
+        """
+        from . import decision_log
+        decision_log.flush()  # read-after-write: see just-submitted async writes
+        resolved = self._tenant_id(tenant_id)
+        def _with_cursor(row: Decision) -> Dict[str, Any]:
+            # Carry the full-precision created_at alongside the (second-truncated) serialized
+            # form so the SSE loop advances a precise cursor and never re-sends a same-second row.
+            data = self._decision_to_dict(row)
+            data["_created_at_raw"] = row.created_at
+            return data
+
+        with self.connect() as session:
+            query = select(Decision).where(Decision.tenant_id == resolved)
+            if after is not None:
+                query = query.where(Decision.created_at > after).order_by(Decision.created_at).limit(max(1, min(limit, 1000)))
+                rows = session.scalars(query).all()
+                return [_with_cursor(row) for row in rows]
+            # Opening backlog: newest N, returned oldest-first so the cursor advances forward.
+            query = query.order_by(desc(Decision.created_at)).limit(max(1, min(limit, 1000)))
+            rows = list(session.scalars(query).all())
+            rows.reverse()
+            return [_with_cursor(row) for row in rows]
 
     def add_promotion(self, entity_type: str, entity_id: str, from_status: str, to_status: str, promoted_by: str, reason: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id)
