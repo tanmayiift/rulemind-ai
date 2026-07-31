@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Body, Cookie, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,7 +48,7 @@ from .reviews import submit_review_decision
 from .runtime import is_local_dev, redis_client
 from .sandbox import execute_variable
 from .scheduler import execute_cron_policy, init_scheduler
-from .storage import Storage
+from .storage import Storage, _parse_client_datetime
 from .webhooks import WebhookAuthenticationError, trigger_webhook
 
 
@@ -3416,6 +3416,81 @@ def promote_experiment(experiment_id: str, request: ExperimentPromoteRequest) ->
         tenant_id=tenant_id,
     )
     return {"experiment_id": experiment_id, "promoted_variant": request.variant_id, "rules_updated": changed}
+
+
+def _sse_decision_frame(row: Dict[str, Any]) -> str:
+    """Render one decision as a compact Server-Sent Event frame."""
+    data = {
+        "id": row.get("id"),
+        "policy_id": row.get("policy_id"),
+        "outcome": row.get("outcome"),
+        "source": row.get("source"),
+        "latency_ms": row.get("latency_ms"),
+        "experiment_variant": row.get("experiment_variant"),
+        "created_at": row.get("created_at"),
+    }
+    return "id: {0}\nevent: decision\ndata: {1}\n\n".format(row.get("id"), json_dumps(data))
+
+
+@app.get("/api/v1/decisions/stream")
+async def stream_decisions(request: Request) -> StreamingResponse:
+    """Live decision feed as Server-Sent Events (text/event-stream).
+
+    Opens with a small backlog (the most recent decisions, oldest-first), then long-polls for
+    new rows and pushes each as a `decision` event, advancing a monotonic `created_at` cursor so
+    nothing is re-sent. A client resumes after a drop by passing `?after=<ISO-8601>` (or the
+    standard `Last-Event-ID` is echoed as the row id). Heartbeat comments keep proxies from
+    closing an idle connection; the stream self-closes after a bounded lifetime so clients
+    reconnect (EventSource does this automatically) instead of holding a worker forever.
+    `?once=1` emits the current backlog and closes — handy for a one-shot catch-up or testing.
+    """
+    # Resolve the tenant eagerly, while the request context is live: the middleware resets its
+    # context vars once this coroutine returns the StreamingResponse, before the body streams.
+    tenant_id = active_tenant_id(request)
+    after_param = request.query_params.get("after")
+    once = request.query_params.get("once") in ("1", "true", "yes")
+    poll_seconds = float(os.getenv("DECISION_STREAM_POLL_SECONDS", "1.0"))
+    max_seconds = float(os.getenv("DECISION_STREAM_MAX_SECONDS", "3600"))
+    backlog_size = int(os.getenv("DECISION_STREAM_BACKLOG", "25"))
+
+    def _emit(row: Dict[str, Any]):
+        # Advance the cursor to this row's full-precision timestamp, then frame the clean row.
+        raw = row.pop("_created_at_raw", None)
+        return raw, _sse_decision_frame(row)
+
+    async def event_gen():
+        cursor = _parse_client_datetime(after_param) if after_param else None
+        backlog = await asyncio.to_thread(storage.decisions_after, tenant_id, cursor, backlog_size)
+        yield ": connected\n\n"
+        for row in backlog:
+            raw, frame = _emit(row)
+            cursor = raw or cursor
+            yield frame
+        if once:
+            return
+        started = time.monotonic()
+        while time.monotonic() - started < max_seconds:
+            if await request.is_disconnected():
+                break
+            rows = await asyncio.to_thread(storage.decisions_after, tenant_id, cursor, 200)
+            if rows:
+                for row in rows:
+                    raw, frame = _emit(row)
+                    cursor = raw or cursor
+                    yield frame
+            else:
+                yield ": ping\n\n"
+            await asyncio.sleep(poll_seconds)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # tell nginx not to buffer the stream
+        },
+    )
 
 
 @app.get("/api/v1/analytics/decisions")

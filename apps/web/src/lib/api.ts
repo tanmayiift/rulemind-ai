@@ -83,3 +83,67 @@ export async function rulemindRequest<T>(
 ): Promise<T> {
   return apiJson<T>(apiBaseUrl, path, init, apiKey);
 }
+
+export interface StreamedDecision {
+  id?: string;
+  policy_id?: string;
+  outcome?: string;
+  source?: string;
+  latency_ms?: number;
+  experiment_variant?: string;
+  created_at?: string;
+}
+
+/**
+ * Subscribe to the live decision feed (GET /api/v1/decisions/stream) via a fetch stream.
+ * EventSource can't send an auth header, so we read the text/event-stream body ourselves,
+ * parse `data:` frames, and invoke `onDecision` for each. Returns a stop() that aborts the
+ * connection. Reconnection is left to the caller (toggle off/on) — the server also bounds the
+ * connection lifetime so a long-lived stream is refreshed rather than held forever.
+ */
+export function streamDecisions(
+  apiBaseUrl: string,
+  apiKey: string,
+  onDecision: (decision: StreamedDecision) => void,
+  onError?: (error: unknown) => void
+): () => void {
+  const controller = new AbortController();
+  (async () => {
+    try {
+      const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/api/v1/decisions/stream`, {
+        headers: { accept: "text/event-stream", ...authHeaders(apiKey) },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(`Live feed failed with status ${response.status}`);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames are separated by a blank line.
+        let split: number;
+        while ((split = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+          const dataLine = frame
+            .split("\n")
+            .find((line) => line.startsWith("data:"));
+          if (!dataLine) continue;
+          try {
+            onDecision(JSON.parse(dataLine.slice(5).trim()) as StreamedDecision);
+          } catch {
+            /* ignore malformed frame */
+          }
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) onError?.(error);
+    }
+  })();
+  return () => controller.abort();
+}

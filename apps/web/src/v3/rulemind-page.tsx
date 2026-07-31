@@ -19,7 +19,7 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
-import { apiJson, apiText } from "../lib/api";
+import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../lib/api";
 import { useRuleMindStore } from "../lib/store";
 import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "./theme";
 import { ConnectorIcon } from "./icons";
@@ -3581,6 +3581,7 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
   const [promotions, setPromotions] = React.useState<PromotionRecord[]>([]);
   const [errors, setErrors] = React.useState<AuditErrorRecord[]>([]);
   const [selected, setSelected] = React.useState<Record<string, unknown> | null>(null);
+  const [live, setLive] = React.useState(false);
 
   React.useEffect(() => {
     Promise.all([
@@ -3596,6 +3597,26 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
       .catch((error) => props.onNotify(error instanceof Error ? error.message : "Unable to load audit data."));
   }, [apiBaseUrl, apiKey, props]);
 
+  // Live feed: when enabled, subscribe to the SSE decision stream and prepend new decisions
+  // (deduped by id, capped). The opening backlog the stream sends is filtered against what we
+  // already have so we don't double-list rows from the initial fetch above.
+  React.useEffect(() => {
+    if (!live) return;
+    const stop = streamDecisions(
+      apiBaseUrl,
+      apiKey,
+      (decision: StreamedDecision) => {
+        if (!decision.id) return;
+        setDecisions((prev) => {
+          if (prev.some((row) => row.id === decision.id)) return prev;
+          return [decision as Record<string, unknown>, ...prev].slice(0, 500);
+        });
+      },
+      (error) => props.onNotify(error instanceof Error ? error.message : "Live feed disconnected."),
+    );
+    return stop;
+  }, [live, apiBaseUrl, apiKey, props]);
+
   const rows =
     tab === "decisions"
       ? decisions
@@ -3606,7 +3627,7 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
   return (
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
       <SectionHeader title={PAGE_META.audit.title} subtitle={PAGE_META.audit.subtitle} />
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         {[
           { id: "decisions", label: "Decision History" },
           { id: "promotions", label: "Promotion History" },
@@ -3616,6 +3637,24 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
             {item.label}
           </Button>
         ))}
+        {tab === "decisions" ? (
+          <div style={{ marginLeft: "auto" }}>
+            <Button variant={live ? "primary" : "default"} onClick={() => setLive((value) => !value)}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: live ? theme.success : theme.dim,
+                    boxShadow: live ? "0 0 0 3px " + theme.successBg : "none",
+                  }}
+                />
+                {live ? "Live" : "Go live"}
+              </span>
+            </Button>
+          </div>
+        ) : null}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.1fr 0.9fr", gap: 16 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
