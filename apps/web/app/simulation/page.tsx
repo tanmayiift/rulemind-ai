@@ -183,7 +183,21 @@ export default function SimulationPage() {
     setFileName(file.name);
     try {
       let parsed: Record<string, unknown>[];
-      if (/\.csv$/i.test(file.name)) {
+      if (/\.(jsonl|ndjson)$/i.test(file.name)) {
+        // One JSON object per line — blank lines skipped, a bad line stops with its number.
+        parsed = [];
+        const lines = (await file.text()).split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          try {
+            const obj = JSON.parse(line);
+            parsed.push(obj && typeof obj === "object" ? obj : { _value: obj });
+          } catch {
+            throw new Error(`Line ${i + 1} is not valid JSON.`);
+          }
+        }
+      } else if (/\.csv$/i.test(file.name)) {
         parsed = parseCsv(await file.text());
       } else if (/\.xlsx?$/i.test(file.name)) {
         const XLSX = await import("xlsx"); // dynamic — keeps SheetJS off the main bundle
@@ -195,7 +209,7 @@ export default function SimulationPage() {
           return o;
         });
       } else {
-        throw new Error("Unsupported file — use .csv, .xls, or .xlsx.");
+        throw new Error("Unsupported file — use .csv, .xls, .xlsx, or .jsonl.");
       }
       if (!parsed.length) throw new Error("No rows found in the file.");
       setCases(parsed);
@@ -252,6 +266,19 @@ export default function SimulationPage() {
     }
   };
 
+  // Export every result as JSONL — one line per case, the input payload joined to its decision.
+  const exportJsonl = React.useCallback(() => {
+    if (!rows) return;
+    const lines = rows.map((r) => JSON.stringify({ index: r.index, ...(cases[r.index] ?? {}), outcome: r.result.outcome, latency_ms: r.result.latency_ms ?? null, error: r.result.error ?? undefined }));
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "application/x-ndjson" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `simulation-${policyId || "results"}.jsonl`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [rows, cases, policyId]);
+
   const dist = (rows ?? []).reduce<Record<string, number>>((acc, r) => { acc[r.result.outcome] = (acc[r.result.outcome] ?? 0) + 1; return acc; }, {});
   const total = rows?.length ?? 0;
   const latencies = (rows ?? []).map((r) => r.result.latency_ms ?? 0).filter((x) => x > 0);
@@ -294,10 +321,10 @@ export default function SimulationPage() {
               onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) ingestFile(f); }}
               style={{ border: `1.5px dashed ${dragOver ? "var(--rm-accent)" : "var(--rm-border-strong)"}`, borderRadius: 12, padding: "28px 16px", textAlign: "center", background: dragOver ? "var(--rm-accent-bg)" : "var(--rm-editor)", transition: "all .12s" }}>
               <FileSpreadsheet size={26} style={{ color: "var(--rm-accent)", marginBottom: 8 }} />
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--rm-text)" }}>Drop a CSV or Excel file</div>
-              <div style={{ fontSize: 12, color: "var(--rm-dim)", margin: "4px 0 12px" }}>Each row becomes a decision payload. .csv · .xls · .xlsx</div>
+              <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--rm-text)" }}>Drop a CSV, Excel, or JSONL file</div>
+              <div style={{ fontSize: 12, color: "var(--rm-dim)", margin: "4px 0 12px" }}>Each row / line becomes a decision payload. .csv · .xls · .xlsx · .jsonl</div>
               <label>
-                <input type="file" accept=".csv,.xls,.xlsx" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) ingestFile(f); }} />
+                <input type="file" accept=".csv,.xls,.xlsx,.jsonl,.ndjson" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) ingestFile(f); }} />
                 <span className="rm-btn rm-btn-secondary rm-btn-sm" style={{ cursor: "pointer" }}>Browse files</span>
               </label>
               {fileName ? <div style={{ marginTop: 12, fontSize: 12, color: "var(--rm-muted)" }}>Loaded <strong>{fileName}</strong></div> : null}
@@ -349,6 +376,9 @@ export default function SimulationPage() {
         <div style={{ display: "grid", gap: 18 }}>
           {rows ? (
             <>
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <Button variant="secondary" size="sm" onClick={exportJsonl}>Export JSONL</Button>
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 12 }}>
                 <Stat label="Cases" value={total.toLocaleString()} />
                 <Stat label="Success" value={`${successRate.toFixed(successRate === 100 ? 0 : 1)}%`} tone={errors ? "warning" : "success"} />

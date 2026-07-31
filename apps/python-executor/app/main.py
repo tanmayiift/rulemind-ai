@@ -1,5 +1,6 @@
 import copy
 import asyncio
+import json
 import os
 import secrets
 import time
@@ -3026,24 +3027,15 @@ def workflow_loop_debug(request: LoopDebugRequest) -> Dict[str, Any]:
     ))
 
 
-@app.post("/api/v1/decide/batch")
-def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
-    """Backtest a policy over many cases. Runs concurrently and in *simulation*
-    mode — no decision is logged and review gates don't pause — so thousands of
-    what-if cases execute without DB-write contention. Uses the fast (cached-bundle
-    / Rust) path for pure-compute policies, the full executor otherwise. Returns a
-    `performance` block with real server-side throughput."""
+def _run_decision_batch(policy: Dict[str, Any], payloads: List[Dict[str, Any]], tenant_id: str) -> Dict[str, Any]:
+    """Backtest a policy over many payloads, concurrently and in *simulation* mode (no decision
+    logged, review gates don't pause). Fast path for pure-compute policies, full executor
+    otherwise. Shared by the JSON and JSONL batch endpoints."""
     from concurrent.futures import ThreadPoolExecutor
 
     from .fast_decide import fast_decide, is_fast_servable
 
-    if not request.targetId:
-        raise HTTPException(status_code=422, detail="targetId is required for decision batches.")
-    # Resolve tenant + policy in the request thread (worker threads have no context).
-    tenant_id = active_tenant_id()
-    policy = ensure_exists(storage.get_policy(request.targetId, tenant_id=tenant_id), "policy", request.targetId)
     use_fast = is_fast_servable(policy)
-    payloads = request.payloads or []
     workers = min(int(os.getenv("SIM_MAX_WORKERS", "32")), max(4, (os.cpu_count() or 4) * 4))
     default_outcome = policy.get("defaultOutcome") or "review"
 
@@ -3069,7 +3061,7 @@ def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
     elapsed = time.perf_counter() - started
     tps = round(len(payloads) / elapsed) if elapsed > 0 and payloads else None
     return {
-        "targetType": "decide", "targetId": request.targetId, "rows": rows, "count": len(rows),
+        "targetType": "decide", "targetId": policy["id"], "rows": rows, "count": len(rows),
         "performance": {
             "server_ms": round(elapsed * 1000, 1),
             "throughput_tps": tps,
@@ -3078,6 +3070,67 @@ def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
             "workers": workers,
         },
     }
+
+
+@app.post("/api/v1/decide/batch")
+def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
+    """Backtest a policy over many cases. Runs concurrently and in *simulation*
+    mode — no decision is logged and review gates don't pause — so thousands of
+    what-if cases execute without DB-write contention. Uses the fast (cached-bundle
+    / Rust) path for pure-compute policies, the full executor otherwise. Returns a
+    `performance` block with real server-side throughput."""
+    if not request.targetId:
+        raise HTTPException(status_code=422, detail="targetId is required for decision batches.")
+    # Resolve tenant + policy in the request thread (worker threads have no context).
+    tenant_id = active_tenant_id()
+    policy = ensure_exists(storage.get_policy(request.targetId, tenant_id=tenant_id), "policy", request.targetId)
+    return _run_decision_batch(policy, request.payloads or [], tenant_id)
+
+
+# Max payload lines accepted per JSONL simulation upload (config so limits move without code).
+SIMULATION_JSONL_MAX = int(os.getenv("SIMULATION_JSONL_MAX", "50000"))
+
+
+@app.post("/api/v1/decide/batch/jsonl")
+async def batch_decide_jsonl(request: Request) -> Response:
+    """Backtest a policy over payloads supplied as **JSONL** — one JSON object per line — and,
+    when asked, stream the results back as JSONL. This is the import/export path for large
+    what-if runs: a client uploads a `.jsonl` of payloads (`?targetId=<policy>`), each line is
+    parsed (blank lines skipped, an unparseable line becomes an `error` row so one bad line
+    never sinks the batch), and results come back as JSON (default) or JSONL (`?format=jsonl`,
+    downloadable). Reuses the same concurrent simulation core as /decide/batch."""
+    target_id = request.query_params.get("targetId")
+    if not target_id:
+        raise HTTPException(status_code=422, detail="targetId query parameter is required.")
+    tenant_id = active_tenant_id(request)
+    policy = ensure_exists(storage.get_policy(target_id, tenant_id=tenant_id), "policy", target_id)
+
+    body = (await request.body()).decode("utf-8", errors="replace")
+    payloads: List[Dict[str, Any]] = []
+    parse_errors: List[Dict[str, Any]] = []
+    for line_no, line in enumerate(body.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+            payloads.append(parsed if isinstance(parsed, dict) else {"_value": parsed})
+        except json.JSONDecodeError as exc:
+            parse_errors.append({"line": line_no, "error": str(exc)})
+        if len(payloads) > SIMULATION_JSONL_MAX:
+            raise HTTPException(status_code=413, detail="JSONL exceeds {0} payloads.".format(SIMULATION_JSONL_MAX))
+
+    result = _run_decision_batch(policy, payloads, tenant_id)
+    result["parseErrors"] = parse_errors
+
+    if request.query_params.get("format") == "jsonl":
+        lines = [json_dumps(row) for row in result["rows"] if row is not None]
+        return Response(
+            content="\n".join(lines) + ("\n" if lines else ""),
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": 'attachment; filename="simulation-results.jsonl"'},
+        )
+    return Response(content=json_dumps(result), media_type="application/json")
 
 
 @app.get("/api/v1/deploy/status")
