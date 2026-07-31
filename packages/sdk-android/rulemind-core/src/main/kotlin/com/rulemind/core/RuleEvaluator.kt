@@ -4,6 +4,11 @@ import com.rulemind.core.models.CompiledRule
 import com.rulemind.core.models.RuleTreeNode
 
 class RuleEvaluator {
+    companion object {
+        // Mirrors app/logic.py MAX_RULE_TREE_DEPTH.
+        const val MAX_RULE_TREE_DEPTH = 200
+    }
+
     fun evaluate(rule: CompiledRule, variables: Map<String, Any?>): Map<String, Any?> {
         val conditions = mutableListOf<Map<String, Any?>>()
         val groups = mutableListOf<Map<String, Any?>>()
@@ -31,7 +36,10 @@ class RuleEvaluator {
         val logic = if (nodes.any { (it["type"] as? String)?.lowercase() == "or" }) "OR" else "AND"
         val conditionResults = nodes.filter { (it["type"] as? String) == "condition" }.map { node ->
             val variableId = node["variable"] as? String ?: ""
-            val actual = variables[variableId] ?: 0
+            // A MISSING variable stays null (not 0) so numeric comparisons return false,
+            // matching the Python core (compare(None, ...) -> False). Defaulting to 0 made
+            // `missing < 700` true on-device but false server-side — a real divergence.
+            val actual = variables[variableId]
             val operator = node["operator"] as? String ?: "=="
             val expected = node["value"]
             val passed = compare(actual, operator, expected, node["value2"], node["fieldType"] as? String)
@@ -58,7 +66,7 @@ class RuleEvaluator {
         conditions: MutableList<Map<String, Any?>>,
         groups: MutableList<Map<String, Any?>>,
     ): RuleEvaluation {
-        val passed = evaluateNode(node, variables, conditions, groups)
+        val passed = evaluateNode(node, variables, conditions, groups, 0)
         return RuleEvaluation(
             passed = passed,
             outcome = if (passed) node.onPass ?: "approve" else node.onFail ?: "review",
@@ -71,11 +79,17 @@ class RuleEvaluator {
         variables: Map<String, Any?>,
         conditions: MutableList<Map<String, Any?>>,
         groups: MutableList<Map<String, Any?>>,
+        depth: Int = 0,
     ): Boolean {
+        // Guard pathological nesting from a native stack overflow (matches the Python core).
+        if (depth > MAX_RULE_TREE_DEPTH) {
+            throw IllegalStateException("Rule tree nesting exceeds the maximum depth ($MAX_RULE_TREE_DEPTH)")
+        }
         return when (node.type) {
             "condition" -> {
                 val variableId = node.variable ?: ""
-                val actual = variables[variableId] ?: 0
+                // Missing variable -> null (not 0), matching the Python core. See evaluateFlat.
+                val actual = variables[variableId]
                 val operator = node.operator ?: "=="
                 val expected = node.value
                 val passed = compare(actual, operator, expected, node.value2, node.fieldType)
@@ -93,14 +107,14 @@ class RuleEvaluator {
 
             "not" -> {
                 val child = node.child ?: node.children.firstOrNull() ?: return false
-                val passed = !evaluateNode(child, variables, conditions, groups)
+                val passed = !evaluateNode(child, variables, conditions, groups, depth + 1)
                 groups += mapOf("id" to (node.id ?: "not"), "logic" to "NOT", "passed" to passed, "childCount" to 1)
                 passed
             }
 
             else -> {
                 val logic = (node.logic ?: "AND").uppercase()
-                val children = node.children.map { evaluateNode(it, variables, conditions, groups) }
+                val children = node.children.map { evaluateNode(it, variables, conditions, groups, depth + 1) }
                 val passed = if (logic == "OR") children.any { it } else children.all { it }
                 groups += mapOf("id" to (node.id ?: "group"), "logic" to logic, "passed" to passed, "childCount" to children.size)
                 passed

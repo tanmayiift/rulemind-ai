@@ -1,3 +1,6 @@
+/// Max rule-tree nesting depth. Mirrors app/logic.py MAX_RULE_TREE_DEPTH.
+const int maxRuleTreeDepth = 200;
+
 class RuleEvaluator {
   Map<String, dynamic> evaluate(dynamic rule, Map<String, dynamic> variables) {
     final conditions = <Map<String, dynamic>>[];
@@ -24,7 +27,10 @@ class RuleEvaluator {
     final logic = nodes.any((node) => node["type"] == "or") ? "OR" : "AND";
     final results = nodes.where((node) => node["type"] == "condition").map((condition) {
       final variableId = condition["variable"]?.toString() ?? "";
-      final actual = variables[variableId] ?? 0;
+      // Missing variable stays null (not 0) so numeric comparisons return false,
+      // matching the Python core (compare(None, ...) -> false). Defaulting to 0 made
+      // `missing < 700` true on-device but false server-side — a real divergence.
+      final actual = variables[variableId];
       final operator = condition["operator"]?.toString() ?? "==";
       final expected = condition["value"];
       final passed = _compare(actual, operator, expected,
@@ -51,7 +57,7 @@ class RuleEvaluator {
     List<Map<String, dynamic>> conditions,
     List<Map<String, dynamic>> groups,
   ) {
-    final passed = _evaluateNode(node, variables, conditions, groups);
+    final passed = _evaluateNode(node, variables, conditions, groups, 0);
     return _RuleEvaluation(
       passed: passed,
       outcome: passed ? (node["onPass"]?.toString() ?? "approve") : (node["onFail"]?.toString() ?? "review"),
@@ -64,11 +70,17 @@ class RuleEvaluator {
     Map<String, dynamic> variables,
     List<Map<String, dynamic>> conditions,
     List<Map<String, dynamic>> groups,
+    int depth,
   ) {
+    // Guard pathological nesting from a native stack overflow (matches the Python core).
+    if (depth > maxRuleTreeDepth) {
+      throw StateError("Rule tree nesting exceeds the maximum depth ($maxRuleTreeDepth)");
+    }
     switch (node["type"]) {
       case "condition":
         final variableId = node["variable"]?.toString() ?? "";
-        final actual = variables[variableId] ?? 0;
+        // Missing variable stays null (not 0), matching the Python core. See evaluateFlat above.
+        final actual = variables[variableId];
         final operator = node["operator"]?.toString() ?? "==";
         final expected = node["value"];
         final passed = _compare(actual, operator, expected,
@@ -86,13 +98,13 @@ class RuleEvaluator {
       case "not":
         final child = (node["child"] as Map<String, dynamic>?) ??
             ((node["children"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().firstOrNull);
-        final passed = child == null ? false : !_evaluateNode(child, variables, conditions, groups);
+        final passed = child == null ? false : !_evaluateNode(child, variables, conditions, groups, depth + 1);
         groups.add(<String, dynamic>{"id": node["id"] ?? "not", "logic": "NOT", "passed": passed, "childCount": 1});
         return passed;
       default:
         final children = (node["children"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().toList();
         final logic = node["logic"]?.toString() ?? "AND";
-        final results = children.map((child) => _evaluateNode(child, variables, conditions, groups)).toList();
+        final results = children.map((child) => _evaluateNode(child, variables, conditions, groups, depth + 1)).toList();
         final passed = logic == "OR" ? results.any((value) => value) : results.every((value) => value);
         groups.add(<String, dynamic>{
           "id": node["id"] ?? "group",

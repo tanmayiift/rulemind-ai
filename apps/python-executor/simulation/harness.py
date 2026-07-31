@@ -151,6 +151,151 @@ def build_deep_bundle(num_conditions: int = 20, policy_id: str = "deep_credit") 
     return {"policy": {"id": policy_id, "steps": steps}, "rules": rules, "scorecards": {}}
 
 
+# --------------------------------------------------------------------------- #
+# Large-policy cross-engine accuracy fixture
+# --------------------------------------------------------------------------- #
+# One big v2 nested-tree rule (default 600 conditions across 750 variables, all
+# 12 operators, mixed AND/OR/NOT) used to prove the on-device Kotlin & Dart engines
+# match the Python core on a realistically large policy — including payloads that
+# OMIT variables (the missing-variable parity case). See
+# packages/shared/large-policy.spec.json and the three conformance test arms.
+
+_LARGE_OPS = ["==", "!=", ">", ">=", "<", "<=", "between", "in", "not_in", "regex", "exists", "!exists"]
+
+
+def _large_condition(idx: int, operator: str) -> Dict[str, Any]:
+    """A single well-typed condition on its own variable `var_{idx}`."""
+    var = f"var_{idx}"
+    if operator == "==":  # boolean-typed equality
+        return {"type": "condition", "variable": var, "operator": "==", "value": False, "fieldType": "boolean"}
+    if operator == "!=":
+        return {"type": "condition", "variable": var, "operator": "!=", "value": 100}
+    if operator in (">", ">=", "<", "<="):
+        return {"type": "condition", "variable": var, "operator": operator, "value": 500}
+    if operator == "between":
+        return {"type": "condition", "variable": var, "operator": "between", "value": 200, "value2": 800}
+    if operator == "in":
+        return {"type": "condition", "variable": var, "operator": "in", "value": "alpha,beta,gamma"}
+    if operator == "not_in":
+        return {"type": "condition", "variable": var, "operator": "not_in", "value": "x,y,z"}
+    if operator == "regex":
+        return {"type": "condition", "variable": var, "operator": "regex", "value": "^A"}
+    # exists / !exists
+    return {"type": "condition", "variable": var, "operator": operator, "value": None}
+
+
+def _satisfying_value(operator: str) -> Any:
+    return {
+        "==": False, "!=": 101, ">": 600, ">=": 500, "<": 499, "<=": 500,
+        "between": 500, "in": "beta", "not_in": "ok", "regex": "Apple",
+        "exists": 1, "!exists": "__OMIT__",
+    }[operator]
+
+
+def _violating_value(operator: str) -> Any:
+    return {
+        "==": True, "!=": 100, ">": 400, ">=": 499, "<": 501, "<=": 501,
+        "between": 900, "in": "zeta", "not_in": "x", "regex": "Banana",
+        "exists": "__OMIT__", "!exists": 1,
+    }[operator]
+
+
+def build_large_rule(num_conditions: int = 600, conds_per_group: int = 20, rule_id: str = "r_large") -> Dict[str, Any]:
+    """A v2 rule whose tree nests `num_conditions` conditions (all 12 operators) into
+    alternating AND/OR subgroups with periodic NOT wrappers. Root onPass=approve,
+    onFail=review, so the outcome is sensitive to individual condition results."""
+    conditions = [(_large_condition(i, _LARGE_OPS[i % len(_LARGE_OPS)]), _LARGE_OPS[i % len(_LARGE_OPS)])
+                  for i in range(num_conditions)]
+    subgroups: List[Dict[str, Any]] = []
+    for g in range(0, num_conditions, conds_per_group):
+        chunk = conditions[g:g + conds_per_group]
+        children: List[Dict[str, Any]] = []
+        for local, (cond, _op) in enumerate(chunk):
+            # Wrap ~1 in 7 leaves in NOT (uses the single-child `child` form all engines share).
+            if (g + local) % 7 == 3:
+                children.append({"type": "not", "id": f"not_{g + local}", "child": cond})
+            else:
+                children.append(cond)
+        # AND subgroups (each rarely all-true) under a top-level OR keeps the final
+        # outcome sensitive to individual conditions and roughly split (not saturated).
+        subgroups.append({"type": "group", "id": f"grp_{g}", "logic": "AND", "children": children})
+    tree = {"type": "group", "id": "root", "logic": "OR", "children": subgroups,
+            "onPass": "approve", "onFail": "review"}
+    return {"id": rule_id, "name": "Large policy", "rule_format": "v2", "ruleFormat": "v2", "tree": tree}
+
+
+def generate_large_cases(num_conditions: int = 600, num_variables: int = 750,
+                         num_dense: int = 150, num_missing: int = 150, seed: int = 7) -> List[Dict[str, Any]]:
+    """Deterministic payloads for the large rule: `dense` payloads satisfy each
+    condition with p≈0.85 (so 500+ conditions are true), `missing` payloads then
+    drop ~30% of variables to exercise the missing-variable parity path."""
+    rng = random.Random(seed)
+    ops = [_LARGE_OPS[i % len(_LARGE_OPS)] for i in range(num_conditions)]
+
+    def dense_payload() -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        for i in range(num_conditions):
+            op = ops[i]
+            value = _satisfying_value(op) if rng.random() < 0.85 else _violating_value(op)
+            if value != "__OMIT__":
+                payload[f"var_{i}"] = value
+        # Extra variables present only in the payload (pushes total variables to num_variables).
+        for i in range(num_conditions, num_variables):
+            payload[f"var_{i}"] = rng.randint(0, 1000)
+        return payload
+
+    cases: List[Dict[str, Any]] = []
+    for _ in range(num_dense):
+        cases.append(dense_payload())
+    for _ in range(num_missing):
+        payload = dense_payload()
+        for key in list(payload.keys()):
+            if rng.random() < 0.30:
+                del payload[key]
+        cases.append(payload)
+    return cases
+
+
+def _approve_payload(rng: random.Random, num_variables: int = 750) -> Dict[str, Any]:
+    """A payload that makes subgroup 0 (conditions 0..19) fully true so the top-level
+    OR yields `approve` — exercises the approve path with a random tail."""
+    payload: Dict[str, Any] = {}
+    not_local = {3, 10, 17}  # NOT-wrapped leaves in subgroup 0: their inner must be FALSE
+    for i in range(20):
+        op = _LARGE_OPS[i % len(_LARGE_OPS)]
+        value = _violating_value(op) if i in not_local else _satisfying_value(op)
+        if value != "__OMIT__":
+            payload[f"var_{i}"] = value
+    for i in range(20, num_variables):
+        payload[f"var_{i}"] = rng.randint(0, 1000)
+    return payload
+
+
+def build_large_policy_spec(seed: int = 7) -> Dict[str, Any]:
+    """The committed cross-engine large-policy fixture: the big v2 rule + payload cases
+    with their Python-oracle outcome and passed-condition count. The on-device Kotlin &
+    Dart engines must reproduce both for every case."""
+    from app.logic import evaluate_rule_tree
+
+    rule = build_large_rule(num_conditions=600)
+    payloads = generate_large_cases(num_dense=80, num_missing=40, seed=seed)
+    payloads += [_approve_payload(random.Random(seed + 92)) for _ in range(15)]
+    cases: List[Dict[str, Any]] = []
+    for payload in payloads:
+        ev = evaluate_rule_tree(rule["tree"], payload)
+        cases.append({
+            "variables": payload,
+            "expectedOutcome": ev["outcome"],
+            "trueConditions": sum(1 for c in ev["conditions"] if c["passed"]),
+        })
+    return {
+        "_comment": "Cross-engine large-policy conformance. Python core (app/logic.py) is the source of truth; the Kotlin (sdk-android) and Dart (sdk-flutter) on-device engines must resolve the SAME outcome AND the same number of passed conditions per case. Regenerate with: python -m simulation.gen_large_policy_spec",
+        "meta": {"conditions": 600, "cases": len(cases)},
+        "rule": rule,
+        "cases": cases,
+    }
+
+
 def oracle_outcome(customer: Dict[str, Any]) -> str:
     """Independent reference implementation of the credit policy above.
 
