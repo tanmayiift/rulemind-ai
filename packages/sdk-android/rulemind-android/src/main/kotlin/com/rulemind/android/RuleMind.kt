@@ -85,7 +85,7 @@ object RuleMind {
                     sdkVersion = activeConfig.sdkVersion,
                 ),
             ).copy(source = "sdk_server", policyId = policyId, userId = userId, payload = payload)
-            executionStore?.save(serverDecision)
+            executionStore?.persist(serverDecision)
             return serverDecision
         }
         val bundle = requireNotNull(activeBundle) { "No cached bundle available." }
@@ -95,7 +95,7 @@ object RuleMind {
         val cacheKey = cache.buildKey(policyId, canonicalJson(payload), variant?.id)
         cache.get(cacheKey)?.takeIf { it.status == "completed" && it.pendingOperations.isEmpty() }?.let { return it }
         val decision = engine.evaluate(bundle, policyId, payload, userId).copy(source = "edge_bundle", policyId = policyId, userId = userId)
-        executionStore?.save(decision)
+        executionStore?.persist(decision)
         if (decision.status == "completed" && decision.pendingOperations.isEmpty()) {
             cache.put(policyId, cacheKey, decision)
         }
@@ -148,7 +148,7 @@ object RuleMind {
                 next = engine.evaluate(bundle, resumePolicyId, next.payload, next.userId, next.copy(status = "running"))
                     .copy(source = "edge_resume", policyId = resumePolicyId, userId = next.userId)
             }
-            executionStore?.save(next)
+            executionStore?.persist(next)
             syncDecision(next)
             updated += next
         }
@@ -157,7 +157,7 @@ object RuleMind {
 
     fun getExecution(executionId: String): Decision? {
         executionStore?.get(executionId)?.let { return it }
-        return networkClient?.getExecution(executionId)?.also { executionStore?.save(it) }
+        return networkClient?.getExecution(executionId)?.also { executionStore?.persist(it) }
     }
 
     fun resumeExecution(executionId: String, reviewDecision: ReviewDecision): Decision {
@@ -180,12 +180,12 @@ object RuleMind {
             )
             val resumed = engine.evaluate(bundle, localPolicyId, local.payload, local.userId, resumedSeed)
                 .copy(source = "edge_resume", policyId = localPolicyId, userId = local.userId)
-            executionStore?.save(resumed)
+            executionStore?.persist(resumed)
             syncDecision(resumed)
             return resumed
         }
         val resumed = requireNotNull(networkClient).resumeExecution(executionId, reviewDecision)
-        executionStore?.save(resumed)
+        executionStore?.persist(resumed)
         return resumed
     }
 

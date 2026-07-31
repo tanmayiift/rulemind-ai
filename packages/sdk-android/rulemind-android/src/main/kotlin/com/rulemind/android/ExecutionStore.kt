@@ -26,6 +26,21 @@ internal class ExecutionStore(context: Context) {
             .apply()
     }
 
+    /**
+     * Persist only executions that are still resumable — paused for review, awaiting sync, or
+     * carrying an undelivered pending operation. A terminal decision (completed with every
+     * operation delivered) is pruned instead of stored, so this store can't grow without bound:
+     * the durable decision outbox is the record of completed decisions. Called at every point
+     * where an execution's lifecycle advances.
+     */
+    fun persist(decision: Decision) {
+        val executionId = decision.executionId ?: return
+        if (isResumable(decision)) save(decision) else delete(executionId)
+    }
+
+    private fun isResumable(decision: Decision): Boolean =
+        decision.status != "completed" || decision.pendingOperations.any { it["status"] != "delivered" }
+
     fun get(executionId: String): Decision? {
         val raw = prefs.getString(keyFor(executionId), null) ?: return null
         return runCatching { DecisionCodec.fromJson(JSONObject(raw)) }.getOrNull()
