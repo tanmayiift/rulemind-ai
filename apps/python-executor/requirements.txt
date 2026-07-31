@@ -9,6 +9,12 @@ PyJWT==2.10.1
 httpx==0.28.1
 APScheduler==3.10.4
 PyYAML==6.0.2
+
+# Enterprise SSO. OIDC needs only PyJWT + cryptography (already present); SAML 2.0
+# assertion-signature verification uses signxml (pure-Python XML-DSig over lxml).
+# Both ship manylinux/macos wheels — no system libxmlsec build step.
+lxml==5.4.0
+signxml==4.5.1
 prometheus-client==0.21.1
 redis==5.2.1
 psycopg2-binary==2.9.9

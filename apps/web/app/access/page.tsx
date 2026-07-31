@@ -1,12 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Trash2, Copy, ShieldCheck, KeyRound, UserPlus, Users } from "lucide-react";
+import { Plus, Trash2, Copy, ShieldCheck, KeyRound, UserPlus, Users, Building2 } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { Button, Card, Field, Input, Select, Badge, EmptyState, PageHeader, SectionTitle } from "../../src/v3/ui";
 
 type ApiKey = { id: string; kid: string; masked_key: string; role: string; label?: string; environment?: string; is_active: boolean; is_current?: boolean; created_at?: string };
+type SsoConfig = {
+  provider: string; enabled: boolean; issuer?: string; client_id?: string; client_secret_set?: boolean;
+  redirect_uri?: string; authorization_endpoint?: string; token_endpoint?: string; jwks_uri?: string;
+  sp_entity_id?: string; sso_url?: string; acs_url?: string; idp_entity_id?: string; idp_cert?: string;
+  allowed_domains?: string[]; default_role?: string; jit_provisioning?: boolean;
+};
 type Member = { id: string; email: string; name: string; role: string; is_active: boolean; has_password: boolean; auth_provider: string; last_login_at?: string | null };
 type RoleRef = { role: string; capabilities: string[]; description: string };
 type Me = { role: string; capabilities: string[] };
@@ -34,6 +40,9 @@ export default function AccessPage() {
   const [mName, setMName] = React.useState("");
   const [mRole, setMRole] = React.useState("viewer");
   const [mPassword, setMPassword] = React.useState("");
+  const [sso, setSso] = React.useState<SsoConfig | null>(null);
+  const [ssoSecret, setSsoSecret] = React.useState("");
+  const [ssoSaved, setSsoSaved] = React.useState(false);
 
   const canManage = me?.capabilities?.includes("manage_access") ?? false;
 
@@ -47,6 +56,7 @@ export default function AccessPage() {
       setNewRole(r.assignable[r.assignable.length - 1] ?? "viewer");
       try { setKeys(await apiJson<ApiKey[]>(apiBaseUrl, "/api/v1/access/keys", {}, apiKey)); } catch { /* read may be limited */ }
       try { setMembers(await apiJson<Member[]>(apiBaseUrl, "/api/v1/access/members", {}, apiKey)); } catch { /* read may be limited */ }
+      try { setSso(await apiJson<SsoConfig>(apiBaseUrl, "/api/v1/access/sso", {}, apiKey)); } catch { /* read may be limited */ }
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to load access settings.");
@@ -101,6 +111,24 @@ export default function AccessPage() {
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : "Deactivate failed."); }
   };
+
+  const saveSso = async () => {
+    if (!sso) return;
+    setError(null); setSsoSaved(false);
+    const body: Record<string, unknown> = {
+      provider: sso.provider, enabled: sso.enabled, default_role: sso.default_role, jit_provisioning: sso.jit_provisioning,
+      allowed_domains: sso.allowed_domains ?? [],
+      issuer: sso.issuer, client_id: sso.client_id, redirect_uri: sso.redirect_uri,
+      authorization_endpoint: sso.authorization_endpoint, token_endpoint: sso.token_endpoint, jwks_uri: sso.jwks_uri,
+      sp_entity_id: sso.sp_entity_id, sso_url: sso.sso_url, acs_url: sso.acs_url, idp_entity_id: sso.idp_entity_id, idp_cert: sso.idp_cert,
+    };
+    if (ssoSecret) body.client_secret = ssoSecret;
+    try {
+      setSso(await apiJson<SsoConfig>(apiBaseUrl, "/api/v1/access/sso", { method: "PUT", body: JSON.stringify(body) }, apiKey));
+      setSsoSecret(""); setSsoSaved(true);
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not save SSO config."); }
+  };
+  const patchSso = (patch: Partial<SsoConfig>) => setSso((s) => (s ? { ...s, ...patch } : s));
 
   const activeKeys = keys.filter((k) => k.is_active);
   const assignable = roles?.assignable ?? [];
@@ -185,6 +213,81 @@ export default function AccessPage() {
           </div>
         )}
       </Card>
+
+      {/* Enterprise SSO (OIDC / SAML) */}
+      {sso ? (
+        <Card>
+          <SectionTitle
+            right={<Badge tone={sso.enabled ? "success" : "neutral"}>{sso.enabled ? "Enabled" : "Off"}</Badge>}
+          >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Building2 size={15} /> Single sign-on</span>
+          </SectionTitle>
+          <div style={{ fontSize: 12.5, color: "var(--rm-muted)", marginBottom: 14 }}>
+            Let members sign in through your identity provider. New users are provisioned just-in-time at the default role you choose below.
+          </div>
+          {!canManage ? (
+            <div style={{ fontSize: 12.5, color: "var(--rm-muted)" }}>Read-only — ask an admin to configure SSO.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "160px 160px 1fr", gap: 10, alignItems: "end" }}>
+                <Field label="Protocol">
+                  <Select value={sso.provider} onChange={(e) => patchSso({ provider: e.target.value })}>
+                    <option value="oidc">OIDC (OpenID Connect)</option>
+                    <option value="saml">SAML 2.0</option>
+                  </Select>
+                </Field>
+                <Field label="Default role for new users">
+                  <Select value={sso.default_role ?? "viewer"} onChange={(e) => patchSso({ default_role: e.target.value })}>
+                    {assignable.map((r) => <option key={r} value={r}>{ROLE_LABEL[r] ?? r}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Allowed email domains (comma-separated; blank = any)">
+                  <Input value={(sso.allowed_domains ?? []).join(", ")}
+                    onChange={(e) => patchSso({ allowed_domains: e.target.value.split(",").map((d) => d.trim()).filter(Boolean) })}
+                    placeholder="acme.com, acme.co.uk" />
+                </Field>
+              </div>
+
+              {sso.provider === "oidc" ? (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <Field label="Issuer URL"><Input value={sso.issuer ?? ""} onChange={(e) => patchSso({ issuer: e.target.value })} placeholder="https://login.company.com" /></Field>
+                  <Field label="Redirect URI"><Input value={sso.redirect_uri ?? ""} onChange={(e) => patchSso({ redirect_uri: e.target.value })} placeholder="https://app.rulemind.com/login" /></Field>
+                  <Field label="Client ID"><Input value={sso.client_id ?? ""} onChange={(e) => patchSso({ client_id: e.target.value })} /></Field>
+                  <Field label={`Client secret${sso.client_secret_set ? " (set — leave blank to keep)" : ""}`}>
+                    <Input type="password" value={ssoSecret} onChange={(e) => setSsoSecret(e.target.value)} placeholder={sso.client_secret_set ? "••••••••" : ""} />
+                  </Field>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <Field label="SP entity ID"><Input value={sso.sp_entity_id ?? ""} onChange={(e) => patchSso({ sp_entity_id: e.target.value })} placeholder="rulemind" /></Field>
+                  <Field label="IdP SSO URL"><Input value={sso.sso_url ?? ""} onChange={(e) => patchSso({ sso_url: e.target.value })} placeholder="https://idp.company.com/sso" /></Field>
+                  <Field label="ACS URL (this app)"><Input value={sso.acs_url ?? ""} onChange={(e) => patchSso({ acs_url: e.target.value })} placeholder="https://app.rulemind.com/api/v1/auth/sso/saml/acs" /></Field>
+                  <Field label="IdP entity ID"><Input value={sso.idp_entity_id ?? ""} onChange={(e) => patchSso({ idp_entity_id: e.target.value })} /></Field>
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <Field label="IdP signing certificate (X.509 / PEM)">
+                      <textarea value={sso.idp_cert ?? ""} onChange={(e) => patchSso({ idp_cert: e.target.value })}
+                        rows={4} className="rm-input rm-mono" style={{ resize: "vertical", width: "100%" }} placeholder="-----BEGIN CERTIFICATE-----" />
+                    </Field>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={sso.enabled} onChange={(e) => patchSso({ enabled: e.target.checked })} /> Enable SSO login
+                </label>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={sso.jit_provisioning ?? true} onChange={(e) => patchSso({ jit_provisioning: e.target.checked })} /> Just-in-time provision new users
+                </label>
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+                  {ssoSaved ? <span style={{ fontSize: 12, color: "var(--rm-success)" }}>Saved</span> : null}
+                  <Button onClick={saveSso}>Save SSO</Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </Card>
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 340px", gap: 20, alignItems: "start" }}>
         {/* Keys */}

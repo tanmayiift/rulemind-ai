@@ -2,13 +2,15 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { KeyRound, Mail, ShieldCheck } from "lucide-react";
+import { KeyRound, Mail, ShieldCheck, Building2 } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore, type SessionMember } from "../../src/lib/store";
 import { Button, Card, Field, Input } from "../../src/v3/ui";
 
 type LoginResp = { token: string; expires_at: string; member: SessionMember };
 type OtpReq = { requested: boolean; delivered?: boolean; debug_code?: string };
+type SsoStart = { provider: string; redirect_url: string };
+type SsoConfig = { enabled?: boolean; provider?: string };
 
 export default function LoginPage() {
   const router = useRouter();
@@ -21,10 +23,44 @@ export default function LoginPage() {
   const [hint, setHint] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [ssoEnabled, setSsoEnabled] = React.useState(false);
 
-  const finish = (resp: LoginResp) => {
+  const finish = React.useCallback((resp: LoginResp) => {
     setSession(resp.token, resp.member);
     router.push("/");
+  }, [setSession, router]);
+
+  // Is SSO enabled for this workspace? (Public probe — no secrets, just on/off.)
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const cfg = await apiJson<SsoConfig>(apiBaseUrl, "/api/v1/auth/sso/available", {}, "");
+        setSsoEnabled(Boolean(cfg.enabled));
+      } catch { /* backend may be unreachable; hide the SSO button */ }
+    })();
+  }, [apiBaseUrl]);
+
+  // Complete an OIDC redirect: the IdP sends us back with ?code&state.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code"); const state = params.get("state");
+    if (!code || !state) return;
+    (async () => {
+      setBusy(true); setError(null);
+      try {
+        finish(await apiJson<LoginResp>(apiBaseUrl, "/api/v1/auth/sso/oidc/callback", {
+          method: "POST", body: JSON.stringify({ code, state }),
+        }));
+      } catch (e) { setError(e instanceof Error ? e.message : "SSO sign-in failed."); } finally { setBusy(false); }
+    })();
+  }, [apiBaseUrl, finish]);
+
+  const startSso = async () => {
+    setBusy(true); setError(null);
+    try {
+      const r = await apiJson<SsoStart>(apiBaseUrl, "/api/v1/auth/sso/start", {}, "");
+      window.location.href = r.redirect_url;
+    } catch (e) { setError(e instanceof Error ? e.message : "SSO isn't available."); setBusy(false); }
   };
 
   const loginPassword = async () => {
@@ -117,6 +153,19 @@ export default function LoginPage() {
                 )}
               </>
             )}
+
+            {ssoEnabled ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 0" }}>
+                  <div style={{ flex: 1, height: 1, background: "var(--rm-border)" }} />
+                  <span style={{ fontSize: 11, color: "var(--rm-muted)" }}>OR</span>
+                  <div style={{ flex: 1, height: 1, background: "var(--rm-border)" }} />
+                </div>
+                <Button variant="secondary" onClick={startSso} disabled={busy}>
+                  <Building2 size={15} /> Sign in with SSO
+                </Button>
+              </>
+            ) : null}
 
             {hint ? <div style={{ fontSize: 12, color: "var(--rm-muted)", background: "var(--rm-bg)", padding: "8px 10px", borderRadius: 7 }}>{hint}</div> : null}
             {error ? <div style={{ fontSize: 12.5, color: "var(--rm-danger)" }}>{error}</div> : null}
