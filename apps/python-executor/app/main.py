@@ -737,10 +737,13 @@ def test_scorecard_entity(scorecard: Dict[str, Any], payload: Optional[Dict[str,
     return {"scorecard": updated or scorecard, "variable_results": variable_results["results"], "result": evaluation}
 
 
-def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]], log_decision: bool = False) -> Dict[str, Any]:
+def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]], source: str = "test_console") -> Dict[str, Any]:
     started = time.perf_counter()
     executor = workflow_executor()
-    ctx = asyncio.run(executor.execute(policy=policy, payload=payload or {}, tenant_id=active_tenant_id(), source="test_console"))
+    # The executor is the single canonical decision logger — it writes exactly one
+    # Decision row (source-tagged) at the end of execute(). We must NOT also write one
+    # here, or every /decide would double-log (inflating reports + usage metering).
+    ctx = asyncio.run(executor.execute(policy=policy, payload=payload or {}, tenant_id=active_tenant_id(), source=source))
     latency_ms = round((time.perf_counter() - started) * 1000, 3)
     variable_lookup = current_variable_map()
     connectors = current_connectors()
@@ -777,21 +780,6 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
         "tested_at": now_iso(),
     }
     updated = storage.update_policy(policy["id"], {"last_test_result": last_test_result}, bump_version=False)
-    if log_decision:
-        storage.add_decision(
-            {
-                "id": str(uuid.uuid4()),
-                "policy_id": policy["id"],
-                "payload": redact_payload(ctx.payload),
-                "computed_variables": ctx.variables,
-                "rule_results": copy.deepcopy(ctx.rule_results),
-                "scorecard_result": scorecard_result,
-                "trace": copy.deepcopy(ctx.step_trace),
-                "outcome": outcome["outcome"],
-                "latency_ms": int(latency_ms),
-                "created_at": now_iso(),
-            }
-        )
     return {
         "policy": updated or policy,
         "variable_results": variable_results,
@@ -2044,7 +2032,9 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
             if decision["outcome"] == "reject":
                 record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {})
             return decision
-    outcome = test_policy_entity(policy, request.payload, log_decision=True)
+    # source="api" so the executor logs this as a production decision (exactly one
+    # Decision row); the fast path above logs source="api_fast", also once.
+    outcome = test_policy_entity(policy, request.payload, source="api")
     if outcome["result"]["outcome"] == "reject":
         record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {"trace": outcome["result"].get("trace", [])})
     return {

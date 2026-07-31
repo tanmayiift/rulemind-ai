@@ -72,10 +72,10 @@ class DecisionLogApiTests(unittest.TestCase):
         before = app_main.storage.count_decisions(tenant_id=app_main.storage.default_tenant_id)
         self.assertEqual(self._decide().status_code, 200)
         # read-after-write: the reader flushes the pending async write so the count
-        # reflects it immediately (>= because /decide currently double-logs — a
-        # separate pre-existing bug flagged for its own fix).
+        # reflects it immediately — and EXACTLY one row per /decide (the executor is
+        # the single canonical logger; no more double-logging).
         after = app_main.storage.count_decisions(tenant_id=app_main.storage.default_tenant_id)
-        self.assertGreater(after, before)
+        self.assertEqual(after, before + 1)
 
     def test_audit_endpoint_sees_the_decision(self):
         self._decide()
