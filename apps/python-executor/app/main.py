@@ -15,7 +15,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import JWT_COOKIE_NAME, bcrypt_verify, create_admin_jwt, decode_admin_jwt
 from .analytics import decision_analytics, experiment_analytics, latency_analytics, sdk_analytics
-from .compiler import BundleCompilationError, NoProductionAssetsError, compile_bundle, render_bundle_response
+from .compiler import (
+    BundleCompilationError,
+    NoProductionAssetsError,
+    compile_bundle,
+    compile_policy_block,
+    render_block_response,
+    render_bundle_response,
+    sign_block_payload,
+)
 from .context import get_current_api_key_id, get_current_role, get_current_tenant_id
 from .experience_studio import ADMIN_ENTITY_SCHEMAS, build_experience_manifest
 from .executor import ExecutionContext, PolicyExecutor
@@ -3482,6 +3490,51 @@ def sdk_bundle(request: Request) -> Response:
     response_payload = render_bundle_response(content, request.headers.get("x-client-public-key"))
     BUNDLE_SYNCS_TOTAL.labels(status="success").inc()
     return Response(content=json_dumps(response_payload), media_type="application/json")
+
+
+@app.get("/sdk/v1/blocks/{policy_id}")
+def sdk_policy_block(policy_id: str, request: Request) -> Response:
+    """Serve a single policy as a self-contained, cacheable **decision block**.
+
+    Unlike the full tenant bundle, a block carries exactly one production policy plus only the
+    rules / scorecards / decision tables it references (and the compiled variables). A client
+    fetches one block, caches it by its ETag (the block checksum), and evaluates that policy
+    on-device with the same SDK evaluators. Supports conditional GET (If-None-Match → 304) and
+    optional per-client encryption when an `X-Client-Public-Key` header is supplied.
+    """
+    tenant_id = active_tenant_id(request)
+    block = compile_policy_block(
+        storage, tenant_id, policy_id, client_public_key=request.headers.get("x-client-public-key")
+    )
+    if block is None:
+        raise HTTPException(status_code=404, detail="No production block for policy '{0}'.".format(policy_id))
+
+    etag = '"{0}"'.format(block["checksum"])
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=300"})
+
+    client_public_key = request.headers.get("x-client-public-key")
+    if client_public_key:
+        payload = render_block_response(block, client_public_key)
+    else:
+        # Signed plaintext: the client can inspect + evaluate the block directly, and verify the
+        # RSA signature over its canonical bytes. Confidentiality comes from TLS/mTLS in transit.
+        payload = {
+            "kind": "decision_block",
+            "policyId": block["policyId"],
+            "blockVersion": block["blockVersion"],
+            "blockId": block["blockId"],
+            "checksum": block["checksum"],
+            "compiledAt": block["compiledAt"],
+            "expiresAt": block["expiresAt"],
+            "signature": sign_block_payload(block),
+            "block": block,
+        }
+    return Response(
+        content=json_dumps(payload),
+        media_type="application/json",
+        headers={"ETag": etag, "Cache-Control": "private, max-age=300"},
+    )
 
 
 @app.post("/sdk/v1/decide")

@@ -357,3 +357,159 @@ def compile_bundle(storage: Storage, tenant_id: str, client_public_key: Optional
         },
         tenant_id=tenant_id,
     )
+
+
+def _compile_rule_entry(rule: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": rule["id"],
+        "name": rule["name"],
+        "ruleFormat": rule.get("rule_format", "v1"),
+        "tree": copy.deepcopy(rule.get("tree")),
+        "nodes": copy.deepcopy(rule.get("nodes") or flatten_tree_to_nodes(rule.get("tree"))),
+        "expression": rule.get("expression"),
+        "status": rule.get("status"),
+    }
+
+
+def _compile_table_entry(table: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": table["id"],
+        "name": table.get("name"),
+        "hit_policy": table.get("hit_policy", "first"),
+        "inputs": table.get("inputs", []),
+        "outputs": table.get("outputs", []),
+        "rows": table.get("rows", []),
+        "default_row": table.get("default_row"),
+    }
+
+
+def compile_policy_block(
+    storage: Storage,
+    tenant_id: str,
+    policy_id: str,
+    client_public_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Compile a single production policy into a self-contained, cacheable **decision block**.
+
+    A block is a per-policy slice of a bundle: the one compiled policy plus exactly the rules,
+    scorecards and decision tables its steps reference, and the tenant's compiled variables. A
+    client can fetch one block, cache it by its checksum/ETag, and evaluate that single policy
+    on-device with the same SDK evaluators — without pulling (or re-fetching) the whole tenant
+    bundle. Returns None when the policy does not exist or is not in production.
+
+    The block is deterministic in its content: `blockVersion` is derived from a content hash, so
+    the same policy state always yields the same version + checksum (ideal for HTTP caching).
+    """
+    policy = storage.get_policy(policy_id, tenant_id=tenant_id)
+    if not policy or policy.get("status") != "prod":
+        return None
+
+    referenced_rules: List[str] = []
+    referenced_scorecards: List[str] = []
+    referenced_tables: List[str] = []
+    server_only_steps: List[str] = []
+    edge_steps: List[Dict[str, Any]] = []
+    for step in policy.get("steps", []):
+        step_type = step.get("type")
+        ref_id = step.get("ref_id") or step.get("ref")
+        if step_type not in {"connector", "rule", "scorecard", "decision_table", "transform", "action", "review_gate", "outcome"}:
+            sid = step.get("id") or ref_id
+            if sid:
+                server_only_steps.append(sid)
+            continue
+        edge_steps.append(copy.deepcopy(step))
+        if ref_id and step_type == "rule":
+            referenced_rules.append(ref_id)
+        elif ref_id and step_type == "scorecard":
+            referenced_scorecards.append(ref_id)
+        elif ref_id and step_type == "decision_table":
+            referenced_tables.append(ref_id)
+
+    compiled_variables: List[Dict[str, Any]] = []
+    server_only_variables: List[str] = []
+    for variable in storage.list_variables(status="prod", tenant_id=tenant_id):
+        compilable, compiled, reason = compile_variable(variable)
+        if compilable and compiled:
+            compiled_variables.append(compiled)
+        elif reason and reason.startswith("syntax_error:"):
+            raise BundleCompilationError(
+                "Block compile failed for variable {0}: {1}".format(variable["id"], reason),
+                entity_type="variable",
+                entity_id=variable["id"],
+            )
+        else:
+            server_only_variables.append(variable["id"])
+
+    compiled_rules = [
+        _compile_rule_entry(rule)
+        for rule in (storage.get_rule(rid, tenant_id=tenant_id) for rid in dict.fromkeys(referenced_rules))
+        if rule and rule.get("status") == "prod"
+    ]
+    compiled_scorecards = [
+        scorecard
+        for scorecard in (storage.get_scorecard(sid, tenant_id=tenant_id) for sid in dict.fromkeys(referenced_scorecards))
+        if scorecard and scorecard.get("status") == "prod"
+    ]
+    compiled_tables = [
+        _compile_table_entry(table)
+        for table in (storage.get_decision_table(tid, tenant_id=tenant_id) for tid in dict.fromkeys(referenced_tables))
+        if table and table.get("status") == "prod"
+    ]
+
+    compiled_policy = {
+        "id": policy["id"],
+        "name": policy["name"],
+        "steps": edge_steps,
+        "serverOnlySteps": server_only_steps,
+        "defaultOutcome": policy.get("defaultOutcome"),
+        "trigger": copy.deepcopy(policy.get("trigger")),
+    }
+
+    compiled_at = datetime.utcnow()
+    block: Dict[str, Any] = {
+        "kind": "decision_block",
+        "tenantId": tenant_id,
+        "policyId": policy["id"],
+        "policyName": policy["name"],
+        "compiledAt": compiled_at.replace(microsecond=0).isoformat() + "Z",
+        "expiresAt": (compiled_at + timedelta(days=30)).replace(microsecond=0).isoformat() + "Z",
+        "variables": compiled_variables,
+        "rules": compiled_rules,
+        "scorecards": compiled_scorecards,
+        "decisionTables": compiled_tables,
+        "policy": compiled_policy,
+        "serverOnlyVariables": server_only_variables,
+    }
+    # blockVersion is derived from the content (excluding the timestamps) so identical policy
+    # state always maps to the same version + checksum — stable, cache-friendly ETags.
+    content_for_hash = {key: value for key, value in block.items() if key not in {"compiledAt", "expiresAt"}}
+    content_hash = hashlib.sha256(json_dumps(content_for_hash).encode("utf-8")).hexdigest()
+    block["blockVersion"] = content_hash[:16]
+    block["blockId"] = hashlib.sha256("{0}:{1}".format(tenant_id, policy["id"]).encode("utf-8")).hexdigest()[:24]
+    checksum = "sha256:" + content_hash
+    block["checksum"] = checksum
+    return block
+
+
+def sign_block_payload(block: Dict[str, Any]) -> str:
+    """RSA-sign the canonical bytes of a decision block so a client can verify integrity."""
+    payload_bytes = json.dumps(block, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return _sign_payload(payload_bytes)
+
+
+def render_block_response(block: Dict[str, Any], client_public_key: Optional[str]) -> Dict[str, Any]:
+    """Encrypt + sign a compiled decision block for transport (mirrors render_bundle_response)."""
+    payload_bytes = json.dumps(block, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    encrypted_block, encrypted_key = _encrypt_bundle_payload(payload_bytes, client_public_key)
+    return {
+        "kind": "decision_block",
+        "policyId": block["policyId"],
+        "blockVersion": block["blockVersion"],
+        "blockId": block["blockId"],
+        "encryptedBlock": encrypted_block,
+        "encryptedKey": encrypted_key,
+        "signature": _sign_payload(payload_bytes),
+        "checksum": block["checksum"],
+        "compiledAt": block["compiledAt"],
+        "expiresAt": block["expiresAt"],
+    }
