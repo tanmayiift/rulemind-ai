@@ -532,25 +532,38 @@ class PolicyExecutor:
             items = []
 
         outer_scope = ctx.loop_scope
-        iterations: List[Dict[str, Any]] = []
         truncated = len(items) > max_iterations
-        for idx, item in enumerate(items[:max_iterations]):
-            ctx.loop_scope = {**outer_scope, as_name: item, index_name: idx}
-            outcome_before = ctx.outcome
-            trace_start = len(ctx.step_trace)
-            await self._run_steps(sub_steps, ctx, rules, scorecards, connectors, source, depth + 1)
-            iterations.append({
-                "index": idx,
-                "item": copy.deepcopy(item),
-                "outcome_before": outcome_before,
-                "outcome_after": ctx.outcome,
-                "steps": copy.deepcopy(ctx.step_trace[trace_start:]),
-                "paused": ctx.status == "paused",
-                "failed": ctx.status == "failed",
-            })
-            if ctx.status in {"paused", "failed"}:
-                break
-        ctx.loop_scope = outer_scope
+        sliced = items[:max_iterations]
+
+        # Concurrent map: when each iteration is independent (typically a connector /
+        # http_request per line-item), run them concurrently on isolated cloned
+        # contexts — the main latency lever for I/O-bound loops. Effects merge back in
+        # deterministic index order. `mode: "parallel"` (+ optional `concurrency`).
+        mode = str(config.get("mode", "sequential")).lower()
+        if mode == "parallel" and sliced:
+            iterations = await self._run_loop_parallel(
+                sliced, sub_steps, ctx, rules, scorecards, connectors, source, depth,
+                as_name, index_name, outer_scope, config,
+            )
+        else:
+            iterations = []
+            for idx, item in enumerate(sliced):
+                ctx.loop_scope = {**outer_scope, as_name: item, index_name: idx}
+                outcome_before = ctx.outcome
+                trace_start = len(ctx.step_trace)
+                await self._run_steps(sub_steps, ctx, rules, scorecards, connectors, source, depth + 1)
+                iterations.append({
+                    "index": idx,
+                    "item": copy.deepcopy(item),
+                    "outcome_before": outcome_before,
+                    "outcome_after": ctx.outcome,
+                    "steps": copy.deepcopy(ctx.step_trace[trace_start:]),
+                    "paused": ctx.status == "paused",
+                    "failed": ctx.status == "failed",
+                })
+                if ctx.status in {"paused", "failed"}:
+                    break
+            ctx.loop_scope = outer_scope
 
         return {
             "loop": step.get("id") or step.get("name") or "loop",
@@ -558,8 +571,81 @@ class PolicyExecutor:
             "count": len(items),
             "iterations_run": len(iterations),
             "truncated": truncated,
+            "mode": mode if mode == "parallel" else "sequential",
             "iterations": iterations,
         }
+
+    def _clone_for_iteration(self, ctx: "ExecutionContext", loop_scope: Dict[str, Any]) -> "ExecutionContext":
+        """A per-iteration child context for parallel loops: shares the immutable
+        inputs (payload, tenant) but gets its own copies of everything sub-steps
+        write, so concurrent iterations never race on shared state."""
+        child = copy.copy(ctx)
+        child.variables = dict(ctx.variables)
+        child.rule_results = []
+        child.scorecard_results = {}
+        child.decision_table_results = {}
+        child.transform_outputs = {}
+        child.action_results = []
+        child.step_trace = []
+        child.pending_operations = []
+        child.loop_scope = loop_scope
+        child.outcome = ctx.outcome
+        child.status = "running"
+        return child
+
+    async def _run_loop_parallel(self, sliced, sub_steps, ctx, rules, scorecards, connectors,
+                                 source, depth, as_name, index_name, outer_scope, config):
+        hard_cap_concurrency = 32
+        try:
+            concurrency = max(1, min(int(config.get("concurrency", 8)), hard_cap_concurrency))
+        except (TypeError, ValueError):
+            concurrency = 8
+        semaphore = asyncio.Semaphore(concurrency)
+        entry_outcome = ctx.outcome
+
+        async def run_one(idx: int, item: Any):
+            async with semaphore:
+                child = self._clone_for_iteration(ctx, {**outer_scope, as_name: item, index_name: idx})
+                await self._run_steps(sub_steps, child, rules, scorecards, connectors, source, depth + 1)
+                return idx, item, child
+
+        results = await asyncio.gather(*[run_one(idx, item) for idx, item in enumerate(sliced)])
+        results.sort(key=lambda entry: entry[0])
+
+        # A durable pause can't be represented across concurrent iterations — reject it
+        # clearly rather than silently dropping the resume point.
+        if any(child.status == "paused" for _, _, child in results):
+            raise ValueError("Review gates / durable pauses are not supported inside a parallel loop; use sequential mode.")
+
+        iterations: List[Dict[str, Any]] = []
+        cumulative = entry_outcome
+        for idx, item, child in results:
+            # Merge child effects into the parent in index order (parity with sequential).
+            ctx.rule_results.extend(child.rule_results)
+            ctx.action_results.extend(child.action_results)
+            ctx.scorecard_results.update(child.scorecard_results)
+            ctx.decision_table_results.update(child.decision_table_results)
+            ctx.transform_outputs.update(child.transform_outputs)
+            ctx.step_trace.extend(child.step_trace)
+            # Reproduce the sequential loop's cumulative outcome merge: each iteration's
+            # outcome_after is the running merge up to and including this item. The
+            # precedence merge is order-independent, so parallel matches sequential.
+            outcome_before = cumulative
+            cumulative = _merge_outcome(cumulative, child.outcome)
+            iterations.append({
+                "index": idx,
+                "item": copy.deepcopy(item),
+                "outcome_before": outcome_before,
+                "outcome_after": cumulative,
+                "steps": copy.deepcopy(child.step_trace),
+                "paused": False,
+                "failed": child.status == "failed",
+            })
+        ctx.loop_scope = outer_scope
+        ctx.outcome = cumulative
+        if any(it["failed"] for it in iterations):
+            ctx.status = "failed"
+        return iterations
 
     async def _execute_branch(self, step, ctx, rules, scorecards, connectors, source, depth):
         """Multi-branch routing: run the first branch whose condition matches (or

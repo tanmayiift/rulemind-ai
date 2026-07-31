@@ -60,16 +60,19 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
     variables = storage.list_variables(tenant_id=tenant_id)
     rules = {item["id"]: item for item in storage.list_rules(tenant_id=tenant_id)}
     scorecards = {item["id"]: item for item in storage.list_scorecards(tenant_id=tenant_id)}
+    decision_tables = {item["id"]: item for item in storage.list_decision_tables(tenant_id=tenant_id)}
     connectors = {
         item["id"]: (item.get("sample_payload") or {})
         for item in storage.list_connectors(tenant_id=tenant_id)
     }
     settings = storage.get_settings(tenant_id=tenant_id).get("engine_config", {})
-    core_bundle = {"policy": policy, "rules": rules, "scorecards": scorecards, "variables": variables}
+    core_bundle = {"policy": policy, "rules": rules, "scorecards": scorecards,
+                   "decision_tables": decision_tables, "variables": variables}
 
     rust_bundle = None
-    # The Rust core covers rule/outcome policies; scorecards stay on Python.
-    rules_only = not any(step.get("type") == "scorecard" for step in policy.get("steps", []))
+    # The Rust core covers rule/outcome policies only; scorecards and decision tables
+    # stay on the Python core (which now serves both on the fast path).
+    rules_only = not any(step.get("type") in ("scorecard", "decision_table") for step in policy.get("steps", []))
     if _HAVE_RUST and rules_only:
         try:
             rust_bundle = rulemind_core_rs.Bundle(json.dumps({"policy": policy, "rules": rules}))
