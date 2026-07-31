@@ -23,6 +23,26 @@ class ExecutionStore {
     await _box!.put(executionId, decisionToMap(decision));
   }
 
+  /// Persist only executions that are still resumable — paused for review, awaiting sync, or
+  /// carrying an undelivered pending operation. A terminal decision (completed with every
+  /// operation delivered) is pruned instead of stored, so this store can't grow without bound:
+  /// the durable decision outbox is the record of completed decisions.
+  Future<void> persist(Decision decision) async {
+    final executionId = decision.executionId;
+    if (executionId == null || executionId.isEmpty) {
+      return;
+    }
+    if (_isResumable(decision)) {
+      await save(decision);
+    } else {
+      await delete(executionId);
+    }
+  }
+
+  bool _isResumable(Decision decision) =>
+      decision.status != "completed" ||
+      decision.pendingOperations.any((op) => op["status"] != "delivered");
+
   Future<Decision?> get(String executionId) async {
     await initialize();
     if (_box == null) return null;

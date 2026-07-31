@@ -107,7 +107,7 @@ class RuleMind {
       policyId: policyId,
       userId: userId,
     );
-    await _executionStore?.save(decision);
+    await _executionStore?.persist(decision);
     if (decision.status == "completed" && decision.pendingOperations.isEmpty) {
       await _decisionCache!.put(cacheKey, decision);
     }
@@ -218,7 +218,7 @@ class RuleMind {
           userId: next.userId,
         );
       }
-      await _executionStore?.save(next);
+      await _executionStore?.persist(next);
       await _syncDecision(next);
       updated.add(next);
     }
@@ -272,7 +272,7 @@ class RuleMind {
         policyId: local.policyId,
         userId: local.userId,
       );
-      await _executionStore?.save(resumed);
+      await _executionStore?.persist(resumed);
       await _syncDecision(resumed);
       return resumed;
     }
@@ -294,7 +294,7 @@ class RuleMind {
       throw StateError("Execution resume failed with HTTP ${response.statusCode}");
     }
     final resumed = decisionFromMap(jsonDecode(response.body) as Map<String, dynamic>);
-    await _executionStore?.save(resumed);
+    await _executionStore?.persist(resumed);
     return resumed;
   }
 
@@ -439,7 +439,7 @@ class RuleMind {
       userId: userId,
       payload: payload,
     );
-    await _executionStore?.save(decision);
+    await _executionStore?.persist(decision);
     return decision;
   }
 }
