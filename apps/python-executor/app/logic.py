@@ -6,6 +6,11 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import yaml
 
+# Max rule-tree nesting depth. Real trees are a handful deep; this guards against a
+# pathological/adversarial tree recursing into a native stack overflow — the on-device
+# Kotlin & Dart engines enforce the same cap (see RuleEvaluator).
+MAX_RULE_TREE_DEPTH = 200
+
 
 REDACTED_KEYS = {
     "name",
@@ -281,7 +286,9 @@ def evaluate_rule_tree(
     condition_results: List[Dict[str, Any]] = []
     group_results: List[Dict[str, Any]] = []
 
-    def evaluate_node(node: Dict[str, Any], inherited_logic: str = "AND") -> bool:
+    def evaluate_node(node: Dict[str, Any], inherited_logic: str = "AND", depth: int = 0) -> bool:
+        if depth > MAX_RULE_TREE_DEPTH:
+            raise ValueError(f"Rule tree nesting exceeds the maximum depth ({MAX_RULE_TREE_DEPTH})")
         node_type = node.get("type")
         if node_type == "condition":
             variable_id = str(node.get("variable", ""))
@@ -306,7 +313,7 @@ def evaluate_rule_tree(
 
         if node_type == "not":
             child = node.get("child") or {}
-            result = not evaluate_node(child, "NOT")
+            result = not evaluate_node(child, "NOT", depth + 1)
             group_results.append(
                 {
                     "id": node.get("id", "not"),
@@ -319,7 +326,7 @@ def evaluate_rule_tree(
 
         if node_type == "group":
             child_logic = str(node.get("logic", "AND")).upper()
-            child_results = [evaluate_node(child, child_logic) for child in node.get("children", [])]
+            child_results = [evaluate_node(child, child_logic, depth + 1) for child in node.get("children", [])]
             passed = all(child_results) if child_logic == "AND" else any(child_results) if child_results else False
             group_results.append(
                 {
