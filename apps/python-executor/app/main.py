@@ -1,6 +1,7 @@
 import copy
 import asyncio
 import os
+import secrets
 import time
 import uuid
 from datetime import datetime
@@ -2250,6 +2251,40 @@ class OtpVerifyRequest(BaseModel):
     tenant_id: Optional[str] = None
 
 
+class SsoConfigRequest(BaseModel):
+    provider: Optional[str] = None  # "oidc" | "saml"
+    enabled: Optional[bool] = None
+    # OIDC
+    issuer: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None  # "__CLEAR__" to remove
+    redirect_uri: Optional[str] = None
+    scope: Optional[str] = None
+    authorization_endpoint: Optional[str] = None
+    token_endpoint: Optional[str] = None
+    jwks_uri: Optional[str] = None
+    # SAML
+    sp_entity_id: Optional[str] = None
+    sso_url: Optional[str] = None
+    acs_url: Optional[str] = None
+    idp_entity_id: Optional[str] = None
+    idp_cert: Optional[str] = None
+    # Provisioning policy
+    allowed_domains: Optional[List[str]] = None
+    default_role: Optional[str] = None
+    jit_provisioning: Optional[bool] = None
+
+
+class OidcCallbackRequest(BaseModel):
+    code: str
+    state: str
+
+
+class SamlAcsRequest(BaseModel):
+    saml_response: Optional[str] = None
+    relay_state: Optional[str] = None
+
+
 @app.get("/api/v1/access/me")
 def access_me() -> Dict[str, Any]:
     """The caller's own role + capabilities — lets the UI adapt to permissions."""
@@ -2498,6 +2533,133 @@ def member_logout(http_request: Request) -> Dict[str, Any]:
     token = _bearer_from_request(http_request)
     revoked = storage.revoke_member_session(token) if token else False
     return {"logged_out": bool(revoked)}
+
+
+# ── Enterprise SSO (OIDC / SAML) ─────────────────────────────────────────
+@app.get("/api/v1/access/sso")
+def access_get_sso() -> Dict[str, Any]:
+    """The workspace's SSO connection config (secrets masked). Requires manage_access."""
+    return storage.get_sso_config_masked(active_tenant_id())
+
+
+@app.put("/api/v1/access/sso")
+def access_set_sso(request: SsoConfigRequest) -> Dict[str, Any]:
+    """Configure the workspace's OIDC or SAML connection (requires manage_access)."""
+    from .rbac import ASSIGNABLE_ROLES
+
+    patch = {k: v for k, v in request.model_dump().items() if v is not None}
+    if "default_role" in patch and patch["default_role"] not in ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=422, detail="default_role must be one of: {0}".format(", ".join(ASSIGNABLE_ROLES)))
+    if "provider" in patch and patch["provider"] not in ("oidc", "saml"):
+        raise HTTPException(status_code=422, detail="provider must be 'oidc' or 'saml'.")
+    tenant_id = active_tenant_id()
+    result = storage.set_sso_config(patch, tenant_id=tenant_id)
+    _audit_member("sso_configured", tenant_id, None,
+                  "Updated SSO ({0}, enabled={1})".format(result.get("provider"), result.get("enabled")),
+                  {"provider": result.get("provider"), "enabled": result.get("enabled")})
+    return result
+
+
+def _sso_finish_login(tenant_id: str, identity: Dict[str, Any], provider: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a verified SSO identity to a member (JIT-provisioning if allowed) and issue
+    a bearer session — shared by the OIDC and SAML callbacks."""
+    from . import sso
+
+    email = identity["email"]
+    if not sso.email_domain_allowed(email, cfg.get("allowed_domains")):
+        raise HTTPException(status_code=403, detail="Your email domain is not permitted for this workspace.")
+    member = storage.get_member_by_email(email, tenant_id=tenant_id)
+    if member and not member.get("is_active"):
+        raise HTTPException(status_code=403, detail="This account is deactivated.")
+    if not member:
+        if not cfg.get("jit_provisioning", True):
+            raise HTTPException(status_code=403, detail="No account for this email, and just-in-time provisioning is off.")
+        member = storage.create_member(
+            tenant_id, email, identity.get("name") or email,
+            cfg.get("default_role", "viewer"), password=None, auth_provider=provider,
+        )
+    session = storage.create_member_session(member["tenant_id"], member["id"])
+    _audit_member("member_login", member["tenant_id"], member["id"],
+                  "SSO login by '{0}' via {1}".format(email, provider), {"method": provider})
+    return {"token": session["token"], "expires_at": session["expires_at"], "member": member}
+
+
+@app.get("/api/v1/auth/sso/available")
+def sso_available(tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    """Public: whether SSO is enabled for a workspace (so the login screen can show
+    the button). Exposes only the on/off flag and protocol — never any config/secret."""
+    resolved_tenant = tenant_id or storage.default_tenant_id
+    cfg = storage.get_sso_config_masked(tenant_id=resolved_tenant)
+    return {"enabled": bool(cfg.get("enabled")), "provider": cfg.get("provider", "oidc")}
+
+
+@app.get("/api/v1/auth/sso/start")
+def sso_start(tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    """Begin an SSO login: returns the IdP redirect URL the browser should navigate to.
+    Public (identity is not yet established)."""
+    from . import sso
+
+    resolved_tenant = tenant_id or storage.default_tenant_id
+    cfg = storage.get_sso_config_internal(tenant_id=resolved_tenant)
+    if not cfg.get("enabled"):
+        raise HTTPException(status_code=404, detail="SSO is not enabled for this workspace.")
+    provider = cfg.get("provider", "oidc")
+    nonce = secrets.token_urlsafe(16)
+    try:
+        if provider == "oidc":
+            state = sso.issue_state(resolved_tenant, provider, nonce, cfg.get("redirect_uri", ""))
+            return {"provider": "oidc", "redirect_url": sso.oidc_authorize_url(cfg, state, nonce)}
+        state = sso.issue_state(resolved_tenant, provider, nonce, cfg.get("acs_url", ""))
+        return {"provider": "saml", "redirect_url": sso.saml_authn_request_url(cfg, state)}
+    except sso.SsoError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/auth/sso/oidc/callback")
+def sso_oidc_callback(request: OidcCallbackRequest) -> Dict[str, Any]:
+    """Complete an OIDC login: validate state, exchange the code, verify the ID token,
+    and issue a bearer session. Public."""
+    from . import sso
+
+    try:
+        state = sso.verify_state(request.state)
+        tenant_id = state["t"]
+        cfg = storage.get_sso_config_internal(tenant_id=tenant_id)
+        if not cfg.get("enabled") or cfg.get("provider") != "oidc":
+            raise HTTPException(status_code=404, detail="OIDC is not enabled for this workspace.")
+        identity = sso.complete_oidc_login(cfg, request.code, state.get("n", ""))
+    except sso.SsoError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    return _sso_finish_login(tenant_id, identity, "oidc", cfg)
+
+
+@app.post("/api/v1/auth/sso/saml/acs")
+async def sso_saml_acs(http_request: Request) -> Dict[str, Any]:
+    """SAML assertion consumer: verify the IdP's signature and issue a bearer session.
+    Accepts a browser form POST (SAMLResponse/RelayState) or a JSON body. Public."""
+    from . import sso
+
+    saml_response = relay_state = None
+    ctype = http_request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        body = await http_request.json()
+        saml_response, relay_state = body.get("saml_response"), body.get("relay_state")
+    else:
+        form = await http_request.form()
+        saml_response = form.get("SAMLResponse") or form.get("saml_response")
+        relay_state = form.get("RelayState") or form.get("relay_state")
+    if not saml_response or not relay_state:
+        raise HTTPException(status_code=400, detail="Missing SAMLResponse or RelayState.")
+    try:
+        state = sso.verify_state(str(relay_state))
+        tenant_id = state["t"]
+        cfg = storage.get_sso_config_internal(tenant_id=tenant_id)
+        if not cfg.get("enabled") or cfg.get("provider") != "saml":
+            raise HTTPException(status_code=404, detail="SAML is not enabled for this workspace.")
+        identity = sso.parse_and_verify_saml_response(cfg, str(saml_response))
+    except sso.SsoError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    return _sso_finish_login(tenant_id, identity, "saml", cfg)
 
 
 @app.post("/api/v1/ai/generate-rule")

@@ -1663,6 +1663,58 @@ class Storage:
             email["password"] = decrypt_secret_text(enc)
         return email
 
+    # ── SSO (OIDC / SAML) connection config, per workspace ───────────────
+    def set_sso_config(self, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Upsert the workspace's SSO connection. The OIDC client secret is stored
+        Fernet-encrypted and never returned to the client."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            if not tenant:
+                raise ValueError("Tenant not found")
+            cfg = copy.deepcopy(tenant.config or {})
+            sso = cfg.get("sso") or {}
+            for key in ("provider", "enabled", "issuer", "client_id", "redirect_uri", "scope",
+                        "authorization_endpoint", "token_endpoint", "jwks_uri",
+                        "sp_entity_id", "sso_url", "acs_url", "idp_entity_id", "idp_cert",
+                        "allowed_domains", "default_role", "jit_provisioning"):
+                if key in patch:
+                    sso[key] = patch[key]
+            secret = patch.get("client_secret")
+            if secret == "__CLEAR__":
+                sso.pop("client_secret_encrypted", None)
+            elif secret:
+                sso["client_secret_encrypted"] = encrypt_secret_text(secret)
+            cfg["sso"] = sso
+            tenant.config = cfg
+            session.flush()
+        return self.get_sso_config_masked(tenant_id=resolved)
+
+    def get_sso_config_masked(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            sso = copy.deepcopy((tenant.config or {}).get("sso") or {}) if tenant else {}
+        has_secret = bool(sso.pop("client_secret_encrypted", None))
+        sso["client_secret_set"] = has_secret
+        sso.setdefault("provider", "oidc")
+        sso.setdefault("enabled", False)
+        sso.setdefault("default_role", "viewer")
+        sso.setdefault("jit_provisioning", True)
+        sso.setdefault("allowed_domains", [])
+        return sso
+
+    def get_sso_config_internal(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Server-side only — decrypts the client secret for the token exchange."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            sso = copy.deepcopy((tenant.config or {}).get("sso") or {}) if tenant else {}
+        enc = sso.pop("client_secret_encrypted", None)
+        if enc:
+            sso["client_secret"] = decrypt_secret_text(enc)
+        return sso
+
     def seed_sample_inventory(self, tenant_id: str) -> None:
         """Populate a new workspace with the sample connectors/variables/rules/
         scorecards/policies so an onboarding client can try a decision immediately."""
