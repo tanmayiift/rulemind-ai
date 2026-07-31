@@ -15,6 +15,7 @@ from .context import (
     set_current_role,
     set_current_tenant_id,
 )
+from .mtls import MtlsSettings, evaluate_client_cert
 from .rbac import is_allowed
 from .runtime import rate_limit_allow
 
@@ -62,6 +63,20 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
 
         if not (path.startswith("/api/v1") or path.startswith("/sdk/v1")):
             return await call_next(request)
+
+        # mTLS is transport-layer auth, orthogonal to the API-key / session check below, so it
+        # runs first and applies even in AUTH_MODE=none. Config-gated (default off) — no effect
+        # until an operator opts in. A guarded path without a valid client cert is rejected here.
+        mtls = MtlsSettings()
+        if mtls.guards(path):
+            ok, reason, identity = evaluate_client_cert(request.headers, mtls)
+            if not ok:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "Client certificate required", "detail": reason},
+                )
+            request.state.mtls_fingerprint = identity.get("fingerprint")
+            request.state.mtls_subject = identity.get("subject")
 
         # Login / OTP endpoints establish identity — no key or session yet.
         if any(path.startswith(prefix) for prefix in UNAUTH_AUTH_PREFIXES):

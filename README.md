@@ -130,6 +130,15 @@ This runs:
 | `PYTHON_SANDBOX_TIMEOUT` | `2000` | Variable execution timeout (ms) |
 | `PYTHON_SANDBOX_MEMORY` | `128` | Variable execution memory limit (MB) |
 | `RATE_LIMIT_RPM` | `100` | Requests per minute per tenant |
+| `MTLS_MODE` | `off` | In-app mutual-TLS enforcement: `off`, `optional`, or `required` |
+| `MTLS_CERT_HEADER` | `x-client-cert` | Header the terminating proxy forwards the client cert in (nginx: `$ssl_client_escaped_cert`) |
+| `MTLS_ALLOWED_FINGERPRINTS` | _(empty)_ | Comma-separated SHA-256 client-cert fingerprints to allow (empty = any valid, unexpired cert) |
+| `MTLS_PROTECTED_PREFIXES` | `/sdk/v1` | Comma-separated path prefixes mTLS guards |
+
+**Mutual TLS.** With `MTLS_MODE=required`, the API rejects any request to a protected prefix
+(default `/sdk/v1`) that does not carry an allow-listed, unexpired client certificate — enforced
+in-app, before API-key auth, so it holds even when TLS is terminated at a proxy that forwards the
+cert. See `app/mtls.py` for the full option set (proxy-verify header, custom cert header, etc.).
 
 See `.env.example` for the full list.
 
