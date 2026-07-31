@@ -65,6 +65,26 @@ def current_storage() -> Storage:
     return storage
 
 
+def _record_ai_usage(provider: str, model: str, usage: Dict[str, Any]) -> None:
+    """Recorder hook for ai.complete() — accrues per-workspace token + cost counters
+    for the current tenant. Best-effort; usage accounting never fails a call."""
+    from . import ai
+
+    input_tokens = int(usage.get("input_tokens", 0))
+    output_tokens = int(usage.get("output_tokens", 0))
+    cost = ai.estimate_cost(provider, model, input_tokens, output_tokens)
+    storage.record_ai_usage(provider, model, input_tokens, output_tokens, cost, tenant_id=get_current_tenant_id())
+
+
+def _install_ai_usage_recorder() -> None:
+    from . import ai
+
+    ai.set_usage_recorder(_record_ai_usage)
+
+
+_install_ai_usage_recorder()
+
+
 app = FastAPI(title="RuleMind V4 API", version="4.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -2176,6 +2196,44 @@ def put_ai_config(request: AIConfigRequest) -> Dict[str, Any]:
     return storage.set_ai_config(request.model_dump(exclude_none=True))
 
 
+class AIBudgetRequest(BaseModel):
+    monthly_budget_usd: float = 0.0
+
+
+@app.get("/api/v1/ai/usage")
+def get_ai_usage() -> Dict[str, Any]:
+    """Per-workspace AI token + estimated-cost accounting, plus the budget cap.
+    Costs are estimates (BYO-key: the customer is billed by their provider)."""
+    return storage.get_ai_usage()
+
+
+@app.put("/api/v1/ai/budget")
+def set_ai_budget(request: AIBudgetRequest) -> Dict[str, Any]:
+    """Set a monthly estimated-cost cap; AI generation is blocked once exceeded
+    (0 = no cap)."""
+    if request.monthly_budget_usd < 0:
+        raise HTTPException(status_code=422, detail="Budget must be >= 0.")
+    return storage.set_ai_budget(request.monthly_budget_usd)
+
+
+@app.post("/api/v1/ai/usage/reset")
+def reset_ai_usage() -> Dict[str, Any]:
+    """Reset the accumulated usage counters (e.g. at the start of a billing month)."""
+    storage.reset_ai_usage()
+    return storage.get_ai_usage()
+
+
+def _enforce_ai_budget() -> None:
+    """Block an AI generation call when the workspace is over its estimated-cost cap."""
+    usage = storage.get_ai_usage()
+    if usage.get("over_budget"):
+        raise HTTPException(
+            status_code=402,
+            detail="AI budget of ${0:.2f} reached (estimated spend ${1:.2f}). Raise the budget in Settings or reset usage.".format(
+                usage.get("budget_usd", 0), usage.get("cost_usd", 0)),
+        )
+
+
 @app.get("/api/v1/ai/models")
 async def list_ai_models(provider: str = Query(default="anthropic")) -> Dict[str, Any]:
     """Selectable models for a provider. Live-fetches from the provider's /models
@@ -2665,6 +2723,7 @@ async def ai_generate_rule(request: AIGenerateRuleRequest) -> Dict[str, Any]:
     if not in_scope:
         return {"in_scope": False, "reason": reason, "message": OUT_OF_SCOPE_MESSAGE}
 
+    _enforce_ai_budget()
     creds = storage.get_ai_credentials(request.provider)
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
@@ -2702,6 +2761,7 @@ async def ai_generate_policy(request: AIGeneratePolicyRequest) -> Dict[str, Any]
     in_scope, reason = is_in_scope(request.prompt, names)
     if not in_scope:
         return {"in_scope": False, "reason": reason, "message": OUT_OF_SCOPE_MESSAGE}
+    _enforce_ai_budget()
     creds = storage.get_ai_credentials(request.provider)
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
@@ -2730,6 +2790,7 @@ async def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
     decision = find_by_id(storage.list_decisions(limit=1000), request.decision_id)
     if not decision:
         raise HTTPException(status_code=404, detail="Decision not found.")
+    _enforce_ai_budget()
     creds = storage.get_ai_credentials(request.provider)
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")

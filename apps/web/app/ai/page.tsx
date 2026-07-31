@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Sparkles, KeyRound, Wand2, ShieldCheck } from "lucide-react";
+import { Sparkles, KeyRound, Wand2, ShieldCheck, Gauge } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { Button, Card, Field, Input, Select, Badge, PageHeader, SectionTitle } from "../../src/v3/ui";
@@ -9,6 +9,10 @@ import { Button, Card, Field, Input, Select, Badge, PageHeader, SectionTitle } f
 type MaskedConfig = {
   default_provider: string;
   providers: Record<string, { configured: boolean; model: string }>;
+};
+type AIUsage = {
+  calls: number; input_tokens: number; output_tokens: number; cost_usd: number;
+  budget_usd: number; over_budget: boolean; by_model: Record<string, { calls: number; cost_usd: number }>;
 };
 type GenResult = {
   in_scope: boolean;
@@ -22,6 +26,15 @@ type GenResult = {
 
 const PROVIDER_LABEL: Record<string, string> = { anthropic: "Anthropic (Claude)", openai: "OpenAI (GPT)" };
 const DEFAULT_MODEL: Record<string, string> = { anthropic: "claude-sonnet-5", openai: "gpt-4o" };
+
+function Stat({ label, value, tone }: { label: string; value: string; tone?: "danger" }) {
+  return (
+    <div style={{ padding: "8px 10px", borderRadius: 8, background: "var(--rm-bg)", border: "1px solid var(--rm-border)" }}>
+      <div style={{ fontSize: 10.5, color: "var(--rm-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: tone === "danger" ? "var(--rm-danger)" : "var(--rm-text)" }}>{value}</div>
+    </div>
+  );
+}
 
 export default function AICopilotPage() {
   const { apiBaseUrl, apiKey } = useRuleMindStore();
@@ -41,6 +54,8 @@ export default function AICopilotPage() {
   const [gen, setGen] = React.useState<GenResult | null>(null);
   const [generating, setGenerating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [usage, setUsage] = React.useState<AIUsage | null>(null);
+  const [budgetInput, setBudgetInput] = React.useState("");
 
   const loadConfig = React.useCallback(async () => {
     try {
@@ -53,7 +68,26 @@ export default function AICopilotPage() {
     }
   }, [apiBaseUrl, apiKey]);
 
-  React.useEffect(() => { void loadConfig(); }, [loadConfig]);
+  const loadUsage = React.useCallback(async () => {
+    try {
+      const u = await apiJson<AIUsage>(apiBaseUrl, "/api/v1/ai/usage", {}, apiKey);
+      setUsage(u);
+      setBudgetInput(u.budget_usd ? String(u.budget_usd) : "");
+    } catch { /* usage is best-effort */ }
+  }, [apiBaseUrl, apiKey]);
+
+  React.useEffect(() => { void loadConfig(); void loadUsage(); }, [loadConfig, loadUsage]);
+
+  const saveBudget = async () => {
+    try {
+      await apiJson(apiBaseUrl, "/api/v1/ai/budget", { method: "PUT", body: JSON.stringify({ monthly_budget_usd: Number(budgetInput) || 0 }) }, apiKey);
+      await loadUsage();
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not save budget."); }
+  };
+  const resetUsage = async () => {
+    try { await apiJson(apiBaseUrl, "/api/v1/ai/usage/reset", { method: "POST" }, apiKey); await loadUsage(); }
+    catch (e) { setError(e instanceof Error ? e.message : "Could not reset usage."); }
+  };
 
   // Load the selectable models for the current provider (live from the provider's
   // /models API when a key is set, else curated) whenever the provider changes.
@@ -100,6 +134,7 @@ export default function AICopilotPage() {
       const path = genMode === "policy" ? "/api/v1/ai/generate-policy" : "/api/v1/ai/generate-rule";
       const r = await apiJson<GenResult>(apiBaseUrl, path, { method: "POST", body: JSON.stringify({ prompt, provider }) }, apiKey);
       setGen(r);
+      void loadUsage();  // reflect the tokens/cost this call just spent
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed.");
     } finally { setGenerating(false); }
@@ -151,6 +186,30 @@ export default function AICopilotPage() {
               </div>
             ) : null}
           </div>
+
+          {/* usage + budget */}
+          {usage ? (
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--rm-border)" }}>
+              <SectionTitle right={<Gauge size={15} style={{ color: "var(--rm-dim)" }} />}>Usage &amp; budget</SectionTitle>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, margin: "8px 0 10px" }}>
+                <Stat label="Calls" value={String(usage.calls)} />
+                <Stat label="Est. cost" value={`$${usage.cost_usd.toFixed(4)}`} tone={usage.over_budget ? "danger" : undefined} />
+                <Stat label="Input tokens" value={usage.input_tokens.toLocaleString()} />
+                <Stat label="Output tokens" value={usage.output_tokens.toLocaleString()} />
+              </div>
+              {usage.over_budget ? (
+                <div style={{ fontSize: 12, color: "var(--rm-danger)", marginBottom: 8 }}>Budget reached — AI generation is paused until you raise the budget or reset usage.</div>
+              ) : null}
+              <Field label="Monthly budget (USD, 0 = no cap)">
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Input type="number" min={0} step="1" value={budgetInput} onChange={(e) => setBudgetInput(e.target.value)} placeholder="0" style={{ flex: 1 }} />
+                  <Button variant="secondary" onClick={saveBudget}>Set</Button>
+                  <Button variant="secondary" onClick={resetUsage} title="Reset counters (e.g. new billing month)">Reset</Button>
+                </div>
+              </Field>
+              <div style={{ fontSize: 11, color: "var(--rm-muted)", marginTop: 6 }}>Costs are estimates — you&apos;re billed directly by your provider.</div>
+            </div>
+          ) : null}
         </Card>
 
         {/* rule generator */}

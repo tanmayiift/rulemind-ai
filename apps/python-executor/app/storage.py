@@ -1663,6 +1663,74 @@ class Storage:
             email["password"] = decrypt_secret_text(enc)
         return email
 
+    # ── AI usage + cost accounting (per workspace) ───────────────────────
+    def record_ai_usage(self, provider: str, model: str, input_tokens: int, output_tokens: int,
+                        cost_usd: float, tenant_id: Optional[str] = None) -> None:
+        """Accumulate token + estimated-cost counters for a workspace's AI usage.
+        Off the critical concern of the call itself — best-effort, never raises."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            if not tenant:
+                return
+            cfg = copy.deepcopy(tenant.config or {})
+            usage = cfg.get("ai_usage") or {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "by_model": {}}
+            usage["calls"] = int(usage.get("calls", 0)) + 1
+            usage["input_tokens"] = int(usage.get("input_tokens", 0)) + int(input_tokens)
+            usage["output_tokens"] = int(usage.get("output_tokens", 0)) + int(output_tokens)
+            usage["cost_usd"] = round(float(usage.get("cost_usd", 0.0)) + float(cost_usd), 6)
+            per_model = usage.get("by_model") or {}
+            key = "{0}/{1}".format(provider, model)
+            row = per_model.get(key) or {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+            row["calls"] += 1
+            row["input_tokens"] += int(input_tokens)
+            row["output_tokens"] += int(output_tokens)
+            row["cost_usd"] = round(float(row["cost_usd"]) + float(cost_usd), 6)
+            per_model[key] = row
+            usage["by_model"] = per_model
+            usage["updated_at"] = now_iso()
+            cfg["ai_usage"] = usage
+            tenant.config = cfg
+
+    def get_ai_usage(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            cfg = (tenant.config or {}) if tenant else {}
+            usage = copy.deepcopy(cfg.get("ai_usage") or {})
+            budget = float(((cfg.get("settings_ai") or {}).get("monthly_budget_usd", 0)) or 0)
+        usage.setdefault("calls", 0)
+        usage.setdefault("input_tokens", 0)
+        usage.setdefault("output_tokens", 0)
+        usage.setdefault("cost_usd", 0.0)
+        usage.setdefault("by_model", {})
+        usage["budget_usd"] = budget
+        usage["over_budget"] = bool(budget) and float(usage.get("cost_usd", 0)) >= budget
+        return usage
+
+    def set_ai_budget(self, monthly_budget_usd: float, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            if not tenant:
+                raise ValueError("Tenant not found")
+            cfg = copy.deepcopy(tenant.config or {})
+            settings_ai = cfg.get("settings_ai") or {}
+            settings_ai["monthly_budget_usd"] = float(monthly_budget_usd or 0)
+            cfg["settings_ai"] = settings_ai
+            tenant.config = cfg
+        return self.get_ai_usage(tenant_id=resolved)
+
+    def reset_ai_usage(self, tenant_id: Optional[str] = None) -> None:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            tenant = session.get(Tenant, resolved)
+            if not tenant:
+                return
+            cfg = copy.deepcopy(tenant.config or {})
+            cfg["ai_usage"] = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "by_model": {}, "updated_at": now_iso()}
+            tenant.config = cfg
+
     # ── SSO (OIDC / SAML) connection config, per workspace ───────────────
     def set_sso_config(self, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Upsert the workspace's SSO connection. The OIDC client secret is stored

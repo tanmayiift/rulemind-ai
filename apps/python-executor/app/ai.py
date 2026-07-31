@@ -80,7 +80,9 @@ async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_
         raise AIError(f"Anthropic error {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
     parts = data.get("content") or []
-    return "".join(p.get("text", "") for p in parts if p.get("type") == "text").strip()
+    text = "".join(p.get("text", "") for p in parts if p.get("type") == "text").strip()
+    usage = data.get("usage") or {}
+    return text, {"input_tokens": int(usage.get("input_tokens", 0)), "output_tokens": int(usage.get("output_tokens", 0))}
 
 
 async def _call_openai(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
@@ -97,7 +99,9 @@ async def _call_openai(api_key: str, model: str, system: str, user: str, max_tok
     if resp.status_code != 200:
         raise AIError(f"OpenAI error {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
-    return (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    text = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    usage = data.get("usage") or {}
+    return text, {"input_tokens": int(usage.get("prompt_tokens", 0)), "output_tokens": int(usage.get("completion_tokens", 0))}
 
 
 # Indirection so tests can inject a mock without a network / real key. Providers are
@@ -154,6 +158,40 @@ async def list_models(provider: str, api_key: Optional[str] = None) -> Dict[str,
         return {"provider": provider, "models": curated, "default": default, "live": False, "error": str(exc)[:200]}
 
 
+# Approximate list prices in USD per 1M tokens (input, output), matched by model-name
+# substring. The customer pays their provider directly (BYO-key); this is an ESTIMATE
+# for visibility + budget guardrails, not a bill. Unknown models fall back to a
+# mid-range default so cost is never silently zero.
+_PRICING = {
+    "anthropic": [
+        ("opus", (15.0, 75.0)), ("haiku", (0.80, 4.0)), ("sonnet", (3.0, 15.0)),
+    ],
+    "openai": [
+        ("gpt-4o-mini", (0.15, 0.60)), ("gpt-4o", (2.50, 10.0)), ("o3-mini", (1.10, 4.40)),
+        ("o1", (15.0, 60.0)), ("o3", (10.0, 40.0)), ("gpt-4", (10.0, 30.0)),
+    ],
+}
+_DEFAULT_RATE = (3.0, 15.0)
+
+
+def estimate_cost(provider: str, model: str, input_tokens: int, output_tokens: int) -> float:
+    """Rough USD estimate for a call, matched by model-name substring."""
+    table = _PRICING.get((provider or "").lower(), [])
+    model_l = (model or "").lower()
+    in_rate, out_rate = next((rates for key, rates in table if key in model_l), _DEFAULT_RATE)
+    return round((input_tokens / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate, 6)
+
+
+# The host registers a recorder so ai.py stays storage-decoupled; complete() calls it
+# with (provider, model, usage) after every successful completion.
+_USAGE_RECORDER: Optional[Any] = None
+
+
+def set_usage_recorder(fn: Any) -> None:
+    global _USAGE_RECORDER
+    _USAGE_RECORDER = fn
+
+
 async def complete(provider: str, api_key: str, system: str, user: str, model: Optional[str] = None,
                    max_tokens: int = 1500, temperature: float = 0.2) -> str:
     provider = (provider or "anthropic").lower()
@@ -162,7 +200,19 @@ async def complete(provider: str, api_key: str, system: str, user: str, model: O
         raise AIError(f"Unsupported provider: {provider}")
     if not api_key:
         raise AIError("No API key configured for this provider.")
-    return await fn(api_key, model or DEFAULT_MODELS[provider], system, user, max_tokens, temperature)
+    resolved_model = model or DEFAULT_MODELS[provider]
+    result = await fn(api_key, resolved_model, system, user, max_tokens, temperature)
+    # Providers return (text, usage); legacy/mocked ones may return a bare string.
+    if isinstance(result, tuple):
+        text, usage = result
+    else:
+        text, usage = result, None
+    if usage and _USAGE_RECORDER is not None:
+        try:
+            _USAGE_RECORDER(provider, resolved_model, usage)
+        except Exception:  # pragma: no cover - usage accounting must never fail a call
+            pass
+    return text
 
 
 async def test_connection(provider: str, api_key: str, model: Optional[str] = None) -> Dict[str, Any]:
