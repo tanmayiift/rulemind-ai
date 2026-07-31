@@ -7,10 +7,13 @@ import "package:http/http.dart" as http;
 import "src/bundle_manager.dart";
 import "src/decision_cache.dart";
 import "src/decision_codec.dart";
+import "src/decision_outbox.dart";
+import "src/decision_syncer.dart";
 import "src/event_logger.dart";
 import "src/execution_store.dart";
 import "src/models.dart";
 import "src/rulemind_engine.dart";
+import "src/sqflite_decision_outbox.dart";
 import "src/sync_service.dart";
 
 export "src/models.dart";
@@ -24,6 +27,8 @@ class RuleMind {
   static RuleMindEngine _engine = RuleMindEngine();
   static DecisionCache? _decisionCache;
   static ExecutionStore? _executionStore;
+  static DecisionOutbox? _decisionOutbox;
+  static DecisionSyncer? _decisionSyncer;
   static http.Client _httpClient = http.Client();
 
   static Future<void> initialize(RuleMindConfig config) async {
@@ -31,7 +36,16 @@ class RuleMind {
     _bundleManager = BundleManager(config: config, httpClient: _httpClient);
     _eventLogger = EventLogger(config: config, httpClient: _httpClient);
     _executionStore = ExecutionStore();
-    SyncService(bundleManager: _bundleManager!, eventLogger: _eventLogger!);
+    // Durable on-device decision outbox (SQLite). Decisions made offline are queued here
+    // and drained to the backend in batches by the background sync; on a device without a
+    // SQLite binding (tests/desktop) fall back to an in-memory queue.
+    try {
+      _decisionOutbox = await SqfliteDecisionOutbox.open();
+    } catch (_) {
+      _decisionOutbox = InMemoryDecisionOutbox();
+    }
+    _decisionSyncer = DecisionSyncer(outbox: _decisionOutbox!, uploader: _uploadDecisions);
+    SyncService(bundleManager: _bundleManager!, eventLogger: _eventLogger!, decisionSyncer: _decisionSyncer);
     _decisionCache = DecisionCache(
       boxName: "rulemind.decisions",
       ttlMs: config.decisionCacheTtlMs,
@@ -41,6 +55,11 @@ class RuleMind {
     await _eventLogger!.initialize();
     await _executionStore!.initialize();
     await SyncService.registerPeriodicSync(intervalMinutes: config.bundleSyncIntervalMinutes);
+  }
+
+  /// Drain the durable decision outbox now (e.g. on app foreground / reconnect).
+  static Future<void> syncPendingDecisions() async {
+    await _decisionSyncer?.sync();
   }
 
   static Future<Bundle?> syncNow() async {
@@ -92,8 +111,69 @@ class RuleMind {
     if (decision.status == "completed" && decision.pendingOperations.isEmpty) {
       await _decisionCache!.put(cacheKey, decision);
     }
-    await _syncDecision(decision);
+    // A completed decision goes to the durable outbox (batched, deduped, retried by the
+    // background sync). A paused/resumable execution keeps the execution-state sync so it
+    // can be resumed. Routing completed decisions through the outbox instead of the old
+    // fire-and-forget avoids double-logging (the outbox path is deduped server-side).
+    if (decision.status == "completed" && _decisionOutbox != null && decision.executionId != null && decision.policyId != null) {
+      await _decisionOutbox!.enqueue(_toPending(decision));
+    } else {
+      await _syncDecision(decision);
+    }
     return decision;
+  }
+
+  static PendingDecision _toPending(Decision d) {
+    final now = DateTime.now().toUtc().toIso8601String();
+    final record = <String, dynamic>{
+      "id": d.executionId,
+      "policy_id": d.policyId,
+      "outcome": d.outcome,
+      "payload": d.payload,
+      "computed_variables": d.variables,
+      "rule_results": d.ruleResults,
+      "scorecard_result": d.scorecardResults.values.isNotEmpty ? d.scorecardResults.values.first : null,
+      "latency_ms": d.latencyMs,
+      "source": "on_device",
+      "sdk_version": _config?.sdkVersion,
+      "experiment_variant": d.experimentVariant,
+      "created_at": now,
+    };
+    return PendingDecision(
+      id: d.executionId!,
+      policyId: d.policyId,
+      outcome: d.outcome,
+      payloadJson: jsonEncode(record),
+      createdAt: now,
+    );
+  }
+
+  /// Uploader the DecisionSyncer calls: POST a batch to /sdk/v1/decisions and return the
+  /// server-acked ids (idempotent — a retry after a lost ack never double-counts).
+  static Future<UploadResult> _uploadDecisions(List<PendingDecision> batch) async {
+    final config = _config;
+    if (config == null) return UploadResult.failure();
+    try {
+      final response = await _httpClient.post(
+        Uri.parse("${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/sdk/v1/decisions"),
+        headers: <String, String>{
+          "Content-Type": "application/json",
+          "X-API-Key": config.apiKey,
+          "X-SDK-Version": config.sdkVersion,
+        },
+        body: jsonEncode(<String, dynamic>{
+          "decisions": batch.map((d) => jsonDecode(d.payloadJson)).toList(),
+        }),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return UploadResult.failure();
+      }
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final acked = (body["acked"] as List?)?.map((e) => e.toString()).toList() ?? const <String>[];
+      return UploadResult.success(acked);
+    } catch (_) {
+      return UploadResult.failure();
+    }
   }
 
   static Future<List<Decision>> flushPendingOperations() async {
