@@ -1,5 +1,6 @@
 import "dart:math";
 
+import "decision_table_evaluator.dart";
 import "models.dart";
 import "rule_evaluator.dart";
 import "scorecard_evaluator.dart";
@@ -10,13 +11,16 @@ class PolicyExecutor {
     VariableVm? variableVm,
     RuleEvaluator? ruleEvaluator,
     ScorecardEvaluator? scorecardEvaluator,
+    DecisionTableEvaluator? decisionTableEvaluator,
   })  : _variableVm = variableVm ?? VariableVm(),
         _ruleEvaluator = ruleEvaluator ?? RuleEvaluator(),
-        _scorecardEvaluator = scorecardEvaluator ?? ScorecardEvaluator();
+        _scorecardEvaluator = scorecardEvaluator ?? ScorecardEvaluator(),
+        _decisionTableEvaluator = decisionTableEvaluator ?? DecisionTableEvaluator(ruleEvaluator: ruleEvaluator);
 
   final VariableVm _variableVm;
   final RuleEvaluator _ruleEvaluator;
   final ScorecardEvaluator _scorecardEvaluator;
+  final DecisionTableEvaluator _decisionTableEvaluator;
 
   String _mergeOutcome(String? current, String? candidate) {
     final currentValue = current ?? "pending";
@@ -118,6 +122,17 @@ class PolicyExecutor {
           } else {
             result = _ruleEvaluator.evaluate(rule, variables);
             ruleResults.add(result);
+            outcome = _mergeOutcome(outcome, result["outcome"]?.toString());
+          }
+          break;
+        case "decision_table":
+          final refId = step.refId ?? step.ref;
+          final table = bundle.decisionTables.cast<Map<String, dynamic>?>().firstWhere((item) => item?["id"] == refId, orElse: () => null);
+          if (table == null) {
+            skipped.add(step.id ?? refId ?? step.type);
+            error = "Unknown decision table: $refId";
+          } else {
+            result = _decisionTableEvaluator.evaluate(table, variables);
             outcome = _mergeOutcome(outcome, result["outcome"]?.toString());
           }
           break;

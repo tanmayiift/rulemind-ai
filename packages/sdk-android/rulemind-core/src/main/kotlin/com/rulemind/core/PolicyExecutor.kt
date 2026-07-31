@@ -10,6 +10,7 @@ class PolicyExecutor(
     private val variableVm: VariableVM = VariableVM(),
     private val ruleEvaluator: RuleEvaluator = RuleEvaluator(),
     private val scorecardEvaluator: ScorecardEvaluator = ScorecardEvaluator(),
+    private val decisionTableEvaluator: DecisionTableEvaluator = DecisionTableEvaluator(ruleEvaluator),
 ) {
     private fun mergeOutcome(current: String?, candidate: String?): String {
         val currentValue = current ?: "pending"
@@ -103,6 +104,18 @@ class PolicyExecutor(
                     } else {
                         result = ruleEvaluator.evaluate(rule, variables)
                         ruleResults += result
+                        outcome = mergeOutcome(outcome, result["outcome"]?.toString())
+                    }
+                }
+
+                "decision_table" -> {
+                    val refId = step.refId ?: step.ref
+                    val table = bundle.decisionTables.firstOrNull { it["id"] == refId }
+                    if (table == null) {
+                        skippedSteps += step.id ?: refId ?: step.type
+                        error = "Unknown decision table: $refId"
+                    } else {
+                        result = decisionTableEvaluator.evaluate(table, variables)
                         outcome = mergeOutcome(outcome, result["outcome"]?.toString())
                     }
                 }

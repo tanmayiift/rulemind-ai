@@ -115,6 +115,9 @@ data class Bundle(
     val variables: List<CompiledVariable>,
     val rules: List<CompiledRule>,
     val scorecards: List<Scorecard>,
+    // Decision tables travel as raw maps (rows/cells are dynamic, keyed by arbitrary
+    // input ids) — the DecisionTableEvaluator reads them exactly like the Python core.
+    val decisionTables: List<Map<String, Any?>> = emptyList(),
     val policies: List<Policy>,
     val experiments: List<Experiment>,
     val serverOnlyVariables: List<String>,
