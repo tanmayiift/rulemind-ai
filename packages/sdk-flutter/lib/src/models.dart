@@ -276,6 +276,7 @@ class Bundle {
     required this.variables,
     required this.rules,
     required this.scorecards,
+    this.decisionTables = const <Map<String, dynamic>>[],
     required this.policies,
     required this.experiments,
     required this.serverOnlyVariables,
@@ -291,6 +292,9 @@ class Bundle {
         variables: (json["variables"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().map(CompiledVariable.fromJson).toList(),
         rules: (json["rules"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().map(CompiledRule.fromJson).toList(),
         scorecards: (json["scorecards"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().map(Scorecard.fromJson).toList(),
+        // Decision tables travel as raw maps (rows/cells are keyed by dynamic input
+        // ids) — DecisionTableEvaluator reads them exactly like the Python core.
+        decisionTables: (json["decisionTables"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().toList(),
         policies: (json["policies"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().map(Policy.fromJson).toList(),
         experiments: (json["experiments"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().map(Experiment.fromJson).toList(),
         serverOnlyVariables: (json["serverOnlyVariables"] as List<dynamic>? ?? const <dynamic>[]).map((item) => item.toString()).toList(),
@@ -305,6 +309,7 @@ class Bundle {
   final List<CompiledVariable> variables;
   final List<CompiledRule> rules;
   final List<Scorecard> scorecards;
+  final List<Map<String, dynamic>> decisionTables;
   final List<Policy> policies;
   final List<Experiment> experiments;
   final List<String> serverOnlyVariables;

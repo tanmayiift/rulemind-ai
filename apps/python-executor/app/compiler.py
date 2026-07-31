@@ -248,6 +248,7 @@ def compile_bundle(storage: Storage, tenant_id: str, client_public_key: Optional
     variables = storage.list_variables(status="prod", tenant_id=tenant_id)
     rules = storage.list_rules(status="prod", tenant_id=tenant_id)
     scorecards = storage.list_scorecards(status="prod", tenant_id=tenant_id)
+    decision_tables = [t for t in storage.list_decision_tables(tenant_id=tenant_id) if t.get("status") == "prod"]
     policies = storage.list_policies(status="prod", tenant_id=tenant_id)
     experiments = [item for item in storage.list_experiments(tenant_id=tenant_id) if item.get("status") == "running"]
 
@@ -292,7 +293,7 @@ def compile_bundle(storage: Storage, tenant_id: str, client_public_key: Optional
         for step in policy.get("steps", []):
             step_type = step.get("type")
             step_id = step.get("id") or step.get("ref_id") or step.get("ref")
-            if step_type not in {"connector", "rule", "scorecard", "transform", "action", "review_gate", "outcome"}:
+            if step_type not in {"connector", "rule", "scorecard", "decision_table", "transform", "action", "review_gate", "outcome"}:
                 if step_id:
                     server_only_steps.append(step_id)
                 continue
@@ -320,6 +321,18 @@ def compile_bundle(storage: Storage, tenant_id: str, client_public_key: Optional
         "variables": compiled_variables,
         "rules": compiled_rules,
         "scorecards": scorecards,
+        "decisionTables": [
+            {
+                "id": table["id"],
+                "name": table.get("name"),
+                "hit_policy": table.get("hit_policy", "first"),
+                "inputs": table.get("inputs", []),
+                "outputs": table.get("outputs", []),
+                "rows": table.get("rows", []),
+                "default_row": table.get("default_row"),
+            }
+            for table in decision_tables
+        ],
         "policies": compiled_policies,
         "experiments": experiments,
         "serverOnlyVariables": server_only_variables,

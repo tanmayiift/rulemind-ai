@@ -1,0 +1,56 @@
+{
+  "_comment": "Cross-engine decision-table conformance. The Python core (app/decision_tables.py) is the source of truth; the Kotlin (sdk-android) and Dart (sdk-flutter) on-device evaluators must produce the SAME outcome for every case. Arms: apps/python-executor/tests/test_decision_table_conformance.py, packages/sdk-android/.../DecisionTableConformanceTest.kt, packages/sdk-flutter/test/decision_table_conformance_test.dart.",
+  "tables": {
+    "risk_first": {
+      "hit_policy": "first",
+      "inputs": [
+        {"id": "in_score", "variable_id": "score", "name": "Score", "field_type": "number"},
+        {"id": "in_flag", "variable_id": "fraud_flag", "name": "Fraud", "field_type": "boolean"}
+      ],
+      "outputs": [{"id": "out_decision", "name": "Decision", "type": "outcome"}],
+      "rows": [
+        {"id": "r1", "cells": {"in_score": {"operator": ">=", "value": 750}, "in_flag": {"operator": "==", "value": "false"}}, "outputs": {"out_decision": "approve"}},
+        {"id": "r2", "cells": {"in_score": {"operator": "between", "value": 600, "value2": 749}, "in_flag": {"operator": "==", "value": "false"}}, "outputs": {"out_decision": "review"}},
+        {"id": "r3", "cells": {"in_score": {"operator": "<", "value": 600}}, "outputs": {"out_decision": "reject"}}
+      ],
+      "default_row": {"outputs": {"out_decision": "review"}}
+    },
+    "risk_priority": {
+      "hit_policy": "priority",
+      "inputs": [{"id": "in_score", "variable_id": "score", "name": "Score", "field_type": "number"}],
+      "outputs": [{"id": "out_decision", "name": "Decision", "type": "outcome"}],
+      "rows": [
+        {"id": "low_prio", "priority": 1, "cells": {"in_score": {"operator": ">=", "value": 100}}, "outputs": {"out_decision": "approve"}},
+        {"id": "high_prio", "priority": 5, "cells": {"in_score": {"operator": ">=", "value": 100}}, "outputs": {"out_decision": "reject"}}
+      ]
+    },
+    "tier_in": {
+      "hit_policy": "first",
+      "inputs": [{"id": "in_tier", "variable_id": "tier", "name": "Tier", "field_type": "string"}],
+      "outputs": [{"id": "out_decision", "name": "Decision", "type": "outcome"}],
+      "rows": [
+        {"id": "gold", "cells": {"in_tier": {"operator": "in", "value": "gold,platinum"}}, "outputs": {"out_decision": "approve"}},
+        {"id": "other", "cells": {"in_tier": {"operator": "any"}}, "outputs": {"out_decision": "review"}}
+      ]
+    },
+    "collect_first_of_list": {
+      "hit_policy": "collect",
+      "inputs": [{"id": "in_score", "variable_id": "score", "name": "Score", "field_type": "number"}],
+      "outputs": [{"id": "out_decision", "name": "Decision", "type": "outcome"}],
+      "rows": [
+        {"id": "a", "cells": {"in_score": {"operator": ">=", "value": 100}}, "outputs": {"out_decision": "approve"}},
+        {"id": "b", "cells": {"in_score": {"operator": ">=", "value": 200}}, "outputs": {"out_decision": "reject"}}
+      ]
+    }
+  },
+  "cases": [
+    {"name": "first: high clean score approves", "table": "risk_first", "variables": {"score": 800, "fraud_flag": false}, "expectedOutcome": "approve"},
+    {"name": "first: mid clean score reviews", "table": "risk_first", "variables": {"score": 700, "fraud_flag": false}, "expectedOutcome": "review"},
+    {"name": "first: low score rejects regardless of flag", "table": "risk_first", "variables": {"score": 500, "fraud_flag": true}, "expectedOutcome": "reject"},
+    {"name": "first: high score with fraud flag falls through to default", "table": "risk_first", "variables": {"score": 800, "fraud_flag": true}, "expectedOutcome": "review"},
+    {"name": "priority: highest-priority row wins", "table": "risk_priority", "variables": {"score": 500}, "expectedOutcome": "reject"},
+    {"name": "in: member of the set approves", "table": "tier_in", "variables": {"tier": "gold"}, "expectedOutcome": "approve"},
+    {"name": "in: non-member hits the wildcard row", "table": "tier_in", "variables": {"tier": "bronze"}, "expectedOutcome": "review"},
+    {"name": "collect: outcome column takes the first matched row's value", "table": "collect_first_of_list", "variables": {"score": 500}, "expectedOutcome": "approve"}
+  ]
+}
