@@ -58,12 +58,12 @@ class DecisionSyncer {
   final Random _random;
 
   Future<SyncStats> sync() async {
-    final dropped = _outbox.trimToCapacity(_config.capacity);
+    final dropped = await _outbox.trimToCapacity(_config.capacity);
     var uploaded = 0;
     var failed = 0;
     var runs = 0;
     while (runs++ < _config.maxRunsPerSync) {
-      final batch = _outbox.pending(_config.batchSize, _clock());
+      final batch = await _outbox.pending(_config.batchSize, _clock());
       if (batch.isEmpty) break;
       UploadResult result;
       try {
@@ -73,11 +73,11 @@ class DecisionSyncer {
       }
       if (result.ok) {
         final acked = result.ackedIds.isEmpty ? batch.map((d) => d.id).toList() : result.ackedIds;
-        _outbox.markSynced(acked);
+        await _outbox.markSynced(acked);
         uploaded += acked.length;
       } else {
         final attempts = batch.map((d) => d.attempts).fold<int>(0, max) + 1;
-        _outbox.recordFailure(batch.map((d) => d.id).toList(), _clock() + backoffMs(attempts));
+        await _outbox.recordFailure(batch.map((d) => d.id).toList(), _clock() + backoffMs(attempts));
         failed += batch.length;
         break; // network is down — retry on the next scheduled run
       }

@@ -32,27 +32,30 @@ class PendingDecision {
 }
 
 /// Durable, bounded queue of on-device decisions awaiting sync. The persistence seam:
-/// the platform layer provides a SQLite-backed implementation (sqflite), while
-/// [InMemoryDecisionOutbox] backs unit tests. All sync behaviour lives in DecisionSyncer,
-/// so every implementation gets it for free.
+/// the platform layer provides a SQLite-backed implementation ([SqfliteDecisionOutbox]),
+/// while [InMemoryDecisionOutbox] backs unit tests. All sync behaviour lives in
+/// DecisionSyncer, so every implementation gets it for free.
+///
+/// Every method is ASYNC — durable stores (SQLite) do I/O, and it must never block the
+/// UI isolate. The in-memory impl completes synchronously behind the same Future contract.
 abstract class DecisionOutbox {
   /// Persist a new decision as pending (idempotent on id).
-  void enqueue(PendingDecision decision);
+  Future<void> enqueue(PendingDecision decision);
 
   /// Up to [limit] decisions eligible to send now (nextAttemptAtMs <= nowMs), oldest first.
-  List<PendingDecision> pending(int limit, int nowMs);
+  Future<List<PendingDecision>> pending(int limit, int nowMs);
 
   /// Delete the given ids after the server acknowledged them — reclaims local space.
-  void markSynced(List<String> ids);
+  Future<void> markSynced(List<String> ids);
 
   /// Record a failed attempt: bump attempts and defer each id until nextAttemptAtMs.
-  void recordFailure(List<String> ids, int nextAttemptAtMs);
+  Future<void> recordFailure(List<String> ids, int nextAttemptAtMs);
 
   /// Total pending rows.
-  int size();
+  Future<int> size();
 
   /// Drop the OLDEST rows beyond [maxRows]; returns how many were dropped.
-  int trimToCapacity(int maxRows);
+  Future<int> trimToCapacity(int maxRows);
 }
 
 class InMemoryDecisionOutbox implements DecisionOutbox {
@@ -61,21 +64,21 @@ class InMemoryDecisionOutbox implements DecisionOutbox {
   int _seq = 0;
 
   @override
-  void enqueue(PendingDecision decision) {
+  Future<void> enqueue(PendingDecision decision) async {
     if (_rows.containsKey(decision.id)) return; // idempotent on id
     _rows[decision.id] = decision;
     _order[decision.id] = _seq++;
   }
 
   @override
-  List<PendingDecision> pending(int limit, int nowMs) {
+  Future<List<PendingDecision>> pending(int limit, int nowMs) async {
     final eligible = _rows.values.where((d) => d.nextAttemptAtMs <= nowMs).toList()
       ..sort((a, b) => (_order[a.id] ?? 0).compareTo(_order[b.id] ?? 0));
     return eligible.take(limit).toList();
   }
 
   @override
-  void markSynced(List<String> ids) {
+  Future<void> markSynced(List<String> ids) async {
     for (final id in ids) {
       _rows.remove(id);
       _order.remove(id);
@@ -83,7 +86,7 @@ class InMemoryDecisionOutbox implements DecisionOutbox {
   }
 
   @override
-  void recordFailure(List<String> ids, int nextAttemptAtMs) {
+  Future<void> recordFailure(List<String> ids, int nextAttemptAtMs) async {
     for (final id in ids) {
       final row = _rows[id];
       if (row != null) {
@@ -93,10 +96,10 @@ class InMemoryDecisionOutbox implements DecisionOutbox {
   }
 
   @override
-  int size() => _rows.length;
+  Future<int> size() async => _rows.length;
 
   @override
-  int trimToCapacity(int maxRows) {
+  Future<int> trimToCapacity(int maxRows) async {
     final overflow = _rows.length - maxRows;
     if (overflow <= 0) return 0;
     final oldest = _rows.values.toList()
