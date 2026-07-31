@@ -243,6 +243,18 @@ def _row_covers(inputs: Dict[str, Dict[str, Any]], earlier: Dict[str, Any], late
     return True
 
 
+def _row_has_opaque_cell(inputs: Dict[str, Dict[str, Any]], row: Dict[str, Any]) -> bool:
+    """True if any of the row's cells uses an operator the reachability analyzer can't
+    reason about exactly (regex, !=, not_in, exists / numeric negation) — so the row is
+    conservatively skipped by _row_covers and must be surfaced as 'not analyzed'."""
+    cells = row.get("cells", {}) or {}
+    for input_id, inp in inputs.items():
+        ft = inp.get("field_type") or inp.get("fieldType")
+        if _cell_region(cells.get(input_id), ft)[0] == "opaque":
+            return True
+    return False
+
+
 def _row_to_rule(table: Dict[str, Any], row: Dict[str, Any], inputs: Dict[str, Dict[str, Any]], index: int) -> Dict[str, Any]:
     conditions = []
     for input_id, inp in inputs.items():
@@ -317,6 +329,15 @@ def analyze_decision_table(table: Dict[str, Any]) -> Dict[str, Any]:
                                         "description": f'Row {j + 1} is unreachable — Row {i + 1} already covers all of its inputs'})
                     break
 
+    # 2b. Rows the analyzer couldn't fully reason about (regex / != / not_in / exists).
+    # Surfaced as info so the UI can say "couldn't analyze this row" rather than
+    # implying the row is proven safe.
+    for ri, row in enumerate(rows):
+        if _row_has_opaque_cell(inputs, row):
+            diagnostics.append({"type": "not_analyzable", "severity": "info", "rows": [row.get("id")],
+                                "description": f'Row {ri + 1} uses an operator (regex, not-equals, not-in, or exists) the '
+                                               f'reachability analyzer can\'t reason about — verify overlap/reachability manually.'})
+
     # 3. Conflicts (overlap) + gaps — reuse the tested MECE algebra.
     mece_rules = [_row_to_rule(table, row, inputs, ri) for ri, row in enumerate(rows)]
     conflict_error = False
@@ -347,6 +368,7 @@ def analyze_decision_table(table: Dict[str, Any]) -> Dict[str, Any]:
         "hasGaps": gap_error,
         "hasInvalidValues": any(d["type"] == "invalid" and d["severity"] == "error" for d in diagnostics),
         "hasUnreachableRows": any(d["type"] == "unreachable" for d in diagnostics),
+        "hasUnanalyzableRows": any(d["type"] == "not_analyzable" for d in diagnostics),
         "rowCount": len(rows),
         "hitPolicy": hit_policy,
         "ok": not any(d["severity"] == "error" for d in diagnostics),
