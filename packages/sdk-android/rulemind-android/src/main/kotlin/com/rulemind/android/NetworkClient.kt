@@ -209,6 +209,35 @@ class NetworkClient(private val config: RuleMindConfig) {
         return true
     }
 
+    /**
+     * Upload a batch of on-device decisions to POST /sdk/v1/decisions and return the server-acked
+     * ids. Idempotent server-side (dedupe by client id), so a retry after a lost ack never
+     * double-counts. Returns [com.rulemind.core.UploadResult.failure] on any network/HTTP error so
+     * the syncer keeps the rows and retries with backoff.
+     */
+    fun uploadDecisions(batch: List<com.rulemind.core.PendingDecision>): com.rulemind.core.UploadResult {
+        if (batch.isEmpty()) return com.rulemind.core.UploadResult.success(emptyList())
+        val decisions = JSONArray().apply {
+            batch.forEach { put(JSONObject(it.payloadJson)) }
+        }
+        val request = Request.Builder()
+            .url("${config.baseUrl.trimEnd('/')}/sdk/v1/decisions")
+            .post(JSONObject().put("decisions", decisions).toString().toRequestBody(jsonMediaType))
+            .header("X-API-Key", config.apiKey)
+            .header("X-SDK-Version", config.sdkVersion)
+            .build()
+        return try {
+            execute(request).use { response ->
+                val payload = response.body?.string().orEmpty()
+                val ackedJson = JSONObject(payload).optJSONArray("acked") ?: JSONArray()
+                val acked = (0 until ackedJson.length()).map { ackedJson.getString(it) }
+                com.rulemind.core.UploadResult.success(acked)
+            }
+        } catch (_: Exception) {
+            com.rulemind.core.UploadResult.failure()
+        }
+    }
+
     private fun execute(request: Request): okhttp3.Response {
         if (System.currentTimeMillis() < breakerOpenUntilMs) {
             throw IOException("Circuit breaker is open.")
