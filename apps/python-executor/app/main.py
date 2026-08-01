@@ -47,6 +47,7 @@ from .experiments import apply_experiment_overrides
 from .middleware import TenantContextMiddleware, admin_cookie_secure
 from .reviews import submit_review_decision
 from .runtime import is_local_dev, redis_client
+from .security_config import verify_production_secrets
 from .sandbox import execute_variable
 from .scheduler import execute_cron_policy, init_scheduler
 from .storage import Storage, _parse_client_datetime
@@ -1214,6 +1215,8 @@ def sync_sdk_review_task(request: SdkExecutionSyncRequest, tenant_id: str) -> Op
 
 @app.on_event("startup")
 async def startup() -> None:
+    # Fail closed: refuse to serve in production with default/unset critical secrets.
+    verify_production_secrets()
     if not (is_local_dev() or os.getenv("RULEMIND_RUN_API_SCHEDULER") == "1"):
         return
     try:

@@ -135,6 +135,13 @@ This runs:
 | `MTLS_ALLOWED_FINGERPRINTS` | _(empty)_ | Comma-separated SHA-256 client-cert fingerprints to allow (empty = any valid, unexpired cert) |
 | `MTLS_PROTECTED_PREFIXES` | `/sdk/v1` | Comma-separated path prefixes mTLS guards |
 
+**Production secret guard.** Outside local dev (`NODE_ENV != development`), the API **refuses to
+boot** if `RULEMIND_CONFIG_KEY`, `RULEMIND_ADMIN_JWT_SECRET`, `RULEMIND_ADMIN_PASSWORD`, or
+`RULEMIND_DEV_API_KEY` is unset or still its built-in default — so a deploy can never ship with
+credentials published in this repo. Set each to a strong unique value (`openssl rand -hex 32`).
+Waive a specific one with `RULEMIND_ALLOW_DEFAULT_SECRETS=<VAR[,VAR...]>`, or bypass entirely
+with `RULEMIND_SKIP_SECRET_CHECK=1` (discouraged).
+
 **Mutual TLS.** With `MTLS_MODE=required`, the API rejects any request to a protected prefix
 (default `/sdk/v1`) that does not carry an allow-listed, unexpired client certificate — enforced
 in-app, before API-key auth, so it holds even when TLS is terminated at a proxy that forwards the
