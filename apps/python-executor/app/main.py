@@ -263,6 +263,9 @@ class DecideRequest(BaseModel):
 
     policy_id: str = Field(alias="policyId")
     payload: Dict[str, Any] = Field(default_factory=dict)
+    # Stable per-subject key used for A/B experiment assignment (hashed to a variant).
+    # Without it, a running experiment can never assign a variant to this decision.
+    user_id: Optional[str] = Field(default=None, alias="userId")
 
 
 class BatchSimulationRequest(BaseModel):
@@ -776,13 +779,14 @@ def test_scorecard_entity(scorecard: Dict[str, Any], payload: Optional[Dict[str,
     return {"scorecard": updated or scorecard, "variable_results": variable_results["results"], "result": evaluation}
 
 
-def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]], source: str = "test_console") -> Dict[str, Any]:
+def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]], source: str = "test_console", user_id: Optional[str] = None) -> Dict[str, Any]:
     started = time.perf_counter()
     executor = workflow_executor()
     # The executor is the single canonical decision logger — it writes exactly one
     # Decision row (source-tagged) at the end of execute(). We must NOT also write one
     # here, or every /decide would double-log (inflating reports + usage metering).
-    ctx = asyncio.run(executor.execute(policy=policy, payload=payload or {}, tenant_id=active_tenant_id(), source=source))
+    # user_id is threaded through so a running A/B experiment can assign a variant.
+    ctx = asyncio.run(executor.execute(policy=policy, payload=payload or {}, tenant_id=active_tenant_id(), source=source, user_id=user_id))
     latency_ms = round((time.perf_counter() - started) * 1000, 3)
     variable_lookup = current_variable_map()
     connectors = current_connectors()
@@ -2058,6 +2062,15 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
     return {"targetType": request.targetType, "targetId": request.targetId, "rows": rows, "count": len(rows)}
 
 
+def _has_running_experiment(policy_id: str) -> bool:
+    """True when a running A/B experiment targets this policy (so the fast path, which
+    doesn't apply experiment overrides, must be bypassed in favour of the full executor)."""
+    return any(
+        exp.get("status") == "running" and exp.get("target_policy_id") == policy_id
+        for exp in storage.list_experiments(tenant_id=active_tenant_id())
+    )
+
+
 @app.post("/api/v1/decide")
 def decide(request: DecideRequest) -> Dict[str, Any]:
     policy = ensure_exists(storage.get_policy(request.policy_id), "policy", request.policy_id)
@@ -2066,14 +2079,17 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
     if os.getenv("FAST_DECIDE", "0") == "1":
         from .fast_decide import fast_decide, is_fast_servable
 
-        if is_fast_servable(policy):
+        # The fast path is pure-compute and does not apply experiment overrides, so only
+        # take it when no running experiment targets this policy (otherwise A/B assignment
+        # + variant logging would be silently skipped).
+        if is_fast_servable(policy) and not _has_running_experiment(policy["id"]):
             decision = fast_decide(storage, policy, request.payload or {}, active_tenant_id())
             if decision["outcome"] == "reject":
                 record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {})
             return decision
     # source="api" so the executor logs this as a production decision (exactly one
     # Decision row); the fast path above logs source="api_fast", also once.
-    outcome = test_policy_entity(policy, request.payload, source="api")
+    outcome = test_policy_entity(policy, request.payload, source="api", user_id=request.user_id)
     if outcome["result"]["outcome"] == "reject":
         record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {"trace": outcome["result"].get("trace", [])})
     return {
