@@ -131,6 +131,19 @@ This runs:
 | `PYTHON_SANDBOX_MEMORY` | `128` | Variable execution memory limit (MB) |
 | `RATE_LIMIT_RPM` | `100` | Requests per minute per tenant |
 | `RATE_LIMIT_FAIL_OPEN` | `0` | If Redis is down: `0` = fall back to a bounded per-replica limiter (fail-closed); `1` = allow all (fail-open) |
+| `DECISION_ARCHIVE_SINK` | `none` | Decision-log retention sink: `none` (off), `clickhouse`, `s3`, or `memory` (tests) |
+| `DECISION_ARCHIVE_INTERVAL_HOURS` | `24` | How often the retention job archives + purges aged decisions |
+
+**Data tier + retention.** **Postgres is the production datastore** — set `DATABASE_URL` to a
+Postgres DSN in prod (the app logs a warning if it starts on SQLite outside dev); **SQLite is the
+zero-config dev default**, and dev can switch to Postgres by setting `DATABASE_URL` too. The
+append-only decision log is bounded by a **retention job**: with `DECISION_ARCHIVE_SINK` set, each
+workspace's decisions older than its retention window (`audit_retention_days`) are dumped to a
+pluggable OLAP sink and purged from the hot DB (archive-first, purge-only-on-success — a sink
+failure never loses data). Sinks are client-chosen — **ClickHouse** (`CLICKHOUSE_*`) or
+**S3/object storage** (`DECISION_ARCHIVE_S3_BUCKET`, NDJSON or Parquet). Sink clients are optional
+deps installed only for the chosen sink: `pip install clickhouse-connect` or `pip install boto3
+pyarrow`. Default `none` = archiving off, nothing purged.
 | `MTLS_MODE` | `off` | In-app mutual-TLS enforcement: `off`, `optional`, or `required` |
 | `MTLS_CERT_HEADER` | `x-client-cert` | Header the terminating proxy forwards the client cert in (nginx: `$ssl_client_escaped_cert`) |
 | `MTLS_ALLOWED_FINGERPRINTS` | _(empty)_ | Comma-separated SHA-256 client-cert fingerprints to allow (empty = any valid, unexpired cert) |

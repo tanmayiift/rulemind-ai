@@ -68,6 +68,40 @@ async def _scheduled_review_timeouts(storage: Storage) -> None:
     await check_review_timeouts(storage)
 
 
+def archive_old_decisions(storage: Storage) -> Dict[str, Any]:
+    """Per tenant, archive decisions older than its retention window to the configured OLAP sink
+    and purge them from the hot DB. No-op unless a sink is configured (DECISION_ARCHIVE_SINK).
+    Bounds the transactional decision log while preserving history in cheap analytical storage."""
+    from .archiver import archiving_enabled, get_archiver
+
+    if not archiving_enabled():
+        return {"skipped": "archiving_disabled"}
+    archiver = get_archiver()
+    total = 0
+    tenants = 0
+    for tenant in storage.list_tenants():
+        tenant_id = tenant.get("id")
+        if not tenant_id:
+            continue
+        days = int(storage.get_settings(tenant_id=tenant_id).get("audit_retention_days") or 0)
+        if days <= 0:
+            continue  # retention disabled for this workspace
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        try:
+            total += storage.archive_and_purge_decisions(tenant_id, cutoff, archiver)
+            tenants += 1
+        except Exception as exc:  # one tenant/sink failure must not stop the others
+            logger.warning("archive: tenant %s failed: %s", tenant_id, exc)
+    return {"archived": total, "tenants": tenants, "sink": archiver.name}
+
+
+async def _scheduled_archive_decisions(storage: Storage) -> Dict[str, Any]:
+    if not _IS_LEADER:
+        return {"skipped": "not_leader"}
+    # DB + archive I/O off the event loop.
+    return await asyncio.to_thread(archive_old_decisions, storage)
+
+
 async def fetch_batch_items(payload_source: Dict[str, Any], tenant_id: str) -> List[Dict[str, Any]]:
     source_type = (payload_source or {}).get("type", "static_json")
     if source_type == "static_json":
@@ -310,4 +344,7 @@ def init_scheduler(storage: Storage) -> None:
     scheduler.add_job(_scheduled_review_timeouts, "interval", minutes=5, id="review-timeouts", args=[storage], replace_existing=True)
     scheduler.add_job(retry_outbox, "interval", seconds=int(os.getenv("OUTBOX_RETRY_SECONDS", "60")),
                       id="email-outbox-retry", args=[storage], replace_existing=True)
+    scheduler.add_job(_scheduled_archive_decisions, "interval",
+                      hours=int(os.getenv("DECISION_ARCHIVE_INTERVAL_HOURS", "24")),
+                      id="decision-archive", args=[storage], replace_existing=True)
     scheduler.start()
