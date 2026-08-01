@@ -88,6 +88,18 @@ def cache_set_json(key: str, value: Any, ttl_seconds: int = 300) -> None:
     _MEMORY_CACHE[key] = (time.time() + ttl_seconds, payload)
 
 
+def _rate_limit_fallback(key: str, limit: int, window_seconds: int) -> tuple[bool, int]:
+    """Used when Redis is unavailable (unconfigured, or errored mid-request). Falls back to the
+    bounded per-replica in-memory limiter so limits STILL apply during a Redis outage — a blip
+    must not silently remove all per-tenant limits (DoS / cost-blowout exposure). The per-replica
+    cap means the effective global limit is roughly limit x replicas while Redis is down, which
+    is bounded and vastly safer than unlimited. Operators who prefer availability over protection
+    can opt into the old fail-open behaviour with RATE_LIMIT_FAIL_OPEN=1."""
+    if (os.getenv("RATE_LIMIT_FAIL_OPEN", "") or "").strip() in ("1", "true", "yes"):
+        return True, 0
+    return _MEMORY_LIMITER.allowed(key, limit, window_seconds)
+
+
 def rate_limit_allow(key: str, limit: int, window_seconds: int = 60) -> tuple[bool, int]:
     client = redis_client()
     if client is not None:
@@ -101,9 +113,6 @@ def rate_limit_allow(key: str, limit: int, window_seconds: int = 60) -> tuple[bo
                 return False, max(1, ttl if ttl > 0 else window_seconds)
             return True, 0
         except RedisError:
-            if is_local_dev():
-                return _MEMORY_LIMITER.allowed(key, limit, window_seconds)
-            return True, 0
-    if not is_local_dev() and os.getenv("REDIS_URL"):
-        return True, 0
-    return _MEMORY_LIMITER.allowed(key, limit, window_seconds)
+            return _rate_limit_fallback(key, limit, window_seconds)
+    # No Redis client (unconfigured, or connection failed) — fail closed to the local limiter.
+    return _rate_limit_fallback(key, limit, window_seconds)
