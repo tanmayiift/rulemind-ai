@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, desc, func, or_, select, update
+from sqlalchemy import case, delete, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -169,6 +169,7 @@ class Storage:
         self.engine = engine_for(path)
         self.SessionLocal = session_factory(path)
         Base.metadata.create_all(self.engine)
+        self._reconcile_sqlite_columns()
         self.default_tenant_id: Optional[str] = None
         self.default_api_key: Optional[str] = None
         # Per-instance verified-API-key cache (see get_tenant_by_api_key). Keeping
@@ -423,6 +424,29 @@ class Storage:
             # entities before the inventory backfill checks query for existing rows.
             session.flush()
             self._ensure_seed_inventory(session, tenant.id)
+
+    def _reconcile_sqlite_columns(self) -> None:
+        """Add any additive, nullable columns the ORM models declare but an existing SQLite
+        table is missing. `create_all` only creates missing *tables*, never ALTERs existing
+        ones, so a new nullable column would otherwise be invisible on a dev/test DB until it
+        was deleted. SQLite only by design: Postgres/prod schema changes go through Alembic
+        migrations (the authoritative record); this is a dev-ergonomics safety net, and it only
+        ever adds nullable columns (no backfill, no data loss)."""
+        if self.engine.dialect.name != "sqlite":
+            return
+        from sqlalchemy import inspect as sa_inspect, text
+
+        inspector = sa_inspect(self.engine)
+        with self.engine.begin() as conn:
+            for table in Base.metadata.sorted_tables:
+                if not inspector.has_table(table.name):
+                    continue
+                existing = {col["name"] for col in inspector.get_columns(table.name)}
+                for column in table.columns:
+                    if column.name in existing or not column.nullable:
+                        continue
+                    col_type = column.type.compile(dialect=self.engine.dialect)
+                    conn.execute(text('ALTER TABLE "{0}" ADD COLUMN "{1}" {2}'.format(table.name, column.name, col_type)))
 
     def _ensure_settings(self, session: Session, tenant_id: str) -> None:
         existing = session.scalar(select(Setting).where(Setting.tenant_id == tenant_id))
@@ -690,6 +714,7 @@ class Storage:
             "latency_ms": model.latency_ms,
             "source": model.source,
             "sdk_version": model.sdk_version,
+            "experiment_id": model.experiment_id,
             "experiment_variant": model.experiment_variant,
             "created_at": serialize_datetime(model.created_at),
         }
@@ -1216,6 +1241,7 @@ class Storage:
                 latency_ms=int(payload.get("latency_ms", 0)),
                 source=payload.get("source", "api"),
                 sdk_version=payload.get("sdk_version"),
+                experiment_id=payload.get("experiment_id"),
                 experiment_variant=payload.get("experiment_variant"),
                 created_at=datetime.utcnow(),
             )
@@ -1269,6 +1295,7 @@ class Storage:
                     latency_ms=int(record.get("latency_ms", record.get("latencyMs", 0)) or 0),
                     source=record.get("source", "on_device"),
                     sdk_version=record.get("sdk_version") or record.get("sdkVersion"),
+                    experiment_id=record.get("experiment_id") or record.get("experimentId"),
                     experiment_variant=record.get("experiment_variant") or record.get("experimentVariant"),
                     # Preserve the on-device decision time when supplied.
                     created_at=_parse_client_datetime(record.get("created_at") or record.get("createdAt")) or datetime.utcnow(),
@@ -1365,6 +1392,97 @@ class Storage:
             rows = list(session.scalars(query).all())
             rows.reverse()
             return [_with_cursor(row) for row in rows]
+
+    def experiment_variant_rollup(
+        self,
+        tenant_id: Optional[str],
+        experiment_id: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Exact per-variant decision aggregates for ONE A/B experiment, computed in SQL over
+        ALL of that experiment's decisions (no 200-row cap). Returns {variant_id: {users,
+        approved, rejected, reviewed, latency_sum}}. Scoped by experiment_id — not by variant
+        id, which repeats across experiments (two experiments both have a "champion") and would
+        otherwise cross-count."""
+        if not experiment_id:
+            return {}
+        resolved = self._tenant_id(tenant_id)
+        approved = func.sum(case((Decision.outcome == "approve", 1), else_=0))
+        rejected = func.sum(case((Decision.outcome == "reject", 1), else_=0))
+        reviewed = func.sum(case((Decision.outcome == "review", 1), else_=0))
+        with self.connect() as session:
+            rows = session.execute(
+                select(
+                    Decision.experiment_variant,
+                    func.count().label("users"),
+                    approved.label("approved"),
+                    rejected.label("rejected"),
+                    reviewed.label("reviewed"),
+                    func.coalesce(func.sum(Decision.latency_ms), 0).label("latency_sum"),
+                )
+                .where(Decision.tenant_id == resolved, Decision.experiment_id == experiment_id)
+                .group_by(Decision.experiment_variant)
+            ).all()
+        return {
+            str(row.experiment_variant): {
+                "users": int(row.users or 0),
+                "approved": int(row.approved or 0),
+                "rejected": int(row.rejected or 0),
+                "reviewed": int(row.reviewed or 0),
+                "latency_sum": int(row.latency_sum or 0),
+            }
+            for row in rows
+        }
+
+    def decision_facts(
+        self,
+        tenant_id: Optional[str] = None,
+        since: Optional[datetime] = None,
+        max_rows: int = 200_000,
+        page_size: int = 5_000,
+    ) -> List[Dict[str, Any]]:
+        """Lightweight, column-projected decision rows for analytics — only the fields the
+        dashboards need (no payload/trace/variables), paginated at the DB level within a time
+        window. Replaces the 200-row `list_decisions` cap in the analytics path so percentiles,
+        timeseries, and rollups are computed over the full (windowed) set without loading heavy
+        JSON columns or exhausting memory."""
+        from . import decision_log
+        decision_log.flush()
+        resolved = self._tenant_id(tenant_id)
+        collected: List[Dict[str, Any]] = []
+        with self.connect() as session:
+            base = select(
+                Decision.created_at,
+                Decision.outcome,
+                Decision.source,
+                Decision.latency_ms,
+                Decision.policy_id,
+                Decision.experiment_variant,
+            ).where(Decision.tenant_id == resolved)
+            if since is not None:
+                base = base.where(Decision.created_at >= since)
+            base = base.order_by(desc(Decision.created_at))
+            offset = 0
+            while len(collected) < max_rows:
+                rows = session.execute(base.limit(page_size).offset(offset)).all()
+                if not rows:
+                    break
+                for row in rows:
+                    collected.append(
+                        {
+                            "created_at": serialize_datetime(row.created_at),
+                            "outcome": row.outcome,
+                            "source": row.source,
+                            "latency_ms": row.latency_ms,
+                            "policy_id": row.policy_id,
+                            "experiment_variant": row.experiment_variant,
+                        }
+                    )
+                    if len(collected) >= max_rows:
+                        break
+                if len(rows) < page_size:
+                    break
+                offset += page_size
+        return collected
 
     def add_promotion(self, entity_type: str, entity_id: str, from_status: str, to_status: str, promoted_by: str, reason: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id)

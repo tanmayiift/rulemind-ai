@@ -243,6 +243,7 @@ class Decision(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     source: Mapped[str] = mapped_column(String(32), default="api", nullable=False)
     sdk_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    experiment_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     experiment_variant: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 

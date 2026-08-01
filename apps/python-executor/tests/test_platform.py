@@ -367,6 +367,7 @@ class RuleMindPlatformTests(unittest.TestCase):
                     "rule_results": [],
                     "outcome": "approve" if index < 20 else "reject",
                     "latency_ms": 10,
+                    "experiment_id": experiment["id"],
                     "experiment_variant": "control",
                 }
             )
@@ -378,6 +379,7 @@ class RuleMindPlatformTests(unittest.TestCase):
                     "rule_results": [],
                     "outcome": "approve" if index < 40 else "reject",
                     "latency_ms": 12,
+                    "experiment_id": experiment["id"],
                     "experiment_variant": "treatment",
                 }
             )

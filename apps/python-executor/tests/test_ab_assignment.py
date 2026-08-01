@@ -32,6 +32,12 @@ class AbAssignmentTests(unittest.TestCase):
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
         self.tenant_id = app_main.storage.default_tenant_id
         self.policy = app_main.storage.list_policies(status="prod", tenant_id=self.tenant_id)[0]
+        # Isolation: resolve_experiment_assignment picks the FIRST running experiment for a
+        # policy, and the shared test DB can hold leftover ones. Retire any others so this
+        # test's experiment is the one assigned.
+        for exp in app_main.storage.list_experiments(tenant_id=self.tenant_id):
+            if exp.get("status") == "running" and exp.get("target_policy_id") == self.policy["id"]:
+                app_main.storage.create_or_update_experiment({**exp, "status": "completed"}, tenant_id=self.tenant_id)
         self.experiment = app_main.storage.create_or_update_experiment(
             {
                 "id": "test_ab_exp",
