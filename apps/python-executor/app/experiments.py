@@ -21,11 +21,16 @@ def assign_variant(user_id: str, experiment_id: str, variants: List[Dict[str, An
 def resolve_experiment_assignment(storage, tenant_id: str, policy_id: str, user_id: Optional[str]) -> Optional[Dict[str, Any]]:
     if not user_id:
         return None
-    for experiment in storage.list_experiments(tenant_id=tenant_id):
-        if experiment.get("status") != "running":
-            continue
-        if experiment.get("target_policy_id") != policy_id:
-            continue
+    # The API enforces at most one running experiment per policy, so normally there is a single
+    # candidate. Should legacy/imported data ever hold more than one, resolve deterministically
+    # (oldest-created wins) rather than relying on iteration order.
+    candidates = [
+        experiment
+        for experiment in storage.list_experiments(tenant_id=tenant_id)
+        if experiment.get("status") == "running" and experiment.get("target_policy_id") == policy_id
+    ]
+    candidates.sort(key=lambda experiment: (str(experiment.get("created_at") or ""), str(experiment.get("id") or "")))
+    for experiment in candidates:
         variant = assign_variant(user_id, experiment["id"], experiment.get("variants", []))
         if not variant:
             continue

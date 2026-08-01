@@ -3383,10 +3383,32 @@ def get_experiment(experiment_id: str) -> Dict[str, Any]:
     return experiment
 
 
+def _assert_single_running_experiment(experiment_id: str, status: Optional[str], target_policy_id: Optional[str]) -> None:
+    """Enforce at most one *running* experiment per policy. Two running experiments on the same
+    policy is an ambiguous state — a decision could be assigned to either — so the API refuses to
+    start/keep a second one. Pause the other first. (The decide path resolves deterministically
+    regardless, but this keeps the data model unambiguous.)"""
+    if status != "running" or not target_policy_id:
+        return
+    tenant_id = active_tenant_id()
+    for exp in storage.list_experiments(tenant_id=tenant_id):
+        if exp.get("id") == experiment_id:
+            continue
+        if exp.get("status") == "running" and exp.get("target_policy_id") == target_policy_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Experiment '{0}' is already running on policy '{1}'. Pause it before starting another.".format(
+                    exp.get("id"), target_policy_id
+                ),
+            )
+
+
 @app.post("/api/v1/experiments")
 def create_experiment(request: ExperimentUpsertRequest) -> Dict[str, Any]:
     experiment_id = request.id or make_id(request.name, {item["id"]: item for item in storage.list_experiments()})
-    return storage.create_or_update_experiment({**request.model_dump(), "id": experiment_id})
+    payload = {**request.model_dump(), "id": experiment_id}
+    _assert_single_running_experiment(experiment_id, payload.get("status"), payload.get("target_policy_id"))
+    return storage.create_or_update_experiment(payload)
 
 
 @app.put("/api/v1/experiments/{experiment_id}")
@@ -3394,7 +3416,9 @@ def update_experiment(experiment_id: str, request: ExperimentUpsertRequest) -> D
     existing = storage.get_experiment(experiment_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Experiment not found.")
-    return storage.create_or_update_experiment({**existing, **request.model_dump(exclude_none=True), "id": experiment_id})
+    merged = {**existing, **request.model_dump(exclude_none=True), "id": experiment_id}
+    _assert_single_running_experiment(experiment_id, merged.get("status"), merged.get("target_policy_id"))
+    return storage.create_or_update_experiment(merged)
 
 
 @app.patch("/api/v1/experiments/{experiment_id}/status")
@@ -3402,6 +3426,7 @@ def update_experiment_status(experiment_id: str, request: ExperimentStatusReques
     existing = storage.get_experiment(experiment_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Experiment not found.")
+    _assert_single_running_experiment(experiment_id, request.status, existing.get("target_policy_id"))
     return storage.create_or_update_experiment({**existing, "status": request.status, "id": experiment_id})
 
 
