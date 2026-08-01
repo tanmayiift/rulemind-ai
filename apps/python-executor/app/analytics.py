@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import math
+import os
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Union
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Union
 
 from .champion_challenger import analyze_champion_challenger
 from .runtime import cache_get_json, cache_set_json
 from .storage import Storage
+
+
+def _analytics_window_start() -> Optional[datetime]:
+    """Start of the dashboard analytics window (naive UTC). Bounds the scanned decision set so
+    the dashboards stay fast at scale; configurable via ANALYTICS_WINDOW_DAYS (default 90).
+    Set to 0 to scan all history."""
+    days = int(os.getenv("ANALYTICS_WINDOW_DAYS", "90"))
+    if days <= 0:
+        return None
+    return datetime.utcnow() - timedelta(days=days)
 
 
 def _percentile(values: List[Union[int, float]], percentile: float) -> float:
@@ -29,7 +41,8 @@ def decision_analytics(storage: Storage, tenant_id: str) -> Dict[str, Any]:
     cached = cache_get_json(cache_key)
     if cached is not None:
         return cached
-    decisions = storage.list_decisions(tenant_id=tenant_id)
+    # Full windowed set (column-projected, paginated) — not the 200-row recency cap.
+    decisions = storage.decision_facts(tenant_id=tenant_id, since=_analytics_window_start())
     total = len(decisions)
     outcomes = Counter(item.get("outcome", "unknown") for item in decisions)
     by_policy: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -81,7 +94,7 @@ def latency_analytics(storage: Storage, tenant_id: str) -> Dict[str, Any]:
     cached = cache_get_json(cache_key)
     if cached is not None:
         return cached
-    decisions = storage.list_decisions(tenant_id=tenant_id)
+    decisions = storage.decision_facts(tenant_id=tenant_id, since=_analytics_window_start())
     latencies = [int(item.get("latency_ms", 0)) for item in decisions]
     by_source: dict[str, list[int]] = defaultdict(list)
     for decision in decisions:
@@ -143,20 +156,19 @@ def experiment_analytics(storage: Storage, tenant_id: str, experiment_id: str) -
     experiment = storage.get_experiment(experiment_id, tenant_id=tenant_id)
     if not experiment:
         raise ValueError("Experiment not found")
-    decisions = [item for item in storage.list_decisions(tenant_id=tenant_id) if item.get("experiment_variant")]
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for decision in decisions:
-        grouped[str(decision.get("experiment_variant"))].append(decision)
+    # Exact per-variant aggregates over ALL matching decisions, computed in SQL (GROUP BY) —
+    # not a 200-row recency sample — so lift + significance hold at real traffic.
+    rollup = storage.experiment_variant_rollup(tenant_id, experiment_id)
 
     variant_rows = []
     variant_stats: dict[str, dict[str, Any]] = {}
     for variant in experiment.get("variants", []):
-        items = grouped.get(variant.get("id"), [])
-        users = len(items)
-        approved = sum(1 for item in items if item.get("outcome") == "approve")
-        rejected = sum(1 for item in items if item.get("outcome") == "reject")
-        reviewed = sum(1 for item in items if item.get("outcome") == "review")
-        avg_latency = round(sum(int(item.get("latency_ms", 0)) for item in items) / users, 2) if users else 0
+        stats = rollup.get(str(variant.get("id")), {})
+        users = int(stats.get("users", 0))
+        approved = int(stats.get("approved", 0))
+        rejected = int(stats.get("rejected", 0))
+        reviewed = int(stats.get("reviewed", 0))
+        avg_latency = round(stats.get("latency_sum", 0) / users, 2) if users else 0
         row = {
             "id": variant.get("id"),
             "role": variant.get("role"),

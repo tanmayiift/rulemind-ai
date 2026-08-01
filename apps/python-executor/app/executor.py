@@ -843,6 +843,7 @@ class PolicyExecutor:
                 "latency_ms": ctx.total_latency_ms,
                 "source": source,
                 "sdk_version": sdk_version,
+                "experiment_id": ctx.experiment_id,
                 "experiment_variant": experiment_variant,
             },
             tenant_id=ctx.tenant_id,
