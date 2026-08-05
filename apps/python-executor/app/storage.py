@@ -1348,6 +1348,14 @@ class Storage:
             rows = session.scalars(query).all()
             return [self._decision_to_dict(row) for row in rows]
 
+    def get_decision(self, decision_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        from . import decision_log
+        decision_log.flush()
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(select(Decision).where(Decision.tenant_id == resolved, Decision.id == decision_id))
+            return self._decision_to_dict(row) if row else None
+
     def count_decisions(self, tenant_id: Optional[str] = None) -> int:
         from . import decision_log
         decision_log.flush()
@@ -2568,6 +2576,16 @@ class Storage:
         with self.connect() as session:
             rows = session.scalars(select(Bundle).where(Bundle.tenant_id == resolved).order_by(desc(Bundle.version))).all()
             return [self._bundle_to_dict(row) for row in rows]
+
+    def get_bundle(self, version: int, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fetch a specific (retained, possibly superseded) bundle version — backs decision replay
+        against a historical policy version."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(
+                select(Bundle).where(Bundle.tenant_id == resolved, Bundle.version == int(version)).limit(1)
+            )
+            return self._bundle_to_dict(row) if row else None
 
     def add_sdk_events(self, events: List[Dict[str, Any]], tenant_id: Optional[str] = None) -> int:
         resolved = self._tenant_id(tenant_id)

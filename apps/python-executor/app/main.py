@@ -3618,6 +3618,57 @@ async def stream_decisions(request: Request) -> StreamingResponse:
     )
 
 
+@app.post("/api/v1/decisions/{decision_id}/replay")
+def replay_decision(decision_id: str, bundle_version: Optional[int] = Query(default=None, alias="bundleVersion")) -> Dict[str, Any]:
+    """Re-run a past decision against the current policy — or a historical compiled bundle version
+    (`?bundleVersion=N`) — and report whether the outcome would change. Answers "did my policy
+    change flip decisions that already went out?" using the decision's stored inputs. Uses the
+    recorded computed variables, so it isolates rule/policy-logic changes and is unaffected by
+    payload redaction."""
+    from .core.engine import decide as core_decide
+
+    tenant_id = active_tenant_id()
+    decision = ensure_exists(storage.get_decision(decision_id, tenant_id=tenant_id), "decision", decision_id)
+    if bundle_version is not None:
+        bundle = storage.get_bundle(bundle_version, tenant_id=tenant_id)
+        if not bundle:
+            raise HTTPException(status_code=404, detail="Bundle version {0} not found.".format(bundle_version))
+    else:
+        bundle = storage.latest_bundle(tenant_id=tenant_id)
+        if not bundle:
+            raise HTTPException(status_code=404, detail="No compiled bundle to replay against.")
+    replayed = core_decide(
+        bundle["content"],
+        decision.get("payload") or {},
+        {
+            "policy_id": decision.get("policy_id"),
+            "variables": decision.get("computed_variables") or {},
+            "strict_validation": False,
+        },
+    )
+    original_outcome = decision.get("outcome")
+    replayed_outcome = replayed.get("outcome")
+    return {
+        "decision_id": decision_id,
+        "policy_id": decision.get("policy_id"),
+        "bundle_version": bundle.get("version"),
+        "original_outcome": original_outcome,
+        "replayed_outcome": replayed_outcome,
+        "changed": original_outcome != replayed_outcome,
+        "replayed_at": now_iso(),
+    }
+
+
+@app.get("/api/v1/bundles/versions")
+def list_bundle_versions() -> List[Dict[str, Any]]:
+    """The retained compiled bundle versions (for choosing a historical version to replay against)."""
+    return [
+        {"version": b.get("version"), "checksum": b.get("checksum"), "compiled_at": b.get("compiled_at"),
+         "superseded": b.get("superseded")}
+        for b in storage.list_bundles(active_tenant_id())
+    ]
+
+
 @app.get("/api/v1/analytics/decisions")
 def analytics_decisions() -> Dict[str, Any]:
     return decision_analytics(storage, active_tenant_id())
