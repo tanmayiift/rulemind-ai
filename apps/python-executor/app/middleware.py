@@ -18,6 +18,12 @@ from .context import (
 from .mtls import MtlsSettings, evaluate_client_cert
 from .rbac import is_allowed
 from .runtime import rate_limit_allow
+from .session_cookie import (
+    CSRF_PROTECTED_METHODS,
+    SESSION_COOKIE,
+    authenticated_via_cookie,
+    csrf_valid,
+)
 
 
 EXEMPT_PATHS = {
@@ -42,7 +48,8 @@ def _bearer_token(request: Request) -> str:
     header = request.headers.get("authorization") or ""
     if header.lower().startswith("bearer "):
         return header[7:].strip()
-    return ""
+    # Browser sessions carry the token in an httpOnly cookie instead of the header.
+    return request.cookies.get(SESSION_COOKIE, "") or ""
 
 
 class TenantContextMiddleware(BaseHTTPMiddleware):
@@ -87,6 +94,12 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
 
         if request.method == "POST" and path.startswith("/api/v1/webhooks/") and not path.endswith("/test"):
             return await call_next(request)
+
+        # CSRF: a browser cookie session performing a state-changing request must present a
+        # matching double-submit token. Header/API-key auth (machines, mobile SDK) is exempt —
+        # it isn't cookie-driven, so it isn't CSRF-exposed.
+        if request.method in CSRF_PROTECTED_METHODS and authenticated_via_cookie(request) and not csrf_valid(request):
+            return JSONResponse(status_code=403, content={"error": "CSRF token missing or invalid"})
 
         storage = self.storage() if callable(self.storage) else self.storage
 

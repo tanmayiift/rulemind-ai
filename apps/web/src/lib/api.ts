@@ -14,8 +14,21 @@ export function getBearerToken(): string {
 }
 
 function authHeaders(apiKey: string): Record<string, string> {
+  // A logged-in member's session lives in an httpOnly cookie sent automatically with
+  // `credentials: "include"` — we no longer hold or send the session token from JS. An
+  // in-memory bearer (set right after login, never persisted) still works for this tab; the
+  // (dev) API key is the machine fallback.
   if (_bearerToken) return { Authorization: `Bearer ${_bearerToken}` };
   return apiKey ? { "x-api-key": apiKey } : {};
+}
+
+// Read the readable CSRF cookie and, for state-changing requests, echo it back as a header so
+// the server's double-submit check passes. No-op for GET/HEAD (not CSRF-protected).
+function csrfHeaders(method?: string): Record<string, string> {
+  const m = (method ?? "GET").toUpperCase();
+  if (m === "GET" || m === "HEAD" || m === "OPTIONS" || typeof document === "undefined") return {};
+  const match = document.cookie.match(/(?:^|;\s*)rm_csrf=([^;]+)/);
+  return match ? { "X-CSRF-Token": decodeURIComponent(match[1]) } : {};
 }
 
 export async function apiJson<T>(
@@ -31,8 +44,10 @@ export async function apiJson<T>(
       headers: {
         ...(init.body ? { "content-type": "application/json" } : {}),
         ...authHeaders(apiKey),
+        ...csrfHeaders(init.method),
         ...(init.headers ?? {}),
       },
+      credentials: "include",
       cache: "no-store",
     });
   } catch {
@@ -59,8 +74,10 @@ export async function apiText(
       ...init,
       headers: {
         ...authHeaders(apiKey),
+        ...csrfHeaders(init.method),
         ...(init.headers ?? {}),
       },
+      credentials: "include",
       cache: "no-store",
     });
   } catch {

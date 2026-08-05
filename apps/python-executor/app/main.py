@@ -49,6 +49,7 @@ from .reviews import submit_review_decision
 from . import decision_bus
 from .runtime import is_local_dev, redis_client
 from .security_config import verify_production_secrets
+from .session_cookie import clear_session_cookies, session_token_from_request, set_session_cookies
 from .sandbox import execute_variable
 from .scheduler import execute_cron_policy, init_scheduler
 from .storage import Storage, _parse_client_datetime
@@ -2549,9 +2550,9 @@ def _bearer_from_request(http_request: Request) -> str:
 
 
 @app.post("/api/v1/auth/login")
-def member_login(request: LoginRequest) -> Dict[str, Any]:
-    """Password login for a workspace member. Returns a bearer session token to send
-    as `Authorization: Bearer <token>` on subsequent requests."""
+def member_login(request: LoginRequest, response: Response) -> Dict[str, Any]:
+    """Password login for a workspace member. Sets an httpOnly session cookie (browser) + a CSRF
+    cookie, and also returns the token in the body for machine/mobile callers."""
     member = storage.get_member_by_email(request.email, tenant_id=request.tenant_id)
     if not member or not member.get("is_active"):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
@@ -2560,7 +2561,8 @@ def member_login(request: LoginRequest) -> Dict[str, Any]:
     session = storage.create_member_session(member["tenant_id"], member["id"])
     _audit_member("member_login", member["tenant_id"], member["id"],
                   "Password login by '{0}'".format(member["email"]), {"method": "password"})
-    return {"token": session["token"], "expires_at": session["expires_at"], "member": member}
+    csrf = set_session_cookies(response, session["token"])
+    return {"token": session["token"], "expires_at": session["expires_at"], "member": member, "csrf_token": csrf}
 
 
 @app.post("/api/v1/auth/otp/request")
@@ -2589,8 +2591,9 @@ def member_otp_request(request: OtpRequestRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/v1/auth/otp/verify")
-def member_otp_verify(request: OtpVerifyRequest) -> Dict[str, Any]:
-    """Exchange a valid OTP for a bearer session token."""
+def member_otp_verify(request: OtpVerifyRequest, response: Response) -> Dict[str, Any]:
+    """Exchange a valid OTP for a session — sets the httpOnly session + CSRF cookies (browser)
+    and returns the token for machine/mobile callers."""
     member = storage.get_member_by_email(request.email, tenant_id=request.tenant_id)
     if not member or not member.get("is_active"):
         raise HTTPException(status_code=401, detail="Invalid or expired code.")
@@ -2599,7 +2602,8 @@ def member_otp_verify(request: OtpVerifyRequest) -> Dict[str, Any]:
     session = storage.create_member_session(member["tenant_id"], member["id"])
     _audit_member("member_login", member["tenant_id"], member["id"],
                   "OTP login by '{0}'".format(member["email"]), {"method": "otp"})
-    return {"token": session["token"], "expires_at": session["expires_at"], "member": member}
+    csrf = set_session_cookies(response, session["token"])
+    return {"token": session["token"], "expires_at": session["expires_at"], "member": member, "csrf_token": csrf}
 
 
 @app.get("/api/v1/auth/session")
@@ -2607,7 +2611,7 @@ def member_session(http_request: Request) -> Dict[str, Any]:
     """The current member for a bearer session token, with role + capabilities."""
     from .rbac import capabilities_for
 
-    resolved = storage.resolve_member_session(_bearer_from_request(http_request))
+    resolved = storage.resolve_member_session(session_token_from_request(http_request))
     if not resolved:
         raise HTTPException(status_code=401, detail="Invalid or expired session.")
     role = resolved.get("role", "viewer")
@@ -2615,10 +2619,11 @@ def member_session(http_request: Request) -> Dict[str, Any]:
 
 
 @app.post("/api/v1/auth/logout")
-def member_logout(http_request: Request) -> Dict[str, Any]:
-    """Revoke the current bearer session."""
-    token = _bearer_from_request(http_request)
+def member_logout(http_request: Request, response: Response) -> Dict[str, Any]:
+    """Revoke the current session and clear its cookies."""
+    token = session_token_from_request(http_request)
     revoked = storage.revoke_member_session(token) if token else False
+    clear_session_cookies(response)
     return {"logged_out": bool(revoked)}
 
 
