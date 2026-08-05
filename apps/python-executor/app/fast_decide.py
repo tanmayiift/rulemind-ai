@@ -122,6 +122,7 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple
                         sample[field] = value
     payloads["custom"] = dict(flat_fields) if flat_fields else dict(payload)
     values: Dict[str, Any] = {}
+    errors: Dict[str, str] = {}
     for variable in bundle["variables"]:
         source_payload = payloads.get(variable.get("source_id"), {})
         execution = execute_variable(
@@ -129,13 +130,33 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple
             timeout_ms=bundle["timeout_ms"], memory_mb=bundle["memory_mb"],
         )
         values[variable["id"]] = execution.get("value")
-    return values, payloads
+        # A variable that errors becomes None here; surface the error to the caller so it is
+        # never silently swallowed (a None fed to a gate can flip a decision).
+        if execution.get("error"):
+            errors[variable["id"]] = str(execution.get("error"))
+    return values, payloads, errors
 
 
 def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], tenant_id: str, log: bool = True) -> Dict[str, Any]:
     started = time.perf_counter()
     bundle = _serving_bundle(storage, tenant_id, policy)
-    values, resolved_payload = _compute_variables(bundle, payload or {})
+    values, resolved_payload, variable_errors = _compute_variables(bundle, payload or {})
+    # Variable computation errors on the fast path are recorded as observable error events (not
+    # silently dropped), so a decision made on a None-defaulted variable is alertable.
+    if variable_errors:
+        for variable_id, message in variable_errors.items():
+            try:
+                storage.add_error_event(
+                    {
+                        "tenant_id": tenant_id, "scope": "decision", "stage": "variable_error",
+                        "entity_type": "variable", "entity_id": variable_id,
+                        "message": "Variable errored on the fast path (value defaulted to null): {0}".format(message),
+                        "details": {"policy_id": policy["id"]},
+                    },
+                    tenant_id=tenant_id,
+                )
+            except Exception:  # pragma: no cover - observability must not break the decision
+                pass
 
     if bundle["rust_bundle"] is not None:
         outcome = bundle["rust_bundle"].decide(values)

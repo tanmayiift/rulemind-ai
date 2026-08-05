@@ -121,7 +121,7 @@ class FastPathAccuracyTests(unittest.TestCase):
                            "code": "def run(payload, context):\n    return int(payload.get('bureau_score', 0))\n"}],
             "timeout_ms": 2000, "memory_mb": 128,
         }
-        values, _ = fast_decide._compute_variables(bundle, {"bureau_score": 590})
+        values, _, _ = fast_decide._compute_variables(bundle, {"bureau_score": 590})
         self.assertEqual(values["loan_bureau_score"], 590)  # not the sample 756
 
 

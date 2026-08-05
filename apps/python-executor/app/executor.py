@@ -402,8 +402,15 @@ class PolicyExecutor:
                 if ctx.status == "paused":
                     ctx.step_trace.append({"step": step, "result": result, "error": error, "duration_ms": _ms_since(started)})
                     return
-            except Exception as exc:  # pragma: no cover - defensive execution path
+            except Exception as exc:  # a step raised — do not silently drop it
                 error = str(exc)
+                # Accuracy is paramount: a decision GATE that errors must not be silently
+                # skipped, or a decision could pass a gate it should have failed (fail-open).
+                # Fail CLOSED — escalate to human review — and record an observable error event
+                # (not just the trace line) so it's alertable, never a silent wrong decision.
+                if step.get("type") in ("rule", "scorecard", "decision_table"):
+                    ctx.outcome = _merge_outcome(ctx.outcome, "review")
+                    self._record_gate_error(ctx, step, error)
                 if config.get("onFailure") == "abort":
                     ctx.status = "failed"
             ctx.step_trace.append({"step": step, "result": result, "error": error, "duration_ms": _ms_since(started)})
@@ -827,6 +834,26 @@ class PolicyExecutor:
             self.storage.update_workflow_execution(ctx.execution_id, payload, tenant_id=ctx.tenant_id)
         else:
             self.storage.create_workflow_execution(payload, tenant_id=ctx.tenant_id)
+
+    def _record_gate_error(self, ctx: ExecutionContext, step: Dict[str, Any], message: str) -> None:
+        """Record an observable error when a decision gate (rule/scorecard/table) fails to
+        evaluate — so a fail-closed decision is alertable, not silent. Best-effort: recording the
+        error must never itself break the decision."""
+        try:
+            self.storage.add_error_event(
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "scope": "decision",
+                    "stage": "gate_error",
+                    "entity_type": step.get("type"),
+                    "entity_id": step.get("ref_id") or step.get("ref") or step.get("id"),
+                    "message": "Decision gate errored (failed closed to review): {0}".format(message),
+                    "details": {"policy_id": ctx.policy_id, "execution_id": ctx.execution_id},
+                },
+                tenant_id=ctx.tenant_id,
+            )
+        except Exception:  # pragma: no cover - observability must not break the decision
+            pass
 
     def _log_decision(self, ctx: ExecutionContext, source: str, sdk_version: Optional[str], experiment_variant: Optional[str]) -> None:
         self.storage.add_decision(
