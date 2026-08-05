@@ -46,6 +46,20 @@ def is_fast_servable(policy: Dict[str, Any]) -> bool:
     return not any(step.get("type") in _IO_STEP_TYPES for step in steps)
 
 
+def fast_path_eligible(storage: Any, policy: Dict[str, Any], tenant_id: str) -> bool:
+    """THE single authority for whether a LIVE decision may take the fast path. Both the eligible
+    shape (pure-compute steps only) AND the runtime guard (no running A/B experiment — the fast
+    path applies no experiment overrides) live here, so the /decide endpoint can't drift from the
+    executor on when the fast path is safe. (The A/B assignment bug came from these being split.)"""
+    if not is_fast_servable(policy):
+        return False
+    policy_id = policy.get("id")
+    for experiment in storage.list_experiments(tenant_id=tenant_id):
+        if experiment.get("status") == "running" and experiment.get("target_policy_id") == policy_id:
+            return False
+    return True
+
+
 def invalidate(tenant_id: Optional[str] = None) -> None:
     """Drop cached bundles (all, or one tenant) — call on any publish/update."""
     with _CACHE_LOCK:

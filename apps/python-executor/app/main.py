@@ -2067,27 +2067,17 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
     return {"targetType": request.targetType, "targetId": request.targetId, "rows": rows, "count": len(rows)}
 
 
-def _has_running_experiment(policy_id: str) -> bool:
-    """True when a running A/B experiment targets this policy (so the fast path, which
-    doesn't apply experiment overrides, must be bypassed in favour of the full executor)."""
-    return any(
-        exp.get("status") == "running" and exp.get("target_policy_id") == policy_id
-        for exp in storage.list_experiments(tenant_id=active_tenant_id())
-    )
-
-
 @app.post("/api/v1/decide")
 def decide(request: DecideRequest) -> Dict[str, Any]:
     policy = ensure_exists(storage.get_policy(request.policy_id), "policy", request.policy_id)
-    # Scalable hot path: serve pure-compute policies from the cached bundle via the
-    # stateless core (Rust when available), bypassing the heavy PolicyExecutor.
+    # Scalable hot path: serve pure-compute policies from the cached bundle via the stateless
+    # core (Rust when available), bypassing the heavy PolicyExecutor. fast_path_eligible is the
+    # single authority on when this is safe (shape + no running experiment) so the two paths
+    # can't drift.
     if os.getenv("FAST_DECIDE", "0") == "1":
-        from .fast_decide import fast_decide, is_fast_servable
+        from .fast_decide import fast_decide, fast_path_eligible
 
-        # The fast path is pure-compute and does not apply experiment overrides, so only
-        # take it when no running experiment targets this policy (otherwise A/B assignment
-        # + variant logging would be silently skipped).
-        if is_fast_servable(policy) and not _has_running_experiment(policy["id"]):
+        if fast_path_eligible(storage, policy, active_tenant_id()):
             decision = fast_decide(storage, policy, request.payload or {}, active_tenant_id())
             if decision["outcome"] == "reject":
                 record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {})
