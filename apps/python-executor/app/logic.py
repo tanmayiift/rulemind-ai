@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
@@ -565,17 +566,34 @@ def execute_policy(policy: Dict[str, Any], payload_by_source: Dict[str, Any], va
     }
 
 
+def _redact_keys() -> set:
+    """The PII field names redacted from the stored decision payload. The built-in set covers
+    common identity fields; operators extend it (any domain: patient_id, ssn, card_no, …) via
+    RULEMIND_PII_REDACT_KEYS (comma-separated), case-insensitive."""
+    extra = {
+        item.strip().lower()
+        for item in (os.getenv("RULEMIND_PII_REDACT_KEYS", "") or "").split(",")
+        if item.strip()
+    }
+    return {key.lower() for key in REDACTED_KEYS} | extra
+
+
 def redact_payload(value: Any) -> Any:
+    keys = _redact_keys()
+    return _redact_with(value, keys)
+
+
+def _redact_with(value: Any, keys: set) -> Any:
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
-            if key in REDACTED_KEYS:
+            if str(key).lower() in keys:
                 redacted[key] = "***"
             else:
-                redacted[key] = redact_payload(item)
+                redacted[key] = _redact_with(item, keys)
         return redacted
     if isinstance(value, list):
-        return [redact_payload(item) for item in value]
+        return [_redact_with(item, keys) for item in value]
     return value
 
 

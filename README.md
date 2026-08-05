@@ -133,6 +133,15 @@ This runs:
 | `RATE_LIMIT_FAIL_OPEN` | `0` | If Redis is down: `0` = fall back to a bounded per-replica limiter (fail-closed); `1` = allow all (fail-open) |
 | `DECISION_ARCHIVE_SINK` | `none` | Decision-log retention sink: `none` (off), `clickhouse`, `s3`, or `memory` (tests) |
 | `DECISION_ARCHIVE_INTERVAL_HOURS` | `24` | How often the retention job archives + purges aged decisions |
+| `DECISION_ENCRYPT_AT_REST` | `1` | Encrypt stored decision payloads/variables at rest (Fernet, keyed on `RULEMIND_CONFIG_KEY`); `0` stores plaintext |
+| `RULEMIND_PII_REDACT_KEYS` | _(empty)_ | Extra PII field names redacted from stored payloads (comma-separated, any domain) |
+
+**Decision data protection.** Stored decision payloads + computed variables are **encrypted at
+rest by default** (Fernet, keyed on `RULEMIND_CONFIG_KEY`) and transparently decrypted on read —
+legacy plaintext rows keep reading, so it's safe to enable on an existing DB. In transit, run
+behind TLS (and optionally in-app mTLS above). PII fields (`name`, `email`, `phone`, ids, …) are
+**redacted** from the stored payload before it's ever written; extend the redaction set per
+deployment/domain with `RULEMIND_PII_REDACT_KEYS` (e.g. `patient_id,card_no,ssn`).
 
 **Data tier + retention.** **Postgres is the production datastore** — set `DATABASE_URL` to a
 Postgres DSN in prod (the app logs a warning if it starts on SQLite outside dev); **SQLite is the
