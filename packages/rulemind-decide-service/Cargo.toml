@@ -1,0 +1,21 @@
+[package]
+name = "rulemind-decide-service"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone Rust decision service — the high-throughput /decide hot path over the RuleMind eval-core"
+license = "Apache-2.0"
+
+[[bin]]
+name = "rulemind-decide-service"
+path = "src/main.rs"
+
+[dependencies]
+rulemind_core_rs = { path = "../rulemind-core-rs", default-features = false }
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
