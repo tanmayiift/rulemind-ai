@@ -77,17 +77,15 @@ export const useRuleMindStore = create<RuleMindUiState>()(
       partialize: (state) => ({
         apiBaseUrl: state.apiBaseUrl,
         apiKey: state.apiKey,
-        sessionToken: state.sessionToken,
+        // NOTE: sessionToken is deliberately NOT persisted — the member session lives in an
+        // httpOnly cookie the browser sends automatically, so the bearer token is never written
+        // to localStorage (removes the XSS-exfiltration surface). `member` is non-secret UI state.
         member: state.member,
         environment: state.environment,
         themeMode: state.themeMode,
         sidebarOpen: state.sidebarOpen,
         activeConnectorFilter: state.activeConnectorFilter,
       }),
-      onRehydrateStorage: () => (state) => {
-        // Re-arm the in-memory bearer token from the persisted session on reload.
-        if (state?.sessionToken) setBearerToken(state.sessionToken);
-      },
     }
   )
 );
