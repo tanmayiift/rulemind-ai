@@ -1489,6 +1489,45 @@ class Storage:
                 offset += page_size
         return collected
 
+    def archive_and_purge_decisions(
+        self,
+        tenant_id: Optional[str],
+        older_than: datetime,
+        archiver,
+        batch_size: int = 1000,
+        max_batches: int = 10_000,
+    ) -> int:
+        """Move decisions created before `older_than` out of the hot DB into `archiver`, then
+        delete them. Archive first, purge only on success — so a sink failure never loses data.
+        The archive network write happens OUTSIDE any DB transaction (batches are read, then
+        written, then deleted in separate short transactions) so it never holds row locks."""
+        resolved = self._tenant_id(tenant_id)
+        total = 0
+        for _ in range(max_batches):
+            with self.connect() as session:
+                rows = session.scalars(
+                    select(Decision)
+                    .where(Decision.tenant_id == resolved, Decision.created_at < older_than)
+                    .order_by(Decision.created_at)
+                    .limit(batch_size)
+                ).all()
+                records = []
+                ids = []
+                for row in rows:
+                    record = self._decision_to_dict(row)
+                    record["tenant_id"] = resolved
+                    records.append(record)
+                    ids.append(row.id)
+            if not records:
+                break
+            archiver.write(records)  # raises -> we never reach the purge below
+            with self.connect() as session:
+                session.execute(delete(Decision).where(Decision.id.in_(ids)))
+            total += len(ids)
+            if len(records) < batch_size:
+                break
+        return total
+
     def add_promotion(self, entity_type: str, entity_id: str, from_status: str, to_status: str, promoted_by: str, reason: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
