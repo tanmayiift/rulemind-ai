@@ -121,6 +121,34 @@ def decrypt_config_payload(value: str) -> Dict[str, Any]:
             return {}
 
 
+def decision_encryption_enabled() -> bool:
+    """Encrypt decision payloads at rest (default ON). Financial/KYC/health/any-PII inputs must
+    not sit in the DB as plaintext. Disable only for a plaintext-required migration."""
+    return (os.getenv("DECISION_ENCRYPT_AT_REST", "1") or "1").strip() not in ("0", "false", "no")
+
+
+def encrypt_decision_field(value: Any) -> Any:
+    """Encrypt a decision JSON blob (payload/variables) for storage. Returns a Fernet token
+    string when encryption is enabled, else the value unchanged (dev/migration)."""
+    if value is None or not decision_encryption_enabled():
+        return value
+    return Fernet(fernet_key()).encrypt(json_dumps(value).encode("utf-8")).decode("utf-8")
+
+
+def decrypt_decision_field(value: Any) -> Any:
+    """Decrypt a stored decision blob. Handles both encrypted (Fernet token string) and legacy
+    plaintext (a JSON object already), so old rows keep reading after encryption is turned on."""
+    if not isinstance(value, str):
+        return value  # legacy plaintext dict/list, or None
+    try:
+        return json.loads(Fernet(fernet_key()).decrypt(value.encode("utf-8")).decode("utf-8"))
+    except Exception:
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+
+
 def encrypt_secret_text(value: str) -> str:
     return Fernet(fernet_key()).encrypt(value.encode("utf-8")).decode("utf-8")
 
@@ -704,9 +732,9 @@ class Storage:
         return {
             "id": model.id,
             "policy_id": model.policy_id,
-            "payload": copy.deepcopy(model.payload_preview or {}),
+            "payload": copy.deepcopy(decrypt_decision_field(model.payload_preview) or {}),
             "payload_hash": model.payload_hash,
-            "computed_variables": copy.deepcopy(model.computed_variables or {}),
+            "computed_variables": copy.deepcopy(decrypt_decision_field(model.computed_variables) or {}),
             "rule_results": copy.deepcopy(model.rule_results or []),
             "scorecard_result": copy.deepcopy(model.scorecard_result),
             "trace": copy.deepcopy(model.trace or []),
@@ -1232,8 +1260,8 @@ class Storage:
                 tenant_id=resolved,
                 policy_id=payload.get("policy_id"),
                 payload_hash=payload_hash,
-                payload_preview=preview,
-                computed_variables=copy.deepcopy(payload.get("computed_variables", {})),
+                payload_preview=encrypt_decision_field(preview),
+                computed_variables=encrypt_decision_field(copy.deepcopy(payload.get("computed_variables", {}))),
                 rule_results=copy.deepcopy(payload.get("rule_results", [])),
                 scorecard_result=copy.deepcopy(payload.get("scorecard_result")),
                 trace=copy.deepcopy(payload.get("trace", [])),
@@ -1291,8 +1319,8 @@ class Storage:
                     tenant_id=resolved,
                     policy_id=record.get("policy_id") or record.get("policyId"),
                     payload_hash=payload_hash,
-                    payload_preview=preview,
-                    computed_variables=copy.deepcopy(record.get("computed_variables", {})),
+                    payload_preview=encrypt_decision_field(preview),
+                    computed_variables=encrypt_decision_field(copy.deepcopy(record.get("computed_variables", {}))),
                     rule_results=copy.deepcopy(record.get("rule_results", [])),
                     scorecard_result=copy.deepcopy(record.get("scorecard_result")),
                     trace=copy.deepcopy(record.get("trace", [])),
