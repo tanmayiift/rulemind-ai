@@ -1556,7 +1556,7 @@ class Storage:
                 break
         return total
 
-    def add_promotion(self, entity_type: str, entity_id: str, from_status: str, to_status: str, promoted_by: str, reason: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    def add_promotion(self, entity_type: str, entity_id: str, from_status: str, to_status: str, promoted_by: str, reason: str, tenant_id: Optional[str] = None, snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             promotion = Promotion(
@@ -1567,10 +1567,24 @@ class Storage:
                 to_status=to_status,
                 promoted_by=promoted_by,
                 reason=reason,
+                snapshot_json=copy.deepcopy(snapshot) if snapshot else None,
             )
             session.add(promotion)
             session.flush()
             return self._promotion_to_dict(promotion)
+
+    def last_promotion_snapshot(self, entity_type: str, entity_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """The most recent stored definition snapshot for an entity — the baseline a draft is
+        diffed against before the next promotion."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalars(
+                select(Promotion)
+                .where(Promotion.tenant_id == resolved, Promotion.entity_type == entity_type,
+                       Promotion.entity_id == entity_id, Promotion.snapshot_json.isnot(None))
+                .order_by(desc(Promotion.id)).limit(1)
+            ).first()
+            return copy.deepcopy(row.snapshot_json) if row and row.snapshot_json else None
 
     def list_promotions(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)

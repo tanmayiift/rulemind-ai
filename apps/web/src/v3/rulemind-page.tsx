@@ -3737,6 +3737,30 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
   );
 }
 
+type PolicyDiffBucket = { added: string[]; removed: string[]; changed: string[] };
+type PolicyDiff = {
+  hasBaseline: boolean;
+  changed: boolean;
+  steps: { added: Array<{ type: string; ref_id: string }>; removed: Array<{ type: string; ref_id: string }> };
+  rules: PolicyDiffBucket;
+  scorecards: PolicyDiffBucket;
+  decisionTables: PolicyDiffBucket;
+};
+
+function summarizePolicyDiff(diff: PolicyDiff): string {
+  if (!diff.hasBaseline) return "First promotion — the whole policy is new.";
+  const parts: string[] = [];
+  if (diff.steps.added.length) parts.push("+" + diff.steps.added.length + " step(s)");
+  if (diff.steps.removed.length) parts.push("−" + diff.steps.removed.length + " step(s)");
+  const count = (b: PolicyDiffBucket) => b.added.length + b.removed.length + b.changed.length;
+  if (count(diff.rules)) parts.push(count(diff.rules) + " rule change(s)");
+  if (count(diff.scorecards)) parts.push(count(diff.scorecards) + " scorecard change(s)");
+  if (count(diff.decisionTables)) parts.push(count(diff.decisionTables) + " decision-table change(s)");
+  return parts.length
+    ? "Changes since the last live version: " + parts.join(", ") + "."
+    : "No decision-logic changes since the last promotion.";
+}
+
 function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
   const { apiBaseUrl, apiKey, isMobile } = useRuleMindStore();
@@ -3751,13 +3775,28 @@ function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNoti
 
   const promote = React.useCallback(
     async (entityType: "variable" | "rule" | "scorecard" | "policy", entityId: string) => {
-      if (!window.confirm("Promote this item to the next environment?")) {
+      // For a policy, show exactly what decision logic changed since the last promotion before
+      // shipping it — and record that summary on the approval.
+      let changeSummary = "";
+      if (entityType === "policy") {
+        try {
+          const diff = await apiJson<PolicyDiff>(apiBaseUrl, "/api/v1/policies/" + entityId + "/diff", {}, apiKey);
+          changeSummary = summarizePolicyDiff(diff);
+        } catch {
+          /* diff is best-effort context; fall through to a plain confirm */
+        }
+      }
+      const prompt = changeSummary
+        ? changeSummary + "\n\nPromote this policy to the next environment?"
+        : "Promote this item to the next environment?";
+      if (!window.confirm(prompt)) {
         return;
       }
       setBusyKey(entityType + ":" + entityId);
       try {
         const route = "/api/v1/" + entityType + "s/" + entityId + "/promote";
-        await apiJson(apiBaseUrl, route, { method: "POST", body: JSON.stringify({ promoted_by: "web", reason: "Manual promotion from Deploy board" }) }, apiKey);
+        const reason = "Manual promotion from Deploy board." + (changeSummary ? " " + changeSummary : "");
+        await apiJson(apiBaseUrl, route, { method: "POST", body: JSON.stringify({ promoted_by: "web", reason }) }, apiKey);
         props.refresh();
         props.onNotify("Promotion completed.");
       } catch (error) {

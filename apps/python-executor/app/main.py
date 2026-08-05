@@ -849,7 +849,14 @@ def promote_entity(entity_type: str, entity_id: str, promoted_by: str, reason: s
     ensure_promotable(entity)
     target_status = next_status(entity["status"])
     updated = updater(entity_id, {"status": target_status}, bump_version=False)
-    storage.add_promotion(entity_type, entity_id, entity["status"], target_status, promoted_by, reason)
+    # Snapshot the policy's decision definition so the next promotion can be diffed against this
+    # one (and this change is recorded on the approval for audit).
+    snapshot = None
+    if entity_type == "policy":
+        from .policy_diff import policy_snapshot
+
+        snapshot = policy_snapshot(storage, active_tenant_id(), entity)
+    storage.add_promotion(entity_type, entity_id, entity["status"], target_status, promoted_by, reason, snapshot=snapshot)
     return ensure_exists(updated, entity_type, entity_id)
 
 
@@ -1973,6 +1980,20 @@ def transition_policy_lifecycle(policy_id: str, request: LifecycleTransitionRequ
         "label": LIFECYCLE_LABELS.get(request.target, request.target),
         "allowedTransitions": allowed_transitions(request.target),
     }
+
+
+@app.get("/api/v1/policies/{policy_id}/diff")
+def policy_promotion_diff(policy_id: str) -> Dict[str, Any]:
+    """The decision-logic delta between the working policy and the last promoted snapshot:
+    steps added/removed and rules/scorecards/decision-tables added/removed/changed. Surface this
+    before a promotion so a reviewer sees exactly what is shipping."""
+    from .policy_diff import diff_snapshots, policy_snapshot
+
+    policy = ensure_exists(storage.get_policy(policy_id), "policy", policy_id)
+    tenant_id = active_tenant_id()
+    current = policy_snapshot(storage, tenant_id, policy)
+    previous = storage.last_promotion_snapshot("policy", policy_id, tenant_id=tenant_id)
+    return diff_snapshots(current, previous)
 
 
 @app.post("/api/v1/policies/{policy_id}/promote")
