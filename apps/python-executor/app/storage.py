@@ -1247,7 +1247,12 @@ class Storage:
             )
             session.add(decision)
             session.flush()
-            return self._decision_to_dict(decision)
+            result = self._decision_to_dict(decision)
+        # Best-effort real-time fan-out to the live SSE feed (no-op without Redis; never raises).
+        from . import decision_bus
+
+        decision_bus.publish_decision(resolved, result)
+        return result
 
     def add_decisions_batch(self, decisions: List[Dict[str, Any]], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Idempotently ingest a batch of (device-originated) decisions.

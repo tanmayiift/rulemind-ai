@@ -46,6 +46,7 @@ from .logic import (
 from .experiments import apply_experiment_overrides
 from .middleware import TenantContextMiddleware, admin_cookie_secure
 from .reviews import submit_review_decision
+from . import decision_bus
 from .runtime import is_local_dev, redis_client
 from .security_config import verify_production_secrets
 from .sandbox import execute_variable
@@ -3566,6 +3567,17 @@ async def stream_decisions(request: Request) -> StreamingResponse:
         if once:
             return
         started = time.monotonic()
+        # Live tail: prefer Redis pub/sub (no DB polling, cross-replica). Falls back to DB polling
+        # when Redis is unavailable (single-replica dev) so the feature works with no infra.
+        if decision_bus.has_redis():
+            async for message in decision_bus.subscribe_decisions(tenant_id):
+                if await request.is_disconnected() or time.monotonic() - started >= max_seconds:
+                    break
+                if message:
+                    yield _sse_decision_frame(message)
+                else:
+                    yield ": ping\n\n"
+            return
         while time.monotonic() - started < max_seconds:
             if await request.is_disconnected():
                 break
