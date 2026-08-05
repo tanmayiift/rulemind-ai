@@ -9,6 +9,8 @@
 use regex::Regex;
 use serde_json::Value;
 
+pub mod variables;
+
 fn value_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -199,6 +201,9 @@ use std::collections::HashMap;
 pub struct CompiledBundle {
     policy: Value,
     rules: HashMap<String, Value>,
+    /// Compiled variables in declared order (register-machine instructions). Empty when the
+    /// bundle only carries pre-computed variables and the caller passes them directly.
+    compiled_variables: Vec<Value>,
 }
 
 impl CompiledBundle {
@@ -211,7 +216,27 @@ impl CompiledBundle {
                 rules.insert(key.clone(), value.clone());
             }
         }
-        Ok(Self { policy, rules })
+        let compiled_variables = bundle
+            .get("variables")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(Self {
+            policy,
+            rules,
+            compiled_variables,
+        })
+    }
+
+    /// Compute the bundle's compiled variables from a raw payload, then decide — the fully
+    /// self-contained hot path (payload in, outcome out) matching the SDK evaluators. When the
+    /// bundle has no compiled variables, the payload is used directly as the variable map.
+    pub fn decide_from_payload(&self, payload: &Value) -> String {
+        if self.compiled_variables.is_empty() {
+            return self.decide(payload);
+        }
+        let variables = variables::compute_variables(&self.compiled_variables, payload);
+        self.decide(&variables)
     }
 
     /// Run the policy's rule/outcome steps over a variable map; returns the outcome.
