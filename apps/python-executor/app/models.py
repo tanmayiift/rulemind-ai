@@ -259,6 +259,9 @@ class Promotion(Base):
     to_status: Mapped[str] = mapped_column(String(16), nullable=False)
     promoted_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The entity's decision definition at promotion time — lets us diff what actually changed
+    # between successive promotions (draft-vs-live), and record that diff on the approval.
+    snapshot_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
