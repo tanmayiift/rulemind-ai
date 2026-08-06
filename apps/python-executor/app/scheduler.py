@@ -102,6 +102,68 @@ async def _scheduled_archive_decisions(storage: Storage) -> Dict[str, Any]:
     return await asyncio.to_thread(archive_old_decisions, storage)
 
 
+def check_slos(storage: Storage) -> Dict[str, Any]:
+    """Per tenant, evaluate the SLO + outcome-drift guard, publish Prometheus gauges, and
+    record a durable ``slo_breach`` audit event when the active breach set changes (so an
+    on-call trail exists without re-alerting every interval on the same breach)."""
+    from . import slo
+
+    checked = 0
+    breached = 0
+    for tenant in storage.list_tenants():
+        tenant_id = tenant.get("id")
+        if not tenant_id:
+            continue
+        try:
+            report = slo.evaluate_slo(storage, tenant_id=tenant_id)
+        except Exception as exc:  # one tenant must not stop the sweep
+            logger.warning("slo: tenant %s evaluation failed: %s", tenant_id, exc)
+            continue
+        checked += 1
+        slo.record_prometheus(tenant_id, report)
+        if not report.get("enabled"):
+            continue
+        active_types = sorted(b.get("type") for b in report.get("breaches", []))
+        # Only write a new event when the breach set transitions (fires on new breaches and
+        # on recovery), so the audit trail is signal, not one row per interval.
+        try:
+            prior = storage.list_audit_events(tenant_id=tenant_id, event_type="slo_breach")
+            last_types = sorted((prior[0].get("metadata", {}) or {}).get("breach_types", [])) if prior else []
+        except Exception:
+            last_types = []
+        if active_types == last_types:
+            if active_types:
+                breached += 1
+            continue
+        if active_types:
+            breached += 1
+        detail = ("SLO breached: " + ", ".join(active_types)) if active_types else "SLO recovered"
+        try:
+            storage.add_audit_event({
+                "event_type": "slo_breach",
+                "entity_type": "slo",
+                "detail": detail,
+                "metadata": {
+                    "breach_types": active_types,
+                    "breaches": report.get("breaches", []),
+                    "metrics": report.get("metrics", {}),
+                    "drift": report.get("drift", {}),
+                    "healthy": report.get("healthy", True),
+                },
+            }, tenant_id=tenant_id)
+        except Exception as exc:  # audit write failure must not stop the sweep
+            logger.warning("slo: tenant %s audit write failed: %s", tenant_id, exc)
+        if active_types:
+            logger.warning("slo: tenant %s %s", tenant_id, detail)
+    return {"checked": checked, "breached": breached}
+
+
+async def _scheduled_slo_check(storage: Storage) -> Dict[str, Any]:
+    if not _IS_LEADER:
+        return {"skipped": "not_leader"}
+    return await asyncio.to_thread(check_slos, storage)
+
+
 async def fetch_batch_items(payload_source: Dict[str, Any], tenant_id: str) -> List[Dict[str, Any]]:
     source_type = (payload_source or {}).get("type", "static_json")
     if source_type == "static_json":
@@ -347,4 +409,7 @@ def init_scheduler(storage: Storage) -> None:
     scheduler.add_job(_scheduled_archive_decisions, "interval",
                       hours=int(os.getenv("DECISION_ARCHIVE_INTERVAL_HOURS", "24")),
                       id="decision-archive", args=[storage], replace_existing=True)
+    scheduler.add_job(_scheduled_slo_check, "interval",
+                      minutes=int(os.getenv("SLO_CHECK_INTERVAL_MINUTES", "15")),
+                      id="slo-check", args=[storage], replace_existing=True)
     scheduler.start()
