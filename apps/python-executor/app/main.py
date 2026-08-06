@@ -51,9 +51,9 @@ from .runtime import is_local_dev, redis_client
 from .security_config import verify_production_secrets
 from .session_cookie import clear_session_cookies, session_token_from_request, set_session_cookies
 from .sandbox import execute_variable
-from .scheduler import execute_cron_policy, init_scheduler
+from .scheduler import init_scheduler
 from .storage import Storage, _parse_client_datetime
-from .webhooks import WebhookAuthenticationError, trigger_webhook
+from .webhooks import trigger_webhook  # re-exported: app/routers/operations.py webhook_trigger reads main.trigger_webhook live (patch target)
 
 
 def parse_origins() -> List[str]:
@@ -3194,197 +3194,6 @@ def sdk_decisions_batch(request: SdkDecisionsBatchRequest) -> Dict[str, Any]:
     }
 
 
-@app.get("/api/v1/webhooks")
-def list_webhooks() -> List[Dict[str, Any]]:
-    return storage.list_webhooks()
-
-
-@app.get("/api/v1/webhooks/{webhook_id}")
-def get_webhook(webhook_id: str) -> Dict[str, Any]:
-    webhook = storage.get_webhook(webhook_id)
-    if not webhook:
-        raise HTTPException(status_code=404, detail="Webhook not found.")
-    return webhook
-
-
-@app.post("/api/v1/webhooks")
-def create_webhook(request: WebhookUpsertRequest) -> Dict[str, Any]:
-    import secrets as _secrets
-
-    endpoint_id = "wh_" + uuid.uuid4().hex[:12]
-    # Always require a signing secret so an inbound webhook is HMAC-authenticated —
-    # auto-generate one when the caller doesn't supply it (returned once here).
-    secret = request.secret or _secrets.token_urlsafe(32)
-    created = storage.create_webhook(
-        {
-            "id": endpoint_id,
-            "policy_id": request.policy_id,
-            "endpoint_path": "/api/v1/webhooks/{0}".format(endpoint_id),
-            "is_active": request.is_active,
-            "secret_hash": secret,
-            "payload_mapping": request.payload_mapping,
-        }
-    )
-    created["secret"] = secret  # shown once — the caller signs requests with it (x-webhook-signature)
-    return created
-
-
-@app.put("/api/v1/webhooks/{webhook_id}")
-def update_webhook(webhook_id: str, request: WebhookUpsertRequest) -> Dict[str, Any]:
-    updated = storage.update_webhook(
-        webhook_id,
-        {
-            "policy_id": request.policy_id,
-            "is_active": request.is_active,
-            "secret_hash": request.secret,
-            "payload_mapping": request.payload_mapping,
-        },
-    )
-    if not updated:
-        raise HTTPException(status_code=404, detail="Webhook not found.")
-    return updated
-
-
-@app.delete("/api/v1/webhooks/{webhook_id}")
-def delete_webhook(webhook_id: str) -> Dict[str, bool]:
-    updated = storage.update_webhook(webhook_id, {"is_active": False})
-    if not updated:
-        raise HTTPException(status_code=404, detail="Webhook not found.")
-    return {"deactivated": True}
-
-
-@app.get("/api/v1/webhooks/{webhook_id}/test")
-def test_webhook(webhook_id: str) -> Dict[str, str]:
-    webhook = storage.get_webhook(webhook_id)
-    if not webhook:
-        raise HTTPException(status_code=404, detail="Webhook not found.")
-    return {
-        "url": webhook["endpoint_path"],
-        "curl": "curl -X POST http://localhost:8080{0} -H 'Content-Type: application/json' -d '{{}}'".format(webhook["endpoint_path"]),
-    }
-
-
-@app.post("/api/v1/webhooks/{webhook_id}")
-async def webhook_trigger(webhook_id: str, request: Request) -> Dict[str, Any]:
-    try:
-        body = await request.json()
-    except Exception as error:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from error
-    try:
-        return await trigger_webhook(storage, webhook_id, body, signature=request.headers.get("x-webhook-signature"))
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except WebhookAuthenticationError as error:
-        raise HTTPException(status_code=401, detail=str(error)) from error
-    except PermissionError as error:
-        storage.add_error_event(
-            {
-                "tenant_id": active_tenant_id(),
-                "scope": "webhook",
-                "entity_type": "workflow_execution",
-                "entity_id": webhook_id,
-                "stage": "execute",
-                "message": str(error),
-                "details": {"trigger": "webhook"},
-            },
-            tenant_id=active_tenant_id(),
-        )
-        raise HTTPException(status_code=500, detail="Webhook execution failed.") from error
-
-
-@app.get("/api/v1/schedules")
-def list_schedules() -> List[Dict[str, Any]]:
-    return storage.list_schedules()
-
-
-@app.get("/api/v1/schedules/{schedule_id}")
-def get_schedule(schedule_id: str) -> Dict[str, Any]:
-    schedule = storage.get_schedule(schedule_id)
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found.")
-    return schedule
-
-
-@app.post("/api/v1/schedules")
-def create_schedule(request: ScheduleUpsertRequest) -> Dict[str, Any]:
-    return storage.create_schedule(request.model_dump())
-
-
-@app.put("/api/v1/schedules/{schedule_id}")
-def update_schedule(schedule_id: str, request: ScheduleUpsertRequest) -> Dict[str, Any]:
-    updated = storage.update_schedule(schedule_id, request.model_dump())
-    if not updated:
-        raise HTTPException(status_code=404, detail="Schedule not found.")
-    return updated
-
-
-@app.delete("/api/v1/schedules/{schedule_id}")
-def delete_schedule(schedule_id: str) -> Dict[str, bool]:
-    updated = storage.update_schedule(schedule_id, {"is_active": False})
-    if not updated:
-        raise HTTPException(status_code=404, detail="Schedule not found.")
-    return {"deactivated": True}
-
-
-@app.post("/api/v1/schedules/{schedule_id}/run-now")
-def run_schedule_now(schedule_id: str) -> Dict[str, Any]:
-    schedule = storage.get_schedule(schedule_id)
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found.")
-    result = asyncio.run(execute_cron_policy(storage, schedule))
-    return result
-
-
-@app.get("/api/v1/schedules/{schedule_id}/history")
-def schedule_history(schedule_id: str) -> List[Dict[str, Any]]:
-    return [
-        event
-        for event in storage.list_audit_events(event_type="cron_executed")
-        if event.get("metadata", {}).get("schedule_id") == schedule_id
-    ]
-
-
-@app.get("/api/v1/reviews")
-def list_reviews(queue: Optional[str] = Query(default=None), status: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
-    return storage.list_review_tasks(queue=queue, status=status)
-
-
-@app.get("/api/v1/reviews/stats")
-def review_stats() -> Dict[str, Any]:
-    tasks = storage.list_review_tasks()
-    pending = [task for task in tasks if task["status"] == "pending"]
-    reviewed = [task for task in tasks if task["status"] in {"approved", "rejected", "timed_out"}]
-    return {"pending": len(pending), "reviewed": len(reviewed), "queues": {queue: len([task for task in tasks if task["queue"] == queue]) for queue in {task["queue"] for task in tasks}}}
-
-
-@app.get("/api/v1/reviews/{task_id}")
-def get_review(task_id: str) -> Dict[str, Any]:
-    task = storage.get_review_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Review task not found.")
-    return task
-
-
-@app.post("/api/v1/reviews/{task_id}/decide")
-def decide_review(task_id: str, request: ReviewDecisionRequest) -> Dict[str, Any]:
-    try:
-        result = submit_review_decision(storage, task_id, request.response, request.reviewer_id, request.decision)
-    except ValueError as error:
-        detail = str(error)
-        status_code = 422 if detail.startswith("Missing required field") else 404
-        raise HTTPException(status_code=status_code, detail=detail) from error
-    return {"executionId": result["execution"]["execution_id"], "outcome": result["execution"]["outcome"], "status": result["execution"]["status"]}
-
-
-@app.post("/api/v1/reviews/{task_id}/escalate")
-def escalate_review(task_id: str, request: ReviewDecisionRequest) -> Dict[str, Any]:
-    task = storage.get_review_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Review task not found.")
-    updated = storage.update_review_task(task_id, {"status": "escalated", "reviewer_response": request.response, "reviewed_by": request.reviewer_id})
-    return updated or task
-
-
 @app.post("/api/v1/executions/{execution_id}/resume")
 def resume_execution(execution_id: str) -> Dict[str, Any]:
     execution = storage.get_workflow_execution(execution_id)
@@ -3787,12 +3596,14 @@ from .routers import rules as _rules  # noqa: E402
 from .routers.rules import router as rules_router  # noqa: E402
 from .routers import policies as _policies  # noqa: E402
 from .routers.policies import router as policies_router  # noqa: E402
+from .routers.operations import router as operations_router  # noqa: E402
 
 app.include_router(governance_router)
 app.include_router(insights_router)
 app.include_router(authoring_router)
 app.include_router(rules_router)
 app.include_router(policies_router)
+app.include_router(operations_router)
 
 # Back-compat: a few tests call these handlers as module attributes (app.main.audit_errors()).
 # Re-export the moved handlers so those direct references keep resolving after the extraction.
