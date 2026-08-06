@@ -15,7 +15,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import JWT_COOKIE_NAME, bcrypt_verify, create_admin_jwt, decode_admin_jwt
-from .analytics import decision_analytics, experiment_analytics, latency_analytics, sdk_analytics
+from .analytics import experiment_analytics
 from .compiler import (
     BundleCompilationError,
     NoProductionAssetsError,
@@ -2856,23 +2856,6 @@ async def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
     return {"decision_id": request.decision_id, "outcome": decision.get("outcome"), **result}
 
 
-class RejectionDriversRequest(BaseModel):
-    policy_id: Optional[str] = None
-    limit: int = 500
-
-
-@app.post("/api/v1/analytics/rejection-drivers")
-def analytics_rejection_drivers(request: RejectionDriversRequest) -> Dict[str, Any]:
-    """Which predictor/condition drives the most rejections — pure compute over the
-    decision log (no LLM, no key). Optionally scoped to one policy."""
-    from .analytics import rejection_drivers
-
-    decisions = storage.list_decisions(limit=max(1, min(request.limit, 1000)))
-    if request.policy_id:
-        decisions = [d for d in decisions if d.get("policy_id") == request.policy_id]
-    return rejection_drivers(decisions)
-
-
 # ── Onboarding journey (self-serve: details → dev key → verify → prod key) ─────
 
 class OnboardingSignupRequest(BaseModel):
@@ -3342,28 +3325,6 @@ def import_config(request: ImportRequest) -> Dict[str, Any]:
         raise
 
 
-@app.get("/api/v1/audit/decisions")
-def audit_decisions(limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
-    # Paginated — the decisions table is unbounded in production; an unpaged fetch
-    # of tens of thousands of full-context rows would time out and exhaust memory.
-    return storage.list_decisions(limit=limit, offset=offset)
-
-
-@app.get("/api/v1/audit/decisions/count")
-def audit_decisions_count() -> Dict[str, int]:
-    return {"total": storage.count_decisions()}
-
-
-@app.get("/api/v1/audit/promotions")
-def audit_promotions() -> List[Dict[str, Any]]:
-    return storage.list_promotions()
-
-
-@app.get("/api/v1/audit/errors")
-def audit_errors(limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
-    return storage.list_error_events(limit=limit, offset=offset)
-
-
 @app.get("/api/v1/settings")
 def get_settings() -> Dict[str, Any]:
     return storage.get_settings()
@@ -3456,15 +3417,6 @@ def delete_experiment(experiment_id: str) -> Dict[str, bool]:
         raise HTTPException(status_code=409, detail="Only draft experiments can be deleted.")
     storage.delete_experiment(experiment_id)
     return {"deleted": True}
-
-
-@app.get("/api/v1/experiments/{experiment_id}/results")
-@app.get("/api/v1/analytics/experiments/{experiment_id}")
-def experiment_results(experiment_id: str) -> Dict[str, Any]:
-    try:
-        return experiment_analytics(storage, active_tenant_id(), experiment_id)
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.post("/api/v1/experiments/{experiment_id}/promote")
@@ -3616,21 +3568,6 @@ async def stream_decisions(request: Request) -> StreamingResponse:
             "X-Accel-Buffering": "no",  # tell nginx not to buffer the stream
         },
     )
-
-
-@app.get("/api/v1/analytics/decisions")
-def analytics_decisions() -> Dict[str, Any]:
-    return decision_analytics(storage, active_tenant_id())
-
-
-@app.get("/api/v1/analytics/latency")
-def analytics_latency() -> Dict[str, Any]:
-    return latency_analytics(storage, active_tenant_id())
-
-
-@app.get("/api/v1/analytics/sdk")
-def analytics_sdk() -> Dict[str, Any]:
-    return sdk_analytics(storage, active_tenant_id())
 
 
 @app.get("/sdk/v1/experience-manifest")
@@ -4553,5 +4490,15 @@ def list_excel_functions() -> Dict[str, Any]:
 # call time (see app/routers/__init__.py) so they honour the test harness's
 # per-test storage swaps, exactly as these in-line endpoints did.
 from .routers.governance import router as governance_router  # noqa: E402
+from .routers import insights as _insights  # noqa: E402
+from .routers.insights import router as insights_router  # noqa: E402
 
 app.include_router(governance_router)
+app.include_router(insights_router)
+
+# Back-compat: a few tests call these handlers as module attributes (app.main.audit_errors()).
+# Re-export the moved handlers so those direct references keep resolving after the extraction.
+audit_decisions = _insights.audit_decisions
+audit_decisions_count = _insights.audit_decisions_count
+audit_promotions = _insights.audit_promotions
+audit_errors = _insights.audit_errors
