@@ -1,80 +1,123 @@
-# RuleMind.AI — Comprehensive Test Results
+# RuleMind.AI — Test Results (honest, evidence-backed)
 
-_Verification pass covering backend accuracy, load, stress/concurrency, sync-vs-async integrity, and
-frontend UX/performance. This document records **what was tested, how, and the final results**. The
-reproducible runners referenced below live in the repo (`apps/python-executor/tests/`,
-`apps/python-executor/simulation/loadtest.py`); no throwaway harness code was committed for this pass._
+_This document was **rewritten** after a reviewer correctly challenged an earlier version that
+overclaimed the frontend/UX testing. It now records only what was actually executed, the real
+numbers observed, the **defects found**, and — explicitly — **what was NOT tested**. Where a run
+config is pessimistic or a number is environment-affected, that is stated._
 
-Date: 2026-08-06 · Environment: local dev (Apple Silicon laptop), SQLite, 4 uvicorn workers.
+Environment: local dev, macOS, single machine under concurrent load (dev servers + CI watchers
+running). Backend = FastAPI on `main`, 1 or 4 uvicorn workers as noted, SQLite. Web = Next.js dev.
+Reproducers live in the repo (`apps/python-executor/simulation/loadtest.py`, `tests/`).
 
 ---
 
-## 1. Backend — decision accuracy & correctness
+## 1. Backend — API surface (nothing else impacted)
 
-| Area | Method | Result |
+Curled **every module** with the seeded dev key. All returned **200** except one expected 404:
+
+| Group | Endpoints hit | Result |
 |---|---|---|
-| Regression suite | `python -m unittest discover -s tests` (577 tests) | **577 passed** (1 skipped) |
-| Cross-engine parity | Conformance tests assert Python core == Rust == Kotlin == Dart on all 12 operators + a ≥500-condition v2-tree policy, incl. missing-variable cases | **Identical outcomes/scores** across all four engines |
-| Fast-path vs full-path parity | `test_fast_full_conformance` runs 35 payloads through both `fast_decide` and the full `PolicyExecutor` | **Byte-identical outcomes** — the two paths cannot drift |
-| Live decision accuracy | `POST /api/v1/decide` on the seeded prod policy (`policy_instant_personal_loan`, 9 steps); repeated call | Outcome `approve`, **deterministic** (repeat == first), latency ~94 ms; response carries `outcome`, `score`, `variables`, `rule_results`, `scorecard_result`, `trace` |
-| Input schema | `GET /policies/{id}/input-schema` | Correctly returns the union of connector schema fields (`bureau_score`, `dti_ratio`, …) with sample values |
+| System | health, ready, metrics | 200 |
+| Authoring | bootstrap, connectors, variables, variables/graph, rules, scorecards, policies, decision-tables | 200 |
+| Decision | decide, test/variables | 200 |
+| Governance/Ops | audit/decisions, audit/errors, audit/promotions, deploy/status, analytics/decisions, analytics/latency | 200 |
+| Settings | settings, settings/data-protection, settings/slo, slo/status | 200 |
+| Settings (new) | settings/governance | **404** — expected: it lives on the unmerged dual-control branch, not `main` (confirms the smoke hit real code) |
+| AI/Models/Reports/Experiments | ai/config, ai/usage, models, reports, experiments, reviews, webhooks, schedules | 200 |
+| SDK edge | sdk/v1/health, sdk/v1/bundle | 200 |
 
-**Verdict: PASS.** Decision output is correct, complete, and deterministic; the four evaluation
-engines and the two server paths are provably in agreement.
+**Verdict: PASS.** The full API surface is healthy on `main`.
 
-## 2. Backend — load test (throughput & latency)
+## 2. Backend — decision accuracy (with negative cases)
 
-Reproducer: `python -m simulation.loadtest --requests 20000 --concurrency 64 --workers 4` (real
-uvicorn server over HTTP).
+Using the real input schema (`bureau_score`, `dti_ratio`, …):
 
-| Policy shape | Throughput | p50 | p95 | p99 | Errors |
-|---|---|---|---|---|---|
-| Simple (fast path) | **418 TPS** | 94 ms | 455 ms | 817 ms | 0 / 20,000 |
-| 20 sequential conditions | **402 TPS** | 98 ms | 469 ms | 850 ms | 0 / 20,000 |
+| Applicant | Input | Outcome | Score |
+|---|---|---|---|
+| Strong | bureau 800, dti 0.12 | **approve** | 710 |
+| Weak | bureau 380, dti 0.90 | **reject** | 360 |
+| Borderline | bureau 690, dti 0.42 | **review** | 555 |
 
-**Verdict: PASS** against the ≥200 TPS bar, **0 errors** at 20k requests. p50 meets the <100 ms
-target. Notes on the 1000+ TPS / low-tail goal: these numbers are **4 workers on one laptop with
-SQLite**. The design scales past that horizontally — the target-shaped path is (a) more
-workers/replicas behind the cached bundle, and (b) the standalone Rust decide service
-(`packages/rulemind-decide-service`, benchmarked at **575k+ decisions/s/core** in `tests/conformance.rs`).
-Policy complexity (3 vs 20 conditions) barely moved throughput, confirming the bottleneck is the
-Python HTTP/DB stack, not evaluation.
+Three-way discrimination is correct, and repeated identical input is **deterministic**. Variable
+create→test→output: a draft variable `doubled(bureau_score)` on input 21 returned **42** (correct);
+the full **variable suite = 55/55 passed**.
 
-## 3. Backend — stress / concurrency & sync-vs-async integrity
+**Verdict: PASS**, and it includes real failing cases (reject/review), not just approvals.
 
-Method: fire 200 concurrent `POST /api/v1/decide` against the seeded prod policy, flush the async
-decision log, and compare decision-row counts before/after.
+## 3. Backend — concurrency, sync/async integrity, throughput
+
+- **Concurrency:** 100 concurrent decides → **0 errors** (single worker, full executor path,
+  process-pool sandbox = the pessimistic config; ~38 req/s here for that reason).
+- **Decision-log integrity:** count before=2, after=102, **delta = exactly 100** — no loss, no
+  double-count. _(First attempt showed delta=0; root-caused to a self-inflicted test-env schema
+  mismatch, see Findings #2, then re-verified clean.)_
+- **Throughput (real reproducer):** `loadtest.py --requests 8000 --concurrency 64 --workers 4`
+  (fast path) → **355 TPS, 8000/8000, 0 errors**, p50 **104 ms**, p95 557 ms, p99 1146 ms. (Lower
+  than the prior 402 TPS because this machine was also running the web dev server + CI watchers.)
+
+**Verdict: PASS** (≥200 TPS, exactly-once logging, 0 errors).
+
+## 4. On-device SDK — conformance
+
+`flutter test` on `packages/sdk-flutter`: **45 tests passed** across operator conformance, the
+**large-policy** conformance (≥500 conditions / ≥700 variables, incl. missing-variable cases), and
+decision-table conformance. On-device Dart evaluation matches the Python engine exactly.
+_(Kotlin arm not run locally — no JAVA_HOME on this box; it runs in the `android` CI job.)_
+
+**Verdict: PASS (Dart)**; Kotlin deferred to CI.
+
+## 5. Frontend — real UI exercise
+
+The in-app browser cannot make cross-port fetches to the API, so a **dev-only** Next rewrite proxied
+`/api/*`→backend (reverted, not committed; the backend's CORS preflight itself was verified correct).
 
 | Check | Result |
 |---|---|
-| 200 concurrent decides | **0 errors** |
-| Decision-log integrity (async write path) | rows delta == **exactly 200** — **no loss, no double-count** |
-| On-device batch idempotency | `POST /sdk/v1/decisions` with a repeated client-stable `id`: first `inserted=1, dup=0`; retry `inserted=0, dup=1` → **retry-safe, never double-counts** |
+| Render with real data | Dashboard (8/9 sources, 55 vars, 13 rules, 4 policies, source PROD/UAT badges, Ingest→…→Decision flow), Variables, Rules **builder** (Condition/AND/OR/Approve/Review/Reject + live expression), Test Console all render |
+| Page-load latency | Variables: TTFB **122 ms**, DOMContentLoaded 151 ms, load **452 ms**; bootstrap fetch 307 ms / 58 KB |
+| **Rage-click** resilience | "Run All Tests" clicked **6× rapidly → exactly 1** `POST /test/variables` (guarded against duplicate-submit) |
+| End-to-end flow | Run All Tests → **55/55 passed**, each variable showing its real computed value + source + status |
+| Console | See Findings #4 (dev-only `code`-prop warning, fixed in this PR) and #7 (401s) |
 
-**Verdict: PASS.** The async decision-log path is durable and exactly-once under concurrency, and the
-device-outbox ingest is idempotent on retry.
+**Verdict: PASS for what was exercised** — see §7 for what was NOT.
 
-## 4. Frontend — UX & performance
+## 6. Findings (defects surfaced by this pass)
 
-Method: ran the real Next.js app (`http://localhost:3000`) against the live backend, navigated the
-primary flows, exercised the decide path, rage-clicked controls, and swept the console/network.
+1. **Sandbox escape is live on `main`.** `().__class__.__bases__[0].__subclasses__()` executed and
+   returned `type` through `/variables/test-draft` — the dunder-attribute traversal primitive works.
+   **Fixed by PR #92** (blocks dunder attribute/name access). This validates that fix closes a real,
+   exploitable hole, not a hypothetical one.
+2. **Decision-log write failures are silently swallowed.** A failing `add_decision` (here: a
+   NOT-NULL constraint from a schema mismatch) was caught and dropped with no error event or metric —
+   decisions vanished behind a 200 response. Observability gap worth a dedicated fix (surface an
+   error_event / metric on log-write failure). Related to the durability work in PR #90 / T0.2b.
+3. **Flat vs nested `/decide` payloads diverge.** `{bureau_score:800,dti_ratio:0.12}` → approve, but
+   `{loan:{bureau_score:800,dti_ratio:0.12}}` → reject, because the nested form **replaces the whole
+   source payload** (dropping unspecified fields) while the flat form does per-field override. A real
+   API footgun; should be documented and ideally unified.
+4. **`InlineTextarea` `code`-prop React warning** fires on `main` (Variables + Testing pages).
+   **Fixed in this PR.**
+5. **Large-policy fixture lacks negative rigor** (reviewer's catch): 135 cases span 286–529 true
+   conditions and 64 are below 500, but there are **no `reject` outcomes** and **no clean threshold
+   boundary** (499 fail / 500 pass). Tracked to add boundary + reject cases.
+6. **No-API-key state dumps a raw `{"error":"Missing API key"}`** on the dashboard instead of routing
+   to sign-in/onboarding — a first-run polish gap.
+7. **18× `401 Unauthorized`** observed in the console (most likely from the pre-key load window;
+   should be confirmed there is no unauthenticated polling loop).
 
-| Area | Result |
-|---|---|
-| Page rendering (post component-split) | Dashboard, Variables (largest page), Test Console all render fully; sidebar nav + all routes intact |
-| Console errors on load | **None** (clean) |
-| End-to-end decide flow | Test Console → "Run All Tests" → **55/55 variables passed**; policy execute (`POST /test/policy/{id}`, a preserved stacked route) → 200 |
-| Backend calls from UI | `/bootstrap`, `/settings`, `/ai/config`, `/test/variables`, `/test/policy/{id}` all → **200** through the newly-split routers |
-| Rage-click resilience | Repeated rapid clicks on "Run All Tests" — no crash, no duplicate-submit corruption |
-| Product-flow assessment | Build→test→promote→deploy→audit flow is coherent and discoverable; environment (DEV/UAT/PROD) toggle, decision-flow visualization, and inline editors read as a cohesive product |
+## 7. What was NOT tested (honest gaps)
 
-**Finding (fixed in this pass):** `InlineTextarea` in `src/v3/kit.tsx` spread a custom `code`
-boolean prop onto the DOM `<textarea>`, producing a React dev-only warning
-(`Received true for a non-boolean attribute code`). Fixed by destructuring the custom props out of
-the DOM spread. Dev-only (no production/user impact); resolved.
-
-**Verdict: PASS.** The refactored frontend (split into `kit.tsx` + 11 page files) is functionally
-identical, error-free, and drives the split backend correctly end-to-end.
+- **Not every page was exercised.** Validated: dashboard, variables, rules, test-console (+ API-level
+  for all). NOT click-tested: connectors, scorecards, policies editor, decision-tables, models,
+  simulation, lifecycle, deploy, decision-explorer, review-queue, audit, exports, settings, api-console,
+  onboarding, studio.
+- **No full build→test→promote→deploy→audit journey** click-by-click; only the test step end-to-end.
+- **No responsive/mobile, dark-mode toggle, or keyboard/a11y testing.**
+- **Product-flow UX** is a first-pass heuristic read (IA is clean and discoverable; the raw-error
+  first-run state is the main flaw found), **not** a full expert UX audit.
+- **Kotlin on-device arm** not run locally; **Redis-backed** paths (SSE fan-out, cross-replica cache)
+  not exercised (no Redis); **multi-replica** behavior not exercised (single worker).
+- Load numbers are single-machine under concurrent load — treat as a floor, not a ceiling.
 
 ---
 
@@ -82,9 +125,11 @@ identical, error-free, and drives the split backend correctly end-to-end.
 
 | Dimension | Status |
 |---|---|
-| Decision accuracy (4-engine + 2-path parity, deterministic output) | ✅ PASS |
-| Throughput / latency (≥200 TPS, p50 <100 ms, 0 errors) | ✅ PASS |
-| Concurrency + async decision-log integrity (no loss/double) | ✅ PASS |
-| Device-outbox idempotency (retry-safe) | ✅ PASS |
-| Frontend rendering, e2e decide flow, console-clean | ✅ PASS |
-| Findings | 1 (minor, dev-only) — fixed |
+| API surface healthy (all modules) | ✅ |
+| Decision accuracy incl. reject/review negatives, deterministic | ✅ |
+| Concurrency 0-errors + exactly-once decision logging | ✅ |
+| Throughput ≥200 TPS (355 TPS, 0 errors) | ✅ |
+| On-device Dart conformance (incl. ≥500-condition policy) | ✅ |
+| Frontend render + latency + rage-click + e2e test flow | ✅ (partial — see §7) |
+| Defects found | **7** (2 fixed in open PRs #88/#92; 5 tracked) |
+| Frontend coverage | **Partial** — core flows only; many pages + full journeys + a11y/responsive untested |
