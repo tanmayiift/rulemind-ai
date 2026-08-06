@@ -67,6 +67,36 @@ def update_data_protection(request: Request, body: DataProtectionRequest) -> Dic
     return _data_protection_view(tenant_id)
 
 
+# ── Change-management governance (dual control) ────────────────────────────
+class GovernanceRequest(BaseModel):
+    require_dual_control: Optional[bool] = None
+
+
+def _governance_view(tenant_id: str) -> Dict[str, Any]:
+    return {"require_dual_control": main.storage.dual_control_enabled(tenant_id)}
+
+
+@router.get("/api/v1/settings/governance")
+def get_governance(request: Request) -> Dict[str, Any]:
+    """Workspace change-management posture. `require_dual_control` = two-person control (maker !=
+    checker) is required to promote any asset to production."""
+    return _governance_view(main.active_tenant_id(request))
+
+
+@router.put("/api/v1/settings/governance")
+def update_governance(request: Request, body: GovernanceRequest) -> Dict[str, Any]:
+    """Toggle two-person control for production promotions. Admin-only (/settings requires
+    manage_access). When on, promoting an asset to prod must be done by a different member than the
+    one who promoted it to UAT."""
+    tenant_id = main.active_tenant_id(request)
+    if body.require_dual_control is not None:
+        settings = main.storage.get_settings(tenant_id=tenant_id)
+        engine = dict(settings.get("engine_config", {}) or {})
+        engine["require_dual_control"] = bool(body.require_dual_control)
+        main.storage.update_settings({"engine_config": engine}, tenant_id=tenant_id)
+    return _governance_view(tenant_id)
+
+
 # ── Service-level objectives + drift ───────────────────────────────────────
 class SloConfigRequest(BaseModel):
     enabled: Optional[bool] = None
