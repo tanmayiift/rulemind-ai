@@ -3801,6 +3801,26 @@ function summarizePolicyDiff(diff: PolicyDiff): string {
     : "No decision-logic changes since the last promotion.";
 }
 
+type PolicyBacktest = {
+  policy_id: string;
+  bundle_version: number | null;
+  sample: number;
+  changed: number;
+  change_rate_pct: number;
+  errors: number;
+  transition_matrix: { from: string; to: string; count: number }[];
+};
+
+function summarizeBacktest(bt: PolicyBacktest): string {
+  if (!bt.sample) return "Backtest: no recent decisions for this policy to measure against.";
+  const flips = bt.transition_matrix
+    .filter((t) => t.from !== t.to)
+    .slice(0, 4)
+    .map((t) => t.from + "→" + t.to + " (" + t.count + ")");
+  const head = "Backtest vs " + bt.sample + " recent decision(s): " + bt.changed + " would change (" + bt.change_rate_pct + "%)";
+  return flips.length ? head + " — " + flips.join(", ") + "." : head + ".";
+}
+
 function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
   const { apiBaseUrl, apiKey, isMobile } = useRuleMindStore();
@@ -3818,6 +3838,7 @@ function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNoti
       // For a policy, show exactly what decision logic changed since the last promotion before
       // shipping it — and record that summary on the approval.
       let changeSummary = "";
+      let impactSummary = "";
       if (entityType === "policy") {
         try {
           const diff = await apiJson<PolicyDiff>(apiBaseUrl, "/api/v1/policies/" + entityId + "/diff", {}, apiKey);
@@ -3825,9 +3846,17 @@ function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNoti
         } catch {
           /* diff is best-effort context; fall through to a plain confirm */
         }
+        try {
+          // Measured impact of the current bundle on this policy's real recent traffic.
+          const bt = await apiJson<PolicyBacktest>(apiBaseUrl, "/api/v1/policies/" + entityId + "/backtest?sample=200", { method: "POST" }, apiKey);
+          impactSummary = summarizeBacktest(bt);
+        } catch {
+          /* backtest is best-effort context */
+        }
       }
-      const prompt = changeSummary
-        ? changeSummary + "\n\nPromote this policy to the next environment?"
+      const context = [changeSummary, impactSummary].filter(Boolean).join("\n");
+      const prompt = context
+        ? context + "\n\nPromote this policy to the next environment?"
         : "Promote this item to the next environment?";
       if (!window.confirm(prompt)) {
         return;

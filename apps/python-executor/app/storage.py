@@ -1356,6 +1356,22 @@ class Storage:
             row = session.scalar(select(Decision).where(Decision.tenant_id == resolved, Decision.id == decision_id))
             return self._decision_to_dict(row) if row else None
 
+    def sample_policy_decisions(self, policy_id: str, tenant_id: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
+        """The most recent full decision rows for one policy (payload + computed variables included,
+        decrypted) — backs policy backtesting, which re-runs a candidate bundle over real traffic."""
+        from . import decision_log
+        decision_log.flush()
+        resolved = self._tenant_id(tenant_id)
+        capped = max(1, min(int(limit), 2000))
+        with self.connect() as session:
+            rows = session.scalars(
+                select(Decision)
+                .where(Decision.tenant_id == resolved, Decision.policy_id == policy_id)
+                .order_by(desc(Decision.created_at))
+                .limit(capped)
+            ).all()
+            return [self._decision_to_dict(row) for row in rows]
+
     def count_decisions(self, tenant_id: Optional[str] = None) -> int:
         from . import decision_log
         decision_log.flush()
