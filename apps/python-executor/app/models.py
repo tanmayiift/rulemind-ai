@@ -229,9 +229,15 @@ class Policy(Base, TimestampMixin):
 
 class Decision(Base):
     __tablename__ = "decisions"
+    # A device-supplied client id is unique only *within a tenant* (two tenants may independently
+    # mint the same id). The primary key is a server-generated id; dedupe of on-device decisions is
+    # by (tenant_id, client_id), so an at-least-once retry never double-counts and one tenant's id can
+    # never collide with another's. client_id is NULL for server/API decisions (many NULLs allowed).
+    __table_args__ = (UniqueConstraint("tenant_id", "client_id", name="uq_decisions_tenant_client"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
     tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    client_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     policy_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     payload_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     payload_preview: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
@@ -245,7 +251,14 @@ class Decision(Base):
     sdk_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     experiment_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     experiment_variant: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # On-device sync lineage: the device that produced the decision, and the bundle version/hash it
+    # ran against (so an offline decision made on an old bundle is traceable). Null for API decisions.
+    device_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    bundle_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # created_at is the DECISION time (device clock for on-device decisions — subject to drift);
+    # received_at is the trustworthy SERVER receipt time, used for ordering/retention/analytics.
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class Promotion(Base):

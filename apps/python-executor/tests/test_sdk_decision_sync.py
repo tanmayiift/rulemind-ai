@@ -92,7 +92,8 @@ class SdkDecisionBatchTests(unittest.TestCase):
     def test_source_and_device_time_preserved(self):
         self.client.post("/sdk/v1/decisions", headers=self.headers, json={"decisions": [_decision("z")]})
         rows = app_main.storage.list_decisions(tenant_id=self.tenant, limit=10)
-        row = next(r for r in rows if r["id"] == "z")
+        # The device-supplied id is now the client_id (the PK is server-generated).
+        row = next(r for r in rows if r["client_id"] == "z")
         self.assertEqual(row["source"], "on_device")
         self.assertTrue(str(row["created_at"]).startswith("2026-07-31"))  # device decision time kept
 
