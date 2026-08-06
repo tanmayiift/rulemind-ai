@@ -8,13 +8,13 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Body, Cookie, FastAPI, HTTPException, Query, Request, Response
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
 
-from .auth import JWT_COOKIE_NAME, bcrypt_verify, create_admin_jwt, decode_admin_jwt
+from .auth import decode_admin_jwt
 from .compiler import (
     BundleCompilationError,
     NoProductionAssetsError,
@@ -42,7 +42,7 @@ from .logic import (
     nodes_to_tree,
     slugify,
 )
-from .middleware import TenantContextMiddleware, admin_cookie_secure
+from .middleware import TenantContextMiddleware
 from .reviews import submit_review_decision
 from . import decision_bus
 from .runtime import is_local_dev, redis_client
@@ -1277,135 +1277,6 @@ def metrics() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/api/mobile/v1/auth/demo")
-def mobile_demo_access(request: Request) -> Dict[str, Any]:
-    tenant_id = str(storage.default_tenant_id or "")
-    if not tenant_id:
-        raise HTTPException(status_code=500, detail="Default tenant is unavailable.")
-    return mobile_session_payload(
-        base_url=public_api_base_url(request),
-        user=None,
-        tenant_id=tenant_id,
-        mode="demo",
-    )
-
-
-@app.post("/api/mobile/v1/auth/login")
-def mobile_admin_login(request: MobileAdminLoginRequest, http_request: Request) -> Dict[str, Any]:
-    user = storage.get_platform_admin_user_by_email(request.email)
-    if not user or not user.get("is_active") or not bcrypt_verify(request.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    tenant_id = request.tenantId or str(storage.default_tenant_id or "")
-    token = create_admin_jwt(user["id"], user["email"])
-    return mobile_session_payload(
-        base_url=public_api_base_url(http_request),
-        user=user,
-        tenant_id=tenant_id,
-        mode="admin",
-        access_token=token,
-    )
-
-
-@app.get("/api/mobile/v1/auth/me")
-def mobile_admin_me(request: Request) -> Dict[str, Any]:
-    user = require_platform_admin_request(request)
-    return {"user": sanitize_admin_user(user), "availableTenants": storage.list_tenants()}
-
-
-@app.post("/api/mobile/v1/tenants/{tenant_id}/session")
-def mobile_switch_tenant(tenant_id: str, request: Request) -> Dict[str, Any]:
-    user = require_platform_admin_request(request)
-    return mobile_session_payload(
-        base_url=public_api_base_url(request),
-        user=user,
-        tenant_id=tenant_id,
-        mode="admin",
-        access_token=bearer_token(request),
-    )
-
-
-@app.post("/api/admin/v1/auth/login")
-def admin_login(request: AdminLoginRequest, response: Response) -> Dict[str, Any]:
-    user = storage.get_platform_admin_user_by_email(request.email)
-    if not user or not user.get("is_active") or not bcrypt_verify(request.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    token = create_admin_jwt(user["id"], user["email"])
-    response.set_cookie(
-        JWT_COOKIE_NAME,
-        token,
-        httponly=True,
-        secure=admin_cookie_secure(),
-        samesite="lax",
-        path="/",
-        max_age=60 * 60 * 12,
-    )
-    return {"user": {key: value for key, value in user.items() if key != "password_hash"}}
-
-
-@app.get("/api/admin/v1/auth/me")
-def admin_me(admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
-    return {"user": sanitize_admin_user(require_platform_admin(admin_token))}
-
-
-@app.post("/api/admin/v1/auth/logout")
-def admin_logout(response: Response) -> Dict[str, bool]:
-    response.delete_cookie(JWT_COOKIE_NAME, path="/")
-    return {"ok": True}
-
-
-@app.get("/api/admin/v1/tenants")
-def admin_list_tenants(admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> List[Dict[str, Any]]:
-    require_platform_admin(admin_token)
-    return storage.list_tenants()
-
-
-@app.post("/api/admin/v1/tenants")
-def admin_create_tenant(request: TenantCreateRequest, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
-    require_platform_admin(admin_token)
-    return storage.create_tenant(request.name, plan=request.plan, config=request.config, is_active=request.is_active)
-
-
-@app.get("/api/admin/v1/tenants/{tenant_id}")
-def admin_get_tenant(tenant_id: str, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
-    require_platform_admin(admin_token)
-    tenant = storage.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found.")
-    return tenant
-
-
-@app.patch("/api/admin/v1/tenants/{tenant_id}")
-def admin_update_tenant(tenant_id: str, request: TenantUpdateRequest, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
-    require_platform_admin(admin_token)
-    tenant = storage.update_tenant(tenant_id, request.model_dump(exclude_none=True))
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found.")
-    return tenant
-
-
-@app.post("/api/admin/v1/tenants/{tenant_id}/keys")
-def admin_create_tenant_key(tenant_id: str, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
-    require_platform_admin(admin_token)
-    try:
-        return storage.generate_api_key_for_tenant(tenant_id)
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-
-
-@app.get("/api/admin/v1/tenants/{tenant_id}/keys")
-def admin_list_tenant_keys(tenant_id: str, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> List[Dict[str, Any]]:
-    require_platform_admin(admin_token)
-    return storage.list_api_keys(tenant_id)
-
-
-@app.delete("/api/admin/v1/tenants/{tenant_id}/keys/{kid}")
-def admin_revoke_tenant_key(tenant_id: str, kid: str, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, bool]:
-    require_platform_admin(admin_token)
-    if not storage.revoke_api_key(tenant_id, kid):
-        raise HTTPException(status_code=404, detail="API key not found.")
-    return {"revoked": True}
-
-
 @app.post("/api/v1/test/variables")
 def batch_test_variables(request: TestPayloadRequest = Body(default=TestPayloadRequest())) -> Dict[str, Any]:
     payloads = payload_map(request.payload)
@@ -2548,6 +2419,7 @@ from .routers.identity import router as identity_router  # noqa: E402
 from .routers.ai import router as ai_router  # noqa: E402
 from .routers.experiments import router as experiments_router  # noqa: E402
 from .routers.models import router as models_router  # noqa: E402
+from .routers.platform import router as platform_router  # noqa: E402
 
 app.include_router(governance_router)
 app.include_router(insights_router)
@@ -2561,6 +2433,7 @@ app.include_router(identity_router)
 app.include_router(ai_router)
 app.include_router(experiments_router)
 app.include_router(models_router)
+app.include_router(platform_router)
 
 # Back-compat: a few tests call these handlers as module attributes (app.main.audit_errors()).
 # Re-export the moved handlers so those direct references keep resolving after the extraction.
