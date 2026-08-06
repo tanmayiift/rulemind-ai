@@ -1409,226 +1409,6 @@ def admin_revoke_tenant_key(tenant_id: str, kid: str, admin_token: Optional[str]
     return {"revoked": True}
 
 
-@app.get("/api/v1/connectors")
-def list_connectors() -> List[Dict[str, Any]]:
-    return storage.list_connectors()
-
-
-@app.post("/api/v1/connectors")
-def create_connector(request: ConnectorCreateRequest) -> Dict[str, Any]:
-    connector_id = make_id(request.name, current_connectors())
-    return storage.create_connector(
-        {
-            "id": connector_id,
-            "name": request.name,
-            "icon": request.icon,
-            "color": request.color,
-            "description": request.description,
-            "schema_paths": request.schema_paths,
-            "sample_payload": request.sample_payload,
-            "is_active": request.is_active,
-            "config": request.config,
-        }
-    )
-
-
-@app.get("/api/v1/connectors/{connector_id}")
-def get_connector(connector_id: str) -> Dict[str, Any]:
-    return ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
-
-
-@app.put("/api/v1/connectors/{connector_id}")
-def update_connector(connector_id: str, request: ConnectorUpdateRequest) -> Dict[str, Any]:
-    connector = ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
-    updated = storage.update_connector(
-        connector_id,
-        {
-            "name": request.name or connector["name"],
-            "icon": request.icon or connector["icon"],
-            "color": request.color or connector["color"],
-            "description": request.description if request.description is not None else connector.get("description"),
-            "schema_paths": request.schema_paths or connector.get("schema_paths", []),
-            "sample_payload": request.sample_payload if request.sample_payload is not None else connector.get("sample_payload", {}),
-            "is_active": connector["is_active"] if request.is_active is None else request.is_active,
-            "config": request.config if request.config is not None else connector.get("config", {}),
-        },
-    )
-    return ensure_exists(updated, "connector", connector_id)
-
-
-@app.delete("/api/v1/connectors/{connector_id}")
-def delete_connector(connector_id: str) -> Dict[str, Any]:
-    connector = ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
-    if connector.get("is_active"):
-        raise HTTPException(status_code=409, detail="Deactivate the connector before deleting it.")
-    return storage.delete_connector(connector_id) or connector
-
-
-@app.post("/api/v1/connectors/{connector_id}/test")
-def test_connector(connector_id: str) -> Dict[str, Any]:
-    connector = ensure_exists(storage.get_connector(connector_id), "connector", connector_id)
-    return {
-        "connector_id": connector["id"],
-        "passed": True,
-        "schema_paths": connector["schema_paths"],
-        "sample_payload": connector["sample_payload"],
-        "config_summary": {
-            "auth_type": connector.get("config", {}).get("auth_type", "api_key"),
-            "base_url": connector.get("config", {}).get("base_url", ""),
-            "has_webhook": bool(connector.get("config", {}).get("webhook_url")),
-        },
-    }
-
-
-@app.get("/api/v1/variables")
-def list_variables(
-    source: Optional[str] = Query(default=None),
-    status: Optional[str] = Query(default=None),
-    category: Optional[str] = Query(default=None),
-) -> List[Dict[str, Any]]:
-    return storage.list_variables(source_id=source, status=status, category=category)
-
-
-@app.post("/api/v1/variables")
-def create_variable(request: VariableUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
-    connectors = current_connectors()
-    if request.source_id not in connectors:
-        raise HTTPException(status_code=422, detail="Unknown source connector.")
-    variable_id = make_id(request.name, current_variable_map())
-    created = storage.create_variable(
-        {
-            "id": variable_id,
-            "name": request.name,
-            "category": request.category,
-            "source_id": request.source_id,
-            "code": request.code,
-            "description": request.description,
-            "status": request.status,
-            "last_test_result": None,
-            "version": 1,
-        }
-    )
-    if created["status"] == "prod":
-        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
-    return created
-
-
-@app.put("/api/v1/variables/{variable_id}")
-def update_variable(
-    variable_id: str,
-    request: VariableUpsertRequest,
-    background_tasks: BackgroundTasks = None,
-) -> Dict[str, Any]:
-    existing = ensure_exists(storage.get_variable(variable_id), "variable", variable_id)
-    updated = storage.update_variable(
-        variable_id,
-        {
-            "name": request.name,
-            "category": request.category,
-            "source_id": request.source_id,
-            "code": request.code,
-            "description": request.description,
-            "status": request.status,
-        },
-    )
-    if existing["status"] == "prod" or request.status == "prod":
-        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
-    return ensure_exists(updated, "variable", variable_id)
-
-
-@app.delete("/api/v1/variables/{variable_id}")
-def delete_variable(variable_id: str) -> Dict[str, Any]:
-    variable = ensure_exists(storage.get_variable(variable_id), "variable", variable_id)
-    if variable["status"] != "dev":
-        raise HTTPException(status_code=409, detail="Only DEV variables can be deleted.")
-    return storage.delete_variable(variable_id) or variable
-
-
-@app.post("/api/v1/variables/{variable_id}/test")
-def test_variable(variable_id: str, request: TestPayloadRequest = Body(default=TestPayloadRequest())) -> Dict[str, Any]:
-    variable = ensure_exists(storage.get_variable(variable_id), "variable", variable_id)
-    result = test_variable_entity(variable, request.payload)
-    if result["result"].get("error"):
-        record_error("variables", "test", result["result"]["error"], "variable", variable_id, {"payload": request.payload})
-    return result
-
-
-@app.post("/api/v1/variables/test-draft")
-def test_variable_draft(request: VariableDraftTestRequest) -> Dict[str, Any]:
-    connectors = current_connectors()
-    if request.source_id not in connectors:
-      raise HTTPException(status_code=422, detail="Unknown source connector.")
-    limits = engine_limits()
-    execution = execute_variable(
-        request.code,
-        connector_payload(request.source_id, request.payload),
-        {},
-        timeout_ms=limits["timeout_ms"],
-        memory_mb=limits["memory_mb"],
-    )
-    result = {
-        "result": {
-            "value": execution.get("value"),
-            "error": execution.get("error"),
-            "latency_ms": execution.get("latency_ms"),
-            "passed": execution.get("error") in (None, ""),
-            "tested_at": now_iso(),
-        }
-    }
-    if result["result"]["error"]:
-        record_error("variables", "draft_test", result["result"]["error"], "variable", None, {"source_id": request.source_id})
-    return result
-
-
-@app.post("/api/v1/variables/{variable_id}/promote")
-def promote_variable(
-    variable_id: str,
-    request: PromoteRequest,
-    background_tasks: BackgroundTasks = None,
-) -> Dict[str, Any]:
-    promoted = promote_entity("variable", variable_id, request.promoted_by, request.reason)
-    if promoted["status"] == "prod":
-        maybe_compile_bundle(active_tenant_id(), background_tasks=background_tasks)
-    return promoted
-
-
-@app.get("/api/v1/variables/{variable_id}/history")
-def variable_history(variable_id: str) -> List[Dict[str, Any]]:
-    return storage.get_history("variable", variable_id)
-
-
-@app.get("/api/v1/variables/graph")
-def variable_graph() -> Dict[str, Any]:
-    variables = storage.list_variables()
-    rules = storage.list_rules()
-    scorecards = storage.list_scorecards()
-    policies = storage.list_policies()
-    nodes = []
-    edges = []
-    for variable in variables:
-        nodes.append({"id": variable["id"], "type": "variable", "label": variable["name"], "status": variable["status"]})
-    for rule in rules:
-        nodes.append({"id": rule["id"], "type": "rule", "label": rule["name"], "status": rule["status"]})
-        referenced = {node.get("variable") for node in rule.get("nodes", []) if node.get("type") == "condition" and node.get("variable")}
-        for variable_id in referenced:
-            edges.append({"from": variable_id, "to": rule["id"], "relation": "used_by_rule"})
-    for scorecard in scorecards:
-        nodes.append({"id": scorecard["id"], "type": "scorecard", "label": scorecard["name"], "status": scorecard["status"]})
-        for factor in scorecard.get("bins", []):
-            edges.append({"from": factor.get("variable_id"), "to": scorecard["id"], "relation": "used_by_scorecard"})
-    for policy in policies:
-        nodes.append({"id": policy["id"], "type": "policy", "label": policy["name"], "status": policy["status"]})
-        for step in policy.get("steps", []):
-            if step.get("type") in {"rule", "scorecard"}:
-                edges.append({"from": step.get("ref_id"), "to": policy["id"], "relation": "used_by_policy"})
-    return {"nodes": nodes, "edges": edges}
-
-
-@app.get("/api/v1/variables/{variable_id}")
-def get_variable(variable_id: str) -> Dict[str, Any]:
-    return ensure_exists(storage.get_variable(variable_id), "variable", variable_id)
-
-
 @app.get("/api/v1/rules")
 def list_rules(status: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
     return storage.list_rules(status=status)
@@ -4492,9 +4272,12 @@ def list_excel_functions() -> Dict[str, Any]:
 from .routers.governance import router as governance_router  # noqa: E402
 from .routers import insights as _insights  # noqa: E402
 from .routers.insights import router as insights_router  # noqa: E402
+from .routers import authoring as _authoring  # noqa: E402
+from .routers.authoring import router as authoring_router  # noqa: E402
 
 app.include_router(governance_router)
 app.include_router(insights_router)
+app.include_router(authoring_router)
 
 # Back-compat: a few tests call these handlers as module attributes (app.main.audit_errors()).
 # Re-export the moved handlers so those direct references keep resolving after the extraction.
@@ -4502,3 +4285,6 @@ audit_decisions = _insights.audit_decisions
 audit_decisions_count = _insights.audit_decisions_count
 audit_promotions = _insights.audit_promotions
 audit_errors = _insights.audit_errors
+update_connector = _authoring.update_connector
+create_variable = _authoring.create_variable
+variable_graph = _authoring.variable_graph
