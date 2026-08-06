@@ -3582,6 +3582,23 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
   const [errors, setErrors] = React.useState<AuditErrorRecord[]>([]);
   const [selected, setSelected] = React.useState<Record<string, unknown> | null>(null);
   const [live, setLive] = React.useState(false);
+  const [replay, setReplay] = React.useState<{ original_outcome: string; replayed_outcome: string; changed: boolean; bundle_version: number } | null>(null);
+  const [replayBusy, setReplayBusy] = React.useState(false);
+
+  const runReplay = React.useCallback(async (decisionId: string) => {
+    setReplayBusy(true);
+    setReplay(null);
+    try {
+      const res = await apiJson<{ original_outcome: string; replayed_outcome: string; changed: boolean; bundle_version: number }>(
+        apiBaseUrl, "/api/v1/decisions/" + decisionId + "/replay", { method: "POST" }, apiKey,
+      );
+      setReplay(res);
+    } catch (error) {
+      props.onNotify(error instanceof Error ? error.message : "Replay failed.");
+    } finally {
+      setReplayBusy(false);
+    }
+  }, [apiBaseUrl, apiKey, props]);
 
   React.useEffect(() => {
     Promise.all([
@@ -3671,7 +3688,7 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
                   <button
                     key={String(record.id ?? index)}
                     type="button"
-                    onClick={() => setSelected(record)}
+                    onClick={() => { setSelected(record); setReplay(null); }}
                     style={{
                       textAlign: "left",
                       border: "none",
@@ -3707,6 +3724,26 @@ function AuditPage(props: { onNotify: (message: string) => void }) {
             <div style={{ padding: 18, fontSize: "var(--rm-fs-body)", color: theme.dim }}>Select an audit row to inspect payload, trace, and metadata.</div>
           ) : (
             <div style={{ display: "grid", gap: 12, padding: 14, maxHeight: 520, overflow: "auto" }}>
+              {selected.id ? (
+                <div style={{ background: theme.hover, border: "1px solid " + theme.border, borderRadius: 10, padding: 10, display: "grid", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Replay vs current policy</div>
+                    <Button small variant="default" disabled={replayBusy} onClick={() => runReplay(String(selected.id))}>{replayBusy ? "Replaying…" : "Replay"}</Button>
+                  </div>
+                  {replay ? (
+                    <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <span>original <strong style={{ color: theme.text }}>{replay.original_outcome}</strong></span>
+                      <span>→ now <strong style={{ color: theme.text }}>{replay.replayed_outcome}</strong></span>
+                      <span style={{ padding: "2px 8px", borderRadius: 999, background: replay.changed ? theme.warningBg : theme.successBg, color: replay.changed ? theme.warning : theme.success, fontWeight: "var(--rm-fw-bold)" as unknown as number }}>
+                        {replay.changed ? "CHANGED" : "same"}
+                      </span>
+                      <span style={{ color: theme.dim }}>bundle v{replay.bundle_version}</span>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: "var(--rm-fs-caption)", color: theme.dim }}>Re-run this decision&apos;s inputs through the current policy to see if the outcome would change.</div>
+                  )}
+                </div>
+              ) : null}
               {Array.isArray((selected as { trace?: unknown[] }).trace) ? (
                 <div style={{ display: "grid", gap: 8 }}>
                   <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Execution Trace</div>
