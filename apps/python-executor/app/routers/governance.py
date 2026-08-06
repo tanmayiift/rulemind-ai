@@ -152,6 +152,20 @@ def get_slo_status(request: Request) -> Dict[str, Any]:
     return report
 
 
+# ── Adverse-action reason codes ────────────────────────────────────────────
+@router.get("/api/v1/decisions/{decision_id}/reason-codes")
+def decision_reason_codes(request: Request, decision_id: str, limit: int = Query(default=3, ge=1, le=10)) -> Dict[str, Any]:
+    """Deterministic adverse-action reason codes for a decision — the top failing conditions ranked
+    by materiality, each with a stable code + human reason for a FCRA-style decline notice. Pure and
+    reproducible (no LLM), unlike /ai/explain-decision which produces a narrative."""
+    from ..logic import adverse_reason_codes
+
+    tenant_id = main.active_tenant_id(request)
+    decision = main.ensure_exists(main.storage.get_decision(decision_id, tenant_id=tenant_id), "decision", decision_id)
+    codes = adverse_reason_codes(decision.get("rule_results", []), limit=limit)
+    return {"decision_id": decision_id, "outcome": decision.get("outcome"), "reason_codes": codes}
+
+
 # ── Decision replay + bundle versions + policy backtest ────────────────────
 @router.post("/api/v1/decisions/{decision_id}/replay")
 def replay_decision(request: Request, decision_id: str, bundle_version: Optional[int] = Query(default=None, alias="bundleVersion")) -> Dict[str, Any]:
