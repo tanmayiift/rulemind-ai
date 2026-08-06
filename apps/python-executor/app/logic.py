@@ -578,8 +578,10 @@ def _redact_keys() -> set:
     return {key.lower() for key in REDACTED_KEYS} | extra
 
 
-def redact_payload(value: Any) -> Any:
+def redact_payload(value: Any, extra_keys: Optional[Iterable[str]] = None) -> Any:
     keys = _redact_keys()
+    if extra_keys:
+        keys = keys | {str(k).strip().lower() for k in extra_keys if str(k).strip()}
     return _redact_with(value, keys)
 
 

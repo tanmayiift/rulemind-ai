@@ -42,6 +42,7 @@ import type {
   ScorecardRangeRecord,
   ScorecardRecord,
   SettingsRecord,
+  DataProtection,
   VariableBatchTestResponse,
   VariableGraphResponse,
   VariableRecord,
@@ -4024,10 +4025,44 @@ function SettingsPage(props: { data: BootstrapPayload; refresh: () => void; onNo
   const { apiBaseUrl, apiKey, themeMode, setThemeMode, isMobile } = useRuleMindStore();
   const [settings, setSettings] = React.useState<SettingsRecord>(props.data.settings);
   const [busy, setBusy] = React.useState(false);
+  const [dp, setDp] = React.useState<DataProtection | null>(null);
+  const [dpKeys, setDpKeys] = React.useState("");
+  const [dpBusy, setDpBusy] = React.useState(false);
 
   React.useEffect(() => {
     setSettings(props.data.settings);
   }, [props.data.settings]);
+
+  const loadDp = React.useCallback(async () => {
+    try {
+      const view = await apiJson<DataProtection>(apiBaseUrl, "/api/v1/settings/data-protection", {}, apiKey);
+      setDp(view);
+      setDpKeys((view.pii_redact_keys ?? []).join(", "));
+    } catch {
+      /* read may be limited for this role */
+    }
+  }, [apiBaseUrl, apiKey]);
+
+  React.useEffect(() => { void loadDp(); }, [loadDp]);
+
+  const saveDp = React.useCallback(async () => {
+    if (!dp) return;
+    setDpBusy(true);
+    try {
+      const keys = dpKeys.split(",").map((k) => k.trim()).filter(Boolean);
+      const view = await apiJson<DataProtection>(apiBaseUrl, "/api/v1/settings/data-protection", {
+        method: "PUT",
+        body: JSON.stringify({ retention_days: dp.retention_days, pii_redact_keys: keys }),
+      }, apiKey);
+      setDp(view);
+      setDpKeys((view.pii_redact_keys ?? []).join(", "));
+      props.onNotify("Data-protection settings saved.");
+    } catch (error) {
+      props.onNotify(error instanceof Error ? error.message : "Data-protection save failed.");
+    } finally {
+      setDpBusy(false);
+    }
+  }, [apiBaseUrl, apiKey, dp, dpKeys, props]);
 
   const saveSettings = React.useCallback(async () => {
     setBusy(true);
@@ -4091,6 +4126,56 @@ function SettingsPage(props: { data: BootstrapPayload; refresh: () => void; onNo
           </InlineSelect>
         </div>
       </div>
+
+      {dp ? (
+        <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 16, display: "grid", gap: 14 }} data-testid="data-protection">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Data protection</div>
+              <div style={{ fontSize: 12.5, color: theme.muted, marginTop: 2 }}>Retention window, PII redaction, and at-rest encryption for this workspace&apos;s decision log.</div>
+            </div>
+            <Button variant="primary" onClick={saveDp} disabled={dpBusy} testId="data-protection-save">Save data protection</Button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 12 }}>
+            {(() => {
+              const enc = dp.encryption_at_rest;
+              const encTone = enc ? tone(theme, "success") : tone(theme, "warning");
+              return (
+                <div style={{ border: "1px solid " + theme.border, borderRadius: 10, padding: 12, display: "grid", gap: 6 }}>
+                  <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: theme.muted, fontWeight: 700 }}>Encryption at rest</div>
+                  <span style={{ justifySelf: "start", fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: encTone.bg, color: encTone.fg }}>
+                    {enc ? "Enabled (Fernet)" : "Off"}
+                  </span>
+                  <div style={{ fontSize: 11.5, color: theme.muted }}>Set by server config (DECISION_ENCRYPT_AT_REST). Transit is TLS-enforced.</div>
+                </div>
+              );
+            })()}
+
+            <div style={{ border: "1px solid " + theme.border, borderRadius: 10, padding: 12, display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: theme.muted, fontWeight: 700 }}>Archive sink</div>
+              <span style={{ justifySelf: "start", fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: tone(theme, "accent").bg, color: tone(theme, "accent").fg }}>
+                {dp.archive_sink || "none"}
+              </span>
+              <div style={{ fontSize: 11.5, color: theme.muted }}>Where expired decisions are archived before purge (ClickHouse / S3 / none).</div>
+            </div>
+
+            <div style={{ border: "1px solid " + theme.border, borderRadius: 10, padding: 12, display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: theme.muted, fontWeight: 700 }}>Retention window (days)</div>
+              <InlineInput type="number" value={String(dp.retention_days)} onChange={(event) => setDp((current) => (current ? { ...current, retention_days: Math.max(1, Number(event.target.value || 0)) } : current))} testId="data-protection-retention" />
+              <div style={{ fontSize: 11.5, color: theme.muted }}>Decisions older than this are archived (if a sink is set) then purged. Minimum 1 day.</div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: theme.muted, fontWeight: 700 }}>Redacted PII fields (comma-separated)</div>
+            <InlineInput value={dpKeys} onChange={(event) => setDpKeys(event.target.value)} placeholder="account_no, member_id, tax_id" testId="data-protection-pii" />
+            <div style={{ fontSize: 11.5, color: theme.muted }}>
+              These payload keys are masked to <code style={{ fontFamily: "monospace" }}>***</code> in stored decision logs, on top of built-ins ({(dp.builtin_redact_keys ?? []).join(", ") || "none"}){dp.env_redact_keys && dp.env_redact_keys.length ? ` and server keys (${dp.env_redact_keys.join(", ")})` : ""}.
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
