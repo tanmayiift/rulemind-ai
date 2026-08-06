@@ -15,7 +15,6 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import JWT_COOKIE_NAME, bcrypt_verify, create_admin_jwt, decode_admin_jwt
-from .analytics import experiment_analytics
 from .compiler import (
     BundleCompilationError,
     NoProductionAssetsError,
@@ -43,7 +42,6 @@ from .logic import (
     nodes_to_tree,
     slugify,
 )
-from .experiments import apply_experiment_overrides
 from .middleware import TenantContextMiddleware, admin_cookie_secure
 from .reviews import submit_review_decision
 from . import decision_bus
@@ -2032,142 +2030,6 @@ def bootstrap() -> Dict[str, Any]:
     }
 
 
-@app.get("/api/v1/experiments")
-def list_experiments() -> List[Dict[str, Any]]:
-    return storage.list_experiments()
-
-
-@app.get("/api/v1/experiments/{experiment_id}")
-def get_experiment(experiment_id: str) -> Dict[str, Any]:
-    experiment = storage.get_experiment(experiment_id)
-    if not experiment:
-        raise HTTPException(status_code=404, detail="Experiment not found.")
-    return experiment
-
-
-def _assert_single_running_experiment(experiment_id: str, status: Optional[str], target_policy_id: Optional[str]) -> None:
-    """Enforce at most one *running* experiment per policy. Two running experiments on the same
-    policy is an ambiguous state — a decision could be assigned to either — so the API refuses to
-    start/keep a second one. Pause the other first. (The decide path resolves deterministically
-    regardless, but this keeps the data model unambiguous.)"""
-    if status != "running" or not target_policy_id:
-        return
-    tenant_id = active_tenant_id()
-    for exp in storage.list_experiments(tenant_id=tenant_id):
-        if exp.get("id") == experiment_id:
-            continue
-        if exp.get("status") == "running" and exp.get("target_policy_id") == target_policy_id:
-            raise HTTPException(
-                status_code=409,
-                detail="Experiment '{0}' is already running on policy '{1}'. Pause it before starting another.".format(
-                    exp.get("id"), target_policy_id
-                ),
-            )
-
-
-@app.post("/api/v1/experiments")
-def create_experiment(request: ExperimentUpsertRequest) -> Dict[str, Any]:
-    experiment_id = request.id or make_id(request.name, {item["id"]: item for item in storage.list_experiments()})
-    payload = {**request.model_dump(), "id": experiment_id}
-    _assert_single_running_experiment(experiment_id, payload.get("status"), payload.get("target_policy_id"))
-    return storage.create_or_update_experiment(payload)
-
-
-@app.put("/api/v1/experiments/{experiment_id}")
-def update_experiment(experiment_id: str, request: ExperimentUpsertRequest) -> Dict[str, Any]:
-    existing = storage.get_experiment(experiment_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Experiment not found.")
-    merged = {**existing, **request.model_dump(exclude_none=True), "id": experiment_id}
-    _assert_single_running_experiment(experiment_id, merged.get("status"), merged.get("target_policy_id"))
-    return storage.create_or_update_experiment(merged)
-
-
-@app.patch("/api/v1/experiments/{experiment_id}/status")
-def update_experiment_status(experiment_id: str, request: ExperimentStatusRequest) -> Dict[str, Any]:
-    existing = storage.get_experiment(experiment_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Experiment not found.")
-    _assert_single_running_experiment(experiment_id, request.status, existing.get("target_policy_id"))
-    return storage.create_or_update_experiment({**existing, "status": request.status, "id": experiment_id})
-
-
-@app.delete("/api/v1/experiments/{experiment_id}")
-def delete_experiment(experiment_id: str) -> Dict[str, bool]:
-    existing = storage.get_experiment(experiment_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Experiment not found.")
-    if existing["status"] != "draft":
-        raise HTTPException(status_code=409, detail="Only draft experiments can be deleted.")
-    storage.delete_experiment(experiment_id)
-    return {"deleted": True}
-
-
-@app.post("/api/v1/experiments/{experiment_id}/promote")
-def promote_experiment(experiment_id: str, request: ExperimentPromoteRequest) -> Dict[str, Any]:
-    """Promote a challenger variant to champion.
-
-    Applies the winning variant's condition overrides to the live rules
-    (maker/checker recorded) and completes the experiment. `force=true` bypasses
-    the guardrail/significance safety check.
-    """
-    tenant_id = active_tenant_id()
-    experiment = ensure_exists(storage.get_experiment(experiment_id, tenant_id=tenant_id), "experiment", experiment_id)
-    variants = experiment.get("variants", [])
-    variant = next((item for item in variants if item.get("id") == request.variant_id), None)
-    if not variant:
-        raise HTTPException(status_code=404, detail="Variant not found in experiment.")
-
-    # Safety gate: only promote a challenger the analysis recommends, unless forced.
-    if not request.force:
-        analysis = experiment_analytics(storage, tenant_id, experiment_id).get("championChallenger", {})
-        row = next((c for c in analysis.get("challengers", []) if c["id"] == request.variant_id), None)
-        if row is None:
-            raise HTTPException(status_code=422, detail="Only a challenger variant can be promoted.")
-        if row["recommendation"] != "promote":
-            raise HTTPException(
-                status_code=422,
-                detail=f"Promotion blocked: recommendation is '{row['recommendation']}'. "
-                f"Guardrails: {row['guardrails'].get('breaches', [])}. Use force=true to override.",
-            )
-
-    # Bake the variant overrides into the live rules (permanent promotion).
-    rules = {item["id"]: item for item in storage.list_rules(tenant_id=tenant_id)}
-    patched = apply_experiment_overrides(rules, {"variant": variant})
-    changed = []
-    for rule_id, rule in patched.items():
-        if rule != rules.get(rule_id):
-            storage.update_rule(
-                rule_id,
-                {"tree": rule.get("tree"), "nodes": rule.get("nodes")},
-                tenant_id=tenant_id,
-            )
-            changed.append(rule_id)
-
-    storage.create_or_update_experiment(
-        {
-            **experiment,
-            "id": experiment_id,
-            "status": "completed",
-            "promoted_variant_id": request.variant_id,
-            "promoted_by": request.promoted_by,
-            "promoted_at": now_iso(),
-        }
-    )
-    storage.add_audit_event(
-        {
-            "tenant_id": tenant_id,
-            "event_type": "experiment_promoted",
-            "entity_type": "experiment",
-            "entity_id": experiment_id,
-            "detail": f"Promoted variant {request.variant_id} to champion.",
-            "metadata": {"variant": request.variant_id, "rules_updated": changed, "promoted_by": request.promoted_by, "forced": request.force},
-        },
-        tenant_id=tenant_id,
-    )
-    return {"experiment_id": experiment_id, "promoted_variant": request.variant_id, "rules_updated": changed}
-
-
 def _sse_decision_frame(row: Dict[str, Any]) -> str:
     """Render one decision as a compact Server-Sent Event frame."""
     data = {
@@ -2559,95 +2421,6 @@ class ModelPredictRequest(BaseModel):
     features: Optional[List[str]] = None
 
 
-@app.get("/api/v1/models")
-def list_models() -> List[Dict[str, Any]]:
-    return storage.list_models()
-
-
-@app.get("/api/v1/models/{model_id}")
-def get_model(model_id: str) -> Dict[str, Any]:
-    model = storage.get_model(model_id)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model not found.")
-    return model
-
-
-@app.post("/api/v1/models")
-def create_model(request: ModelCreateRequest) -> Dict[str, Any]:
-    from .model_executor import base64_to_model, validate_model
-
-    model_blob = base64_to_model(request.model_base64)
-    validation = validate_model(model_blob)
-    if not validation["valid"]:
-        raise HTTPException(status_code=422, detail=f"Invalid model: {validation['error']}")
-
-    model_id = slugify(request.name)
-    existing_ids = {m["id"] for m in storage.list_models()}
-    if model_id in existing_ids:
-        model_id = f"{model_id}_{uuid.uuid4().hex[:6]}"
-
-    model_data = {
-        "id": model_id,
-        "name": request.name,
-        "description": request.description,
-        "model_type": validation.get("model_type", request.model_type),
-        "model_blob": model_blob,
-        "input_schema": request.input_schema,
-        "output_schema": request.output_schema,
-        "metrics": request.metrics,
-        "status": request.status,
-        "version": 1,
-        "has_predict": validation["has_predict"],
-        "has_predict_proba": validation["has_predict_proba"],
-    }
-    return storage.create_model(model_data)
-
-
-@app.post("/api/v1/models/{model_id}/predict")
-def predict_model(model_id: str, request: ModelPredictRequest) -> Dict[str, Any]:
-    from .model_executor import execute_model
-
-    model = storage.get_model(model_id, include_blob=True)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model not found.")
-    model_blob = model.get("model_blob")
-    if not model_blob:
-        raise HTTPException(status_code=422, detail="Model has no binary data.")
-
-    result = execute_model(model_blob, request.input_data, features=request.features)
-    if result.get("error"):
-        raise HTTPException(status_code=500, detail=result["error"])
-    return result
-
-
-@app.post("/api/v1/models/{model_id}/test")
-def test_model(model_id: str, request: ModelPredictRequest) -> Dict[str, Any]:
-    from .model_executor import execute_model
-
-    model = storage.get_model(model_id, include_blob=True)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model not found.")
-    model_blob = model.get("model_blob")
-    if not model_blob:
-        raise HTTPException(status_code=422, detail="Model has no binary data.")
-
-    result = execute_model(model_blob, request.input_data, features=request.features)
-    storage.update_model(model_id, {"last_test_result": {
-        "prediction": result.get("prediction"),
-        "latency_ms": result.get("latency_ms"),
-        "tested_at": now_iso(),
-        "error": result.get("error"),
-    }})
-    return {"model": storage.get_model(model_id), "result": result}
-
-
-@app.delete("/api/v1/models/{model_id}")
-def delete_model(model_id: str) -> Dict[str, Any]:
-    model = storage.get_model(model_id)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model not found.")
-    storage.delete_model(model_id)
-    return {"deleted": True, "id": model_id}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2773,6 +2546,8 @@ from .routers.reports import router as reports_router  # noqa: E402
 from .routers.onboarding import router as onboarding_router  # noqa: E402
 from .routers.identity import router as identity_router  # noqa: E402
 from .routers.ai import router as ai_router  # noqa: E402
+from .routers.experiments import router as experiments_router  # noqa: E402
+from .routers.models import router as models_router  # noqa: E402
 
 app.include_router(governance_router)
 app.include_router(insights_router)
@@ -2784,6 +2559,8 @@ app.include_router(reports_router)
 app.include_router(onboarding_router)
 app.include_router(identity_router)
 app.include_router(ai_router)
+app.include_router(experiments_router)
+app.include_router(models_router)
 
 # Back-compat: a few tests call these handlers as module attributes (app.main.audit_errors()).
 # Re-export the moved handlers so those direct references keep resolving after the extraction.
