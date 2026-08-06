@@ -3374,6 +3374,53 @@ def update_settings(request: SettingsRequest) -> Dict[str, Any]:
     return storage.update_settings(request.model_dump())
 
 
+class DataProtectionRequest(BaseModel):
+    retention_days: Optional[int] = None
+    pii_redact_keys: Optional[List[str]] = None
+
+
+def _data_protection_view(tenant_id: str) -> Dict[str, Any]:
+    from .logic import REDACTED_KEYS
+    from .storage import decision_encryption_enabled
+
+    settings = storage.get_settings(tenant_id=tenant_id)
+    custom = (settings.get("engine_config", {}) or {}).get("pii_redact_keys", []) or []
+    env_keys = [k.strip() for k in (os.getenv("RULEMIND_PII_REDACT_KEYS", "") or "").split(",") if k.strip()]
+    return {
+        "retention_days": int(settings.get("audit_retention_days", 90) or 90),
+        "encryption_at_rest": decision_encryption_enabled(),
+        "archive_sink": (os.getenv("DECISION_ARCHIVE_SINK", "none") or "none"),
+        "pii_redact_keys": custom,
+        "builtin_redact_keys": sorted(REDACTED_KEYS),
+        "env_redact_keys": env_keys,
+    }
+
+
+@app.get("/api/v1/settings/data-protection")
+def get_data_protection() -> Dict[str, Any]:
+    """Per-workspace data-protection posture: decision-log retention window, at-rest encryption
+    status, the OLAP archive sink, and the PII fields redacted from stored payloads."""
+    return _data_protection_view(active_tenant_id())
+
+
+@app.put("/api/v1/settings/data-protection")
+def update_data_protection(request: DataProtectionRequest) -> Dict[str, Any]:
+    """Update the retention window and the workspace's custom PII redaction fields. Encryption at
+    rest and the archive sink are deployment-level (env) and shown read-only."""
+    tenant_id = active_tenant_id()
+    settings = storage.get_settings(tenant_id=tenant_id)
+    patch: Dict[str, Any] = {}
+    if request.retention_days is not None:
+        patch["audit_retention_days"] = max(1, int(request.retention_days))
+    if request.pii_redact_keys is not None:
+        engine = dict(settings.get("engine_config", {}) or {})
+        engine["pii_redact_keys"] = [str(k).strip() for k in request.pii_redact_keys if str(k).strip()]
+        patch["engine_config"] = engine
+    if patch:
+        storage.update_settings(patch, tenant_id=tenant_id)
+    return _data_protection_view(tenant_id)
+
+
 @app.get("/api/v1/bootstrap")
 def bootstrap() -> Dict[str, Any]:
     return {

@@ -1663,6 +1663,23 @@ class Storage:
                 for row in rows
             ]
 
+    def tenant_pii_redact_keys(self, tenant_id: Optional[str] = None) -> List[str]:
+        """A workspace's custom PII field names to redact from stored payloads (managed in the
+        Data Protection settings, stored under engine_config.pii_redact_keys). Cached briefly so
+        the decision-log hot path doesn't read settings on every decision."""
+        resolved = self._tenant_id(tenant_id)
+        cache = getattr(self, "_pii_keys_cache", None)
+        if cache is None:
+            cache = self._pii_keys_cache = {}
+        entry = cache.get(resolved)
+        now = _time.time()
+        if entry and entry[1] > now:
+            return entry[0]
+        raw = (self.get_settings(tenant_id=resolved).get("engine_config", {}) or {}).get("pii_redact_keys", []) or []
+        keys = [str(k) for k in raw if str(k).strip()]
+        cache[resolved] = (keys, now + 60)
+        return keys
+
     def get_settings(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
@@ -1682,6 +1699,7 @@ class Storage:
 
     def update_settings(self, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id)
+        getattr(self, "_pii_keys_cache", {}).pop(resolved, None)  # settings changed -> drop cached PII keys
         current = self.get_settings(tenant_id=resolved)
         next_value = copy.deepcopy(current)
         next_value.update({key: value for key, value in patch.items() if value is not None})

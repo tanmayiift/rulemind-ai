@@ -180,6 +180,15 @@ export interface SettingsRecord {
   updated_at?: string;
 }
 
+export interface DataProtection {
+  retention_days: number;
+  encryption_at_rest: boolean;
+  archive_sink: string;
+  pii_redact_keys: string[];
+  builtin_redact_keys: string[];
+  env_redact_keys: string[];
+}
+
 export interface PromotionRecord {
   id: number;
   entity_type: "variable" | "rule" | "scorecard" | "policy";

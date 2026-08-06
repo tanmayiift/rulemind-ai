@@ -861,7 +861,7 @@ class PolicyExecutor:
                 "tenant_id": ctx.tenant_id,
                 "id": str(uuid.uuid4()),
                 "policy_id": ctx.policy_id,
-                "payload": redact_payload(ctx.payload),
+                "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
                 "computed_variables": copy.deepcopy(ctx.variables),
                 "rule_results": copy.deepcopy(ctx.rule_results),
                 "scorecard_result": next(iter(ctx.scorecard_results.values()), None),
