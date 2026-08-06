@@ -3770,6 +3770,28 @@ def list_bundle_versions() -> List[Dict[str, Any]]:
     ]
 
 
+@app.post("/api/v1/policies/{policy_id}/backtest")
+def backtest_policy_endpoint(
+    policy_id: str,
+    bundle_version: Optional[int] = Query(default=None, alias="bundleVersion"),
+    sample: int = Query(default=200, ge=1, le=2000),
+) -> Dict[str, Any]:
+    """Replay a sample of this policy's recent real decisions through a compiled bundle (latest,
+    or `?bundleVersion=N`) and report the aggregate outcome impact — how many decisions would
+    change and the full from→to transition matrix. The batch sibling of decision replay: answers
+    "if I ship this, how much of my live traffic flips?" before you promote."""
+    from . import backtest as backtest_mod
+
+    ensure_exists(storage.get_policy(policy_id, tenant_id=active_tenant_id()), "policy", policy_id)
+    try:
+        return backtest_mod.backtest_policy(
+            storage, policy_id, tenant_id=active_tenant_id(),
+            bundle_version=bundle_version, sample=sample,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @app.get("/api/v1/analytics/decisions")
 def analytics_decisions() -> Dict[str, Any]:
     return decision_analytics(storage, active_tenant_id())
