@@ -3421,6 +3421,60 @@ def update_data_protection(request: DataProtectionRequest) -> Dict[str, Any]:
     return _data_protection_view(tenant_id)
 
 
+class SloConfigRequest(BaseModel):
+    enabled: Optional[bool] = None
+    latency_p95_ms: Optional[float] = None
+    error_rate_pct: Optional[float] = None
+    drift_threshold: Optional[float] = None
+    min_approval_rate_pct: Optional[float] = None
+    max_approval_rate_pct: Optional[float] = None
+    min_sample: Optional[int] = None
+    recent_hours: Optional[int] = None
+    baseline_days: Optional[int] = None
+
+
+@app.get("/api/v1/settings/slo")
+def get_slo_config() -> Dict[str, Any]:
+    """The workspace's effective SLO objective (stored overrides merged over platform defaults)."""
+    from . import slo
+    return slo.tenant_slo_config(storage, tenant_id=active_tenant_id())
+
+
+@app.put("/api/v1/settings/slo")
+def update_slo_config(request: SloConfigRequest) -> Dict[str, Any]:
+    """Update this workspace's SLO objective — latency/error ceilings, optional approval-rate
+    bounds, the outcome-drift limit, and the evaluation windows."""
+    from . import slo
+    tenant_id = active_tenant_id()
+    settings = storage.get_settings(tenant_id=tenant_id)
+    engine = dict(settings.get("engine_config", {}) or {})
+    stored = dict(engine.get("slo", {}) or {})
+    for key, value in request.model_dump(exclude_unset=True).items():
+        stored[key] = value
+    engine["slo"] = stored
+    storage.update_settings({"engine_config": engine}, tenant_id=tenant_id)
+    return slo.tenant_slo_config(storage, tenant_id=tenant_id)
+
+
+@app.get("/api/v1/slo/status")
+def get_slo_status() -> Dict[str, Any]:
+    """Live SLO scorecard for the workspace — current-window metrics, outcome-drift vs the
+    trailing baseline, active breaches, and the recent breach/recovery audit trail."""
+    from . import slo
+    tenant_id = active_tenant_id()
+    report = slo.evaluate_slo(storage, tenant_id=tenant_id)
+    try:
+        events = storage.list_audit_events(tenant_id=tenant_id, event_type="slo_breach")[:20]
+    except Exception:
+        events = []
+    report["recent_events"] = [
+        {"detail": e.get("detail"), "created_at": e.get("created_at"),
+         "breach_types": (e.get("metadata", {}) or {}).get("breach_types", [])}
+        for e in events
+    ]
+    return report
+
+
 @app.get("/api/v1/bootstrap")
 def bootstrap() -> Dict[str, Any]:
     return {

@@ -189,6 +189,37 @@ export interface DataProtection {
   env_redact_keys: string[];
 }
 
+export interface SloConfig {
+  enabled: boolean;
+  latency_p95_ms: number;
+  error_rate_pct: number;
+  drift_threshold: number;
+  min_approval_rate_pct: number | null;
+  max_approval_rate_pct: number | null;
+  min_sample: number;
+  recent_hours: number;
+  baseline_days: number;
+}
+
+export interface SloBreach {
+  type: string;
+  observed: number;
+  threshold: number;
+  severity: string;
+  message: string;
+}
+
+export interface SloStatus {
+  enabled: boolean;
+  healthy: boolean;
+  window: { recent_hours: number; baseline_days: number; recent_start: string; evaluated_at: string };
+  metrics: { sample: number; p95_latency_ms: number; error_rate_pct: number; approval_rate_pct: number };
+  drift: { distance: number; threshold: number; measurable: boolean; recent: Record<string, number>; baseline: Record<string, number> };
+  objective: Record<string, number | null>;
+  breaches: SloBreach[];
+  recent_events: { detail: string; created_at: string; breach_types: string[] }[];
+}
+
 export interface PromotionRecord {
   id: number;
   entity_type: "variable" | "rule" | "scorecard" | "policy";
