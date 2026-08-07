@@ -39,6 +39,27 @@ function toNumber(value: unknown): number {
   return Number(value);
 }
 
+/**
+ * Numeric coercion that returns null for anything non-numeric — the exact
+ * mirror of Python `_coerce_number`, Kotlin/Dart `numericOrNull`, and the Rust
+ * core. Ordered operators use this so a non-numeric operand yields `false`
+ * consistently across every engine.
+ */
+function numericOrNull(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "boolean" || value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value).trim();
+  if (text === "") {
+    return null;
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function toBoolean(value: unknown): boolean {
   if (typeof value === "boolean") {
     return value;
@@ -103,6 +124,37 @@ function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason
     };
   }
 
+  // Ordered comparisons + inclusive range are NUMERIC-ONLY in every engine
+  // (Python `_coerce_number`, Kotlin/Dart `numericOrNull`, Rust core). A
+  // non-numeric operand — a label, or a date/ISO string — makes the condition
+  // `false` so the web preview matches the server and the on-device SDKs
+  // exactly. Do NOT reintroduce lexical string ordering or Date.parse ordering
+  // here: that is the silent preview-vs-production divergence this block fixes.
+  if (operator === ">=" || operator === "<=" || operator === ">" || operator === "<" || operator === "between") {
+    const actualNumber = numericOrNull(actual);
+    const expectedNumber = numericOrNull(config.value);
+    if (operator === "between") {
+      const upperNumber = numericOrNull(config.value2);
+      const pass =
+        actualNumber !== null && expectedNumber !== null && upperNumber !== null &&
+        actualNumber >= expectedNumber && actualNumber <= upperNumber;
+      return { pass, expected: [config.value, config.value2] };
+    }
+    if (actualNumber === null || expectedNumber === null) {
+      return { pass: false, expected: config.value };
+    }
+    switch (operator) {
+      case ">=":
+        return { pass: actualNumber >= expectedNumber, expected: config.value };
+      case "<=":
+        return { pass: actualNumber <= expectedNumber, expected: config.value };
+      case ">":
+        return { pass: actualNumber > expectedNumber, expected: config.value };
+      case "<":
+        return { pass: actualNumber < expectedNumber, expected: config.value };
+    }
+  }
+
   if (fieldType === "boolean") {
     const actualValue = toBoolean(actual);
     const expectedValue = toBoolean(config.value);
@@ -114,26 +166,19 @@ function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason
     };
   }
 
+  // Date equality compares the parsed instant so "2024-01-01" == "2024-1-1".
+  // Ordered date comparisons are handled by the numeric-only block above (a
+  // date string is non-numeric -> false), matching the server and SDKs, which
+  // do not order dates via the numeric operators.
   if (fieldType === "date") {
     const actualDate = Date.parse(String(actual));
     const expectedDate = Date.parse(String(config.value));
-    const upperDate = Date.parse(String(config.value2));
 
     switch (operator) {
       case "==":
         return { pass: actualDate === expectedDate, expected: config.value };
       case "!=":
         return { pass: actualDate !== expectedDate, expected: config.value };
-      case ">":
-        return { pass: actualDate > expectedDate, expected: config.value };
-      case ">=":
-        return { pass: actualDate >= expectedDate, expected: config.value };
-      case "<":
-        return { pass: actualDate < expectedDate, expected: config.value };
-      case "<=":
-        return { pass: actualDate <= expectedDate, expected: config.value };
-      case "between":
-        return { pass: actualDate >= expectedDate && actualDate <= upperDate, expected: [config.value, config.value2] };
       default:
         return { pass: false, expected: config.value };
     }
@@ -142,23 +187,12 @@ function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason
   if (fieldType === "number" || node.type === "score") {
     const actualNumber = toNumber(actual);
     const expectedNumber = toNumber(config.value);
-    const upperNumber = toNumber(config.value2);
 
     switch (operator) {
       case "==":
         return { pass: actualNumber === expectedNumber, expected: config.value };
       case "!=":
         return { pass: actualNumber !== expectedNumber, expected: config.value };
-      case ">":
-        return { pass: actualNumber > expectedNumber, expected: config.value };
-      case ">=":
-        return { pass: actualNumber >= expectedNumber, expected: config.value };
-      case "<":
-        return { pass: actualNumber < expectedNumber, expected: config.value };
-      case "<=":
-        return { pass: actualNumber <= expectedNumber, expected: config.value };
-      case "between":
-        return { pass: actualNumber >= expectedNumber && actualNumber <= upperNumber, expected: [config.value, config.value2] };
       default:
         return { pass: false, expected: config.value };
     }
@@ -172,18 +206,6 @@ function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason
       return { pass: actualString === expectedString, expected: config.value };
     case "!=":
       return { pass: actualString !== expectedString, expected: config.value };
-    case ">":
-      return { pass: actualString > expectedString, expected: config.value };
-    case ">=":
-      return { pass: actualString >= expectedString, expected: config.value };
-    case "<":
-      return { pass: actualString < expectedString, expected: config.value };
-    case "<=":
-      return { pass: actualString <= expectedString, expected: config.value };
-    case "between": {
-      const upper = String(config.value2 ?? "");
-      return { pass: actualString >= expectedString && actualString <= upper, expected: [config.value, config.value2] };
-    }
     default:
       return { pass: false, expected: config.value };
   }

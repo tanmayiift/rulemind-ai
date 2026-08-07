@@ -1,5 +1,5 @@
 {
-  "$comment": "Canonical cross-engine operator contract for RuleMind. Every evaluation engine (TypeScript packages/rule-engine, Python apps/python-executor, Kotlin sdk-android/rulemind-core, Dart sdk-flutter) MUST satisfy every case below. Conformance tests in each language load this file and assert their compare() returns `expected`. Fixtures use native JSON types and set fieldType on ordering/equality cases so all engines agree without relying on value-string-parsing differences. Do not weaken a case to make an engine pass \u2014 fix the engine. NOTE: ordered operators (>=,<=,>,<) on NON-numeric strings DIVERGE across engines (Python/Rust -> false via numeric coercion; the TS engine does a lexical string compare) \u2014 so date ordering must not be done via numeric operators. That divergence is intentionally NOT asserted here.",
+  "$comment": "Canonical cross-engine operator contract for RuleMind. Every evaluation engine (TypeScript packages/rule-engine, Python apps/python-executor, Kotlin sdk-android/rulemind-core, Dart sdk-flutter) MUST satisfy every case below. Conformance tests in each language load this file and assert their compare() returns `expected`. Fixtures use native JSON types and set fieldType on ordering/equality cases so all engines agree without relying on value-string-parsing differences. Do not weaken a case to make an engine pass \u2014 fix the engine. CONTRACT: ordered operators (>=,<=,>,<,between) are NUMERIC-ONLY in every engine \u2014 a non-numeric operand (a label, or a date/ISO string) makes the condition false via numeric coercion (Python _coerce_number, Kotlin/Dart numericOrNull, Rust core, and the TS engine's numericOrNull). Dates are therefore never ordered via the numeric operators; date == / != compare the parsed instant. These non-numeric ordering cases ARE asserted below (previously they diverged in the TS engine, which used a lexical string compare / Date.parse ordering \u2014 now fixed).",
   "version": 1,
   "operators": [
     {
@@ -498,6 +498,67 @@
         "2026-02-01"
       ],
       "fieldType": "string",
+      "expected": true
+    },
+    {
+      "$comment": "Ordered ops on non-numeric strings are numeric-only -> false in every engine (no lexical ordering). 'banana' >= 'apple' is FALSE, not true.",
+      "name": "gte-non-numeric-string-false",
+      "actual": "banana",
+      "operator": ">=",
+      "value": "apple",
+      "fieldType": "string",
+      "expected": false
+    },
+    {
+      "name": "gt-non-numeric-string-false",
+      "actual": "zebra",
+      "operator": ">",
+      "value": "apple",
+      "fieldType": "string",
+      "expected": false
+    },
+    {
+      "name": "lt-non-numeric-string-false",
+      "actual": "apple",
+      "operator": "<",
+      "value": "zebra",
+      "fieldType": "string",
+      "expected": false
+    },
+    {
+      "name": "between-non-numeric-string-false",
+      "actual": "m",
+      "operator": "between",
+      "value": "a",
+      "value2": "z",
+      "fieldType": "string",
+      "expected": false
+    },
+    {
+      "$comment": "Dates are non-numeric, so ordered date comparison is false everywhere — dates must not be ordered via the numeric operators. Later-date > earlier-date is FALSE, not true.",
+      "name": "date-order-nonnumeric-false",
+      "actual": "2024-06-01",
+      "operator": ">",
+      "value": "2024-01-01",
+      "fieldType": "date",
+      "expected": false
+    },
+    {
+      "name": "date-between-nonnumeric-false",
+      "actual": "2024-06-01",
+      "operator": "between",
+      "value": "2024-01-01",
+      "value2": "2024-12-31",
+      "fieldType": "date",
+      "expected": false
+    },
+    {
+      "$comment": "Date == compares the parsed instant, so equivalent spellings match.",
+      "name": "date-eq-parsed-instant",
+      "actual": "2024-01-01",
+      "operator": "==",
+      "value": "2024-01-01",
+      "fieldType": "date",
       "expected": true
     }
   ]
