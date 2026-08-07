@@ -16,6 +16,10 @@ export interface SessionMember {
 }
 
 interface RuleMindUiState {
+  // True once zustand/persist has rehydrated from localStorage. Data fetches gate on this so they
+  // never fire with the pre-hydration (empty) apiKey — which otherwise caused a burst of 401s on
+  // every page before the persisted key loaded. Not persisted (runtime-only).
+  hydrated: boolean;
   apiBaseUrl: string;
   apiKey: string;
   sessionToken: string;
@@ -43,6 +47,7 @@ interface RuleMindUiState {
 export const useRuleMindStore = create<RuleMindUiState>()(
   persist(
     (set, get) => ({
+      hydrated: false,
       apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080",
       apiKey: process.env.NEXT_PUBLIC_RULEMIND_DEV_API_KEY ?? "",
       sessionToken: "",
@@ -74,6 +79,14 @@ export const useRuleMindStore = create<RuleMindUiState>()(
     }),
     {
       name: "rulemind-v3-ui",
+      // Flip `hydrated` once localStorage has been read, so gated fetches can run with the real key.
+      // Fires even when there is no persisted state (first visit), so the app never hangs unhydrated.
+      // localStorage is synchronous, so this callback can run DURING create() — before
+      // `useRuleMindStore` is assigned (temporal dead zone). Defer the setState to a microtask so the
+      // store reference is always defined by the time we flip the flag.
+      onRehydrateStorage: () => () => {
+        setTimeout(() => useRuleMindStore.setState({ hydrated: true }), 0);
+      },
       partialize: (state) => ({
         apiBaseUrl: state.apiBaseUrl,
         apiKey: state.apiKey,
