@@ -223,6 +223,94 @@ class AITests(unittest.TestCase):
         self.assertEqual(resp["top_reasons"], [])
         self.assertEqual(self.calls["n"], before)  # no LLM call when there is nothing to analyze
 
+    # ---- provider request shape: `temperature` is omitted for models that reject it ----
+    def test_model_omits_temperature_classification(self) -> None:
+        # Claude 5 family + OpenAI o-series reject `temperature`; older models keep it.
+        for m in ("claude-sonnet-5", "claude-opus-5", "claude-opus-5-20260101", "o1", "o3-mini"):
+            self.assertTrue(ai._model_omits_temperature(m), m)
+        for m in ("claude-3-5-sonnet-latest", "claude-3-7-sonnet", "gpt-4o", "gpt-4o-mini", ""):
+            self.assertFalse(ai._model_omits_temperature(m), m)
+
+    def test_anthropic_request_omits_temperature_for_claude5(self) -> None:
+        # Live regression: the mock-provider tests never exercised the real request body, so a
+        # Claude-5 `temperature` 400 shipped. Capture the outgoing body and assert the shape.
+        import asyncio
+        import httpx
+
+        bodies = []
+
+        class _Resp:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"content": [{"type": "text", "text": "ok"}], "usage": {}}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                bodies.append(json)
+                return _Resp()
+
+        orig = httpx.AsyncClient
+        httpx.AsyncClient = _Client
+        try:
+            asyncio.run(ai._call_anthropic("k", "claude-sonnet-5", "sys", "u", 100, 0.2))
+            self.assertNotIn("temperature", bodies[-1])          # Claude 5 -> omitted
+            asyncio.run(ai._call_anthropic("k", "claude-3-5-sonnet-latest", "sys", "u", 100, 0.2))
+            self.assertIn("temperature", bodies[-1])             # older model -> kept
+        finally:
+            httpx.AsyncClient = orig
+
+    def test_anthropic_retries_without_temperature_on_deprecation(self) -> None:
+        # An unknown future model that rejects `temperature` must not hard-fail: retry once without it.
+        import asyncio
+        import httpx
+
+        calls = []
+
+        class _Resp:
+            def __init__(self, code, text):
+                self.status_code = code
+                self.text = text
+
+            def json(self):
+                return {"content": [{"type": "text", "text": "ok"}], "usage": {}}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                calls.append(json)
+                if "temperature" in json:
+                    return _Resp(400, '{"error":{"message":"`temperature` is deprecated for this model."}}')
+                return _Resp(200, "")
+
+        orig = httpx.AsyncClient
+        httpx.AsyncClient = _Client
+        try:
+            text, _ = asyncio.run(ai._call_anthropic("k", "some-future-model", "sys", "u", 100, 0.2))
+            self.assertEqual(text, "ok")                 # succeeded after retry
+            self.assertEqual(len(calls), 2)              # first with temperature, then without
+            self.assertNotIn("temperature", calls[1])
+        finally:
+            httpx.AsyncClient = orig
+
     # ---- AI-feature gating (turn-on-later with a key) ----
     def test_ai_disabled_until_a_key_is_configured(self) -> None:
         cfg = self.client.get("/api/v1/ai/config", headers=self.headers).json()

@@ -65,15 +65,35 @@ class AIError(RuntimeError):
     pass
 
 
+# Newer models reject the `temperature` param outright (a 400, not a warning) because they
+# manage sampling internally: the Claude 5 family (claude-<tier>-5…) and OpenAI's o-series
+# reasoning models. We omit it for those, and additionally retry once without it if any other
+# model turns out to reject it — so a future model launch never hard-fails every AI call.
+_TEMPERATURE_FREE_RE = re.compile(r"claude-(?:opus|sonnet|haiku|fable)-5(?:$|[-.\d])")
+
+
+def _model_omits_temperature(model: Optional[str]) -> bool:
+    m = (model or "").lower()
+    return bool(_TEMPERATURE_FREE_RE.search(m) or re.match(r"o[1-9]", m))
+
+
+def _temperature_rejected(resp: Any, body: Dict[str, Any]) -> bool:
+    return resp.status_code == 400 and "temperature" in body and "temperature" in resp.text.lower()
+
+
 async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    body: Dict[str, Any] = {"model": model, "max_tokens": max_tokens, "system": system,
+                            "messages": [{"role": "user", "content": user}]}
+    if not _model_omits_temperature(model):
+        body["temperature"] = temperature
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": model, "max_tokens": max_tokens, "temperature": temperature,
-                      "system": system, "messages": [{"role": "user", "content": user}]},
-            )
+            resp = await client.post(url, headers=headers, json=body)
+            if _temperature_rejected(resp, body):
+                body.pop("temperature", None)
+                resp = await client.post(url, headers=headers, json=body)
     except Exception as e:  # network
         raise AIError(f"Anthropic request failed: {e}")
     if resp.status_code != 200:
@@ -86,14 +106,18 @@ async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_
 
 
 async def _call_openai(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
+    body: Dict[str, Any] = {"model": model, "max_tokens": max_tokens,
+                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    if not _model_omits_temperature(model):
+        body["temperature"] = temperature
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
-                json={"model": model, "max_tokens": max_tokens, "temperature": temperature,
-                      "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
-            )
+            resp = await client.post(url, headers=headers, json=body)
+            if _temperature_rejected(resp, body):
+                body.pop("temperature", None)
+                resp = await client.post(url, headers=headers, json=body)
     except Exception as e:
         raise AIError(f"OpenAI request failed: {e}")
     if resp.status_code != 200:
