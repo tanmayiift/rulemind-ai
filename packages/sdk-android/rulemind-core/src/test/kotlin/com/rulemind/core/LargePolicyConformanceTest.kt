@@ -40,6 +40,38 @@ class LargePolicyConformanceTest {
         }
     }
 
+    /**
+     * Negative/boundary coverage: the flat-AND threshold rule (onFail=reject) must reproduce the
+     * exact passed-count AND fail (reject) for sub-threshold inputs — 500/500 true approves, 499/500
+     * rejects. The big OR-rule above can't express a clean count threshold, so this closes the gap.
+     */
+    @Test
+    fun thresholdRuleBoundaryAndNegatives() {
+        val rule = CompiledRule(
+            id = spec.getJSONObject("thresholdRule").getString("id"),
+            name = "Threshold policy",
+            ruleFormat = "v2",
+            tree = parseTree(spec.getJSONObject("thresholdRule").getJSONObject("tree")),
+        )
+        val cases = spec.getJSONArray("thresholdCases")
+        val byTarget = HashMap<Int, String?>()
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            @Suppress("UNCHECKED_CAST")
+            val variables = native(case.getJSONObject("variables")) as Map<String, Any?>
+            val result = evaluator.evaluate(rule, variables)
+            assertEquals(case.getString("expectedOutcome"), result["outcome"], "threshold case $i outcome")
+            @Suppress("UNCHECKED_CAST")
+            val passed = (result["conditions"] as List<Map<String, Any?>>).count { it["passed"] == true }
+            assertEquals(case.getInt("trueConditions"), passed, "threshold case $i passed-count")
+            byTarget[case.getInt("targetTrue")] = result["outcome"] as String?
+        }
+        val n = spec.getJSONObject("meta").getInt("thresholdConditions")
+        assertEquals("approve", byTarget[n], "all-true must approve")
+        assertEquals("reject", byTarget[n - 1], "one-below-threshold MUST reject")
+        assertEquals("reject", byTarget[0], "none-true must reject")
+    }
+
     private fun parseTree(o: JSONObject): RuleTreeNode = RuleTreeNode(
         type = o.getString("type"),
         id = o.optStringOrNull("id"),

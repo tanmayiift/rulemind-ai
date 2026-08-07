@@ -200,6 +200,61 @@ def _violating_value(operator: str) -> Any:
     }[operator]
 
 
+def build_threshold_rule(num_conditions: int = 500, rule_id: str = "r_threshold") -> Dict[str, Any]:
+    """A v2 rule that is a FLAT AND of `num_conditions` conditions (all 12 operators, no NOT),
+    onPass=approve, onFail=reject. Because it is a pure conjunction, the outcome flips cleanly at a
+    single boundary: ALL conditions true -> approve; even one false -> reject. This lets the
+    conformance fixture assert the negative/boundary behaviour every engine must share — a case just
+    below the threshold (e.g. 499/500 true) MUST fail, not pass — which the big OR-based rule can't
+    express as a clean count threshold."""
+    children = [_large_condition(i, _LARGE_OPS[i % len(_LARGE_OPS)]) for i in range(num_conditions)]
+    tree = {"type": "group", "id": "troot", "logic": "AND", "children": children,
+            "onPass": "approve", "onFail": "reject"}
+    return {"id": rule_id, "name": "Threshold policy", "rule_format": "v2", "ruleFormat": "v2", "tree": tree}
+
+
+def _threshold_payload(num_conditions: int, num_true: int, num_variables: int = 750) -> Dict[str, Any]:
+    """A payload for the threshold rule where EXACTLY the first `num_true` conditions are satisfied
+    and the rest are violated (so trueConditions == num_true deterministically). `exists`/`!exists`
+    are handled by omitting the variable when the chosen value is the OMIT sentinel."""
+    payload: Dict[str, Any] = {}
+    for i in range(num_conditions):
+        op = _LARGE_OPS[i % len(_LARGE_OPS)]
+        value = _satisfying_value(op) if i < num_true else _violating_value(op)
+        if value != "__OMIT__":
+            payload[f"var_{i}"] = value
+    for i in range(num_conditions, num_variables):
+        payload[f"var_{i}"] = i  # extra vars to reach the ≥700-variable scale
+    return payload
+
+
+def build_threshold_cases(rule: Dict[str, Any], num_conditions: int = 500) -> List[Dict[str, Any]]:
+    """Boundary + negative cases for the threshold rule. Each records the ORACLE outcome and passed
+    count (computed live from app/logic.py) plus the intended `targetTrue`, so the conformance arms
+    assert both the exact count AND that sub-threshold cases fail (reject)."""
+    from app.logic import evaluate_rule_tree
+
+    targets = [
+        (num_conditions, "all-true → approve"),          # 500/500 -> approve
+        (num_conditions - 1, "one-below → reject"),        # 499/500 -> reject  (THE boundary)
+        (num_conditions - 2, "two-below → reject"),        # 498/500 -> reject
+        (num_conditions // 2, "half → reject"),            # 250/500 -> reject
+        (0, "none → reject"),                              # 0/500   -> reject
+    ]
+    cases: List[Dict[str, Any]] = []
+    for num_true, label in targets:
+        payload = _threshold_payload(num_conditions, num_true)
+        ev = evaluate_rule_tree(rule["tree"], payload)
+        cases.append({
+            "label": label,
+            "targetTrue": num_true,
+            "variables": payload,
+            "expectedOutcome": ev["outcome"],
+            "trueConditions": sum(1 for c in ev["conditions"] if c["passed"]),
+        })
+    return cases
+
+
 def build_large_rule(num_conditions: int = 600, conds_per_group: int = 20, rule_id: str = "r_large") -> Dict[str, Any]:
     """A v2 rule whose tree nests `num_conditions` conditions (all 12 operators) into
     alternating AND/OR subgroups with periodic NOT wrappers. Root onPass=approve,
@@ -288,11 +343,15 @@ def build_large_policy_spec(seed: int = 7) -> Dict[str, Any]:
             "expectedOutcome": ev["outcome"],
             "trueConditions": sum(1 for c in ev["conditions"] if c["passed"]),
         })
+    threshold_rule = build_threshold_rule(num_conditions=500)
+    threshold_cases = build_threshold_cases(threshold_rule, num_conditions=500)
     return {
-        "_comment": "Cross-engine large-policy conformance. Python core (app/logic.py) is the source of truth; the Kotlin (sdk-android) and Dart (sdk-flutter) on-device engines must resolve the SAME outcome AND the same number of passed conditions per case. Regenerate with: python -m simulation.gen_large_policy_spec",
-        "meta": {"conditions": 600, "cases": len(cases)},
+        "_comment": "Cross-engine large-policy conformance. Python core (app/logic.py) is the source of truth; the Kotlin (sdk-android) and Dart (sdk-flutter) on-device engines must resolve the SAME outcome AND the same number of passed conditions per case. The thresholdRule is a flat AND of 500 conditions (onFail=reject) so sub-threshold cases (e.g. 499/500 true) MUST reject — the negative/boundary coverage. Regenerate with: python -m simulation.gen_large_policy_spec",
+        "meta": {"conditions": 600, "cases": len(cases), "thresholdConditions": 500, "thresholdCases": len(threshold_cases)},
         "rule": rule,
         "cases": cases,
+        "thresholdRule": threshold_rule,
+        "thresholdCases": threshold_cases,
     }
 
 

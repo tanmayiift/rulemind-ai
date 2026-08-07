@@ -35,8 +35,31 @@ class LargePolicyConformanceTests(unittest.TestCase):
             passed = sum(1 for c in evaluate_rule_tree(rule["tree"], case["variables"])["conditions"] if c["passed"])
             self.assertEqual(passed, case["trueConditions"], f"case {i} passed-count")
 
+    def test_threshold_rule_boundary_and_negatives(self):
+        """The flat-AND threshold rule (onFail=reject): every case reproduces its outcome + exact
+        passed-count, AND the boundary is sharp — 500/500 true approves, 499/500 rejects. This is the
+        negative/boundary coverage: a sub-threshold input MUST fail, not pass."""
+        rule = SPEC["thresholdRule"]
+        by_target = {}
+        for i, case in enumerate(SPEC["thresholdCases"]):
+            outcome = evaluate_rule_definition(rule, case["variables"])["outcome"]
+            passed = sum(1 for c in evaluate_rule_tree(rule["tree"], case["variables"])["conditions"] if c["passed"])
+            self.assertEqual(outcome, case["expectedOutcome"], f"threshold case {i} ({case['label']}) outcome")
+            self.assertEqual(passed, case["trueConditions"], f"threshold case {i} ({case['label']}) count")
+            self.assertEqual(passed, case["targetTrue"], f"threshold case {i} exact target count")
+            by_target[case["targetTrue"]] = outcome
+        n = SPEC["meta"]["thresholdConditions"]
+        self.assertEqual(by_target[n], "approve", "all-true must approve")
+        self.assertEqual(by_target[n - 1], "reject", "one-below-threshold MUST reject (negative case)")
+        self.assertEqual(by_target[0], "reject", "none-true must reject")
+        # reject is actually represented in the corpus now (the old fixture had none)
+        self.assertIn("reject", {c["expectedOutcome"] for c in SPEC["thresholdCases"]})
+
     def test_fixture_actually_exercises_scale(self):
         self.assertEqual(SPEC["meta"]["conditions"], 600)
+        # threshold rule provides a clean count boundary + reject outcomes
+        self.assertEqual(SPEC["meta"]["thresholdConditions"], 500)
+        self.assertTrue(any(c["expectedOutcome"] == "reject" for c in SPEC["thresholdCases"]))
         # at least one case has 500+ conditions true, and 700+ variables supplied
         self.assertTrue(any(c["trueConditions"] >= 500 for c in SPEC["cases"]))
         self.assertTrue(any(len(c["variables"]) >= 700 for c in SPEC["cases"]))

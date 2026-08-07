@@ -27,6 +27,26 @@ void main() {
       expect(passed, cases[i]['trueConditions'], reason: 'case $i passed-count');
     }
   });
+
+  // Negative/boundary coverage: the flat-AND threshold rule (onFail=reject) must reproduce the exact
+  // count AND fail (reject) for sub-threshold inputs — 500/500 true approves, 499/500 rejects.
+  test('threshold rule: boundary is sharp and sub-threshold rejects', () {
+    final tRule = CompiledRule.fromJson(spec['thresholdRule'] as Map<String, dynamic>);
+    final tCases = (spec['thresholdCases'] as List).cast<Map<String, dynamic>>();
+    final byTarget = <int, String>{};
+    for (var i = 0; i < tCases.length; i++) {
+      final variables = (tCases[i]['variables'] as Map).cast<String, dynamic>();
+      final result = evaluator.evaluate(tRule, variables);
+      expect(result['outcome'], tCases[i]['expectedOutcome'], reason: 'threshold case $i outcome');
+      final passed = (result['conditions'] as List).where((c) => (c as Map)['passed'] == true).length;
+      expect(passed, tCases[i]['trueConditions'], reason: 'threshold case $i count');
+      byTarget[tCases[i]['targetTrue'] as int] = result['outcome'] as String;
+    }
+    final n = spec['meta']['thresholdConditions'] as int;
+    expect(byTarget[n], 'approve', reason: 'all-true must approve');
+    expect(byTarget[n - 1], 'reject', reason: 'one-below-threshold MUST reject');
+    expect(byTarget[0], 'reject', reason: 'none-true must reject');
+  });
 }
 
 File _locateSpec() {
