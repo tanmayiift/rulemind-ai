@@ -18,7 +18,7 @@ from .compiler import (
     NoProductionAssetsError,
     compile_bundle,
 )
-from .context import get_current_role, get_current_tenant_id
+from .context import get_current_api_key_id, get_current_role, get_current_tenant_id
 from .experience_studio import build_experience_manifest
 from .executor import ExecutionContext, PolicyExecutor
 from .logic import (
@@ -836,6 +836,21 @@ def promote_entity(entity_type: str, entity_id: str, promoted_by: str, reason: s
     entity = ensure_exists(getter(entity_id), entity_type, entity_id)
     ensure_promotable(entity)
     target_status = next_status(entity["status"])
+    tenant_id = active_tenant_id()
+    # The ledger records the AUTHENTICATED actor, not the client-supplied label — so dual-control
+    # can trust it. (promoted_by is kept as the human-readable reason/attribution.)
+    actor = active_actor()
+    # Dual control (maker != checker): when enabled, promoting to production must be done by a
+    # different member than the one who promoted it to UAT. This is a genuine two-person control
+    # over the dev -> uat -> prod path, enforced without any schema change.
+    if target_status == "prod" and storage.dual_control_enabled(tenant_id):
+        maker = storage.last_promotion_actor(entity_type, entity_id, "uat", tenant_id=tenant_id)
+        if maker is not None and maker == actor:
+            raise HTTPException(
+                status_code=403,
+                detail="Dual control: promotion to production must be approved by a different member "
+                       "than the one who promoted it to UAT.",
+            )
     updated = updater(entity_id, {"status": target_status}, bump_version=False)
     # Snapshot the policy's decision definition so the next promotion can be diffed against this
     # one (and this change is recorded on the approval for audit).
@@ -843,8 +858,11 @@ def promote_entity(entity_type: str, entity_id: str, promoted_by: str, reason: s
     if entity_type == "policy":
         from .policy_diff import policy_snapshot
 
-        snapshot = policy_snapshot(storage, active_tenant_id(), entity)
-    storage.add_promotion(entity_type, entity_id, entity["status"], target_status, promoted_by, reason, snapshot=snapshot)
+        snapshot = policy_snapshot(storage, tenant_id, entity)
+    # Store the authenticated actor as promoted_by so the ledger (and the dual-control check on the
+    # next stage) reflects who really acted; fall back to the supplied label when unauthenticated.
+    ledger_actor = actor if actor != "system" else (promoted_by or "system")
+    storage.add_promotion(entity_type, entity_id, entity["status"], target_status, ledger_actor, reason, snapshot=snapshot)
     return ensure_exists(updated, entity_type, entity_id)
 
 
@@ -977,6 +995,15 @@ def active_role(request: Optional[Request] = None) -> str:
     if request is not None and getattr(request.state, "role", None):
         return str(request.state.role)
     return str(get_current_role() or "owner")
+
+
+def active_actor(request: Optional[Request] = None) -> str:
+    """The authenticated actor's stable id (member session -> "member:<id>", else the API key id).
+    This is the trustworthy identity used for dual-control and the promotion ledger — it is derived
+    from the authenticated session, never from a client-supplied field."""
+    if request is not None and getattr(request.state, "api_key_id", None):
+        return str(request.state.api_key_id)
+    return str(get_current_api_key_id() or "system")
 
 
 def public_api_base_url(request: Optional[Request] = None) -> str:

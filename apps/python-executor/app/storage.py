@@ -1616,6 +1616,26 @@ class Storage:
             rows = session.scalars(select(Promotion).where(Promotion.tenant_id == resolved).order_by(desc(Promotion.id))).all()
             return [self._promotion_to_dict(row) for row in rows]
 
+    def last_promotion_actor(self, entity_type: str, entity_id: str, to_status: str, tenant_id: Optional[str] = None) -> Optional[str]:
+        """The ``promoted_by`` (authenticated actor) of the most recent promotion of this entity to
+        ``to_status`` — used by dual-control to enforce that the person approving to production is not
+        the same one who promoted it to UAT. None if there is no such prior promotion."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalars(
+                select(Promotion)
+                .where(Promotion.tenant_id == resolved, Promotion.entity_type == entity_type,
+                       Promotion.entity_id == entity_id, Promotion.to_status == to_status)
+                .order_by(desc(Promotion.id)).limit(1)
+            ).first()
+            return row.promoted_by if row else None
+
+    def dual_control_enabled(self, tenant_id: Optional[str] = None) -> bool:
+        """Whether this workspace requires two-person control (maker != checker) for promotion to
+        production. Stored under engine_config.require_dual_control; off by default."""
+        settings = self.get_settings(tenant_id=tenant_id)
+        return bool((settings.get("engine_config", {}) or {}).get("require_dual_control", False))
+
     def add_error_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
         with self.connect() as session:
