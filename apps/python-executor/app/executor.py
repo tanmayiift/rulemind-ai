@@ -856,25 +856,32 @@ class PolicyExecutor:
             pass
 
     def _log_decision(self, ctx: ExecutionContext, source: str, sdk_version: Optional[str], experiment_variant: Optional[str]) -> None:
-        self.storage.add_decision(
-            {
-                "tenant_id": ctx.tenant_id,
-                "id": str(uuid.uuid4()),
-                "policy_id": ctx.policy_id,
-                "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
-                "computed_variables": copy.deepcopy(ctx.variables),
-                "rule_results": copy.deepcopy(ctx.rule_results),
-                "scorecard_result": next(iter(ctx.scorecard_results.values()), None),
-                "trace": copy.deepcopy(ctx.step_trace),
-                "outcome": ctx.outcome if ctx.outcome != "pending" else "review",
-                "latency_ms": ctx.total_latency_ms,
-                "source": source,
-                "sdk_version": sdk_version,
-                "experiment_id": ctx.experiment_id,
-                "experiment_variant": experiment_variant,
-            },
-            tenant_id=ctx.tenant_id,
-        )
+        try:
+            self.storage.add_decision(
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "id": str(uuid.uuid4()),
+                    "policy_id": ctx.policy_id,
+                    "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
+                    "computed_variables": copy.deepcopy(ctx.variables),
+                    "rule_results": copy.deepcopy(ctx.rule_results),
+                    "scorecard_result": next(iter(ctx.scorecard_results.values()), None),
+                    "trace": copy.deepcopy(ctx.step_trace),
+                    "outcome": ctx.outcome if ctx.outcome != "pending" else "review",
+                    "latency_ms": ctx.total_latency_ms,
+                    "source": source,
+                    "sdk_version": sdk_version,
+                    "experiment_id": ctx.experiment_id,
+                    "experiment_variant": experiment_variant,
+                },
+                tenant_id=ctx.tenant_id,
+            )
+        except Exception as exc:
+            # A failed write on the async path used to vanish silently. Surface it (metric +
+            # error_event) so a persisted-decision gap is alertable, without breaking the decision.
+            from . import decision_log
+
+            decision_log.record_write_failure(self.storage, ctx.tenant_id, {"source": source, "policy_id": ctx.policy_id}, exc)
 
     def _execute_connector(self, step: Dict[str, Any], ctx: ExecutionContext, connectors: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         ref_id = step.get("ref_id") or step.get("ref")

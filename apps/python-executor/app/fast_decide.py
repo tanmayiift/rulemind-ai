@@ -294,5 +294,9 @@ def _log_decision(storage: Any, tenant_id: str, decision: Dict[str, Any], payloa
 def _safe_add_decision(storage: Any, record: Dict[str, Any], tenant_id: str) -> None:
     try:
         storage.add_decision(record, tenant_id=tenant_id)
-    except Exception:  # pragma: no cover - logging must never fail a decision
-        pass
+    except Exception as exc:  # logging must never fail a decision — but must NOT be silent
+        from . import decision_log
+
+        decision_log.record_write_failure(
+            storage, tenant_id, {"source": record.get("source"), "policy_id": record.get("policy_id")}, exc
+        )

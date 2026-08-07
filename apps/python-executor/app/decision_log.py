@@ -29,13 +29,59 @@ import atexit
 import os
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set
+
+from prometheus_client import REGISTRY, Counter
 
 _pool: Optional[ThreadPoolExecutor] = None
 _pending: Set[Future] = set()
 _lock = threading.Lock()
 _semaphore: Optional[threading.BoundedSemaphore] = None
 _atexit_registered = False
+
+
+def _failure_counter() -> Counter:
+    """Reload-safe Counter: the durability tests importlib.reload() this module, which would re-run a
+    bare Counter() and raise 'Duplicated timeseries' on the global registry. Reuse the already-
+    registered collector on reload instead of redefining it."""
+    name = "rulemind_decision_log_write_failures"
+    existing = getattr(REGISTRY, "_names_to_collectors", {}).get(name) or \
+        getattr(REGISTRY, "_names_to_collectors", {}).get(name + "_total")
+    if existing is not None:
+        return existing
+    return Counter(name, "Decision-log writes that failed (decision computed but not persisted)", ["source"])
+
+
+# A decision-log write that fails on the async path used to be swallowed silently — the decision was
+# computed and returned (200) but never persisted, with no signal anywhere. This counter is the
+# reliable alarm (no DB needed); record_write_failure also best-effort writes an error_event.
+DECISION_LOG_FAILURES = _failure_counter()
+
+
+def record_write_failure(storage: Any, tenant_id: Optional[str], context: Optional[Dict[str, Any]], exc: BaseException) -> None:
+    """Never-raising recorder for a dropped decision-log write. Increments the failure metric (the
+    reliable signal) and best-effort writes an error_event so the drop is alertable instead of silent.
+    Both steps are guarded — recording a failure must never itself break anything."""
+    ctx = context or {}
+    try:
+        DECISION_LOG_FAILURES.labels(source=str(ctx.get("source", "unknown"))).inc()
+    except Exception:  # pragma: no cover - metric must never raise
+        pass
+    try:
+        storage.add_error_event(
+            {
+                "tenant_id": tenant_id,
+                "scope": "decision",
+                "stage": "decision_log_write",
+                "entity_type": "policy",
+                "entity_id": ctx.get("policy_id"),
+                "message": "Decision-log write failed — decision computed but NOT persisted: {0}".format(exc),
+                "details": {"error": str(exc), "source": ctx.get("source")},
+            },
+            tenant_id=tenant_id,
+        )
+    except Exception:  # pragma: no cover - error_event uses the same DB; may also be down
+        pass
 
 
 def is_async() -> bool:
