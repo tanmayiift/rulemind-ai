@@ -38,7 +38,58 @@ except ImportError:  # pragma: no cover - Rust extension optional
 _IO_STEP_TYPES = {"action", "review_gate", "transform", "model"}
 
 _CACHE_LOCK = threading.Lock()
-_SERVING: Dict[str, Dict[str, Any]] = {}
+# key -> (epoch_built_at, bundle). The epoch stamp lets a replica that never received the
+# in-process invalidate() call still detect a stale bundle and rebuild — see _current_epoch.
+_SERVING: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+
+# --- Cross-replica cache coherence -------------------------------------------------
+# The in-memory serving cache is per-process. In a multi-replica deployment (many workers
+# across many pods), invalidate() on the worker that handled the edit clears only THAT
+# process; siblings would serve a stale bundle indefinitely (until restart). To fix this
+# without a per-request DB/Redis round-trip, every tenant carries a monotonic cache
+# "epoch": bumped on invalidate() (Redis INCR when Redis is present, else a process-local
+# counter), and read on the decide path with a short TTL cache. A cached bundle whose
+# stamped epoch != the tenant's current epoch is rebuilt. Worst-case cross-replica
+# staleness is therefore FAST_CACHE_EPOCH_TTL (default 1s; set 0 to check every decision),
+# never unbounded. Single-process/dev is unaffected (local counter + local clear).
+_EPOCH_KEY = "rulemind:fastcache:epoch:{0}"
+_EPOCH_TTL = float(os.getenv("FAST_CACHE_EPOCH_TTL", "1.0"))
+_LOCAL_EPOCH: Dict[str, int] = {}
+_EPOCH_CACHE: Dict[str, Tuple[float, int]] = {}  # tenant_id -> (fetched_at_monotonic, epoch)
+
+
+def _redis():  # pragma: no cover - trivial indirection, exercised via integration
+    """The shared sync Redis client, or None when Redis is not configured/reachable."""
+    try:
+        from .runtime import redis_client
+
+        return redis_client()
+    except Exception:
+        return None
+
+
+def _current_epoch(tenant_id: str) -> int:
+    """The tenant's current cache epoch, read at most once per FAST_CACHE_EPOCH_TTL.
+
+    Redis-backed (authoritative across replicas) when available, else a process-local
+    counter (correct for single-process). Never raises — a Redis hiccup falls back to the
+    last known / local value so decisions keep serving.
+    """
+    now = time.monotonic()
+    hit = _EPOCH_CACHE.get(tenant_id)
+    if hit is not None and (now - hit[0]) < _EPOCH_TTL:
+        return hit[1]
+    epoch = _LOCAL_EPOCH.get(tenant_id, 0)
+    client = _redis()
+    if client is not None:
+        try:
+            raw = client.get(_EPOCH_KEY.format(tenant_id))
+            if raw is not None:
+                epoch = int(raw)
+        except Exception:
+            pass  # keep the local/last value; correctness degrades to single-process semantics
+    _EPOCH_CACHE[tenant_id] = (now, epoch)
+    return epoch
 
 
 def is_fast_servable(policy: Dict[str, Any]) -> bool:
@@ -61,13 +112,30 @@ def fast_path_eligible(storage: Any, policy: Dict[str, Any], tenant_id: str) -> 
 
 
 def invalidate(tenant_id: Optional[str] = None) -> None:
-    """Drop cached bundles (all, or one tenant) — call on any publish/update."""
+    """Drop cached bundles (all, or one tenant) — call on any publish/update.
+
+    For a specific tenant this also **bumps the tenant's cache epoch** so sibling replicas
+    (which never saw this call) rebuild on their next epoch read. With Redis the bump is a
+    global INCR (authoritative for all replicas); without Redis it is a process-local
+    counter (single-process correctness). tenant_id=None is a full local reset (tests).
+    """
     with _CACHE_LOCK:
         if tenant_id is None:
             _SERVING.clear()
-        else:
-            for key in [k for k in _SERVING if k.startswith(f"{tenant_id}:")]:
-                _SERVING.pop(key, None)
+            _EPOCH_CACHE.clear()
+            _LOCAL_EPOCH.clear()
+            return
+        for key in [k for k in _SERVING if k.startswith(f"{tenant_id}:")]:
+            _SERVING.pop(key, None)
+        _LOCAL_EPOCH[tenant_id] = _LOCAL_EPOCH.get(tenant_id, 0) + 1
+        # Force this process to re-read the epoch next time (don't serve from its TTL cache).
+        _EPOCH_CACHE.pop(tenant_id, None)
+    client = _redis()
+    if client is not None:
+        try:
+            client.incr(_EPOCH_KEY.format(tenant_id))
+        except Exception:  # pragma: no cover - best-effort; local clear already happened
+            pass
 
 
 def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,13 +174,14 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
 
 def _serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dict[str, Any]:
     key = f"{tenant_id}:{policy['id']}"
+    epoch = _current_epoch(tenant_id)
     with _CACHE_LOCK:
         cached = _SERVING.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == epoch:
+        return cached[1]
     built = _build_serving_bundle(storage, tenant_id, policy)
     with _CACHE_LOCK:
-        _SERVING[key] = built
+        _SERVING[key] = (epoch, built)
     return built
 
 
