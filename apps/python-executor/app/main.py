@@ -1225,6 +1225,14 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    # Flush any in-flight async decision-log writes before the process exits, so a graceful
+    # stop / rolling deploy (SIGTERM) never loses a queued decision.
+    try:
+        from . import decision_log
+
+        decision_log.shutdown()
+    except Exception:  # pragma: no cover - best effort
+        pass
     # Relinquish scheduler leadership on graceful shutdown so a surviving replica
     # takes over immediately instead of waiting for the lease to expire.
     try:
