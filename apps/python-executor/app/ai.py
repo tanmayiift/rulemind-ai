@@ -339,3 +339,79 @@ async def explain_decision(provider: str, api_key: str, decision: Dict[str, Any]
         raise AIError("Model output was not a valid explanation.")
     obj.setdefault("reason_codes", [])
     return obj
+
+
+# ---- feature: NL/structured definition -> a scorecard "predictor" ------------
+
+_PREDICTOR_SYSTEM = """You are RuleMind's predictor copilot. Turn a plain-English predictor definition
+into a RuleMind SCORECARD (a points-based predictor over existing variables). Output STRICT JSON, no
+prose. Use ONLY the provided variable ids.
+
+Shape: {"name":"<short>","base_score":<int>,"max_score":<int>,"bins":[
+  {"variable_id":"<id>","weight":1.0,"ranges":[{"min":<num>,"max":<num>,"points":<int>}, ...]}, ...]}
+Rules:
+- Higher points = lower risk (or as the definition specifies). Cover the plausible value range per
+  variable with non-overlapping ranges. Never invent variable ids. Keep it to <= 8 bins.
+"""
+
+
+async def generate_predictor(provider: str, api_key: str, definition: str, variables: List[Dict[str, Any]],
+                             model: Optional[str] = None) -> Dict[str, Any]:
+    var_lines = "\n".join(f"- {v.get('id')} ({v.get('name','')}, {v.get('category','')})" for v in variables[:120])
+    user = f"Available variables:\n{var_lines}\n\nPredictor definition:\n{definition}\n\nReturn the JSON now."
+    raw = await complete(provider, api_key, _PREDICTOR_SYSTEM, user, model=model, max_tokens=1800, temperature=0.1)
+    obj = extract_json(raw)
+    if not isinstance(obj, dict) or not isinstance(obj.get("bins"), list) or not obj["bins"]:
+        raise AIError("Model output was not a valid predictor/scorecard object.")
+    obj.setdefault("name", "AI predictor")
+    obj.setdefault("base_score", 300)
+    obj.setdefault("max_score", 900)
+    return obj
+
+
+# ---- feature: analyze a champion/challenger experiment -----------------------
+
+_EXPERIMENT_SYSTEM = """You are RuleMind's experimentation analyst. Given a champion/challenger
+experiment's per-variant results (traffic, decision counts, outcome mix, avg score/latency), give a
+crisp read and a decision. Be quantitative and reference the numbers; never invent data. Output STRICT
+JSON: {"summary":"<3-5 sentences>","recommendation":"promote"|"hold"|"rollback","winning_variant":
+"<variant id or ''>","rationale":"<why, referencing the metrics>","cautions":["<short>", ...]}"""
+
+
+async def analyze_experiment(provider: str, api_key: str, experiment: Dict[str, Any], results: Dict[str, Any],
+                             model: Optional[str] = None) -> Dict[str, Any]:
+    import json as _json
+    user = (f"Experiment: {experiment.get('name')} (hash_key={experiment.get('hash_key')}, "
+            f"status={experiment.get('status')})\nVariants: {_json.dumps(experiment.get('variants', []))[:1500]}\n\n"
+            f"Results:\n{_json.dumps(results)[:3500]}\n\nReturn the JSON now.")
+    raw = await complete(provider, api_key, _EXPERIMENT_SYSTEM, user, model=model, max_tokens=900, temperature=0.2)
+    obj = extract_json(raw)
+    if not isinstance(obj, dict) or "recommendation" not in obj:
+        raise AIError("Model output was not a valid experiment analysis.")
+    obj.setdefault("summary", "")
+    obj.setdefault("cautions", [])
+    return obj
+
+
+# ---- feature: explain WHY rejections went up in a policy ---------------------
+
+_REJECTION_SYSTEM = """You are RuleMind's decision-quality analyst. Given the top drivers of DECLINE/
+REVIEW outcomes for a policy (each: variable, operator, threshold, how often it failed, and the recent
+vs baseline rejection rate), explain in plain English the MAIN reasons rejections changed, ranked by
+impact, and suggest concrete, safe next steps. Be factual and reference the numbers; do not invent
+drivers. Output STRICT JSON: {"summary":"<3-5 sentences>","top_reasons":[{"driver":"<short>","impact":
+"<why it matters + the number>"}, ...],"recommendations":["<short, actionable>", ...]}"""
+
+
+async def analyze_rejections(provider: str, api_key: str, policy_name: str, drivers: Any,
+                             model: Optional[str] = None) -> Dict[str, Any]:
+    import json as _json
+    user = (f"Policy: {policy_name}\n\nRejection drivers (most impactful first):\n"
+            f"{_json.dumps(drivers)[:3500]}\n\nReturn the JSON now.")
+    raw = await complete(provider, api_key, _REJECTION_SYSTEM, user, model=model, max_tokens=900, temperature=0.2)
+    obj = extract_json(raw)
+    if not isinstance(obj, dict) or "top_reasons" not in obj:
+        raise AIError("Model output was not a valid rejection analysis.")
+    obj.setdefault("summary", "")
+    obj.setdefault("recommendations", [])
+    return obj

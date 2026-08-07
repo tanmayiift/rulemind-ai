@@ -39,16 +39,31 @@ class AITests(unittest.TestCase):
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
         self.calls = {"n": 0}
+        # A real seeded variable id so an AI-generated predictor draft validates against known ids.
+        self.var_id = app_main.storage.list_variables()[0]["id"]
 
         async def fake(api_key, model, system, user, max_tokens, temperature):
             self.calls["n"] += 1
+            sys_l = system.lower()
             if "POLICY" in system:
                 return json.dumps({"name": "Loan flow", "steps": [
                     {"id": "s1", "type": "rule", "ref_id": "rule_loan_bureau_gate", "label": "Bureau"},
                     {"id": "s2", "type": "outcome", "outcome": "approve", "label": "Approve"}]})
-            if "explainer" in system.lower():
+            if "explainer" in sys_l:
                 return json.dumps({"summary": "Approved because the bureau score cleared the threshold.",
                                    "reason_codes": ["Bureau score above cutoff"]})
+            if "predictor copilot" in sys_l:
+                return json.dumps({"name": "Risk predictor", "base_score": 300, "max_score": 900, "bins": [
+                    {"variable_id": self.var_id, "weight": 1.0, "ranges": [
+                        {"min": 0, "max": 3, "points": 10}, {"min": 3, "max": 100, "points": 40}]}]})
+            if "experimentation analyst" in sys_l:
+                return json.dumps({"summary": "Challenger B approves 4% more at equal risk.",
+                                   "recommendation": "promote", "winning_variant": "B",
+                                   "rationale": "Higher approval, comparable decline mix.", "cautions": ["Small sample"]})
+            if "decision-quality analyst" in sys_l:
+                return json.dumps({"summary": "Bureau-score failures drive most declines.",
+                                   "top_reasons": [{"driver": "bureau_score < 700", "impact": "fails on 60% of declines"}],
+                                   "recommendations": ["Review the bureau cutoff band"]})
             return _RULE_JSON
         self._orig = dict(ai._PROVIDERS)
         ai._PROVIDERS["anthropic"] = fake
@@ -138,6 +153,75 @@ class AITests(unittest.TestCase):
         resp = self.client.post("/api/v1/ai/explain-decision", headers=self.headers, json={"decision_id": did}).json()
         self.assertIn("summary", resp)
         self.assertIn("reason_codes", resp)
+
+    # ---- new AI actions: predictor / experiment-analysis / rejection-analysis ----
+    def test_generate_predictor_draft_validates_against_known_variables(self) -> None:
+        self._set_key()
+        resp = self.client.post("/api/v1/ai/generate-predictor", headers=self.headers,
+                                json={"definition": "build a scorecard predictor from bureau variables to rank credit risk"}).json()
+        self.assertTrue(resp["in_scope"])
+        self.assertEqual(self.calls["n"], 1)
+        self.assertTrue(resp["valid"], resp.get("validation_error"))
+        self.assertEqual(resp["draft"]["bins"][0]["variable_id"], self.var_id)
+
+    def test_generate_predictor_off_topic_spends_no_token(self) -> None:
+        self._set_key()
+        resp = self.client.post("/api/v1/ai/generate-predictor", headers=self.headers,
+                                json={"definition": "recommend a good pizza topping"}).json()
+        self.assertFalse(resp["in_scope"])
+        self.assertEqual(self.calls["n"], 0)
+
+    def test_generate_predictor_flags_unknown_variable_ids(self) -> None:
+        # Force the model to emit an unknown id — the draft must be marked invalid, never silently saved.
+        async def bad(api_key, model, system, user, max_tokens, temperature):
+            self.calls["n"] += 1
+            return json.dumps({"name": "x", "bins": [{"variable_id": "does_not_exist", "weight": 1.0,
+                                                      "ranges": [{"min": 0, "max": 1, "points": 5}]}]})
+        ai._PROVIDERS["anthropic"] = bad
+        self._set_key()
+        resp = self.client.post("/api/v1/ai/generate-predictor", headers=self.headers,
+                                json={"definition": "a scorecard predictor over the risk variables"}).json()
+        self.assertFalse(resp["valid"])
+        self.assertIn("does_not_exist", resp["validation_error"])
+
+    def test_analyze_experiment(self) -> None:
+        self._set_key()
+        exp = self.client.post("/api/v1/experiments", headers=self.headers, json={
+            "name": "Bureau cutoff A/B", "status": "running", "hash_key": "user_id",
+            "target_policy_id": "policy_instant_personal_loan",
+            "variants": [{"id": "A", "policy_id": "policy_instant_personal_loan", "weight": 50},
+                         {"id": "B", "policy_id": "policy_instant_personal_loan", "weight": 50}]}).json()
+        resp = self.client.post("/api/v1/ai/analyze-experiment", headers=self.headers,
+                                json={"experiment_id": exp["id"]}).json()
+        self.assertIn(resp["recommendation"], {"promote", "hold", "rollback"})
+        self.assertEqual(resp["experiment_id"], exp["id"])
+        self.assertIn("results", resp)
+
+    def test_analyze_experiment_missing_is_404(self) -> None:
+        self._set_key()
+        resp = self.client.post("/api/v1/ai/analyze-experiment", headers=self.headers,
+                                json={"experiment_id": "nope"})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_analyze_rejections(self) -> None:
+        self._set_key()
+        for score in (400, 420, 800):
+            self.client.post("/api/v1/decide", headers=self.headers,
+                             json={"policyId": "policy_instant_personal_loan", "payload": {"loan": {"bureau_score": score}}})
+        resp = self.client.post("/api/v1/ai/analyze-rejections", headers=self.headers,
+                                json={"policy_id": "policy_instant_personal_loan", "limit": 100}).json()
+        self.assertIn("summary", resp)
+        self.assertIsInstance(resp["top_reasons"], list)
+        self.assertIn("drivers", resp)
+
+    def test_analyze_rejections_no_declines_skips_llm(self) -> None:
+        self._set_key()
+        # No decline/review decisions for this policy -> nothing to analyze -> no paid call.
+        before = self.calls["n"]
+        resp = self.client.post("/api/v1/ai/analyze-rejections", headers=self.headers,
+                                json={"policy_id": "policy_instant_personal_loan", "limit": 100}).json()
+        self.assertEqual(resp["top_reasons"], [])
+        self.assertEqual(self.calls["n"], before)  # no LLM call when there is nothing to analyze
 
     # ---- AI-feature gating (turn-on-later with a key) ----
     def test_ai_disabled_until_a_key_is_configured(self) -> None:

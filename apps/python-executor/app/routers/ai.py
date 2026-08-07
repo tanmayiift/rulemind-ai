@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .. import main
@@ -60,6 +60,22 @@ class AIGeneratePolicyRequest(BaseModel):
 
 class AIExplainRequest(BaseModel):
     decision_id: str
+    provider: Optional[str] = None
+
+
+class AIPredictorRequest(BaseModel):
+    definition: str
+    provider: Optional[str] = None
+
+
+class AIExperimentAnalysisRequest(BaseModel):
+    experiment_id: str
+    provider: Optional[str] = None
+
+
+class AIRejectionAnalysisRequest(BaseModel):
+    policy_id: Optional[str] = None  # None = across all policies
+    limit: int = 500
     provider: Optional[str] = None
 
 
@@ -210,3 +226,94 @@ async def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error))
     return {"decision_id": request.decision_id, "outcome": decision.get("outcome"), **result}
+
+
+@router.post("/api/v1/ai/generate-predictor")
+async def ai_generate_predictor(request: AIPredictorRequest) -> Dict[str, Any]:
+    """Definition -> draft SCORECARD predictor over existing variables. Like generate-rule/policy:
+    off-topic is refused locally (no token spent) and the result is a DRAFT — it is validated and
+    must still be test-gated before it is saved/promoted. Nothing is created here."""
+    from ..ai import AIError, OUT_OF_SCOPE_MESSAGE, generate_predictor, is_in_scope
+
+    variables = main.storage.list_variables()
+    names = [v.get("name", "") for v in variables] + [v.get("id", "") for v in variables]
+    in_scope, reason = is_in_scope(request.definition, names)
+    if not in_scope:
+        return {"in_scope": False, "reason": reason, "message": OUT_OF_SCOPE_MESSAGE}
+    if not variables:
+        raise HTTPException(status_code=422, detail="No variables exist yet — create variables before generating a predictor.")
+    _enforce_ai_budget()
+    creds = main.storage.get_ai_credentials(request.provider)
+    if not creds:
+        raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
+    try:
+        draft = await generate_predictor(creds["provider"], creds["api_key"], request.definition, variables, model=creds.get("model"))
+    except AIError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+    # Draft-validate: every referenced variable id must exist (the model is told to use only real ids,
+    # but we never trust that — an unknown id would produce a silently-broken scorecard).
+    known = {v.get("id") for v in variables}
+    unknown = sorted({b.get("variable_id") for b in draft.get("bins", []) if b.get("variable_id") not in known})
+    valid = not unknown
+    validation_error = None if valid else "References unknown variable id(s): {0}".format(", ".join(unknown))
+    return {"in_scope": True, "provider": creds["provider"], "draft": draft, "valid": valid, "validation_error": validation_error}
+
+
+@router.post("/api/v1/ai/analyze-experiment")
+async def ai_analyze_experiment(request: AIExperimentAnalysisRequest, http_request: Request) -> Dict[str, Any]:
+    """Read a champion/challenger experiment's live results and return a quantitative promote/hold/
+    rollback recommendation. The metrics are computed server-side (no LLM); the LLM only interprets."""
+    from ..ai import AIError, analyze_experiment
+    from ..analytics import experiment_analytics
+
+    experiment = main.storage.get_experiment(request.experiment_id, tenant_id=main.active_tenant_id(http_request))
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+    try:
+        results = experiment_analytics(main.storage, main.active_tenant_id(http_request), request.experiment_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    _enforce_ai_budget()
+    creds = main.storage.get_ai_credentials(request.provider)
+    if not creds:
+        raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
+    try:
+        analysis = await analyze_experiment(creds["provider"], creds["api_key"], experiment, results, model=creds.get("model"))
+    except AIError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    return {"experiment_id": request.experiment_id, "provider": creds["provider"], "results": results, **analysis}
+
+
+@router.post("/api/v1/ai/analyze-rejections")
+async def ai_analyze_rejections(request: AIRejectionAnalysisRequest) -> Dict[str, Any]:
+    """Explain WHY rejections changed for a policy. The drivers are computed server-side from the
+    decision log (pure compute, same as /analytics/rejection-drivers); the LLM only interprets them."""
+    from ..ai import AIError, analyze_rejections
+    from ..analytics import rejection_drivers
+
+    decisions = main.storage.list_decisions(limit=max(1, min(request.limit, 1000)))
+    policy_name = "all policies"
+    if request.policy_id:
+        policy = main.storage.get_policy(request.policy_id)
+        if not policy:
+            raise HTTPException(status_code=404, detail="Policy not found.")
+        policy_name = policy.get("name") or request.policy_id
+        decisions = [d for d in decisions if d.get("policy_id") == request.policy_id]
+    drivers = rejection_drivers(decisions)
+    # focus_count = number of decline/review decisions. The drivers list is non-empty even when all
+    # decisions approved (it lists every condition seen), so gate on focus_count — no declines means
+    # there is nothing to explain, and we must not spend a token on it.
+    if not drivers.get("focus_count"):
+        return {"policy_id": request.policy_id, "policy_name": policy_name, "drivers": drivers,
+                "summary": "No declines/reviews in the sampled decisions — nothing to analyze yet.",
+                "top_reasons": [], "recommendations": []}
+    _enforce_ai_budget()
+    creds = main.storage.get_ai_credentials(request.provider)
+    if not creds:
+        raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
+    try:
+        analysis = await analyze_rejections(creds["provider"], creds["api_key"], policy_name, drivers, model=creds.get("model"))
+    except AIError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    return {"policy_id": request.policy_id, "policy_name": policy_name, "provider": creds["provider"], "drivers": drivers, **analysis}
