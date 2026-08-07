@@ -566,6 +566,86 @@ def execute_policy(policy: Dict[str, Any], payload_by_source: Dict[str, Any], va
     }
 
 
+_OPERATOR_PHRASE = {
+    ">=": "below the required minimum", "<=": "above the allowed maximum",
+    ">": "below the required minimum", "<": "above the allowed maximum",
+    "==": "did not match the required value", "!=": "matched a disallowed value",
+    "between": "outside the required range", "in": "not in the accepted set",
+    "not_in": "in the disallowed set", "regex": "did not match the required pattern",
+    "exists": "was missing", "!exists": "was present when it must be absent",
+}
+
+
+def _reason_code_slug(variable_id: str, operator: str) -> str:
+    """A stable, deterministic adverse-action code for a failing condition (same input -> same code),
+    e.g. bureau_score + '>=' -> 'RC-BUREAU-SCORE-LT'. Deterministic so the same failure always maps to
+    the same code for downstream compliance mapping (FCRA-style notices)."""
+    op_token = {">=": "LT", ">": "LT", "<=": "GT", "<": "GT", "==": "NE", "!=": "EQ",
+                "between": "RANGE", "in": "NOTIN", "not_in": "IN", "regex": "NOMATCH",
+                "exists": "MISSING", "!exists": "PRESENT"}.get(operator, "FAIL")
+    base = slugify(str(variable_id)).upper().replace("_", "-") or "CONDITION"
+    return "RC-{0}-{1}".format(base, op_token)
+
+
+def adverse_reason_codes(rule_results: Any, limit: int = 3) -> List[Dict[str, Any]]:
+    """Deterministically derive the top adverse-action reason codes from a decision's failing rule
+    conditions (for FCRA-style decline notices). Pure + deterministic: no LLM, no randomness.
+
+    Ranks failing conditions by how materially they missed — numeric conditions by relative miss
+    magnitude (largest first), non-numeric failures after — and returns the top `limit`, each with a
+    stable code, the human reason, and the variable/threshold/actual for the notice.
+    """
+    conditions: List[Dict[str, Any]] = []
+
+    def _collect(node: Any) -> None:
+        if isinstance(node, dict):
+            if "passed" in node and "operator" in node and ("variable_id" in node or "variable_name" in node):
+                if not node.get("passed"):
+                    conditions.append(node)
+            for value in node.values():
+                _collect(value)
+        elif isinstance(node, list):
+            for item in node:
+                _collect(item)
+
+    _collect(rule_results)
+
+    def _miss(cond: Dict[str, Any]) -> float:
+        actual = _coerce_number(cond.get("value"))
+        threshold = _coerce_number(cond.get("threshold"))
+        if actual is None or threshold is None:
+            return -1.0  # non-numeric misses rank after numeric ones
+        denom = abs(threshold) or 1.0
+        return abs(actual - threshold) / denom
+
+    # Dedupe by (variable, operator) keeping the first, then rank by miss magnitude desc.
+    seen: set = set()
+    unique: List[Dict[str, Any]] = []
+    for cond in conditions:
+        key = (str(cond.get("variable_id") or cond.get("variable_name")), str(cond.get("operator")))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cond)
+    unique.sort(key=_miss, reverse=True)
+
+    codes: List[Dict[str, Any]] = []
+    for cond in unique[: max(0, limit)]:
+        operator = str(cond.get("operator", "=="))
+        name = cond.get("variable_name") or cond.get("variable_id") or "condition"
+        codes.append({
+            "code": _reason_code_slug(str(cond.get("variable_id") or name), operator),
+            "variable_id": cond.get("variable_id"),
+            "variable_name": name,
+            "operator": operator,
+            "threshold": cond.get("threshold"),
+            "value": cond.get("value"),
+            "reason": "{0} {1} ({2}).".format(name, _OPERATOR_PHRASE.get(operator, "failed the check"),
+                                              "required {0}, actual {1}".format(cond.get("threshold"), cond.get("value"))),
+        })
+    return codes
+
+
 def _redact_keys() -> set:
     """The PII field names redacted from the stored decision payload. The built-in set covers
     common identity fields; operators extend it (any domain: patient_id, ssn, card_no, …) via
