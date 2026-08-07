@@ -77,9 +77,12 @@ The in-app browser cannot make cross-port fetches to the API, so a **dev-only** 
 | Page-load latency | Variables: TTFB **122 ms**, DOMContentLoaded 151 ms, load **452 ms**; bootstrap fetch 307 ms / 58 KB |
 | **Rage-click** resilience | "Run All Tests" clicked **6× rapidly → exactly 1** `POST /test/variables` (guarded against duplicate-submit) |
 | End-to-end flow | Run All Tests → **55/55 passed**, each variable showing its real computed value + source + status |
-| Console | See Findings #4 (dev-only `code`-prop warning, fixed in this PR) and #7 (401s) |
+| **All pages swept** | Every sidebar route rendered with a heading, no error banner, no React crash: dashboard, connectors, variables, rules, scorecards, policies, test-console, decision-tables, models, simulation, lifecycle, deploy, decision-explorer, review-queue, audit, exports, settings, api-console. Data-rich pages (dashboard, connectors, deploy) show real content; builder pages (rules/scorecards/policies) correctly default to an empty-new state |
+| **Dark mode** | Toggled → proper dark theme, good contrast, accent colors + PROD/UAT badges intact |
+| **Responsive (375px)** | Stat cards reflow to 2-col, sources stack, header collapses to hamburger, **no horizontal overflow** |
+| Console | Findings #4 (`code`-prop warning, fixed in this PR) and #7 (API-key hydration-race 401s) |
 
-**Verdict: PASS for what was exercised** — see §7 for what was NOT.
+**Verdict: PASS** — full page sweep + dark + responsive done; remaining gaps in §7 are narrow.
 
 ## 6. Findings (defects surfaced by this pass)
 
@@ -102,21 +105,27 @@ The in-app browser cannot make cross-port fetches to the API, so a **dev-only** 
    boundary** (499 fail / 500 pass). Tracked to add boundary + reject cases.
 6. **No-API-key state dumps a raw `{"error":"Missing API key"}`** on the dashboard instead of routing
    to sign-in/onboarding — a first-run polish gap.
-7. **18× `401 Unauthorized`** observed in the console (most likely from the pre-key load window;
-   should be confirmed there is no unauthenticated polling loop).
+7. **API-key hydration race → duplicate 401s on every page (confirmed).** With the key present, the
+   network trace shows a repeating `GET /api/v1/{policies,settings,ai/config,providers} → 401 → 401 →
+   200` per endpoint on every navigation: the app fires authenticated requests before the
+   Zustand-persisted key rehydrates from localStorage, React Query retries the 401s, then the 200
+   lands. Non-breaking (data renders) but adds latency, console noise, and wasted server load. Fix:
+   gate fetches on store rehydration (spawned as a follow-up task).
 
-## 7. What was NOT tested (honest gaps)
+## 7. What was NOT tested (honest gaps — now narrow)
 
-- **Not every page was exercised.** Validated: dashboard, variables, rules, test-console (+ API-level
-  for all). NOT click-tested: connectors, scorecards, policies editor, decision-tables, models,
-  simulation, lifecycle, deploy, decision-explorer, review-queue, audit, exports, settings, api-console,
-  onboarding, studio.
-- **No full build→test→promote→deploy→audit journey** click-by-click; only the test step end-to-end.
-- **No responsive/mobile, dark-mode toggle, or keyboard/a11y testing.**
-- **Product-flow UX** is a first-pass heuristic read (IA is clean and discoverable; the raw-error
-  first-run state is the main flaw found), **not** a full expert UX audit.
-- **Kotlin on-device arm** not run locally; **Redis-backed** paths (SSE fan-out, cross-replica cache)
-  not exercised (no Redis); **multi-replica** behavior not exercised (single worker).
+Done in the completion pass: **all pages swept** (render + console + no crash), **dark mode**, and
+**responsive (375px)**. What still remains:
+
+- **Full build→promote→deploy→audit journey click-by-click** — the test step is validated end-to-end,
+  and deploy/lifecycle/audit pages render, but a create-rule → promote-through-envs → see-in-audit
+  click-through was not performed (dual-control promotion logic is unit-tested in PR #91 instead).
+- **Keyboard/a11y** (focus order, ARIA, screen-reader) not tested.
+- **Product-flow UX** is a strong heuristic read (clean IA, discoverable build→test→deploy→audit,
+  good dark/responsive) with two real flaws found (raw-error first-run state; 401 hydration race),
+  **not** a formal expert a11y/UX audit.
+- **Kotlin on-device arm** not run locally (no JDK; runs in CI); **Redis-backed** paths (SSE fan-out,
+  cross-replica cache) and **multi-replica** behavior not exercised (no Redis, single worker).
 - Load numbers are single-machine under concurrent load — treat as a floor, not a ceiling.
 
 ---
@@ -130,6 +139,6 @@ The in-app browser cannot make cross-port fetches to the API, so a **dev-only** 
 | Concurrency 0-errors + exactly-once decision logging | ✅ |
 | Throughput ≥200 TPS (355 TPS, 0 errors) | ✅ |
 | On-device Dart conformance (incl. ≥500-condition policy) | ✅ |
-| Frontend render + latency + rage-click + e2e test flow | ✅ (partial — see §7) |
-| Defects found | **7** (2 fixed in open PRs #88/#92; 5 tracked) |
-| Frontend coverage | **Partial** — core flows only; many pages + full journeys + a11y/responsive untested |
+| Frontend: all pages render + latency + rage-click + e2e + dark + responsive | ✅ |
+| Defects found | **7** (2 fixed in PRs #88/#92; large-policy negatives fixed in #96; silent-swallow fixed in #97; 401 race + payload footgun + first-run state tracked) |
+| Frontend coverage | **Broad** — every page swept + dark + responsive; remaining: full click-through promote journey + a11y |
