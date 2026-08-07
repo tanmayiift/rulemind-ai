@@ -102,6 +102,16 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
 
 @router.post("/api/v1/decide")
 def decide(request: DecideRequest) -> Dict[str, Any]:
+    """Run a policy decision.
+
+    `payload` accepts two INTENTIONALLY DISTINCT shapes:
+      * flat fields — `{"bureau_score": 800}` — a per-field OVERRIDE applied on top of each source's
+        sample; unspecified fields keep their sample value (handy for quick what-if testing).
+      * a source-keyed dict — `{"loan": {"bureau_score": 800}}` — the AUTHORITATIVE, complete payload
+        for that source; fields you omit are absent, not defaulted (use this for real integrations).
+    So a partial flat and a partial nested of the same field can decide differently; send the full
+    source payload under its key when you want an exact, reproducible decision.
+    """
     policy = ensure_exists(main.storage.get_policy(request.policy_id), "policy", request.policy_id)
     # Scalable hot path: serve pure-compute policies from the cached bundle via the stateless
     # core (Rust when available), bypassing the heavy PolicyExecutor. fast_path_eligible is the
