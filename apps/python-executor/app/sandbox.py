@@ -12,7 +12,23 @@ from typing import Any, Dict, Optional
 MAX_EXECUTION_MS = 2000
 MAX_MEMORY_MB = 128
 SAFE_IMPORTS = {"math", "datetime", "json", "re"}
-BLOCKED_NAMES = {"open", "eval", "exec", "__import__", "os", "sys", "subprocess", "socket", "requests"}
+# Names that must never be referenced. Beyond the obvious IO/eval names, this includes the
+# reflection helpers that could be used to reach attributes dynamically and defeat the static
+# dunder-attribute guard below (e.g. getattr(obj, "__class__")). Most of these aren't in
+# SAFE_BUILTINS anyway (so they'd NameError at runtime) — blocking them here gives a clear,
+# early error and is defense-in-depth.
+BLOCKED_NAMES = {
+    "open", "eval", "exec", "__import__", "os", "sys", "subprocess", "socket", "requests",
+    "getattr", "setattr", "delattr", "globals", "locals", "vars", "compile",
+    "__build_class__", "breakpoint", "input",
+}
+# The real CPython sandbox-escape surface is attribute traversal, not builtins: an expression like
+# ().__class__.__bases__[0].__subclasses__() reaches arbitrary loaded classes (subprocess.Popen, …)
+# with ZERO builtins. So we reject any access to a "dunder" attribute (name starting with "__").
+# We also block str.format / format_map, whose format-spec can perform attribute access at runtime
+# ("{0.__class__}".format(x)) and thereby bypass the static check. f-strings and %-formatting are
+# fine — their expressions are visible to this AST walk and %-formatting doesn't resolve attributes.
+_BLOCKED_ATTRS = {"format", "format_map"}
 SAFE_BUILTINS = {
     "abs": abs,
     "all": all,
@@ -91,8 +107,18 @@ def validate_source(source: str) -> None:
             for module_name in module_names:
                 if module_name not in SAFE_IMPORTS:
                     raise ValueError("Import not allowed: {0}".format(module_name))
-        if isinstance(node, ast.Name) and node.id in BLOCKED_NAMES:
-            raise ValueError("Blocked symbol detected: {0}".format(node.id))
+        if isinstance(node, ast.Name):
+            if node.id in BLOCKED_NAMES:
+                raise ValueError("Blocked symbol detected: {0}".format(node.id))
+            if node.id.startswith("__"):
+                # e.g. __builtins__, __import__ referenced as a bare name.
+                raise ValueError("Access to dunder name not allowed: {0}".format(node.id))
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("__"):
+                # The escape vector: __class__ / __subclasses__ / __globals__ / __bases__ / …
+                raise ValueError("Access to dunder attribute not allowed: {0}".format(node.attr))
+            if node.attr in _BLOCKED_ATTRS:
+                raise ValueError("Method not allowed: {0} (use an f-string or %-formatting)".format(node.attr))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"open", "eval", "exec"}:
             raise ValueError("Blocked call detected: {0}".format(node.func.id))
 
