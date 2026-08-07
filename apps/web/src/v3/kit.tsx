@@ -366,19 +366,22 @@ export function InlineSelect(props: React.SelectHTMLAttributes<HTMLSelectElement
 
 export function InlineTextarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { testId?: string; "data-testid"?: string; code?: boolean }) {
   const theme = useTheme();
+  // Keep custom props (code/testId) out of the DOM spread — React warns when a boolean like
+  // `code` reaches the underlying <textarea> element.
+  const { code, testId, "data-testid": dataTestId, style, ...rest } = props;
   return (
     <textarea
-      {...props}
-      data-testid={props.testId ?? props["data-testid"]}
+      {...rest}
+      data-testid={testId ?? dataTestId}
       style={{
-        ...(props.style ?? {}),
-        background: props.code ? theme.editor : theme.input,
+        ...(style ?? {}),
+        background: code ? theme.editor : theme.input,
         border: "1px solid " + theme.border,
-        color: props.code ? theme.codeText : theme.text,
+        color: code ? theme.codeText : theme.text,
         borderRadius: 10,
         padding: "10px 12px",
         outline: "none",
-        fontFamily: props.code ? "var(--font-mono)" : "inherit",
+        fontFamily: code ? "var(--font-mono)" : "inherit",
       }}
     />
   );
