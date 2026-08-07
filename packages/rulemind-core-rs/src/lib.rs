@@ -48,6 +48,78 @@ fn loose_equal(a: &Value, b: &Value) -> bool {
     value_to_string(a) == value_to_string(b)
 }
 
+// First-class date type — ISO date/date-time (UTC) to epoch seconds via a strict
+// manual parse + integer civil-days math (Howard Hinnant), identical to the Python,
+// TS, Kotlin and Dart engines so dates order and compare equal byte-for-byte.
+const DAYS_IN_MONTH: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+fn is_leap_year(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = year - if month <= 2 { 1 } else { 0 };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + (day - 1);
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn date_to_epoch(v: &Value) -> Option<i64> {
+    if v.is_boolean() || v.is_null() {
+        return None;
+    }
+    let raw = value_to_string(v);
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (date_part, time_part) = match s.find(|c| c == 'T' || c == ' ') {
+        Some(i) => (&s[..i], Some(&s[i + 1..])),
+        None => (s, None),
+    };
+    let dparts: Vec<&str> = date_part.split('-').collect();
+    if dparts.len() != 3 || dparts[0].len() != 4 {
+        return None;
+    }
+    let year: i64 = dparts[0].parse().ok()?;
+    let month: i64 = dparts[1].parse().ok()?;
+    let day: i64 = dparts[2].parse().ok()?;
+    let (mut hour, mut minute, mut second) = (0i64, 0i64, 0i64);
+    if let Some(tp) = time_part {
+        let tp = tp.trim_end_matches('Z');
+        let tp = match tp.find('.') {
+            Some(i) => &tp[..i],
+            None => tp,
+        };
+        let tparts: Vec<&str> = tp.split(':').collect();
+        if tparts.len() < 2 || tparts.len() > 3 {
+            return None;
+        }
+        hour = tparts[0].parse().ok()?;
+        minute = tparts[1].parse().ok()?;
+        if tparts.len() == 3 {
+            second = tparts[2].parse().ok()?;
+        }
+    }
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    let dim = if month == 2 && is_leap_year(year) {
+        29
+    } else {
+        DAYS_IN_MONTH[(month - 1) as usize]
+    };
+    if !(1..=dim).contains(&day) {
+        return None;
+    }
+    if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) || !(0..=59).contains(&second) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second)
+}
+
 fn option_list(expected: &Value) -> Vec<Value> {
     match expected {
         Value::Array(a) => a.clone(),
@@ -92,6 +164,24 @@ pub fn compare(
             if field_type == Some("boolean") && (operator == "==" || operator == "!=") {
                 let matched = to_bool(actual) == to_bool(expected);
                 return if operator == "==" { matched } else { !matched };
+            }
+            if field_type == Some("date") {
+                return match (date_to_epoch(actual), date_to_epoch(expected)) {
+                    (Some(a), Some(e)) => match operator {
+                        "==" => a == e,
+                        "!=" => a != e,
+                        ">=" => a >= e,
+                        "<=" => a <= e,
+                        ">" => a > e,
+                        "<" => a < e,
+                        "between" => match date_to_epoch(expected2) {
+                            Some(u) => a >= e && a <= u,
+                            None => false,
+                        },
+                        _ => false,
+                    },
+                    _ => false,
+                };
             }
             if matches!(operator, ">=" | "<=" | ">" | "<" | "between") {
                 let a = match to_number(actual) {
