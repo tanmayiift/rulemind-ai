@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "rulemind-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@rulemind/web", "dev"],
+      "port": 3000
+    }
+  ]
+}
