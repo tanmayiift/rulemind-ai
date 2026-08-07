@@ -731,6 +731,7 @@ class Storage:
     def _decision_to_dict(model: Decision) -> Dict[str, Any]:
         return {
             "id": model.id,
+            "client_id": model.client_id,
             "policy_id": model.policy_id,
             "payload": copy.deepcopy(decrypt_decision_field(model.payload_preview) or {}),
             "payload_hash": model.payload_hash,
@@ -744,7 +745,10 @@ class Storage:
             "sdk_version": model.sdk_version,
             "experiment_id": model.experiment_id,
             "experiment_variant": model.experiment_variant,
+            "device_id": model.device_id,
+            "bundle_hash": model.bundle_hash,
             "created_at": serialize_datetime(model.created_at),
+            "received_at": serialize_datetime(model.received_at),
         }
 
     @staticmethod
@@ -1258,6 +1262,7 @@ class Storage:
             decision = Decision(
                 id=payload.get("id") or uuid4_str(),
                 tenant_id=resolved,
+                client_id=payload.get("client_id") or payload.get("clientId"),
                 policy_id=payload.get("policy_id"),
                 payload_hash=payload_hash,
                 payload_preview=encrypt_decision_field(preview),
@@ -1271,7 +1276,10 @@ class Storage:
                 sdk_version=payload.get("sdk_version"),
                 experiment_id=payload.get("experiment_id"),
                 experiment_variant=payload.get("experiment_variant"),
-                created_at=datetime.utcnow(),
+                device_id=payload.get("device_id") or payload.get("deviceId"),
+                bundle_hash=payload.get("bundle_hash") or payload.get("bundleHash"),
+                created_at=_parse_client_datetime(payload.get("created_at") or payload.get("createdAt")) or datetime.utcnow(),
+                received_at=datetime.utcnow(),
             )
             session.add(decision)
             session.flush()
@@ -1294,8 +1302,10 @@ class Storage:
         Returns {received, inserted, duplicates, acked:[id,...]}.
         """
         resolved = self._tenant_id(tenant_id)
-        # Client ids are required for idempotency; a decision without one gets a server
-        # id and is always inserted (can't be deduped, but also can't be safely retried).
+        # The device-supplied id is the CLIENT id (stable, unique within the tenant); the stored PK is
+        # server-generated. Dedupe is by (tenant_id, client_id): a decision whose client id already
+        # exists for this tenant — or repeats within the batch — is acked but not re-inserted, so an
+        # at-least-once retry never double-counts, and one tenant's id can never shadow another's.
         client_ids = [str(d["id"]) for d in decisions if d.get("id")]
         acked: List[str] = []
         inserted = 0
@@ -1303,20 +1313,26 @@ class Storage:
         with self.connect() as session:
             existing: set = set()
             if client_ids:
-                existing = set(session.scalars(select(Decision.id).where(Decision.id.in_(client_ids))).all())
+                existing = set(session.scalars(
+                    select(Decision.client_id).where(Decision.client_id.in_(client_ids), Decision.tenant_id == resolved)
+                ).all())
             seen: set = set()
+            now = datetime.utcnow()
             for record in decisions:
-                did = str(record.get("id") or uuid4_str())
-                acked.append(did)
-                if did in existing or did in seen:
+                client_id = str(record["id"]) if record.get("id") else None
+                ack_id = client_id or uuid4_str()  # what the device references to clear its outbox
+                acked.append(ack_id)
+                if client_id is not None and (client_id in existing or client_id in seen):
                     duplicates += 1
                     continue
-                seen.add(did)
+                if client_id is not None:
+                    seen.add(client_id)
                 preview = copy.deepcopy(record.get("payload", {}))
                 payload_hash = record.get("payload_hash") or hashlib.sha256(json_dumps(preview).encode("utf-8")).hexdigest()
-                session.add(Decision(
-                    id=did,
+                row = Decision(
+                    id=uuid4_str(),
                     tenant_id=resolved,
+                    client_id=client_id,
                     policy_id=record.get("policy_id") or record.get("policyId"),
                     payload_hash=payload_hash,
                     payload_preview=encrypt_decision_field(preview),
@@ -1330,10 +1346,24 @@ class Storage:
                     sdk_version=record.get("sdk_version") or record.get("sdkVersion"),
                     experiment_id=record.get("experiment_id") or record.get("experimentId"),
                     experiment_variant=record.get("experiment_variant") or record.get("experimentVariant"),
-                    # Preserve the on-device decision time when supplied.
-                    created_at=_parse_client_datetime(record.get("created_at") or record.get("createdAt")) or datetime.utcnow(),
-                ))
-                inserted += 1
+                    device_id=record.get("device_id") or record.get("deviceId"),
+                    bundle_hash=record.get("bundle_hash") or record.get("bundleHash"),
+                    # Preserve the on-device decision time when supplied; stamp the server receipt time
+                    # separately so ordering/retention never depends on a drifted device clock.
+                    created_at=_parse_client_datetime(record.get("created_at") or record.get("createdAt")) or now,
+                    received_at=now,
+                )
+                # Per-row savepoint: a concurrent worker inserting the same (tenant_id, client_id)
+                # trips the unique constraint (IntegrityError); we absorb it as a duplicate instead of
+                # failing the whole batch — DB-level idempotency on top of the in-app dedupe, so
+                # retries under races never double-count and never lose the rest of the batch.
+                try:
+                    with session.begin_nested():
+                        session.add(row)
+                        session.flush()
+                    inserted += 1
+                except IntegrityError:
+                    duplicates += 1
         return {"received": len(decisions), "inserted": inserted, "duplicates": duplicates, "acked": acked}
 
     def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
