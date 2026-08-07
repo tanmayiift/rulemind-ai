@@ -93,7 +93,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 
 export function RuleMindPage(props: { page: PageId }) {
   const theme = useTheme();
-  const { data, error, loading, refresh } = useBootstrapData();
+  const { data, error, loading, refresh, needsSetup } = useBootstrapData();
   const [notice, setNotice] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -103,6 +103,18 @@ export function RuleMindPage(props: { page: PageId }) {
     const handle = window.setTimeout(() => setNotice(null), 3000);
     return () => window.clearTimeout(handle);
   }, [notice]);
+
+  if (needsSetup) {
+    return (
+      <div style={{ padding: 24 }}>
+        <EmptyState
+          icon={<Workflow size={28} />}
+          title="Connect RuleMind to get started"
+          description="No API key is configured yet. Sign in, or add a workspace API key in Settings, to load your connectors, variables, rules, and policies."
+        />
+      </div>
+    );
+  }
 
   if (loading) {
     return (

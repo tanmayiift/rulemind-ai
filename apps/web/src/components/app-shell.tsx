@@ -105,6 +105,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const {
+    hydrated,
     apiBaseUrl,
     apiKey,
     environment,
@@ -131,7 +132,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const page = PAGE_COPY[pathname ?? "/"] ?? PAGE_COPY["/"];
 
   // Load tenant-wide, admin-configured branding once; apply it as CSS-var overrides.
+  // Gate on store rehydration + a present key so we don't fire (and 401) with the pre-hydration key.
   React.useEffect(() => {
+    if (!hydrated || !apiKey) {
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -150,7 +155,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, apiKey]);
+  }, [hydrated, apiBaseUrl, apiKey]);
 
   React.useEffect(() => {
     document.documentElement.dataset.theme = themeMode;

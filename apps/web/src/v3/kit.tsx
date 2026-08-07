@@ -99,6 +99,7 @@ export function useTheme(): ThemeTokens {
 }
 
 export function useBootstrapData() {
+  const hydrated = useRuleMindStore((state) => state.hydrated);
   const apiBaseUrl = useRuleMindStore((state) => state.apiBaseUrl);
   const apiKey = useRuleMindStore((state) => state.apiKey);
   const [refreshKey, setRefreshKey] = React.useState(0);
@@ -108,7 +109,19 @@ export function useBootstrapData() {
   const dataRef = React.useRef<BootstrapPayload | null>(null);
 
   React.useEffect(() => {
+    // Wait for the persisted store to rehydrate before fetching — otherwise the first run uses the
+    // empty pre-hydration apiKey and 401s (a burst on every page). Once hydrated with no key, surface
+    // a friendly first-run "needsSetup" state instead of firing a doomed request that dumps a raw
+    // "Missing API key" error onto the dashboard.
+    if (!hydrated) {
+      return;
+    }
     let mounted = true;
+    if (!apiKey) {
+      setError(null);
+      setLoading(false);
+      return;
+    }
     if (!dataRef.current) {
       setLoading(true);
     }
@@ -133,10 +146,13 @@ export function useBootstrapData() {
     return () => {
       mounted = false;
     };
-  }, [apiBaseUrl, apiKey, refreshKey]);
+  }, [hydrated, apiBaseUrl, apiKey, refreshKey]);
 
   const refresh = React.useCallback(() => setRefreshKey((value) => value + 1), []);
-  return { apiBaseUrl, apiKey, data, loading, error, refresh };
+  // needsSetup: hydrated, but no API key configured -> show the connect prompt, not a raw error.
+  const needsSetup = hydrated && !apiKey;
+  // Keep loading true until hydration completes so we never flash an unauthenticated state.
+  return { apiBaseUrl, apiKey, data, loading: loading || !hydrated, error, refresh, needsSetup };
 }
 
 export function statusColorKey(status: string): "purple" | "warning" | "success" {
