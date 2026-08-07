@@ -159,7 +159,34 @@ class RuleEvaluator {
       return operator == "==" ? matched : !matched;
     }
 
-    // Ordered comparisons and inclusive range operate on numbers.
+    // Date-typed comparison: normalize both sides to a UTC epoch so dates are
+    // ORDERED and equality is spelling-insensitive. Non-ISO/out-of-range -> false.
+    if ((fieldType ?? "").toLowerCase() == "date") {
+      final a = _dateToEpoch(actual);
+      final e = _dateToEpoch(expected);
+      if (a == null || e == null) return false;
+      switch (operator) {
+        case "==":
+          return a == e;
+        case "!=":
+          return a != e;
+        case ">=":
+          return a >= e;
+        case "<=":
+          return a <= e;
+        case ">":
+          return a > e;
+        case "<":
+          return a < e;
+        case "between":
+          final upper = _dateToEpoch(expected2);
+          return upper != null && a >= e && a <= upper;
+        default:
+          return false;
+      }
+    }
+
+    // Ordered comparisons and inclusive range operate on numbers (non-date).
     if (operator == ">=" ||
         operator == "<=" ||
         operator == ">" ||
@@ -219,6 +246,68 @@ class RuleEvaluator {
     final bn = _numericOrNull(b);
     if (an != null && bn != null) return an == bn;
     return a.toString() == b.toString();
+  }
+
+  // First-class date type — ISO date/date-time (UTC) to epoch seconds via integer
+  // civil-days math (Howard Hinnant), identical to the Python/TS/Rust/Kotlin engines.
+  static const _daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  bool _isLeapYear(int y) => (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+
+  int _daysFromCivil(int year, int month, int day) {
+    final y = year - (month <= 2 ? 1 : 0);
+    final era = (y >= 0 ? y : y - 399) ~/ 400;
+    final yoe = y - era * 400;
+    final doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) ~/ 5 + (day - 1);
+    final doe = yoe * 365 + yoe ~/ 4 - yoe ~/ 100 + doy;
+    return era * 146097 + doe - 719468;
+  }
+
+  int? _dateToEpoch(dynamic value) {
+    if (value == null || value is bool) return null;
+    final s = value.toString().trim();
+    if (s.isEmpty) return null;
+    var sep = -1;
+    for (var i = 0; i < s.length; i++) {
+      if (s[i] == 'T' || s[i] == ' ') {
+        sep = i;
+        break;
+      }
+    }
+    final datePart = sep >= 0 ? s.substring(0, sep) : s;
+    final timePart = sep >= 0 ? s.substring(sep + 1) : null;
+    final dparts = datePart.split('-');
+    if (dparts.length != 3 || dparts[0].length != 4) return null;
+    final year = int.tryParse(dparts[0]);
+    final month = int.tryParse(dparts[1]);
+    final day = int.tryParse(dparts[2]);
+    if (year == null || month == null || day == null) return null;
+    var hour = 0, minute = 0, second = 0;
+    if (timePart != null) {
+      var tp = timePart;
+      if (tp.endsWith('Z')) tp = tp.substring(0, tp.length - 1);
+      final dot = tp.indexOf('.');
+      if (dot >= 0) tp = tp.substring(0, dot);
+      final tparts = tp.split(':');
+      if (tparts.length < 2 || tparts.length > 3) return null;
+      final h = int.tryParse(tparts[0]);
+      final mi = int.tryParse(tparts[1]);
+      if (h == null || mi == null) return null;
+      hour = h;
+      minute = mi;
+      if (tparts.length == 3) {
+        final se = int.tryParse(tparts[2]);
+        if (se == null) return null;
+        second = se;
+      }
+    }
+    if (month < 1 || month > 12) return null;
+    final dim = (month == 2 && _isLeapYear(year)) ? 29 : _daysInMonth[month - 1];
+    if (day < 1 || day > dim) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+      return null;
+    }
+    return _daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
   }
 }
 

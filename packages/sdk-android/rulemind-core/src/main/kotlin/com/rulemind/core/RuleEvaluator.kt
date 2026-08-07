@@ -173,7 +173,24 @@ class RuleEvaluator {
             return if (operator == "==") matched else !matched
         }
 
-        // Ordered comparisons and inclusive range operate on numbers.
+        // Date-typed comparison: normalize both sides to a UTC epoch so dates are
+        // ORDERED and equality is spelling-insensitive. Non-ISO/out-of-range -> false.
+        if ((fieldType ?: "").lowercase() == "date") {
+            val a = dateToEpoch(actual) ?: return false
+            val e = dateToEpoch(expected) ?: return false
+            return when (operator) {
+                "==" -> a == e
+                "!=" -> a != e
+                ">=" -> a >= e
+                "<=" -> a <= e
+                ">" -> a > e
+                "<" -> a < e
+                "between" -> { val u = dateToEpoch(expected2); u != null && a in e..u }
+                else -> false
+            }
+        }
+
+        // Ordered comparisons and inclusive range operate on numbers (non-date).
         if (operator in setOf(">=", "<=", ">", "<", "between")) {
             val a = numericOrNull(actual) ?: return false
             val e = numericOrNull(expected) ?: return false
@@ -220,6 +237,53 @@ class RuleEvaluator {
         val bn = numericOrNull(b)
         if (an != null && bn != null) return an == bn
         return a.toString() == b.toString()
+    }
+
+    // First-class date type — ISO date/date-time (UTC) to epoch seconds via integer
+    // civil-days math (Howard Hinnant), identical to the Python/TS/Rust/Dart engines.
+    private val daysInMonth = intArrayOf(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+    private fun isLeapYear(y: Long): Boolean = (y % 4 == 0L && y % 100 != 0L) || y % 400 == 0L
+
+    private fun daysFromCivil(year: Long, month: Long, day: Long): Long {
+        val y = year - if (month <= 2) 1 else 0
+        val era = (if (y >= 0) y else y - 399) / 400
+        val yoe = y - era * 400
+        val doy = (153 * (month + if (month > 2) -3 else 9) + 2) / 5 + (day - 1)
+        val doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146097 + doe - 719468
+    }
+
+    private fun dateToEpoch(value: Any?): Long? {
+        if (value == null || value is Boolean) return null
+        val s = value.toString().trim()
+        if (s.isEmpty()) return null
+        val sep = s.indexOfFirst { it == 'T' || it == ' ' }
+        val datePart = if (sep >= 0) s.substring(0, sep) else s
+        val timePart = if (sep >= 0) s.substring(sep + 1) else null
+        val dparts = datePart.split("-")
+        if (dparts.size != 3 || dparts[0].length != 4) return null
+        val year = dparts[0].toLongOrNull() ?: return null
+        val month = dparts[1].toLongOrNull() ?: return null
+        val day = dparts[2].toLongOrNull() ?: return null
+        var hour = 0L
+        var minute = 0L
+        var second = 0L
+        if (timePart != null) {
+            var tp = timePart.trimEnd('Z')
+            val dot = tp.indexOf('.')
+            if (dot >= 0) tp = tp.substring(0, dot)
+            val tparts = tp.split(":")
+            if (tparts.size < 2 || tparts.size > 3) return null
+            hour = tparts[0].toLongOrNull() ?: return null
+            minute = tparts[1].toLongOrNull() ?: return null
+            if (tparts.size == 3) second = tparts[2].toLongOrNull() ?: return null
+        }
+        if (month !in 1..12) return null
+        val dim = if (month == 2L && isLeapYear(year)) 29L else daysInMonth[(month - 1).toInt()].toLong()
+        if (day !in 1..dim) return null
+        if (hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
+        return daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
     }
 
     private data class RuleEvaluation(

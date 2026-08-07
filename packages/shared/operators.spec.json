@@ -1,5 +1,5 @@
 {
-  "$comment": "Canonical cross-engine operator contract for RuleMind. Every evaluation engine (TypeScript packages/rule-engine, Python apps/python-executor, Kotlin sdk-android/rulemind-core, Dart sdk-flutter) MUST satisfy every case below. Conformance tests in each language load this file and assert their compare() returns `expected`. Fixtures use native JSON types and set fieldType on ordering/equality cases so all engines agree without relying on value-string-parsing differences. Do not weaken a case to make an engine pass \u2014 fix the engine. CONTRACT: ordered operators (>=,<=,>,<,between) are NUMERIC-ONLY in every engine \u2014 a non-numeric operand (a label, or a date/ISO string) makes the condition false via numeric coercion (Python _coerce_number, Kotlin/Dart numericOrNull, Rust core, and the TS engine's numericOrNull). Dates are therefore never ordered via the numeric operators; date == / != compare the parsed instant. These non-numeric ordering cases ARE asserted below (previously they diverged in the TS engine, which used a lexical string compare / Date.parse ordering \u2014 now fixed).",
+  "$comment": "Canonical cross-engine operator contract for RuleMind. Every evaluation engine (TypeScript packages/rule-engine, Python apps/python-executor, Kotlin sdk-android/rulemind-core, Dart sdk-flutter) MUST satisfy every case below. Conformance tests in each language load this file and assert their compare() returns `expected`. Fixtures use native JSON types and set fieldType on ordering/equality cases so all engines agree without relying on value-string-parsing differences. Do not weaken a case to make an engine pass \u2014 fix the engine. CONTRACT by fieldType: (1) fieldType 'date' \u2014 both sides are normalized to a UTC epoch via a strict ISO-8601 regex + integer civil-days math (identical in every engine, NOT a native date parser), so dates are truly ORDERED (>,>=,<,<=,between) and equality is spelling-insensitive ('2026-01-01' == '2026-1-1'); a non-ISO/out-of-range value \u2192 false for every operator. (2) fieldType 'boolean' \u2014 ==/!= on coerced booleans. (3) all other ordered ops (>,>=,<,<=,between) are NUMERIC-ONLY \u2014 a non-numeric operand (e.g. a plain string) makes it false; strings are never lexically ordered. (4) == / != are LOOSE/numeric-aware everywhere, so '750' == 750 (Python used strict == before and diverged \u2014 now fixed). in/not_in also use loose equality; regex/exists/!exists are string/presence checks.",
   "version": 1,
   "operators": [
     {
@@ -535,31 +535,140 @@
       "expected": false
     },
     {
-      "$comment": "Dates are non-numeric, so ordered date comparison is false everywhere — dates must not be ordered via the numeric operators. Later-date > earlier-date is FALSE, not true.",
-      "name": "date-order-nonnumeric-false",
-      "actual": "2024-06-01",
+      "$comment": "First-class date type: with fieldType 'date' both sides normalize to a UTC epoch, so dates are TRULY ordered. Later > earlier is TRUE.",
+      "name": "date-order-after-true",
+      "actual": "2026-06-01",
       "operator": ">",
-      "value": "2024-01-01",
-      "fieldType": "date",
-      "expected": false
-    },
-    {
-      "name": "date-between-nonnumeric-false",
-      "actual": "2024-06-01",
-      "operator": "between",
-      "value": "2024-01-01",
-      "value2": "2024-12-31",
-      "fieldType": "date",
-      "expected": false
-    },
-    {
-      "$comment": "Date == compares the parsed instant, so equivalent spellings match.",
-      "name": "date-eq-parsed-instant",
-      "actual": "2024-01-01",
-      "operator": "==",
-      "value": "2024-01-01",
+      "value": "2026-01-01",
       "fieldType": "date",
       "expected": true
+    },
+    {
+      "name": "date-order-before-true",
+      "actual": "2026-01-01",
+      "operator": "<",
+      "value": "2026-06-01",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "name": "date-gte-boundary-true",
+      "actual": "2026-01-01",
+      "operator": ">=",
+      "value": "2026-01-01",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "name": "date-gt-not-after-false",
+      "actual": "2026-01-01",
+      "operator": ">",
+      "value": "2026-06-01",
+      "fieldType": "date",
+      "expected": false
+    },
+    {
+      "name": "date-between-inside-true",
+      "actual": "2026-06-15",
+      "operator": "between",
+      "value": "2026-01-01",
+      "value2": "2026-12-31",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "name": "date-between-outside-false",
+      "actual": "2027-01-01",
+      "operator": "between",
+      "value": "2026-01-01",
+      "value2": "2026-12-31",
+      "fieldType": "date",
+      "expected": false
+    },
+    {
+      "$comment": "Equality is epoch-based, so identical spellings match.",
+      "name": "date-eq-identical-spelling-true",
+      "actual": "2026-01-01",
+      "operator": "==",
+      "value": "2026-01-01",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "$comment": "Different spellings of the SAME calendar date match, because both normalize to the same epoch. This is the divergence the string-instant approach could not pin.",
+      "name": "date-eq-different-spelling-true",
+      "actual": "2026-01-01",
+      "operator": "==",
+      "value": "2026-1-1",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "$comment": "A date and its midnight date-time form are the same instant.",
+      "name": "date-eq-datetime-midnight-true",
+      "actual": "2026-01-01T00:00:00Z",
+      "operator": "==",
+      "value": "2026-01-01",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "name": "date-neq-different-day-true",
+      "actual": "2026-01-01",
+      "operator": "!=",
+      "value": "2026-02-01",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "$comment": "A non-ISO / unparseable value under a date field is false for every operator (nothing to compare), mirroring numeric coercion.",
+      "name": "date-invalid-order-false",
+      "actual": "not-a-date",
+      "operator": ">",
+      "value": "2026-01-01",
+      "fieldType": "date",
+      "expected": false
+    },
+    {
+      "name": "date-invalid-eq-false",
+      "actual": "not-a-date",
+      "operator": "==",
+      "value": "2026-01-01",
+      "fieldType": "date",
+      "expected": false
+    },
+    {
+      "$comment": "Leap-day is a valid date; Feb 29 2027 (non-leap) is out of range -> false.",
+      "name": "date-leap-day-valid-true",
+      "actual": "2028-02-29",
+      "operator": "==",
+      "value": "2028-02-29",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "name": "date-invalid-feb29-nonleap-false",
+      "actual": "2027-02-29",
+      "operator": "==",
+      "value": "2027-02-29",
+      "fieldType": "date",
+      "expected": false
+    },
+    {
+      "$comment": "Equality is loose/numeric-aware in every engine: a numeric string equals its number. Python used strict == before and diverged here.",
+      "name": "eq-numeric-string-loose-true",
+      "actual": "750",
+      "operator": "==",
+      "value": 750,
+      "fieldType": "number",
+      "expected": true
+    },
+    {
+      "name": "neq-numeric-string-loose-false",
+      "actual": "750",
+      "operator": "!=",
+      "value": 750,
+      "expected": false
     }
   ]
 }

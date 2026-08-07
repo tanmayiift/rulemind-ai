@@ -68,6 +68,69 @@ function toBoolean(value: unknown): boolean {
   return String(value).toLowerCase() === "true";
 }
 
+/**
+ * Loose / numeric-aware equality — a numeric string equals its number ("750" == 750).
+ * Mirrors Python `_loose_equal`, Rust `loose_equal`, Kotlin/Dart `looseEqual`.
+ */
+function looseEqual(a: unknown, b: unknown): boolean {
+  if (a === b) {
+    return true;
+  }
+  const an = numericOrNull(a);
+  const bn = numericOrNull(b);
+  if (an !== null && bn !== null) {
+    return an === bn;
+  }
+  return String(a) === String(b);
+}
+
+// First-class date type — normalize ISO date/date-time (UTC) to an epoch via a
+// strict regex + integer civil-days math (Howard Hinnant), NOT Date.parse (which
+// is lenient and timezone-sensitive). Every engine reimplements this identically
+// so dates order and compare equal byte-for-byte across server, Rust, and SDKs.
+const ISO_DATE_RE = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d+)?Z?)?$/;
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function daysFromCivil(year: number, month: number, day: number): number {
+  const y = year - (month <= 2 ? 1 : 0);
+  const era = Math.floor((y >= 0 ? y : y - 399) / 400);
+  const yoe = y - era * 400;
+  const doy = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + (day - 1);
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+
+function dateToEpoch(value: unknown): number | null {
+  if (value === null || value === undefined || typeof value === "boolean") {
+    return null;
+  }
+  const match = ISO_DATE_RE.exec(String(value).trim());
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = match[4] ? Number(match[4]) : 0;
+  const minute = match[5] ? Number(match[5]) : 0;
+  const second = match[6] ? Number(match[6]) : 0;
+  if (month < 1 || month > 12) {
+    return null;
+  }
+  const daysInMonth = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+  if (day < 1 || day > daysInMonth) {
+    return null;
+  }
+  if (hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+  return daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+}
+
 function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason?: string; expected?: unknown } {
   const config = node.config ?? {};
   const operator = config.operator ?? "==";
@@ -124,12 +187,48 @@ function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason
     };
   }
 
-  // Ordered comparisons + inclusive range are NUMERIC-ONLY in every engine
-  // (Python `_coerce_number`, Kotlin/Dart `numericOrNull`, Rust core). A
-  // non-numeric operand — a label, or a date/ISO string — makes the condition
-  // `false` so the web preview matches the server and the on-device SDKs
-  // exactly. Do NOT reintroduce lexical string ordering or Date.parse ordering
-  // here: that is the silent preview-vs-production divergence this block fixes.
+  // Boolean-typed equality (declared boolean fields only).
+  if (fieldType === "boolean" && (operator === "==" || operator === "!=")) {
+    const match = toBoolean(actual) === toBoolean(config.value);
+    return { pass: operator === "==" ? match : !match, expected: toBoolean(config.value) };
+  }
+
+  // First-class date type: both sides normalize to a UTC epoch (shared civil-days
+  // routine — NOT Date.parse), so dates are truly ORDERED and equality is
+  // spelling-insensitive, identical to the server, Rust core, and SDKs. A
+  // non-ISO/out-of-range value is false for every operator.
+  if (fieldType === "date") {
+    const actualEpoch = dateToEpoch(actual);
+    const expectedEpoch = dateToEpoch(config.value);
+    if (actualEpoch === null || expectedEpoch === null) {
+      return { pass: false, expected: operator === "between" ? [config.value, config.value2] : config.value };
+    }
+    switch (operator) {
+      case "==":
+        return { pass: actualEpoch === expectedEpoch, expected: config.value };
+      case "!=":
+        return { pass: actualEpoch !== expectedEpoch, expected: config.value };
+      case ">=":
+        return { pass: actualEpoch >= expectedEpoch, expected: config.value };
+      case "<=":
+        return { pass: actualEpoch <= expectedEpoch, expected: config.value };
+      case ">":
+        return { pass: actualEpoch > expectedEpoch, expected: config.value };
+      case "<":
+        return { pass: actualEpoch < expectedEpoch, expected: config.value };
+      case "between": {
+        const upperEpoch = dateToEpoch(config.value2);
+        return { pass: upperEpoch !== null && actualEpoch >= expectedEpoch && actualEpoch <= upperEpoch, expected: [config.value, config.value2] };
+      }
+      default:
+        return { pass: false, expected: config.value };
+    }
+  }
+
+  // Ordered comparisons + inclusive range are NUMERIC-ONLY (non-date) in every
+  // engine (Python `_coerce_number`, Kotlin/Dart `numericOrNull`, Rust core). A
+  // non-numeric operand — a plain string / label — makes the condition `false`;
+  // no lexical ordering. Dates are handled above.
   if (operator === ">=" || operator === "<=" || operator === ">" || operator === "<" || operator === "between") {
     const actualNumber = numericOrNull(actual);
     const expectedNumber = numericOrNull(config.value);
@@ -155,60 +254,14 @@ function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason
     }
   }
 
-  if (fieldType === "boolean") {
-    const actualValue = toBoolean(actual);
-    const expectedValue = toBoolean(config.value);
-    const match = operator === "==" ? actualValue === expectedValue : actualValue !== expectedValue;
-
-    return {
-      pass: match,
-      expected: expectedValue
-    };
+  // Equality is loose / numeric-aware (so "750" == 750) across every engine.
+  if (operator === "==") {
+    return { pass: looseEqual(actual, config.value), expected: config.value };
   }
-
-  // Date equality compares the parsed instant so "2024-01-01" == "2024-1-1".
-  // Ordered date comparisons are handled by the numeric-only block above (a
-  // date string is non-numeric -> false), matching the server and SDKs, which
-  // do not order dates via the numeric operators.
-  if (fieldType === "date") {
-    const actualDate = Date.parse(String(actual));
-    const expectedDate = Date.parse(String(config.value));
-
-    switch (operator) {
-      case "==":
-        return { pass: actualDate === expectedDate, expected: config.value };
-      case "!=":
-        return { pass: actualDate !== expectedDate, expected: config.value };
-      default:
-        return { pass: false, expected: config.value };
-    }
+  if (operator === "!=") {
+    return { pass: !looseEqual(actual, config.value), expected: config.value };
   }
-
-  if (fieldType === "number" || node.type === "score") {
-    const actualNumber = toNumber(actual);
-    const expectedNumber = toNumber(config.value);
-
-    switch (operator) {
-      case "==":
-        return { pass: actualNumber === expectedNumber, expected: config.value };
-      case "!=":
-        return { pass: actualNumber !== expectedNumber, expected: config.value };
-      default:
-        return { pass: false, expected: config.value };
-    }
-  }
-
-  const actualString = String(actual ?? "");
-  const expectedString = String(config.value ?? "");
-
-  switch (operator) {
-    case "==":
-      return { pass: actualString === expectedString, expected: config.value };
-    case "!=":
-      return { pass: actualString !== expectedString, expected: config.value };
-    default:
-      return { pass: false, expected: config.value };
-  }
+  return { pass: false, expected: config.value };
 }
 
 function mergeOutcomes(items: NodeEvaluation[]): OutcomeDecision[] {

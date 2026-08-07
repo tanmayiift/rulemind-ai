@@ -212,6 +212,55 @@ def _loose_equal(actual: Any, expected: Any) -> bool:
     return str(actual) == str(expected)
 
 
+# ── First-class date type ────────────────────────────────────────────────────
+# Dates are normalized to a UTC epoch (seconds) via a strict ISO-8601 regex + pure
+# integer civil-days math (Howard Hinnant's algorithm), NOT any language's native
+# date parser. Native parsers disagree on leniency and timezone, so every engine
+# (Python, Rust, TS, Kotlin, Dart) reimplements this exact routine to agree
+# byte-for-byte. This gives dates real ORDERING and spelling-insensitive equality
+# ("2026-01-01" == "2026-1-1"), while a non-ISO/out-of-range value coerces to None
+# (→ the condition is false), mirroring the numeric-only rule for other types.
+_ISO_DATE_RE = re.compile(
+    r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d+)?Z?)?$"
+)
+_DAYS_IN_MONTH = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def _is_leap_year(year: int) -> bool:
+    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
+
+
+def _days_from_civil(year: int, month: int, day: int) -> int:
+    """Days since 1970-01-01 (proleptic Gregorian) — pure integer, no date library."""
+    y = year - (1 if month <= 2 else 0)
+    era = (y if y >= 0 else y - 399) // 400
+    yoe = y - era * 400
+    doy = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + (day - 1)
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def _date_to_epoch(value: Any) -> Optional[int]:
+    """Canonical ISO date/date-time (UTC) → epoch seconds; non-ISO/out-of-range → None."""
+    if value is None or isinstance(value, bool):
+        return None
+    match = _ISO_DATE_RE.match(str(value).strip())
+    if not match:
+        return None
+    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    hour = int(match.group(4)) if match.group(4) else 0
+    minute = int(match.group(5)) if match.group(5) else 0
+    second = int(match.group(6)) if match.group(6) else 0
+    if not 1 <= month <= 12:
+        return None
+    days_in_month = 29 if (month == 2 and _is_leap_year(year)) else _DAYS_IN_MONTH[month - 1]
+    if not 1 <= day <= days_in_month:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        return None
+    return _days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
+
+
 def compare(
     actual: Any,
     operator: str,
@@ -251,6 +300,31 @@ def compare(
         matched = _to_bool(actual) == _to_bool(expected)
         return matched if operator == "==" else not matched
 
+    # Date-typed comparison: normalize both sides to a UTC epoch so dates are ORDERED
+    # and equality is spelling-insensitive. A non-ISO/out-of-range value → False for
+    # every operator (nothing meaningful to compare), consistent with numeric coercion.
+    if (field_type or "").lower() == "date":
+        actual_epoch = _date_to_epoch(actual)
+        expected_epoch = _date_to_epoch(expected)
+        if actual_epoch is None or expected_epoch is None:
+            return False
+        if operator == "==":
+            return actual_epoch == expected_epoch
+        if operator == "!=":
+            return actual_epoch != expected_epoch
+        if operator == ">=":
+            return actual_epoch >= expected_epoch
+        if operator == "<=":
+            return actual_epoch <= expected_epoch
+        if operator == ">":
+            return actual_epoch > expected_epoch
+        if operator == "<":
+            return actual_epoch < expected_epoch
+        if operator == "between":
+            upper_epoch = _date_to_epoch(expected2)
+            return upper_epoch is not None and expected_epoch <= actual_epoch <= upper_epoch
+        return False
+
     # Ordered comparisons and inclusive range operate on numbers.
     if operator in {">=", "<=", ">", "<", "between"}:
         actual_value = _coerce_number(actual)
@@ -271,10 +345,13 @@ def compare(
             return False
         return expected_value <= actual_value <= upper_value
 
+    # Equality is loose/numeric-aware so a numeric string equals its number
+    # ("750" == 750) uniformly across every engine (Rust/Kotlin/Dart/TS already do this;
+    # Python used strict == before, which diverged). `in`/`not_in` already use this.
     if operator == "==":
-        return actual == expected
+        return _loose_equal(actual, expected)
     if operator == "!=":
-        return actual != expected
+        return not _loose_equal(actual, expected)
     return False
 
 
