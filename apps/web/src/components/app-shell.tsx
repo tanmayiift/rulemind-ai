@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Menu, Moon, Sun, X, Search } from "lucide-react";
 import { CommandPalette, type Command } from "../v3/command-palette";
+import { AiCopilotFab } from "./ai-copilot-fab";
 import { useRuleMindStore } from "../lib/store";
 import { apiJson } from "../lib/api";
 import { ENVIRONMENT_ACCENT, THEMES, themeStyleBlock } from "../v3/theme";
@@ -517,6 +518,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{children}</main>
       </div>
       <CommandPalette commands={COMMANDS} />
+      {/* AI Copilot — only mounts once a provider key is configured and AI is on. */}
+      {aiEnabled && apiKey ? <AiCopilotFab theme={theme} apiBaseUrl={apiBaseUrl} apiKey={apiKey} /> : null}
     </div>
   );
 }
