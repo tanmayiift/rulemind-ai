@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import os
 import re
 from datetime import datetime
@@ -181,9 +182,13 @@ def generate_rule_expression_definition(rule: Dict[str, Any], variable_lookup: D
 
 def _coerce_number(value: Any) -> Optional[float]:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    # Reject non-finite (NaN / ±Infinity): otherwise `"Infinity" >= <threshold>` passes ANY
+    # numeric gate and NaN comparisons are undefined. Non-finite → None → the condition is false,
+    # matching the TS engine's Number.isFinite guard.
+    return number if math.isfinite(number) else None
 
 
 def _to_bool(value: Any) -> bool:
@@ -221,7 +226,8 @@ def _loose_equal(actual: Any, expected: Any) -> bool:
 # ("2026-01-01" == "2026-1-1"), while a non-ISO/out-of-range value coerces to None
 # (→ the condition is false), mirroring the numeric-only rule for other types.
 _ISO_DATE_RE = re.compile(
-    r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d+)?Z?)?$"
+    r"^(\d{4})-(\d{1,2})-(\d{1,2})"
+    r"(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$"
 )
 _DAYS_IN_MONTH = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 
@@ -258,7 +264,44 @@ def _date_to_epoch(value: Any) -> Optional[int]:
         return None
     if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
         return None
-    return _days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
+    epoch = _days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
+    # Apply a timezone offset so "2026-08-08T03:22:19+05:30" and "2026-08-07T21:52:19Z" are the
+    # SAME instant. No offset / "Z" → UTC. (group 7 = Z | ±HH:MM | ±HHMM)
+    tz = match.group(7)
+    if tz and tz != "Z":
+        digits = tz.replace(":", "")
+        offset = int(digits[1:3]) * 3600 + int(digits[3:5]) * 60
+        epoch += -offset if digits[0] == "+" else offset
+    return epoch
+
+
+# ── ReDoS guard for the regex operator ───────────────────────────────────────
+# A catastrophic-backtracking pattern like `^(a+)+$` against a crafted input can pin a worker for
+# minutes — CPython's stdlib `re` runs the backtracking loop in C while holding the GIL, so it is
+# NOT interruptible by a thread timeout. Patterns are author-supplied but the input is untrusted, so
+# a bad pattern + hostile payload is a real DoS. Mitigation: bound the input length and, when the
+# `regex` module is available, enforce a wall-clock timeout that actually interrupts matching. On
+# timeout or any error the condition fails closed (returns False).
+_REGEX_INPUT_MAX = 4096
+_REGEX_TIMEOUT_S = 0.05
+try:
+    import regex as _regex_engine  # third-party; supports an interruptible timeout=
+except Exception:  # pragma: no cover
+    _regex_engine = None
+
+
+def _safe_regex_search(pattern: str, text: str) -> bool:
+    if len(text) > _REGEX_INPUT_MAX:
+        return False
+    if _regex_engine is not None:
+        try:
+            return _regex_engine.search(pattern, text, timeout=_REGEX_TIMEOUT_S) is not None
+        except Exception:  # TimeoutError (ReDoS) or invalid pattern → fail closed
+            return False
+    try:  # no `regex` module installed → stdlib fallback (length-bounded, but no timeout)
+        return re.search(pattern, text) is not None
+    except re.error:
+        return False
 
 
 def compare(
@@ -290,10 +333,7 @@ def compare(
     if operator == "regex":
         if actual is None:
             return False
-        try:
-            return re.search(str(expected), str(actual)) is not None
-        except re.error:
-            return False
+        return _safe_regex_search(str(expected), str(actual))
 
     # Boolean-typed equality (only when the field is declared boolean).
     if (field_type or "").lower() == "boolean" and operator in {"==", "!="}:

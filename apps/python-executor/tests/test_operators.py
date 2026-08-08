@@ -92,6 +92,29 @@ class CompareOperatorTests(unittest.TestCase):
         self.assertFalse(compare("bad-pan", "regex", r"^[A-Z]{5}[0-9]{4}[A-Z]$"))
         self.assertFalse(compare("x", "regex", r"([unclosed"))  # invalid pattern -> False
 
+    def test_regex_redos_guard_fails_closed_fast(self) -> None:
+        # Catastrophic backtracking `^(a+)+$` against a crafted input used to pin the worker for
+        # minutes (CPython `re` holds the GIL). The guard must return quickly and fail closed.
+        import time
+        t0 = time.time()
+        result = compare("a" * 40 + "!", "regex", r"^(a+)+$")
+        elapsed = time.time() - t0
+        self.assertFalse(result)                 # no match, fails closed
+        self.assertLess(elapsed, 1.0, "regex evaluation must be bounded (ReDoS guard)")
+
+    def test_non_finite_numeric_operands_fail(self) -> None:
+        # Infinity/NaN must NOT clear numeric gates (else a hostile payload passes any threshold).
+        self.assertFalse(compare("Infinity", ">=", 9999999))
+        self.assertFalse(compare("Infinity", ">", 0))
+        self.assertFalse(compare("NaN", ">", 0))
+        self.assertFalse(compare("Infinity", "==", 9999999, field_type="number"))
+
+    def test_date_timezone_offset_normalized(self) -> None:
+        # +05:30 local and the equivalent Z instant compare equal; ordering respects the offset.
+        self.assertTrue(compare("2026-08-08T03:22:19+05:30", "==", "2026-08-07T21:52:19Z", field_type="date"))
+        self.assertTrue(compare("2026-01-01T00:00:00-05:00", "==", "2026-01-01T05:00:00Z", field_type="date"))
+        self.assertTrue(compare("2026-08-08T03:22:19+05:30", ">", "2026-08-07T21:00:00Z", field_type="date"))
+
     def test_exists(self) -> None:
         self.assertTrue(compare("something", "exists", None))
         self.assertFalse(compare(None, "exists", None))

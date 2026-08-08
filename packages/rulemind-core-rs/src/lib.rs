@@ -19,13 +19,15 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
-/// Coerce a JSON value to f64 (numbers, or numeric strings).
+/// Coerce a JSON value to f64 (numbers, or numeric strings). Non-finite (NaN / ±Infinity) → None,
+/// so `"Infinity" >= threshold` can't pass a numeric gate and NaN comparisons stay false.
 pub fn to_number(v: &Value) -> Option<f64> {
-    match v {
+    let n = match v {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => s.trim().parse::<f64>().ok(),
         _ => None,
-    }
+    };
+    n.filter(|f| f.is_finite())
 }
 
 /// Coerce to bool: real bool, non-zero number, or "true"/"1"/"yes".
@@ -87,8 +89,16 @@ fn date_to_epoch(v: &Value) -> Option<i64> {
     let month: i64 = dparts[1].parse().ok()?;
     let day: i64 = dparts[2].parse().ok()?;
     let (mut hour, mut minute, mut second) = (0i64, 0i64, 0i64);
-    if let Some(tp) = time_part {
-        let tp = tp.trim_end_matches('Z');
+    let mut offset_secs: i64 = 0; // timezone offset applied so +05:30 and Z resolve to the same UTC epoch
+    if let Some(tp0) = time_part {
+        // Peel off a trailing timezone: 'Z', or a signed ±HH:MM / ±HHMM.
+        let (tp, tz): (&str, Option<&str>) = if let Some(z) = tp0.find('Z') {
+            (&tp0[..z], None)
+        } else if let Some(sign) = tp0.rfind(|c| c == '+' || c == '-') {
+            (&tp0[..sign], Some(&tp0[sign..]))
+        } else {
+            (tp0, None)
+        };
         let tp = match tp.find('.') {
             Some(i) => &tp[..i],
             None => tp,
@@ -101,6 +111,16 @@ fn date_to_epoch(v: &Value) -> Option<i64> {
         minute = tparts[1].parse().ok()?;
         if tparts.len() == 3 {
             second = tparts[2].parse().ok()?;
+        }
+        if let Some(tz) = tz {
+            let digits: String = tz.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() != 4 {
+                return None;
+            }
+            let oh: i64 = digits[0..2].parse().ok()?;
+            let om: i64 = digits[2..4].parse().ok()?;
+            let magnitude = oh * 3600 + om * 60;
+            offset_secs = if tz.starts_with('+') { -magnitude } else { magnitude };
         }
     }
     if !(1..=12).contains(&month) {
@@ -117,7 +137,7 @@ fn date_to_epoch(v: &Value) -> Option<i64> {
     if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) || !(0..=59).contains(&second) {
         return None;
     }
-    Some(days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second)
+    Some(days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second + offset_secs)
 }
 
 fn option_list(expected: &Value) -> Vec<Value> {

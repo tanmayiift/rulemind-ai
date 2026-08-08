@@ -217,9 +217,15 @@ class RuleEvaluator {
   }
 
   double? _numericOrNull(dynamic value) {
-    if (value is num) return value.toDouble();
-    if (value is String) return double.tryParse(value);
-    return null;
+    // Non-finite (NaN / ±Infinity) -> null so "Infinity" can't clear a numeric gate.
+    double? n;
+    if (value is num) {
+      n = value.toDouble();
+    } else if (value is String) {
+      n = double.tryParse(value);
+    }
+    if (n == null || !n.isFinite) return null;
+    return n;
   }
 
   bool _toBool(dynamic value) {
@@ -283,9 +289,18 @@ class RuleEvaluator {
     final day = int.tryParse(dparts[2]);
     if (year == null || month == null || day == null) return null;
     var hour = 0, minute = 0, second = 0;
+    var offsetSecs = 0; // timezone offset so +05:30 and Z resolve to the same UTC epoch
     if (timePart != null) {
       var tp = timePart;
-      if (tp.endsWith('Z')) tp = tp.substring(0, tp.length - 1);
+      String? tz;
+      final zIdx = tp.indexOf('Z');
+      final signIdx = tp.lastIndexOf('+') >= 0 ? tp.lastIndexOf('+') : tp.lastIndexOf('-');
+      if (zIdx >= 0) {
+        tp = tp.substring(0, zIdx);
+      } else if (signIdx >= 0) {
+        tz = tp.substring(signIdx);
+        tp = tp.substring(0, signIdx);
+      }
       final dot = tp.indexOf('.');
       if (dot >= 0) tp = tp.substring(0, dot);
       final tparts = tp.split(':');
@@ -300,6 +315,13 @@ class RuleEvaluator {
         if (se == null) return null;
         second = se;
       }
+      if (tz != null) {
+        final digits = tz.replaceAll(RegExp(r'[^0-9]'), '');
+        if (digits.length != 4) return null;
+        final magnitude =
+            int.parse(digits.substring(0, 2)) * 3600 + int.parse(digits.substring(2, 4)) * 60;
+        offsetSecs = tz.startsWith('+') ? -magnitude : magnitude;
+      }
     }
     if (month < 1 || month > 12) return null;
     final dim = (month == 2 && _isLeapYear(year)) ? 29 : _daysInMonth[month - 1];
@@ -307,7 +329,7 @@ class RuleEvaluator {
     if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
       return null;
     }
-    return _daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+    return _daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second + offsetSecs;
   }
 }
 

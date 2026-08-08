@@ -669,6 +669,57 @@
       "operator": "!=",
       "value": 750,
       "expected": false
+    },
+    {
+      "$comment": "Non-finite operands must NOT pass numeric gates. 'Infinity' >= any threshold is FALSE (coercion rejects non-finite), else a hostile payload clears every numeric rule.",
+      "name": "gte-infinity-string-false",
+      "actual": "Infinity",
+      "operator": ">=",
+      "value": 9999999,
+      "fieldType": "number",
+      "expected": false
+    },
+    {
+      "name": "gt-nan-string-false",
+      "actual": "NaN",
+      "operator": ">",
+      "value": 0,
+      "fieldType": "number",
+      "expected": false
+    },
+    {
+      "name": "eq-infinity-string-false",
+      "actual": "Infinity",
+      "operator": "==",
+      "value": 9999999,
+      "fieldType": "number",
+      "expected": false
+    },
+    {
+      "$comment": "Date type applies timezone offsets: 2026-08-08T03:22:19+05:30 and 2026-08-07T21:52:19Z are the SAME UTC instant.",
+      "name": "date-eq-offset-vs-utc-true",
+      "actual": "2026-08-08T03:22:19+05:30",
+      "operator": "==",
+      "value": "2026-08-07T21:52:19Z",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "name": "date-order-offset-normalized-true",
+      "actual": "2026-08-08T03:22:19+05:30",
+      "operator": ">",
+      "value": "2026-08-07T21:00:00Z",
+      "fieldType": "date",
+      "expected": true
+    },
+    {
+      "$comment": "A negative-offset local time normalizes forward in UTC.",
+      "name": "date-eq-negative-offset-true",
+      "actual": "2026-01-01T00:00:00-05:00",
+      "operator": "==",
+      "value": "2026-01-01T05:00:00Z",
+      "fieldType": "date",
+      "expected": true
     }
   ]
 }
