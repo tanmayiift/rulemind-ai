@@ -1541,6 +1541,29 @@ def list_excel_functions() -> Dict[str, Any]:
     }
 
 
+class EvaluationCreateRequest(BaseModel):
+    """Evaluate an already-scored dataset. `rows` carry score/label (+ optional segment/date/
+    treatment) columns named in `config`. Rows are used to compute metrics then discarded."""
+    name: str
+    description: Optional[str] = None
+    task: str = "binary"  # binary | multilabel | uplift
+    config: Dict[str, Any] = Field(default_factory=dict)
+    rows: List[Dict[str, Any]]
+    status: str = "dev"
+
+
+class ModelEvalRequest(BaseModel):
+    """Evaluate a hosted model: score `rows` (feature dicts + a label column) with the model,
+    then compute binary metrics."""
+    name: str
+    description: Optional[str] = None
+    features: List[str]
+    label_col: str = "label"
+    rows: List[Dict[str, Any]]
+    config: Optional[Dict[str, Any]] = None
+    status: str = "dev"
+
+
 # ── Extracted routers ──────────────────────────────────────────────────────
 # Included last, after the shared singletons above (storage, active_tenant_id,
 # ensure_exists) are defined. Router handlers read `main.storage` etc. live at
@@ -1567,6 +1590,7 @@ from .routers.sdk import router as sdk_router  # noqa: E402
 from .routers import runtime as _runtime  # noqa: E402
 from .routers.runtime import router as runtime_router  # noqa: E402
 from .routers.collab import router as collab_router  # noqa: E402
+from .routers.evaluations import router as evaluations_router  # noqa: E402
 
 app.include_router(governance_router)
 app.include_router(insights_router)
@@ -1584,6 +1608,7 @@ app.include_router(platform_router)
 app.include_router(sdk_router)
 app.include_router(runtime_router)
 app.include_router(collab_router)
+app.include_router(evaluations_router)
 
 # Back-compat: a couple of tests call these handlers as module attributes.
 batch_decide = _runtime.batch_decide
