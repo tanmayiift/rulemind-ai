@@ -15,35 +15,34 @@
 
 ## 1. System at a glance
 
-```
-                    ┌─────────────────────────────────────────────────────────┐
-                    │                     Web console (Next.js)                │
-                    │  apps/web — /app/*/page.tsx routes → v3/RuleMindPage      │
-                    │  authoring · testing · deploy · audit · analytics · AI    │
-                    └───────────────┬─────────────────────────────────────────┘
-                                    │ HTTPS (X-Api-Key or Bearer session cookie)
-                                    ▼
-   ┌──────────────────────────────────────────────────────────────────────────────────┐
-   │                     Control-plane API — FastAPI (apps/python-executor)             │
-   │  app/main.py (bootstrap, middleware, system routes) + app/routers/*.py (15 slices) │
-   │  ┌────────────┐ ┌────────────┐ ┌───────────┐ ┌───────────┐ ┌──────────────────┐   │
-   │  │ Authoring  │ │  Decision  │ │  Workflow │ │ Governance│ │ AI · Models · A/B │   │
-   │  │ (CRUD)     │ │  engine    │ │  engine   │ │ audit/SLO │ │ Reports · SDK     │   │
-   │  └─────┬──────┘ └─────┬──────┘ └─────┬─────┘ └─────┬─────┘ └────────┬─────────┘   │
-   │        └──────────────┴──────── app/storage.py (SQLAlchemy) ────────┘             │
-   └───────────────┬───────────────────────────┬──────────────────────┬───────────────┘
-                   │                            │                      │
-        ┌──────────▼─────────┐      ┌───────────▼─────────┐   ┌────────▼───────────┐
-        │ Postgres / SQLite  │      │ Redis (optional):   │   │ Signed bundles →   │
-        │ app/models.py      │      │ SSE fan-out, rate   │   │ SDKs (Android/     │
-        │ decisions, bundles │      │ limit, scheduler    │   │ Flutter/JS) eval   │
-        │ audit, …           │      │ lease               │   │ ON-DEVICE offline  │
-        └────────────────────┘      └─────────────────────┘   └────────────────────┘
+```mermaid
+flowchart TD
+  Web["Web console — Next.js 14<br/>apps/web · authoring · testing · deploy · audit · <b>AI Copilot FAB</b>"]
+  SDK["On-device SDKs<br/>Android (Kotlin) · Flutter (Dart) · JS (WASM)"]
 
-   Fast path option: standalone Rust /decide service (packages/rulemind-decide-service)
-   Engines (identical semantics): app/logic.py (Py) · rulemind-core-rs (Rust/PyO3/WASM)
-                                  · sdk-android (Kotlin) · sdk-flutter (Dart)
+  Web -->|"HTTPS · X-Api-Key or session cookie"| API
+
+  subgraph API["Control-plane API — FastAPI · apps/python-executor"]
+    direction TB
+    ROUT["app/main.py + app/routers/*.py (16 slices)"]
+    ENG["Decision engine<br/>app/logic.py · core/engine.py · fast_decide.py"]
+    STORE["app/storage.py — SQLAlchemy 2.0"]
+    ROUT --- ENG --- STORE
+  end
+
+  API -->|"signed + encrypted bundles"| SDK
+  STORE --> PG[("Postgres / SQLite<br/>decisions · bundles · audit · assets")]
+  API -.->|optional| REDIS[("Redis<br/>SSE fan-out · rate-limit · scheduler lease")]
+  API -.->|"hot path, 1000+ TPS"| RUST["Standalone Rust /decide<br/>packages/rulemind-decide-service"]
+  ENG -.->|"BYO-key, off until keyed"| LLM[["AI providers<br/>Anthropic · OpenAI"]]
+
+  ENG === CONTRACT
+  SDK === CONTRACT
+  RUST === CONTRACT
+  CONTRACT["<b>One operator + data-type contract</b> — 5 identical engines<br/>Python · Rust · TypeScript · Kotlin · Dart"]
 ```
+
+<sub>ASCII fallback of the same picture is preserved in git history; every box maps to a file/table named in §17.</sub>
 
 **Component summary**
 
@@ -120,14 +119,43 @@ session tokens (hashed at rest), OTP (`generate_otp_code`, hashed), HMAC webhook
 
 ## 4. The decision engine (the heart)
 
-The same evaluation semantics are implemented in **four languages** and pinned by conformance specs so
-server, Rust fast path, and on-device SDKs never diverge.
+The same evaluation semantics are implemented in **five engines** and pinned by a single conformance
+spec so the server, the Rust fast path, the browser preview, and the on-device SDKs never diverge.
 
-**Reference engine:** `app/logic.py`.
+```mermaid
+flowchart LR
+  SPEC["packages/shared/operators.spec.json<br/><b>the operator + data-type contract</b><br/>(75+ asserted cases)"]
+  SPEC --> PY["Python<br/>app/logic.py · compare()"]
+  SPEC --> RS["Rust<br/>rulemind-core-rs"]
+  SPEC --> TS["TypeScript<br/>packages/rule-engine"]
+  SPEC --> KT["Kotlin<br/>sdk-android"]
+  SPEC --> DA["Dart<br/>sdk-flutter"]
+  PY --> CONF{{"Each engine's conformance suite<br/>asserts compare() == expected<br/>for every case"}}
+  RS --> CONF
+  TS --> CONF
+  KT --> CONF
+  DA --> CONF
+```
+
+**Reference engine:** `app/logic.py`. **The five conforming engines:** Python (`app/logic.py`), Rust
+(`rulemind-core-rs`), TypeScript (`packages/rule-engine`, the web preview), Kotlin (`sdk-android`), Dart
+(`sdk-flutter`).
 
 - **Operators (12), one authority** — `compare()` (`logic.py:215`): `== != > >= < <= between in not_in
-  exists !exists regex boolean`. Missing variable → `None` → comparisons return `False` (this exact
-  rule is mirrored in Kotlin/Dart after the missing-var parity fix).
+  exists !exists regex boolean`. Missing variable → `None` → comparisons return `False` (mirrored in
+  every engine after the missing-var parity fix).
+- **Data-type contract (per `fieldType`)** — the corpus pins exactly how each type compares, identically
+  in all five engines:
+  - **number** — ordered ops (`> >= < <= between`) coerce both sides to number; a non-numeric operand →
+    `false`. No lexical string ordering anywhere (a divergence that was closed: the TS engine used to
+    lexically order strings).
+  - **date** — a **first-class type**: both operands normalize to a **UTC epoch** via a strict ISO-8601
+    regex + integer civil-days math (Howard Hinnant), *not* each platform's native date parser (they
+    disagree on leniency/timezone). So dates genuinely **order** (`applicationDate > "2026-01-01"`) and
+    equality is **spelling-insensitive** (`"2026-01-01" == "2026-1-1"`); an unparseable value → `false`.
+  - **boolean** — `==`/`!=` on coerced booleans.
+  - **equality (`==`/`!=`)** is **loose / numeric-aware** in every engine, so a numeric string equals its
+    number (`"750" == 750`) — Python previously used strict `==` and diverged; now unified.
 - **Rule trees** — `evaluate_rule_tree()` (`logic.py:281`) walks an AND/OR/NOT tree with a recursion
   **depth guard**; v1 flat `nodes` are normalized via `nodes_to_tree` / `flatten_tree_to_nodes`. v2
   rules carry an explicit `tree` (preserved verbatim by the compiler).
@@ -157,21 +185,29 @@ by the Lambda adapter (`app/core/lambda_handler.py`) and service wrapper (`app/c
 ### 5.1 Synchronous `/decide` (hot path)
 `POST /api/v1/decide` (router `app/routers/runtime.py`).
 
-```
-request → middleware (tenant/role) → resolve policy → FAST PATH?  ── yes ─┐
-                                                        │ no             │
-                                          full execute_policy (logic.py) │
-                                                        │                │
-                    fast_decide(storage, policy, payload, tenant)  ◄─────┘
-   app/fast_decide.py: cached compiled serving-bundle per (tenant, policy),
-   compute variables, evaluate → outcome/score/trace
-                                                        │
-                    log decision (async by default) → decisions table
-                                                        │
-                    publish to SSE bus (Redis pub/sub or in-proc)
-                                                        ▼
-                    response { outcome, score, variables, rule_results,
-                               scorecard_result, trace, latency_ms }
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant MW as Middleware<br/>(tenant · role · rate-limit)
+  participant RT as runtime.decide
+  participant FD as fast_decide<br/>(cached serving-bundle)
+  participant FULL as execute_policy<br/>(logic.py)
+  participant DB as decisions table
+  participant BUS as SSE bus (Redis)
+  C->>MW: POST /api/v1/decide
+  MW->>RT: tenant + role resolved
+  RT->>RT: resolve policy + experiment variant
+  alt fast_path_eligible
+    RT->>FD: serving-bundle for (tenant, policy)
+    FD-->>RT: outcome / score / trace
+  else full path
+    RT->>FULL: compute variables → run steps
+    FULL-->>RT: outcome / score / trace
+  end
+  RT--)DB: async log (idempotent on client-stable id)
+  RT--)BUS: publish decision (pub/sub or in-proc)
+  RT-->>C: { outcome, score, variables, rule_results,<br/>scorecard_result, trace, latency_ms }
 ```
 
 - **Fast path** (`app/fast_decide.py`): `fast_path_eligible()` gates it; `_serving_bundle()` caches a
@@ -215,12 +251,45 @@ unsaved code. (Several carry **stacked routes** — e.g. `/policies/{id}/execute
 - **Policies** — order connectors→variables→rules→scorecards→(models/actions/branches) into a full
   flow; `GET /policies/{id}/input-schema` returns the union of required connector fields.
 
-**Promotion & environments** (`app/routers/operations.py`):
+**Two orthogonal state machines** — the deployment **environment** (`status`) and the governance
+**lifecycle** (`lifecycle_status`) — move independently:
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  state "Environment (status)" as ENV {
+    [*] --> dev
+    dev --> uat: promote (test-gated)
+    uat --> prod: promote (MECE-gated)
+    note right of prod
+      only DEV assets are deletable
+      (prod delete → 409)
+    end note
+  }
+  state "Governance (lifecycle_status)" as GOV {
+    [*] --> draft
+    draft --> in_review
+    in_review --> ready
+    in_review --> rejected
+    in_review --> draft
+    ready --> live
+    ready --> in_review
+    live --> archived
+    live --> in_review
+    rejected --> draft
+  }
+```
+
+**Promotion & environments** (`app/routers/operations.py`, `policies.py`):
 - `POST /{asset}/{id}/promote` and `POST /api/v1/deploy/promote` move an asset `dev`→`uat`→`prod`,
-  **test-gated**. Every promotion writes a `promotions` row with a **snapshot** of the definition.
+  **test-gated** (and **MECE-gated** for multi-rule policies). Every promotion writes a `promotions` row
+  with a **snapshot** of the definition; reaching `prod` compiles the serving bundle.
+- `POST /api/v1/policies/{id}/lifecycle` walks the governance stages above (`app/lifecycle.py`,
+  `can_transition`).
 - `GET /api/v1/deploy/status` — matrix of what's promoted where.
 - `GET /api/v1/policies/{id}/diff` (`app/policy_diff.py`) — structural diff between the current draft
   and the last live snapshot, shown before approving a promotion.
+- **Delete guard:** only `dev` assets are deletable (a prod/uat delete returns `409` — demote first).
 
 ---
 
@@ -263,6 +332,24 @@ full evaluator, scorecard, policy executor, decision-table evaluator, experiment
 **decision cache**. Bundle verification checks signature + checksum before use.
 
 **Durable decision sync (at-least-once, dedupe):**
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant App as On-device app
+  participant OB as SQLite outbox<br/>(pending)
+  participant SVR as POST /sdk/v1/decisions
+  participant DB as decisions<br/>(idempotent on id)
+  App->>App: RuleMind.evaluate() — offline
+  App->>OB: write decision (pending, client-stable id)
+  loop background drain — batch + exp. backoff
+    OB->>SVR: upload batch
+    SVR->>DB: upsert on id (never double-count)
+    DB-->>SVR: acked ids · source="on_device"
+    SVR-->>OB: delete acked rows, prune ExecutionStore
+  end
+```
+
 - On-device outbox in SQLite — `DecisionOutbox.kt` / `sqflite_decision_outbox.dart` (with in-memory
   fallbacks) — writes each decision `pending`, drains in **batches** with exponential backoff.
 - Upload: `POST /sdk/v1/decisions` (batch) / `/sdk/v1/executions/sync`. Backend ingest is **idempotent
@@ -317,18 +404,55 @@ full evaluator, scorecard, policy executor, decision-table evaluator, experiment
 - **Analytics/insights:** `GET /analytics/decisions`, `/analytics/latency`, `/analytics/sdk`,
   `POST /analytics/rejection-drivers` (top contributing conditions), backtesting
   `POST /policies/{id}/backtest` (`app/backtest.py`).
+- **Full outcome spectrum:** `rejection_drivers()` (`app/analytics.py`) partitions the *whole* spectrum,
+  not just declines — `focus_count` counts **reject + review** (never **approve**), and a driver's
+  `fail_count` is attributed only to focused decisions (a condition that "fails" on an approved decision
+  contributes zero). This is the compute the AI **`analyze-rejections`** action interprets, and its
+  no-declines skip. Pinned by `tests/test_outcome_spectrum.py`.
 
 ---
 
 ## 12. AI Copilot & hosted ML models
 
-**AI router:** `app/routers/ai.py`; logic `app/ai.py`, providers `app/providers.py`.
-- **Generate** — `POST /ai/generate-rule`, `/ai/generate-policy` (NL → asset draft),
-  `/ai/explain-decision` (plain-English rationale for a `trace`), `/ai/test`.
+**AI router:** `app/routers/ai.py`; logic `app/ai.py`; workflow provider templates `app/providers.py`.
+**BYO-key, server-side, provider-agnostic** (Anthropic + OpenAI). The key is Fernet-encrypted per tenant
+and never touches the browser; a **local scope guard** refuses off-topic prompts *before* any paid call.
+
+```mermaid
+flowchart TD
+  FAB["AI Copilot FAB — bottom-right, animated<br/>apps/web/src/components/ai-copilot-fab.tsx"]
+  FAB --> PICK{Pick an action}
+  PICK --> GR["generate-rule"]
+  PICK --> GP["generate-policy"]
+  PICK --> GPR["generate-predictor"]
+  PICK --> AE["analyze-experiment"]
+  PICK --> AR["analyze-rejections"]
+  PICK --> ED["explain-decision"]
+  GR & GP & GPR & AE & AR & ED --> GATE["local scope guard (no token) ·<br/>budget cap · BYO key required"]
+  GATE --> CALL["app/ai.py provider call<br/><b>omit temperature for Claude 5 / o-series</b> + defensive retry"]
+  CALL --> LLM[["Anthropic · OpenAI"]]
+  CALL --> OUT["validated draft / grounded analysis<br/>rendered in the panel"]
+```
+
+- **Six actions** — each guarded, budgeted, and returning a **draft/analysis that is never auto-applied**:
+  - `POST /ai/generate-rule`, `/ai/generate-policy` — NL → a validated asset **draft** (still MECE/test-gated).
+  - `POST /ai/generate-predictor` — a definition → a **draft scorecard** over existing variables; any bin
+    referencing an unknown variable id marks the draft invalid.
+  - `POST /ai/analyze-experiment` — reads a champion/challenger's **server-computed** results → a
+    quantitative promote/hold/rollback call (the LLM interprets, never invents numbers).
+  - `POST /ai/analyze-rejections` — server-computed decline/review drivers → why rejections changed +
+    next steps; skips the LLM (no token) when there are no declines.
+  - `POST /ai/explain-decision` — plain-English rationale + adverse-action reason codes for one `trace`.
+- **Provider abstraction** (`app/ai.py`) — `_call_anthropic` / `_call_openai` behind a `_PROVIDERS` map;
+  `complete()` + `extract_json()` + `AIError`. `temperature` is **omitted for models that reject it**
+  (the Claude 5 family and OpenAI o-series 400 on it) with a defensive retry-without-temperature — caught
+  by a live end-to-end run, since mock tests never build the real request body.
+- **Frontend FAB** — a single floating action button (bottom-right, sparkle icon, pulse + "thinking"
+  animation) mounts only when AI is enabled, and invokes every action from anywhere in the console.
 - **Config & governance** — `GET/PUT /ai/config` (per-provider key, Fernet-encrypted in
-  `settings.ai_config`, **masked on read**), live model list `GET /ai/models`, **cost/budget
-  tracking** `GET /ai/usage`, `PUT /ai/budget`, `POST /ai/usage/reset`. AI is **off until a key is
-  supplied** (feature-gated), and calls are async (`httpx`).
+  `settings.ai_config`, **masked on read**), live model list `GET /ai/models`, **cost/budget tracking**
+  `GET /ai/usage`, `PUT /ai/budget`, `POST /ai/usage/reset`. AI is **off until a key is supplied**
+  (feature-gated), and calls are async (`httpx`).
 
 **Hosted models router:** `app/routers/models.py`; executor `app/model_executor.py`.
 - Upload a pickled sklearn/xgboost model (`hosted_models` table, DB-persisted so it survives restarts
@@ -380,10 +504,15 @@ decision-explorer, lifecycle, access, branding, admin, simulation, ai, batch, lo
   `Button`, `InlineInput/Select/Textarea`, `PAGE_META`, `NODE_TYPES`, operator/status helpers.
 - `apps/web/src/v3/pages/*.tsx` — 11 page components (Dashboard, Connectors, Variables, Rules,
   Scorecards, Policies, Testing, Deploy, Audit, Exports, Settings).
-- State: **Zustand** store `apps/web/src/lib/store.ts` (env, theme, apiBaseUrl/apiKey, filters); API
-  client `apps/web/src/lib/api.ts` (`apiJson`, `apiText`, `streamDecisions` for SSE). Theme tokens in
-  `v3/theme.ts`; icons in `v3/icons.tsx`; types in `v3/types.ts`.
-- One bootstrap call hydrates the console: `GET /api/v1/bootstrap`.
+- State: **Zustand** store `apps/web/src/lib/store.ts` (env, theme, apiBaseUrl/apiKey, filters,
+  `hydrated` flag); API client `apps/web/src/lib/api.ts` (`apiJson`, `apiText`, `streamDecisions` for
+  SSE). Theme tokens in `v3/theme.ts`; icons in `v3/icons.tsx`; types in `v3/types.ts`.
+- One bootstrap call hydrates the console: `GET /api/v1/bootstrap`. Data fetches are **gated on store
+  rehydration** so a pre-hydration empty key never fires a burst of 401s; first run shows a "Connect
+  RuleMind" prompt.
+- **AI Copilot FAB** — `apps/web/src/components/app-shell.tsx` mounts
+  `components/ai-copilot-fab.tsx` (bottom-right) when `GET /ai/config` reports AI enabled; the panel
+  drives all six AI actions with a live "thinking" animation and inline result rendering (§12).
 
 ---
 
@@ -415,7 +544,8 @@ decision-explorer, lifecycle, access, branding, admin, simulation, ai, batch, lo
 | Experiments / A-B | `experiments.py` | `experiments.py`, `champion_challenger.py` | experiments |
 | Decision tables / MECE | (rules/authoring) | `decision_tables.py`, `mece.py` | decision_tables |
 | Reports / analytics | `reports.py`, `insights.py` | `reports.py`, `analytics.py`, `backtest.py`, `mailer.py` | report_definitions, email_outbox |
-| AI Copilot | `ai.py` | `ai.py`, `providers.py` | settings.ai_config |
+| AI Copilot (6 actions + FAB) | `ai.py` | `ai.py` (`_PROVIDERS`, temperature-omit), `providers.py`; web `components/ai-copilot-fab.tsx` | settings.ai_config |
+| Operator + data-type contract | (all engines) | `logic.py` `compare()` + `_date_to_epoch`, `rule-engine`, `rulemind-core-rs`, SDK evaluators | `packages/shared/operators.spec.json` |
 | Hosted ML models | `models.py` | `model_executor.py` | hosted_models |
 | Governance / audit / SLO / PII | `governance.py` | `observability.py`, `slo.py`, `archiver.py`, `security_config.py` | audit_events, error_events, settings |
 | Identity / RBAC / SSO / sessions | `identity.py` | `auth.py`, `rbac.py`, `sso.py`, `session_cookie.py` | workspace_members, member_sessions, member_otps, api_keys |
@@ -427,17 +557,26 @@ decision-explorer, lifecycle, access, branding, admin, simulation, ai, batch, lo
 
 ## 18. Testing & CI
 
-- **Backend regression:** 577-test unittest suite (`apps/python-executor/tests/`); persistent SQLite
-  harness; cross-engine + fast/full conformance.
-- **Native:** Kotlin (`gradlew :rulemind-core:test`), Dart (`flutter test`), Rust
-  (`cargo test` incl. `conformance.rs`).
+- **Backend regression:** **624-test** unittest suite (`apps/python-executor/tests/`); persistent SQLite
+  harness; cross-engine + fast/full conformance. Runs clean (`OK`, only the Rust-module tests skip
+  locally). Notable coverage added: operator/data-type corpus (75+ cases incl. date ordering,
+  spelling-insensitive equality, numeric-string equality), the AI `temperature`-omission + retry
+  (`test_ai.py`), and the full approve/reject/review analytics spectrum (`test_outcome_spectrum.py`).
+- **Cross-engine conformance (one spec, five arms):** TypeScript (`vitest`, 75/75), Python (`unittest`),
+  Dart (`flutter test`, 75/75), Kotlin (`gradlew :rulemind-core:test`), Rust (`cargo test` incl.
+  `conformance.rs`).
 - **Web:** `next build` + `pnpm typecheck` gate; Playwright config present for e2e.
+- **Live end-to-end:** a scripted run against the running instance exercises create → test-gate →
+  promote dev→uat→**prod** → governance lifecycle → evaluate (exact `>=` boundary) → batch-simulate →
+  audit-log, plus all six AI actions against a real key — the layer that caught the `temperature` bug.
 - **CI jobs (all required):** `build-test`, `repo-validation`, `android`, `flutter`.
 - **Performance & verification results:** see [`TESTING_RESULTS.md`](TESTING_RESULTS.md) — 400+ TPS,
   p50 ~95 ms, 0 errors, exactly-once decision logging, retry-safe on-device dedupe, console-clean UI.
 
 ---
 
-_This HLD reflects the codebase as of the monolith split (backend routers `app/routers/*.py` +
-web `v3/kit.tsx` + `v3/pages/*`) and the durable-sync / large-policy conformance work. Every feature
-above is wired end-to-end and covered by the suites in §18._
+_This HLD reflects the codebase through the **first-class date type + unified cross-engine equality**
+(all five engines), the **AI Copilot** expansion (six BYO-key actions + floating action button + the
+`temperature` provider fix), the **full outcome-spectrum analytics** tests, and the earlier monolith
+split / durable-sync / large-policy conformance work. Every feature above is wired end-to-end and
+covered by the suites in §18._
