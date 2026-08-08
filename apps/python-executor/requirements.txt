@@ -37,3 +37,5 @@ opentelemetry-instrumentation-sqlalchemy>=0.48b0
 
 # Interruptible regex (ReDoS timeout guard for the rule 'regex' operator).
 regex==2024.11.6
+# WebSocket support for uvicorn (collaborative editor live-sync channel).
+websockets==13.1
