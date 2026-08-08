@@ -51,6 +51,7 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/api-console" as Route, label: "API Console", icon: "connectors" },
       { href: "/simulation" as Route, label: "Simulation", icon: "testing" },
       { href: "/lifecycle" as Route, label: "Lifecycle", icon: "policies" },
+      { href: "/collab" as Route, label: "Collab Editor", icon: "policies" },
       { href: "/deploy" as Route, label: "Deploy", icon: "deploy" },
     ],
   },
