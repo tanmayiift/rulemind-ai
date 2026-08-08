@@ -7,6 +7,8 @@ Open-source, source-agnostic decisioning engine. Build rules, scorecards, and po
 
 RuleMind accepts JSON payloads from pluggable connectors (bureau, bank, GST, device, KYC, or custom APIs), lets teams author Python variables, click-built rules, scorecards, and multi-step policies — all from a visual dashboard.
 
+> **Operators:** see **[INTEGRATION.md](INTEGRATION.md)** for the resilience/security/evaluation reference — circuit breaker, durable decision WAL, PII redaction, backtest sample-vs-full modes, cross-engine operator semantics, and the full environment-variable list.
+
 **License:** Apache 2.0 — fork it, self-host it, extend it. No approval or payment needed. If you build on RuleMind, please **credit it visibly** ("Built on RuleMind", with a link) — a request, not a condition. The **RuleMind name and logo are trademarks**; the license covers the code, not the brand. See [NOTICE](NOTICE) and the [attribution section](#license-attribution--trademark).
 
 ## Features
