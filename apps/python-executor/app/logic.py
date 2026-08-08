@@ -181,6 +181,12 @@ def generate_rule_expression_definition(rule: Dict[str, Any], variable_lookup: D
 
 
 def _coerce_number(value: Any) -> Optional[float]:
+    # Booleans are NOT numbers here. Python makes `bool` a subclass of `int` (float(True) == 1.0),
+    # but the Rust/TS/Kotlin/Dart cores all treat a boolean as non-numeric (numericOrNull(bool) ->
+    # null). Coercing it would make `True == 1` / `True >= 0` pass on the Python core only — a real
+    # cross-engine divergence. Reject it up front so all five engines agree.
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -207,14 +213,30 @@ def _as_option_list(expected: Any) -> List[Any]:
     return [item.strip() for item in str(expected).split(",") if item.strip() != ""]
 
 
+def _stringify(value: Any) -> str:
+    # Cross-engine string form: booleans render lowercase ("true"/"false") like JS/Rust/Kotlin/Dart,
+    # NOT Python's capitalized str(True)=="True". So `"true" == True` matches on every engine.
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def _loose_equal(actual: Any, expected: Any) -> bool:
+    # Booleans are a distinct type across all five engines: a bool equals a bool directly, and
+    # otherwise compares by its lowercase string form — it never numerically coerces. This keeps
+    # `True == 1` False and `"true" == True` True everywhere (Python's native True==1 and
+    # capitalized str(True) would diverge). See _coerce_number for the numeric half of this rule.
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        if isinstance(actual, bool) and isinstance(expected, bool):
+            return actual == expected
+        return _stringify(actual) == _stringify(expected)
     if actual == expected:
         return True
     actual_number = _coerce_number(actual)
     expected_number = _coerce_number(expected)
     if actual_number is not None and expected_number is not None:
         return actual_number == expected_number
-    return str(actual) == str(expected)
+    return _stringify(actual) == _stringify(expected)
 
 
 # ── First-class date type ────────────────────────────────────────────────────

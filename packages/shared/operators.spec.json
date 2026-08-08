@@ -720,6 +720,86 @@
       "value": "2026-01-01T05:00:00Z",
       "fieldType": "date",
       "expected": true
+    },
+    {
+      "name": "bool-eq-bool-true",
+      "actual": true,
+      "operator": "==",
+      "value": true,
+      "fieldType": null,
+      "expected": true
+    },
+    {
+      "name": "bool-eq-bool-false",
+      "actual": true,
+      "operator": "==",
+      "value": false,
+      "fieldType": null,
+      "expected": false
+    },
+    {
+      "name": "bool-untyped-not-eq-number-1",
+      "actual": true,
+      "operator": "==",
+      "value": 1,
+      "fieldType": null,
+      "expected": false
+    },
+    {
+      "name": "number-1-untyped-not-eq-bool",
+      "actual": 1,
+      "operator": "==",
+      "value": true,
+      "fieldType": null,
+      "expected": false
+    },
+    {
+      "name": "string-true-untyped-eq-bool-true",
+      "actual": "true",
+      "operator": "==",
+      "value": true,
+      "fieldType": null,
+      "expected": true
+    },
+    {
+      "name": "string-1-untyped-not-eq-bool-true",
+      "actual": "1",
+      "operator": "==",
+      "value": true,
+      "fieldType": null,
+      "expected": false
+    },
+    {
+      "name": "bool-not-numeric-gte",
+      "actual": true,
+      "operator": ">=",
+      "value": 0,
+      "fieldType": "number",
+      "expected": false
+    },
+    {
+      "name": "bool-ne-number-untyped-true",
+      "actual": true,
+      "operator": "!=",
+      "value": 1,
+      "fieldType": null,
+      "expected": true
+    },
+    {
+      "name": "null-untyped-not-eq-empty-string",
+      "actual": null,
+      "operator": "==",
+      "value": "",
+      "fieldType": null,
+      "expected": false
+    },
+    {
+      "name": "null-untyped-ne-empty-string-true",
+      "actual": null,
+      "operator": "!=",
+      "value": "",
+      "fieldType": null,
+      "expected": true
     }
   ]
 }

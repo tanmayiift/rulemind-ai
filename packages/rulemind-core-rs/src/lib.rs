@@ -44,6 +44,13 @@ fn loose_equal(a: &Value, b: &Value) -> bool {
     if a == b {
         return true;
     }
+    // A JSON null only loosely-equals another null (handled by `a == b` above) — never "" or any
+    // other value. value_to_string(Null) renders "", so without this guard `null == ""` would be
+    // true here while the Python/TS/Kotlin/Dart cores all return false (they render null as a
+    // non-empty token). Guard it so a missing field never equals an empty string on the Rust path.
+    if a.is_null() || b.is_null() {
+        return false;
+    }
     if let (Some(x), Some(y)) = (to_number(a), to_number(b)) {
         return x == y;
     }

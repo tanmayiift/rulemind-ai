@@ -70,6 +70,24 @@ class CompareOperatorTests(unittest.TestCase):
         self.assertTrue(compare("KYC", "==", "KYC"))
         self.assertTrue(compare("KYC", "!=", "AML"))
 
+    def test_boolean_is_distinct_type_untyped_equality(self) -> None:
+        # Booleans do NOT numerically coerce and stringify lowercase — matching the Rust/TS/Kotlin/
+        # Dart cores. Python's native True==1 and str(True)=="True" would otherwise diverge.
+        self.assertFalse(compare(True, "==", 1))          # bool is not the number 1
+        self.assertFalse(compare(1, "==", True))
+        self.assertFalse(compare("1", "==", True))
+        self.assertTrue(compare("true", "==", True))      # lowercase string form matches
+        self.assertTrue(compare(True, "==", True))
+        self.assertFalse(compare(True, "==", False))
+        self.assertTrue(compare(True, "!=", 1))
+        self.assertFalse(compare(True, ">=", 0, field_type="number"))  # bool not numeric in ordering
+
+    def test_null_only_equals_null(self) -> None:
+        # A missing/null value never loosely-equals an empty string (or any value) — only null.
+        self.assertFalse(compare(None, "==", ""))
+        self.assertTrue(compare(None, "!=", ""))
+        self.assertFalse(compare(None, "==", "null"))
+
     def test_between_inclusive(self) -> None:
         self.assertTrue(compare(50000, "between", 40000, 60000))
         self.assertTrue(compare(40000, "between", 40000, 60000))  # inclusive low
