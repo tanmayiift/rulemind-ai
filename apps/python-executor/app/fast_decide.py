@@ -268,6 +268,14 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
     }
     if log:
         _log_decision(storage, tenant_id, decision, resolved_payload, values)
+        # Dark launch: if a shadow candidate is registered for this policy, evaluate it on the same
+        # payload and log what it WOULD have decided — never affects this returned decision.
+        try:
+            from . import shadow
+
+            shadow.run_shadow(storage, policy["id"], resolved_payload, decision["outcome"], tenant_id)
+        except Exception:  # pragma: no cover - dark launch must never break the live path
+            pass
     return decision
 
 
@@ -288,7 +296,9 @@ def _log_decision(storage: Any, tenant_id: str, decision: Dict[str, Any], payloa
     }
     from . import decision_log
 
-    decision_log.submit(_safe_add_decision, storage, record, tenant_id)
+    # Durable-by-default when DECISION_WAL=1: WAL append (fsync) before the async DB write, so a
+    # hard kill in that window is recovered by startup replay. Same async submit() otherwise.
+    decision_log.persist_decision(storage, record, tenant_id)
 
 
 def _safe_add_decision(storage: Any, record: Dict[str, Any], tenant_id: str) -> None:

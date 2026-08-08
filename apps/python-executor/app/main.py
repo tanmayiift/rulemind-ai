@@ -1241,6 +1241,20 @@ def sync_sdk_review_task(request: SdkExecutionSyncRequest, tenant_id: str) -> Op
 async def startup() -> None:
     # Fail closed: refuse to serve in production with default/unset critical secrets.
     verify_production_secrets()
+    # Durable decision outbox: replay any WAL entries a previous process appended but was killed
+    # (SIGKILL/OOM) before their DB write landed. Idempotent — ids already in the DB are skipped.
+    try:
+        from . import decision_wal
+
+        if decision_wal.enabled():
+            result = decision_wal.recover(storage)
+            if result.get("replayed"):
+                import logging
+
+                logging.getLogger("rulemind.decision_wal").warning(
+                    "decision WAL recovery: replayed %s orphaned decision(s) %s", result["replayed"], result)
+    except Exception:  # pragma: no cover - recovery must never block startup
+        pass
     if not (is_local_dev() or os.getenv("RULEMIND_RUN_API_SCHEDULER") == "1"):
         return
     try:

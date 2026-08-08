@@ -29,11 +29,20 @@ def backtest_policy(
     bundle_version: Optional[int] = None,
     sample: int = 200,
     max_changed_examples: int = 50,
+    full: bool = False,
+    page_size: int = 2000,
 ) -> Dict[str, Any]:
-    """Replay up to ``sample`` recent decisions for ``policy_id`` through the target bundle and
-    summarise the outcome impact vs what was originally recorded.
+    """Replay historical decisions for ``policy_id`` through the target bundle and summarise the
+    outcome impact vs what was originally recorded.
 
-    Raises ValueError when the target bundle is missing (mapped to 404/400 by the caller)."""
+    Two modes:
+      * **sample** (default): the ``sample`` most-recent decisions (fast, representative; <=2000).
+      * **full** (``full=True``): the ENTIRE decision population for this policy, streamed one page
+        at a time via ``storage.iter_policy_decisions`` so memory stays bounded to ``page_size``
+        rows regardless of how many millions of decisions exist. Slower but exhaustive.
+
+    Both modes replay through the same deterministic ``core.engine.decide``, so results are
+    reproducible to the exact outcome. Raises ValueError when the target bundle is missing."""
     from .core.engine import decide as core_decide
 
     if bundle_version is not None:
@@ -45,7 +54,11 @@ def backtest_policy(
         if not bundle:
             raise ValueError("No compiled bundle to backtest against.")
 
-    decisions = storage.sample_policy_decisions(policy_id, tenant_id=tenant_id, limit=sample)
+    # full mode streams the whole population (memory-bounded generator); sample mode loads <=2000.
+    if full:
+        decisions = storage.iter_policy_decisions(policy_id, tenant_id=tenant_id, page_size=page_size)
+    else:
+        decisions = storage.sample_policy_decisions(policy_id, tenant_id=tenant_id, limit=sample)
     content = bundle["content"]
 
     total = 0
@@ -91,6 +104,8 @@ def backtest_policy(
     return {
         "policy_id": policy_id,
         "bundle_version": bundle.get("version"),
+        "mode": "full" if full else "sample",
+        "scanned": total,
         "sample": total,
         "changed": changed,
         "change_rate_pct": round((changed / total) * 100, 2) if total else 0.0,

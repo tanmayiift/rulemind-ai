@@ -777,6 +777,9 @@ class Storage:
             "promoted_by": model.promoted_by,
             "reason": model.reason,
             "created_at": serialize_datetime(model.created_at),
+            # Lightweight flag only — the (potentially large) snapshot itself is fetched on demand
+            # via get_promotion(id) so the ledger listing stays cheap.
+            "has_snapshot": model.snapshot_json is not None,
         }
 
     @staticmethod
@@ -1409,6 +1412,51 @@ class Storage:
         with self.connect() as session:
             return int(session.scalar(select(func.count()).select_from(Decision).where(Decision.tenant_id == resolved)) or 0)
 
+    def iter_policy_decisions(
+        self,
+        policy_id: str,
+        tenant_id: Optional[str] = None,
+        page_size: int = 2000,
+    ):
+        """Stream ALL decisions for one policy, newest-first, one page at a time.
+
+        Unlike ``sample_policy_decisions`` (bounded to <=2000, loaded at once) this is a generator
+        that holds at most ``page_size`` rows in memory regardless of the total population — so a
+        full-population backtest over 1M+ decisions stays memory-bounded (backs backtest full mode).
+        Uses keyset pagination on ``(created_at, id)`` so it stays O(page) at any offset instead of
+        the O(n^2) degradation of LIMIT/OFFSET on a large table."""
+        from sqlalchemy import and_
+        from . import decision_log
+
+        decision_log.flush()
+        resolved = self._tenant_id(tenant_id)
+        last_created: Optional[datetime] = None
+        last_id: Optional[str] = None
+        while True:
+            with self.connect() as session:
+                query = select(Decision).where(
+                    Decision.tenant_id == resolved, Decision.policy_id == policy_id
+                )
+                if last_created is not None:
+                    # Strict keyset cursor: rows strictly "after" the last one in (created_at, id) desc order.
+                    query = query.where(
+                        or_(
+                            Decision.created_at < last_created,
+                            and_(Decision.created_at == last_created, Decision.id < last_id),
+                        )
+                    )
+                rows = session.scalars(
+                    query.order_by(desc(Decision.created_at), desc(Decision.id)).limit(page_size)
+                ).all()
+                if not rows:
+                    return
+                for row in rows:
+                    last_created = row.created_at
+                    last_id = row.id
+                    yield self._decision_to_dict(row)
+                if len(rows) < page_size:
+                    return
+
     def iter_decisions_window(
         self,
         tenant_id: Optional[str] = None,
@@ -1639,6 +1687,19 @@ class Storage:
                 .order_by(desc(Promotion.id)).limit(1)
             ).first()
             return copy.deepcopy(row.snapshot_json) if row and row.snapshot_json else None
+
+    def get_promotion(self, promotion_id: int, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fetch one promotion including its full definition snapshot (for release rollback)."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(
+                select(Promotion).where(Promotion.id == int(promotion_id), Promotion.tenant_id == resolved)
+            )
+            if not row:
+                return None
+            result = self._promotion_to_dict(row)
+            result["snapshot"] = copy.deepcopy(row.snapshot_json)
+            return result
 
     def list_promotions(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
