@@ -224,11 +224,14 @@ def backtest_policy_endpoint(
     policy_id: str,
     bundle_version: Optional[int] = Query(default=None, alias="bundleVersion"),
     sample: int = Query(default=200, ge=1, le=2000),
+    full: bool = Query(default=False),
 ) -> Dict[str, Any]:
-    """Replay a sample of this policy's recent real decisions through a compiled bundle (latest,
-    or `?bundleVersion=N`) and report the aggregate outcome impact — how many decisions would
-    change and the full from→to transition matrix. The batch sibling of decision replay: answers
-    "if I ship this, how much of my live traffic flips?" before you promote."""
+    """Replay this policy's real decisions through a compiled bundle (latest, or `?bundleVersion=N`)
+    and report the aggregate outcome impact — how many decisions would change and the full from→to
+    transition matrix. Answers "if I ship this, how much of my live traffic flips?" before promote.
+
+    Default replays a recent `?sample=` (<=2000). Pass `?full=true` to stream the ENTIRE decision
+    population for this policy in memory-bounded pages (exhaustive; slower, for a true impact audit)."""
     from .. import backtest as backtest_mod
 
     tenant_id = main.active_tenant_id(request)
@@ -236,7 +239,123 @@ def backtest_policy_endpoint(
     try:
         return backtest_mod.backtest_policy(
             main.storage, policy_id, tenant_id=tenant_id,
-            bundle_version=bundle_version, sample=sample,
+            bundle_version=bundle_version, sample=sample, full=full,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ── What-if KPI simulation (T2.7) ──────────────────────────────────────────
+class WhatIfRequest(BaseModel):
+    kpis: List[Dict[str, Any]]
+    bundle_version: Optional[int] = None
+    full: bool = False
+    sample: int = 200
+
+
+@router.post("/api/v1/policies/{policy_id}/whatif")
+def whatif_endpoint(request: Request, policy_id: str, body: WhatIfRequest) -> Dict[str, Any]:
+    """Replay this policy's decisions through a candidate bundle and compute caller-defined KPIs on
+    baseline (recorded) vs candidate (replayed). `full=true` streams the whole population, memory-
+    bounded. Answers 'if I ship this, what happens to MY metrics?'."""
+    from .. import whatif
+
+    tenant_id = main.active_tenant_id(request)
+    main.ensure_exists(main.storage.get_policy(policy_id, tenant_id=tenant_id), "policy", policy_id)
+    try:
+        return whatif.simulate_kpis(
+            main.storage, policy_id, body.kpis, tenant_id=tenant_id,
+            bundle_version=body.bundle_version, full=body.full, sample=body.sample,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ── Shadow execution / dark launch (T2.6) ──────────────────────────────────
+class ShadowRequest(BaseModel):
+    candidate_policy_id: str
+
+
+@router.post("/api/v1/policies/{policy_id}/shadow")
+def register_shadow_endpoint(request: Request, policy_id: str, body: ShadowRequest) -> Dict[str, Any]:
+    """Dark-launch a candidate policy behind this live policy: it runs on the same live traffic and
+    logs what it would decide, without ever changing the returned decision."""
+    from .. import shadow
+
+    tenant_id = main.active_tenant_id(request)
+    try:
+        return shadow.register_shadow(main.storage, policy_id, body.candidate_policy_id, tenant_id=tenant_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.delete("/api/v1/policies/{policy_id}/shadow")
+def unregister_shadow_endpoint(request: Request, policy_id: str) -> Dict[str, Any]:
+    from .. import shadow
+
+    tenant_id = main.active_tenant_id(request)
+    return shadow.unregister_shadow(main.storage, policy_id, tenant_id=tenant_id)
+
+
+@router.get("/api/v1/policies/{policy_id}/shadow")
+def shadow_report_endpoint(request: Request, policy_id: str) -> Dict[str, Any]:
+    """Divergence report: how much of live traffic the dark-launched candidate would have flipped."""
+    from .. import shadow
+
+    tenant_id = main.active_tenant_id(request)
+    return shadow.shadow_report(main.storage, policy_id, tenant_id=tenant_id)
+
+
+# ── Release snapshots + one-click rollback (T2.8) ──────────────────────────
+class RollbackRequest(BaseModel):
+    promotion_id: int
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@router.get("/api/v1/policies/{policy_id}/releases")
+def list_releases_endpoint(request: Request, policy_id: str) -> Dict[str, Any]:
+    """The release timeline for this policy — every promotion that captured a restorable snapshot."""
+    from .. import release
+
+    tenant_id = main.active_tenant_id(request)
+    main.ensure_exists(main.storage.get_policy(policy_id, tenant_id=tenant_id), "policy", policy_id)
+    return {"policy_id": policy_id, "releases": release.list_releases(main.storage, policy_id, tenant_id=tenant_id)}
+
+
+@router.post("/api/v1/policies/{policy_id}/rollback")
+def rollback_endpoint(request: Request, policy_id: str, body: RollbackRequest) -> Dict[str, Any]:
+    """One-click rollback: restore this policy (and its referenced rules/scorecards/tables) to a
+    chosen release's snapshot. Recorded as a forward 'rollback' promotion (history is append-only)."""
+    from .. import release
+
+    tenant_id = main.active_tenant_id(request)
+    actor = body.actor or (getattr(request.state, "user_id", None) or "system")
+    try:
+        return release.rollback_policy(
+            main.storage, policy_id, body.promotion_id, actor, tenant_id=tenant_id, reason=body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ── Collaborative editing (CRDT merge) + time-travel (T4.12 backend) ────────
+class CrdtMergeRequest(BaseModel):
+    base: Dict[str, Any]
+    edit_a: Dict[str, Any]
+    edit_b: Dict[str, Any]
+    actor_a: str = "a"
+    actor_b: str = "b"
+    ts_a: float = 1.0
+    ts_b: float = 2.0
+
+
+@router.post("/api/v1/collab/merge")
+def crdt_merge_endpoint(body: CrdtMergeRequest) -> Dict[str, Any]:
+    """Conflict-free merge of two concurrent edits made against the same base document (per-field
+    LWW CRDT). Different-field edits both survive; same-field edits resolve deterministically and
+    are reported as conflicts. Backs multi-author policy editing."""
+    from .. import crdt
+
+    merged, conflicts = crdt.three_way_merge(
+        body.base, body.edit_a, body.edit_b, body.ts_a, body.actor_a, body.ts_b, body.actor_b)
+    return {"merged": merged, "conflicts": conflicts}

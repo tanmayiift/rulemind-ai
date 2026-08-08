@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from . import circuit_breaker
 from .experiments import apply_experiment_overrides, resolve_experiment_assignment
 from .jsonpath import evaluate_math_expr, resolve_jsonpath
 from .logic import evaluate_rule_definition, evaluate_scorecard, json_dumps, now_iso, redact_payload
@@ -25,6 +26,18 @@ def _datetime_from_iso(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _url_host(url: str) -> str:
+    """Downstream identity for circuit-breaker keying: the host (with port) of a URL, or the
+    raw string if it doesn't parse. Groups all calls to the same target under one breaker."""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        return parsed.netloc or url
+    except Exception:
+        return url
 
 
 def _ms_since(started_at: float) -> int:
@@ -808,11 +821,10 @@ class PolicyExecutor:
         # Decision logging runs off the request's critical path by default (the
         # single biggest per-decision latency tax). Reads flush pending writes for
         # in-process read-after-write; ASYNC_DECISION_LOG=0 forces synchronous.
-        from . import decision_log
-
-        decision_log.submit(
-            self._log_decision, ctx, source, sdk_version, ctx.experiment_variant or experiment_variant,
-        )
+        # _log_decision builds the record and routes through decision_log.persist_decision, which
+        # does the WAL append + async submit itself — so call it directly (no outer submit()) to
+        # keep a single async hop and correct flush()-based read-after-write.
+        self._log_decision(ctx, source, sdk_version, ctx.experiment_variant or experiment_variant)
         return ctx
 
     def _persist_execution(self, ctx: ExecutionContext, trigger_type: str) -> None:
@@ -856,32 +868,27 @@ class PolicyExecutor:
             pass
 
     def _log_decision(self, ctx: ExecutionContext, source: str, sdk_version: Optional[str], experiment_variant: Optional[str]) -> None:
-        try:
-            self.storage.add_decision(
-                {
-                    "tenant_id": ctx.tenant_id,
-                    "id": str(uuid.uuid4()),
-                    "policy_id": ctx.policy_id,
-                    "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
-                    "computed_variables": copy.deepcopy(ctx.variables),
-                    "rule_results": copy.deepcopy(ctx.rule_results),
-                    "scorecard_result": next(iter(ctx.scorecard_results.values()), None),
-                    "trace": copy.deepcopy(ctx.step_trace),
-                    "outcome": ctx.outcome if ctx.outcome != "pending" else "review",
-                    "latency_ms": ctx.total_latency_ms,
-                    "source": source,
-                    "sdk_version": sdk_version,
-                    "experiment_id": ctx.experiment_id,
-                    "experiment_variant": experiment_variant,
-                },
-                tenant_id=ctx.tenant_id,
-            )
-        except Exception as exc:
-            # A failed write on the async path used to vanish silently. Surface it (metric +
-            # error_event) so a persisted-decision gap is alertable, without breaking the decision.
-            from . import decision_log
+        record = {
+            "tenant_id": ctx.tenant_id,
+            "id": str(uuid.uuid4()),
+            "policy_id": ctx.policy_id,
+            "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
+            "computed_variables": copy.deepcopy(ctx.variables),
+            "rule_results": copy.deepcopy(ctx.rule_results),
+            "scorecard_result": next(iter(ctx.scorecard_results.values()), None),
+            "trace": copy.deepcopy(ctx.step_trace),
+            "outcome": ctx.outcome if ctx.outcome != "pending" else "review",
+            "latency_ms": ctx.total_latency_ms,
+            "source": source,
+            "sdk_version": sdk_version,
+            "experiment_id": ctx.experiment_id,
+            "experiment_variant": experiment_variant,
+        }
+        # WAL-durable (DECISION_WAL=1) then DB write; a failed write is surfaced (metric +
+        # error_event) instead of vanishing silently, and the WAL entry is replayed on restart.
+        from . import decision_log
 
-            decision_log.record_write_failure(self.storage, ctx.tenant_id, {"source": source, "policy_id": ctx.policy_id}, exc)
+        decision_log.persist_decision(self.storage, record, ctx.tenant_id)
 
     def _execute_connector(self, step: Dict[str, Any], ctx: ExecutionContext, connectors: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         ref_id = step.get("ref_id") or step.get("ref")
@@ -995,6 +1002,30 @@ class PolicyExecutor:
             ctx.action_results.append(simulated)
             return simulated
 
+        # Circuit breaker: if this downstream has been failing, short-circuit NOW instead of
+        # paying the full timeout+retry budget again (which is what drags tenant-wide latency up
+        # when one connector is down). Keyed by connector id when known, else the URL host.
+        breaker = None
+        if circuit_breaker.enabled():
+            breaker_key = str(step.get("ref_id") or step.get("ref") or config.get("connectorId") or _url_host(url))
+            breaker = circuit_breaker.get_breaker(breaker_key)
+            try:
+                breaker.allow()
+            except circuit_breaker.CircuitOpenError as open_err:
+                short = {
+                    "success": False,
+                    "error": "circuit_open: {0}".format(open_err),
+                    "circuit_open": True,
+                    "attempts": 0,
+                }
+                ctx.action_results.append(short)
+                on_failure = config.get("onFailure", "continue")
+                if on_failure == "abort":
+                    raise ActionFailedError("Action skipped — circuit open for {0}".format(breaker_key))
+                if on_failure == "review_gate":
+                    ctx.outcome = _merge_outcome(ctx.outcome, "review")
+                return short
+
         async with httpx.AsyncClient(timeout=timeout) as client:
             for attempt in range(retries + 1):
                 attempt_started = time.perf_counter()
@@ -1032,6 +1063,8 @@ class PolicyExecutor:
                     )
                     ctx.action_results.append(result)
                     if result["success"]:
+                        if breaker is not None:
+                            breaker.record_success()
                         return result
                     last_error = "HTTP {0}".format(response.status_code)
                 except Exception as error:
@@ -1039,6 +1072,9 @@ class PolicyExecutor:
                 if attempt < retries:
                     await asyncio.sleep((int(config.get("retryBackoffMs", 1000)) * (attempt + 1)) / 1000)
 
+        # All attempts failed -> count it against the breaker so a persistently-down target trips.
+        if breaker is not None:
+            breaker.record_failure()
         failure_result = {"success": False, "error": last_error, "attempts": retries + 1}
         ctx.action_results.append(failure_result)
         on_failure = config.get("onFailure", "continue")

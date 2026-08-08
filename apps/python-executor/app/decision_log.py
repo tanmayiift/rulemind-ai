@@ -143,6 +143,31 @@ def submit(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
     future.add_done_callback(_done)
 
 
+def persist_decision(storage: Any, record: Dict[str, Any], tenant_id: Optional[str]) -> None:
+    """Durable-by-default decision write. When DECISION_WAL=1, the decision is appended to the
+    write-ahead log (fsync) BEFORE the async DB write is scheduled, so a hard SIGKILL/OOM between
+    the decision returning and the DB write landing loses nothing — startup replay re-inserts any
+    WAL entry missing from the DB (idempotent by id). Without the WAL flag this is exactly the old
+    async submit(), so behaviour is unchanged unless a deployment opts in."""
+    from . import decision_wal
+
+    rec_id = record.get("id")
+    use_wal = decision_wal.enabled() and bool(rec_id)
+    if use_wal:
+        decision_wal.append(record, tenant_id)
+
+    def _write() -> None:
+        try:
+            storage.add_decision(record, tenant_id=tenant_id)
+        except Exception as exc:  # never fail the decision; surface the drop (metric + error_event)
+            record_write_failure(storage, tenant_id, {"source": record.get("source"), "policy_id": record.get("policy_id")}, exc)
+            return  # leave the WAL entry UNcommitted so startup replay re-inserts it
+        if use_wal:
+            decision_wal.mark_committed(str(rec_id))
+
+    submit(_write)
+
+
 def _discard(future: Future) -> None:
     with _lock:
         _pending.discard(future)
