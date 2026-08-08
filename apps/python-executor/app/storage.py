@@ -32,6 +32,7 @@ from .context import get_current_tenant_id
 from .db import engine_for, session_factory
 from .logic import generate_rule_expression_definition, json_dumps, now_iso
 from .models import (
+    ModelEvaluation,
     ActionLog,
     ApiKey,
     AuditEvent,
@@ -3399,6 +3400,79 @@ class Storage:
             if status:
                 stmt = stmt.where(EmailOutbox.status == status)
             return int(session.scalar(stmt) or 0)
+
+    # MODEL EVALUATIONS — persisted metric runs (Gini/AUC/calibration/…).
+    # Stores metrics + dataset summary only, never the raw scored rows.
+    # ───────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _model_evaluation_to_dict(row: ModelEvaluation) -> Dict[str, Any]:
+        return {
+            "id": row.public_id,
+            "name": row.name,
+            "description": row.description,
+            "model_id": row.model_id,
+            "task": row.task,
+            "dataset_summary": copy.deepcopy(row.dataset_summary or {}),
+            "metrics": copy.deepcopy(row.metrics or {}),
+            "segments": copy.deepcopy(row.segments or {}),
+            "temporal": copy.deepcopy(row.temporal or {}),
+            "gate_status": row.gate_status,
+            "gate_result": copy.deepcopy(row.gate_result or {}),
+            "status": row.status,
+            "created_at": serialize_datetime(row.created_at),
+            "updated_at": serialize_datetime(row.updated_at),
+        }
+
+    def list_evaluations(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(ModelEvaluation).where(ModelEvaluation.tenant_id == resolved).order_by(desc(ModelEvaluation.created_at))
+            ).all()
+            return [self._model_evaluation_to_dict(row) for row in rows]
+
+    def get_evaluation(self, evaluation_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(
+                select(ModelEvaluation).where(
+                    ModelEvaluation.tenant_id == resolved, ModelEvaluation.public_id == evaluation_id
+                )
+            )
+            return self._model_evaluation_to_dict(row) if row else None
+
+    def create_evaluation(self, data: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = ModelEvaluation(
+                tenant_id=resolved,
+                public_id=data["id"],
+                name=data["name"],
+                description=data.get("description"),
+                model_id=data.get("model_id"),
+                task=data.get("task", "binary"),
+                dataset_summary=copy.deepcopy(data.get("dataset_summary") or {}),
+                metrics=copy.deepcopy(data.get("metrics") or {}),
+                segments=copy.deepcopy(data.get("segments") or {}),
+                temporal=copy.deepcopy(data.get("temporal") or {}),
+                gate_status=data.get("gate_status", "unknown"),
+                gate_result=copy.deepcopy(data.get("gate_result") or {}),
+                status=data.get("status", "dev"),
+            )
+            session.add(row)
+            session.flush()
+            return self._model_evaluation_to_dict(row)
+
+    def delete_evaluation(self, evaluation_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            result = session.execute(
+                delete(ModelEvaluation).where(
+                    ModelEvaluation.tenant_id == resolved, ModelEvaluation.public_id == evaluation_id
+                )
+            )
+            return result.rowcount > 0
+
 
     # ---- Scheduler leader lease (multi-replica single-fire) --------------- #
     def try_acquire_scheduler_lease(self, owner: str, ttl_seconds: int = 30) -> bool:

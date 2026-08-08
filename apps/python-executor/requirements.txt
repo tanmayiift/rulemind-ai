@@ -23,7 +23,11 @@ psycopg2-binary==2.9.9
 # feature + /models UI + policy "model" step). Without these the runtime cannot
 # deserialize real models. Full stack (sklearn + boosted trees); adds ~400MB.
 numpy==2.2.1
-scipy==1.15.1
+# scipy: 1.15.1 is the version tested on Linux CI/prod (compatible with scikit-learn 1.6.1).
+# On modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to dlopen, so pin 1.18.0 there only —
+# a platform marker keeps Linux on the tested pin while unblocking a fresh `pip install` on macOS.
+scipy==1.15.1; sys_platform != "darwin"
+scipy==1.18.0; sys_platform == "darwin"
 scikit-learn==1.6.1
 joblib==1.4.2
 xgboost==2.1.3

@@ -493,6 +493,34 @@ class HostedModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class ModelEvaluation(Base):
+    """A predictive-model evaluation run (Gini/AUC/KS/PR-AUC/calibration/PSI/…) against
+    ground-truth labels, optionally tied to a hosted model. Persisted so results survive
+    restarts and gate dev→uat→prod promotion. Only metrics + a dataset summary are stored —
+    never the raw scored rows (PII-minimising, mirrors decision-payload redaction)."""
+
+    __tablename__ = "model_evaluations"
+    __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_model_evaluations_tenant_public"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    public_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Optional link to the hosted model that produced the scores (from-model evaluations).
+    model_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    task: Mapped[str] = mapped_column(String(24), default="binary", nullable=False)  # binary|multilabel|uplift
+    dataset_summary: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    segments: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    temporal: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    gate_status: Mapped[str] = mapped_column(String(24), default="unknown", nullable=False)  # pass|fail|unknown
+    gate_result: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="dev", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class DecisionTable(Base, TimestampMixin):
     """Spreadsheet-style decision table: input columns bound to variables, rows
     stating a condition per input and the output(s) to emit. Compiles to the

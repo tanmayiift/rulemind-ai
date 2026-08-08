@@ -42,6 +42,7 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/decision-tables" as Route, label: "Decision Tables", icon: "rules" },
       { href: "/scorecards" as Route, label: "Scorecards", icon: "scorecards" },
       { href: "/models" as Route, label: "ML Models", icon: "variables" },
+      { href: "/evaluations" as Route, label: "Model Evaluation", icon: "testing" },
     ],
   },
   {
