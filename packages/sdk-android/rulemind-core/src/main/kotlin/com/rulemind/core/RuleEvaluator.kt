@@ -213,10 +213,14 @@ class RuleEvaluator {
         }
     }
 
-    private fun numericOrNull(value: Any?): Double? = when (value) {
-        is Number -> value.toDouble()
-        is String -> value.toDoubleOrNull()
-        else -> null
+    private fun numericOrNull(value: Any?): Double? {
+        // Non-finite (NaN / ±Infinity) -> null so "Infinity" can't clear a numeric gate.
+        val n = when (value) {
+            is Number -> value.toDouble()
+            is String -> value.toDoubleOrNull()
+            else -> null
+        }
+        return if (n != null && n.isFinite()) n else null
     }
 
     private fun toBool(value: Any?): Boolean = when (value) {
@@ -269,8 +273,20 @@ class RuleEvaluator {
         var hour = 0L
         var minute = 0L
         var second = 0L
+        var offsetSecs = 0L // timezone offset so +05:30 and Z resolve to the same UTC epoch
         if (timePart != null) {
-            var tp = timePart.trimEnd('Z')
+            var tp: String
+            var tz: String? = null
+            val zIdx = timePart.indexOf('Z')
+            val signIdx = timePart.indexOfLast { it == '+' || it == '-' }
+            if (zIdx >= 0) {
+                tp = timePart.substring(0, zIdx)
+            } else if (signIdx >= 0) {
+                tp = timePart.substring(0, signIdx)
+                tz = timePart.substring(signIdx)
+            } else {
+                tp = timePart
+            }
             val dot = tp.indexOf('.')
             if (dot >= 0) tp = tp.substring(0, dot)
             val tparts = tp.split(":")
@@ -278,12 +294,18 @@ class RuleEvaluator {
             hour = tparts[0].toLongOrNull() ?: return null
             minute = tparts[1].toLongOrNull() ?: return null
             if (tparts.size == 3) second = tparts[2].toLongOrNull() ?: return null
+            if (tz != null) {
+                val digits = tz.filter { it.isDigit() }
+                if (digits.length != 4) return null
+                val magnitude = digits.substring(0, 2).toLong() * 3600 + digits.substring(2, 4).toLong() * 60
+                offsetSecs = if (tz.startsWith("+")) -magnitude else magnitude
+            }
         }
         if (month !in 1..12) return null
         val dim = if (month == 2L && isLeapYear(year)) 29L else daysInMonth[(month - 1).toInt()].toLong()
         if (day !in 1..dim) return null
         if (hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
-        return daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
+        return daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second + offsetSecs
     }
 
     private data class RuleEvaluation(

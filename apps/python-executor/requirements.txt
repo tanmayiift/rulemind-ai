@@ -34,3 +34,6 @@ opentelemetry-sdk>=1.27.0
 opentelemetry-exporter-otlp-proto-grpc>=1.27.0
 opentelemetry-instrumentation-fastapi>=0.48b0
 opentelemetry-instrumentation-sqlalchemy>=0.48b0
+
+# Interruptible regex (ReDoS timeout guard for the rule 'regex' operator).
+regex==2024.11.6

@@ -88,7 +88,7 @@ function looseEqual(a: unknown, b: unknown): boolean {
 // strict regex + integer civil-days math (Howard Hinnant), NOT Date.parse (which
 // is lenient and timezone-sensitive). Every engine reimplements this identically
 // so dates order and compare equal byte-for-byte across server, Rust, and SDKs.
-const ISO_DATE_RE = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d+)?Z?)?$/;
+const ISO_DATE_RE = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 function isLeapYear(year: number): boolean {
@@ -128,7 +128,15 @@ function dateToEpoch(value: unknown): number | null {
   if (hour > 23 || minute > 59 || second > 59) {
     return null;
   }
-  return daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+  let epoch = daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+  // Apply a timezone offset so "2026-08-08T03:22:19+05:30" == "2026-08-07T21:52:19Z". Z / none = UTC.
+  const tz = match[7];
+  if (tz && tz !== "Z") {
+    const digits = tz.replace(":", "");
+    const offset = Number(digits.slice(1, 3)) * 3600 + Number(digits.slice(3, 5)) * 60;
+    epoch += digits[0] === "+" ? -offset : offset;
+  }
+  return epoch;
 }
 
 function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason?: string; expected?: unknown } {
