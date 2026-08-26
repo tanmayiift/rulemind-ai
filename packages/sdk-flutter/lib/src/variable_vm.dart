@@ -39,7 +39,12 @@ class VariableVm {
             // string "r2" and cast to 0. Every on-device variable resolved to 0.
             final path = _deref(instruction.path ?? instruction.key, registers);
             final fallback = _deref(instruction.defaultValue, registers);
-            registers[target] = _resolvePath(source, path) ?? fallback;
+            // Two path conventions are in use: the compiler emits a bare field name
+            // relative to the variable's source payload, while hand-authored bundles
+            // use a rooted "sourceId.field". Try the scoped payload, then the root,
+            // so both resolve without the caller having to pick one.
+            registers[target] =
+                _resolvePath(source, path) ?? _resolvePath(registers['rootPayload'], path) ?? fallback;
           }
           break;
         case 'filter':

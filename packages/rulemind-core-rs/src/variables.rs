@@ -122,7 +122,12 @@ pub fn evaluate_variable(variable: &Value, payload: &Value, variables: &Value) -
         .unwrap_or_else(|| payload.clone());
 
     let mut registers: Map<String, Value> = Map::new();
-    registers.insert("payload".into(), payload.clone());
+    // `payload` must be the variable's SOURCE-SCOPED payload: that is what the
+    // compiler means by {"op":"get","source":"payload"}, mirroring the Python
+    // authoring contract where @variable(source="claim") receives only the claim
+    // dict. The whole payload stays reachable as `rootPayload`.
+    registers.insert("payload".into(), source_payload.clone());
+    registers.insert("rootPayload".into(), payload.clone());
     registers.insert("variables".into(), variables.clone());
     registers.insert("context".into(), variables.clone());
     registers.insert("source".into(), source_payload.clone());
@@ -211,8 +216,14 @@ pub fn evaluate_variable(variable: &Value, payload: &Value, variables: &Value) -
                             _ => p.to_string(),
                         }
                     });
+                    // Two path conventions are in use: the compiler emits a bare field
+                    // name relative to the source payload, while hand-authored bundles
+                    // use a rooted "sourceId.field". Try the scoped payload, then the root.
+                    let root_payload = registers.get("rootPayload").cloned().unwrap_or(Value::Null);
                     let mut out = match path_owned.as_deref() {
-                        Some(p) => resolve_path(&root, p).unwrap_or(Value::Null),
+                        Some(p) => resolve_path(&root, p)
+                            .or_else(|| resolve_path(&root_payload, p))
+                            .unwrap_or(Value::Null),
                         None => root,
                     };
                     if out.is_null() {

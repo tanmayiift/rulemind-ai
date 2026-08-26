@@ -46,4 +46,24 @@ void main() {
     }, <String, dynamic>{});
     expect(value, 0, reason: 'claim variable must not read the checkout payload');
   });
+
+  /// Hand-authored bundles (the Android sample app's fixtures, for instance) use a
+  /// path rooted at the whole payload rather than a bare field name. Both must work
+  /// — the engine should not require the caller to know which convention it emitted.
+  CompiledVariable rootedPath() => CompiledVariable.fromJson({
+        "id": "claim_amount_inr",
+        "sourceId": "claim",
+        "name": "Claim Amount (INR)",
+        "instructions": [
+          {"op": "get", "source": "payload", "path": "claim.claim_amount_inr", "target": "result"},
+          {"op": "return", "source": "result"},
+        ],
+      });
+
+  test('a rooted "sourceId.field" path also resolves', () {
+    final value = vm.evaluate(rootedPath(), {
+      "claim": {"claim_amount_inr": 28000},
+    }, <String, dynamic>{});
+    expect(value, 28000);
+  });
 }

@@ -38,7 +38,13 @@ class VariableVM {
                     // was the string "r2" and cast to 0.
                     val path = deref(instruction.path ?: instruction.key, registers) as? String
                     val fallback = deref(instruction.defaultValue, registers)
-                    registers[target] = resolvePath(source, path) ?: fallback
+                    // Two path conventions are in use: the compiler emits a bare field
+                    // name relative to the variable's source payload, while hand-authored
+                    // bundles use a rooted "sourceId.field". Try the scoped payload, then
+                    // the root, so both resolve without the caller having to pick one.
+                    registers[target] = resolvePath(source, path)
+                        ?: resolvePath(registers["rootPayload"], path)
+                        ?: fallback
                 }
 
                 "filter" -> if (target != null) {
