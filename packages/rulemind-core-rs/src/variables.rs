@@ -134,6 +134,21 @@ pub fn evaluate_variable(variable: &Value, payload: &Value, variables: &Value) -
         .unwrap_or(&empty);
 
     let get = |ins: &Value, k: &str| ins.get(k).cloned();
+    // Compiler-allocated registers are named `r<n>`. A token of that shape is a
+    // reference to a previously computed value, not a literal — the compiler passes
+    // both the lookup key and the default through registers.
+    let deref_token = |token: &str, regs: &Map<String, Value>| -> Value {
+        let is_register = token.len() > 1
+            && token.starts_with('r')
+            && token[1..].chars().all(|c| c.is_ascii_digit());
+        if is_register {
+            if let Some(v) = regs.get(token) {
+                return v.clone();
+            }
+        }
+        Value::String(token.to_string())
+    };
+
     let resolve_register = |name: Option<&str>, regs: &Map<String, Value>| -> Value {
         let name = match name {
             Some(n) if !n.is_empty() => n,
@@ -182,16 +197,32 @@ pub fn evaluate_variable(variable: &Value, payload: &Value, variables: &Value) -
                             r
                         }
                     };
-                    let path = ins
+                    // Both the lookup key and the default arrive as register names
+                    // (`{"key":"r1","default":"r2"}`). Reading them literally made every
+                    // compiled variable miss its field and return the default's own name.
+                    let path_token = ins
                         .get("path")
                         .and_then(Value::as_str)
                         .or_else(|| ins.get("key").and_then(Value::as_str));
-                    let mut out = match path {
+                    let path_owned: Option<String> = path_token.map(|p| {
+                        match deref_token(p, &registers) {
+                            Value::String(v) => v,
+                            other if !other.is_null() => other.to_string(),
+                            _ => p.to_string(),
+                        }
+                    });
+                    let mut out = match path_owned.as_deref() {
                         Some(p) => resolve_path(&root, p).unwrap_or(Value::Null),
                         None => root,
                     };
                     if out.is_null() {
-                        out = get(ins, "default").or_else(|| get(ins, "defaultValue")).unwrap_or(Value::Null);
+                        let fallback = get(ins, "default")
+                            .or_else(|| get(ins, "defaultValue"))
+                            .unwrap_or(Value::Null);
+                        out = match fallback.as_str() {
+                            Some(token) => deref_token(token, &registers),
+                            None => fallback,
+                        };
                     }
                     registers.insert(t, out);
                 }

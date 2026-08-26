@@ -6,12 +6,19 @@ import java.util.Locale
 
 class VariableVM {
     fun evaluate(variable: CompiledVariable, payload: Map<String, Any?>, variables: Map<String, Any?>): Any? {
+        val sourcePayload = (payload[variable.sourceId] as? Map<String, Any?>) ?: payload
+        // `payload` must be the variable's SOURCE-SCOPED payload: that is what the
+        // compiler means by {"op":"get","source":"payload"}, mirroring the Python
+        // authoring contract where @variable(source = "claim") receives only the
+        // claim dict. Binding the FULL payload made every connector-sourced variable
+        // fall back to its default (0) whenever the caller sent the documented
+        // source-keyed shape, so on-device decisions diverged from the server.
         val registers = mutableMapOf<String, Any?>(
-            "payload" to payload,
+            "payload" to sourcePayload,
+            "rootPayload" to payload,
             "variables" to variables,
             "context" to variables,
         )
-        val sourcePayload = (payload[variable.sourceId] as? Map<String, Any?>) ?: payload
         registers["source"] = sourcePayload
 
         for (instruction in variable.instructions) {
@@ -23,7 +30,15 @@ class VariableVM {
 
                 "get" -> if (target != null) {
                     val source = resolveRegister(instruction.source, registers) ?: sourcePayload
-                    registers[target] = resolvePath(source, instruction.path ?: instruction.key) ?: instruction.defaultValue
+                    // The compiler passes the lookup key and the default THROUGH REGISTERS:
+                    //   {"op":"literal","target":"r1","value":"claim_amount_inr"}
+                    //   {"op":"get","source":"payload","key":"r1","default":"r2",...}
+                    // Reading "r1" as a literal field name made every compiled variable
+                    // miss its field and fall back to the default, which read literally
+                    // was the string "r2" and cast to 0.
+                    val path = deref(instruction.path ?: instruction.key, registers) as? String
+                    val fallback = deref(instruction.defaultValue, registers)
+                    registers[target] = resolvePath(source, path) ?: fallback
                 }
 
                 "filter" -> if (target != null) {
@@ -132,6 +147,15 @@ class VariableVM {
             }
         }
         return null
+    }
+
+    /** Compiler-allocated registers are named `r<n>`; such a token is a reference to a
+     * previously computed value, not a literal. Anything else passes through. */
+    private fun deref(token: Any?, registers: Map<String, Any?>): Any? {
+        if (token is String && REGISTER_NAME.matches(token) && registers.containsKey(token)) {
+            return registers[token]
+        }
+        return token
     }
 
     private fun resolveRegister(name: String?, registers: Map<String, Any?>): Any? {
@@ -259,5 +283,9 @@ class VariableVM {
         is String -> value.toDoubleOrNull() ?: 0.0
         is Boolean -> if (value) 1.0 else 0.0
         else -> 0.0
+    }
+
+    companion object {
+        private val REGISTER_NAME = Regex("^r\\d+$")
     }
 }

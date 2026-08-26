@@ -2,11 +2,21 @@ import 'models.dart';
 
 class VariableVm {
   dynamic evaluate(CompiledVariable variable, Map<String, dynamic> payload, Map<String, dynamic> variables) {
+    final sourcePayload =
+        payload[variable.sourceId] is Map<String, dynamic> ? payload[variable.sourceId] : payload;
+    // `payload` must be the variable's SOURCE-SCOPED payload, because that is what
+    // the compiler means by {"op":"get","source":"payload"} — it mirrors the Python
+    // authoring contract, where @variable(source: "claim") receives only the claim
+    // dict. Binding the FULL payload here made every connector-sourced variable
+    // read its default (0) whenever the caller sent the documented source-keyed
+    // shape {"claim": {...}}, so on-device decisions silently diverged from the
+    // server. The whole payload stays reachable as `rootPayload`.
     final registers = <String, dynamic>{
-      'payload': payload,
+      'payload': sourcePayload,
+      'rootPayload': payload,
       'variables': variables,
       'context': variables,
-      'source': payload[variable.sourceId] is Map<String, dynamic> ? payload[variable.sourceId] : payload,
+      'source': sourcePayload,
     };
 
     for (final instruction in variable.instructions) {
@@ -21,7 +31,15 @@ class VariableVm {
         case 'get':
           if (target != null) {
             final source = _resolveRegister(instruction.source, registers) ?? registers['source'];
-            registers[target] = _resolvePath(source, instruction.path ?? instruction.key) ?? instruction.defaultValue;
+            // The compiler passes the lookup key and the default THROUGH REGISTERS:
+            //   {"op":"literal","target":"r1","value":"claim_amount_inr"}
+            //   {"op":"get","source":"payload","key":"r1","default":"r2",...}
+            // Reading "r1" as a literal field name made every compiled variable miss
+            // its field and fall back to the default — which, read literally, was the
+            // string "r2" and cast to 0. Every on-device variable resolved to 0.
+            final path = _deref(instruction.path ?? instruction.key, registers);
+            final fallback = _deref(instruction.defaultValue, registers);
+            registers[target] = _resolvePath(source, path) ?? fallback;
           }
           break;
         case 'filter':
@@ -144,6 +162,18 @@ class VariableVm {
       }
     }
     return null;
+  }
+
+  /// Compiler-allocated registers are named `r<n>`. When an instruction field holds
+  /// such a name, it is a reference to a previously computed value rather than a
+  /// literal. Anything else is returned untouched.
+  static final RegExp _registerName = RegExp(r'^r\d+$');
+
+  dynamic _deref(dynamic token, Map<String, dynamic> registers) {
+    if (token is String && _registerName.hasMatch(token) && registers.containsKey(token)) {
+      return registers[token];
+    }
+    return token;
   }
 
   dynamic _resolveRegister(String? name, Map<String, dynamic> registers) {
