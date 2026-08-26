@@ -32,7 +32,8 @@ class Instruction {
         args: (json["args"] as List<dynamic>? ?? const <dynamic>[]).map((item) => item.toString()).toList(),
         path: json["path"] as String?,
         key: json["key"] as String?,
-        defaultValue: json["defaultValue"],
+        // The compiler emits "default"; "defaultValue" is only the legacy spelling.
+        defaultValue: json["default"] ?? json["defaultValue"],
         type: json["type"] as String?,
         value: json["value"],
         values: (json["values"] as List<dynamic>? ?? const <dynamic>[]).toList(),
@@ -330,8 +331,12 @@ class BundleEnvelope {
   factory BundleEnvelope.fromJson(Map<String, dynamic> json) => BundleEnvelope(
         bundleVersion: (json["bundleVersion"] as num).toInt(),
         encryptedBundle: json["encryptedBundle"] as String,
-        encryptedKey: json["encryptedKey"] as String,
-        signature: json["signature"] as String,
+        // The server omits this (JSON null) whenever the client sent no
+        // X-Client-Public-Key, and CryptoManager.decryptBundle already branches on
+        // an EMPTY key. A hard non-null cast threw before that branch could run, so
+        // every RuleMind.evaluate() died at bundle parse. Normalise null -> "".
+        encryptedKey: (json["encryptedKey"] as String?) ?? "",
+        signature: (json["signature"] as String?) ?? "",
         checksum: json["checksum"] as String,
         compiledAt: json["compiledAt"] as String,
         expiresAt: json["expiresAt"] as String,
@@ -431,6 +436,8 @@ class RuleMindConfig {
     this.eventFlushIntervalMs = 60000,
     this.enableServerFallback = true,
     this.serverPublicKeyPem,
+    this.clientPublicKeyBase64,
+    this.initializeHive = true,
   });
 
   final String baseUrl;
@@ -445,7 +452,18 @@ class RuleMindConfig {
   final int eventFlushBatchSize;
   final int eventFlushIntervalMs;
   final bool enableServerFallback;
+
+  /// The server's bundle-SIGNING public key. Used only to verify a downloaded
+  /// bundle; never sent to the server.
   final String? serverPublicKeyPem;
+
+  /// This device's own public key (base64 DER or PEM), sent as X-Client-Public-Key
+  /// so the server can RSA-wrap the bundle's AES key to it. Leave null to use the
+  /// server's keyless bundle mode.
+  final String? clientPublicKeyBase64;
+
+  /// Set false when the host app already called `Hive.init`/`Hive.initFlutter`.
+  final bool initializeHive;
 }
 
 class SdkEvent {

@@ -12,8 +12,19 @@ class CryptoManager {
 
   final RuleMindConfig config;
 
+  /// The DEVICE's own public key, for the server to RSA-wrap the bundle's AES key.
+  ///
+  /// This is not `serverPublicKeyPem` — that is the server's *signing* key, used
+  /// here only to verify a downloaded bundle. Returning it from this method sent
+  /// the server's own key as `X-Client-Public-Key`, which (a) is a raw PEM and so
+  /// is not a legal HTTP header value, and (b) would have asked the server to wrap
+  /// the AES key to a key this device holds no private half of.
+  ///
+  /// Per-device keypairs are not implemented yet, so this is empty by default and
+  /// the SDK uses the server's keyless bundle mode. Supply `clientPublicKeyBase64`
+  /// once you provision device keys.
   String publicKeyBase64() {
-    return config.serverPublicKeyPem ?? '';
+    return config.clientPublicKeyBase64 ?? '';
   }
 
   Future<String> decryptBundle(BundleEnvelope envelope) async {
@@ -95,7 +106,16 @@ class RSAKeyParser {
     final topLevelSeq = parser.nextObject() as asn1.ASN1Sequence;
 
     final publicKeyBitString = topLevelSeq.elements[1] as asn1.ASN1BitString;
-    final publicKeyAsn = asn1.ASN1Parser(publicKeyBitString.valueBytes());
+    // A DER BIT STRING's contents begin with an octet counting the unused trailing
+    // bits — always 0 here. valueBytes() includes it, so handing those bytes
+    // straight to the parser makes it read 0x00 as a tag and throw. Because
+    // verifySignature() catches everything and returns false, that surfaced as
+    // "Invalid bundle signature" and no bundle could ever be verified.
+    var keyBytes = publicKeyBitString.valueBytes();
+    if (keyBytes.isNotEmpty && keyBytes.first == 0x00) {
+      keyBytes = Uint8List.fromList(keyBytes.sublist(1));
+    }
+    final publicKeyAsn = asn1.ASN1Parser(keyBytes);
     final publicKeySeq = publicKeyAsn.nextObject() as asn1.ASN1Sequence;
 
     final modulus = (publicKeySeq.elements[0] as asn1.ASN1Integer).valueAsBigInteger;

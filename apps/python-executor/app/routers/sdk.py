@@ -17,10 +17,13 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import main
 from ..compiler import (
+    signing_key_is_ephemeral,
+    signing_public_key_pem,
     BundleCompilationError,
     NoProductionAssetsError,
     compile_bundle,
     compile_policy_block,
+    BundleEncryptionRequired,
     render_block_response,
     render_bundle_response,
     sign_block_payload,
@@ -69,6 +72,23 @@ def sdk_health(request: Request) -> Dict[str, Any]:
     return {"status": "ok", "latestBundleVersion": latest["version"] if latest else 0}
 
 
+@router.get("/sdk/v1/signing-key")
+def sdk_signing_key() -> Dict[str, Any]:
+    """The public half of the bundle-signing keypair.
+
+    An SDK verifies every downloaded bundle against this key and refuses one it
+    cannot check — but nothing used to publish it, so verification could never
+    succeed. `ephemeral` is true when no RULEMIND_SIGNING_PRIVATE_KEY is set, in
+    which case the key changes on restart and differs per replica: pin a real key
+    before relying on signatures in production.
+    """
+    return {
+        "algorithm": "RS256",
+        "publicKeyPem": signing_public_key_pem(),
+        "ephemeral": signing_key_is_ephemeral(),
+    }
+
+
 @router.get("/sdk/v1/bundle")
 def sdk_bundle(request: Request) -> Response:
     tenant_id = active_tenant_id(request)
@@ -110,7 +130,11 @@ def sdk_bundle(request: Request) -> Response:
         BUNDLE_SYNCS_TOTAL.labels(status="not_modified").inc()
         return Response(status_code=304)
     content = latest["content"]
-    response_payload = render_bundle_response(content, request.headers.get("x-client-public-key"))
+    try:
+        response_payload = render_bundle_response(content, request.headers.get("x-client-public-key"))
+    except BundleEncryptionRequired as exc:
+        # A policy choice, not a server fault — tell the caller what to send.
+        raise HTTPException(status_code=400, detail=str(exc))
     BUNDLE_SYNCS_TOTAL.labels(status="success").inc()
     return Response(content=json_dumps(response_payload), media_type="application/json")
 
@@ -138,7 +162,10 @@ def sdk_policy_block(policy_id: str, request: Request) -> Response:
 
     client_public_key = request.headers.get("x-client-public-key")
     if client_public_key:
-        payload = render_block_response(block, client_public_key)
+        try:
+            payload = render_block_response(block, client_public_key)
+        except BundleEncryptionRequired as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     else:
         # Signed plaintext: the client can inspect + evaluate the block directly, and verify the
         # RSA signature over its canonical bytes. Confidentiality comes from TLS/mTLS in transit.

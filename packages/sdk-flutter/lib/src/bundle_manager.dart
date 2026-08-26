@@ -29,13 +29,16 @@ class BundleManager {
 
   Future<Bundle?> syncNow() async {
     final current = await currentBundle();
+    final clientKey = _cryptoManager.publicKeyBase64();
     final response = await _httpClient.get(
       Uri.parse("${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/sdk/v1/bundle"),
       headers: <String, String>{
         "X-API-Key": config.apiKey,
         "X-SDK-Version": config.sdkVersion,
         "X-Bundle-Version": (current?.bundleVersion ?? 0).toString(),
-        "X-Client-Public-Key": _cryptoManager.publicKeyBase64(),
+        // Only sent when this device actually has a keypair. An empty or
+        // newline-bearing value is not a legal header and aborts the request.
+        if (clientKey.isNotEmpty) "X-Client-Public-Key": clientKey.replaceAll(RegExp(r"\s+"), ""),
       },
     );
     if (response.statusCode == 304) {

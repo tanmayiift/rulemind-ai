@@ -56,7 +56,8 @@ internal object BundleParser {
             args = item.optJSONArray("args").toStringList(),
             path = item.optString("path").ifBlank { null },
             key = item.optString("key").ifBlank { null },
-            defaultValue = item.opt("defaultValue").takeUnless { it == JSONObject.NULL },
+            // The compiler emits "default"; "defaultValue" is only the legacy spelling.
+            defaultValue = (item.opt("default") ?: item.opt("defaultValue")).takeUnless { it == JSONObject.NULL },
             type = item.optString("type").ifBlank { null },
             value = item.opt("value").takeUnless { it == JSONObject.NULL },
             values = item.optJSONArray("values").toAnyList(),

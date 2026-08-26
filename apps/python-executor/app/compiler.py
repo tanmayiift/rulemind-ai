@@ -48,6 +48,25 @@ def _load_signing_keypair():
     return _PRIVATE_KEY, _PUBLIC_KEY
 
 
+def signing_public_key_pem() -> str:
+    """PEM of the key that signs bundles, so an SDK can verify what it downloads.
+
+    Without this the signature is unverifiable: the SDK refuses any bundle it cannot
+    check, and nothing published the key it needed."""
+    _, public_key = _load_signing_keypair()
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+
+
+def signing_key_is_ephemeral() -> bool:
+    """True when RULEMIND_SIGNING_PRIVATE_KEY is unset, so the keypair was generated
+    in memory at boot. That means every replica signs with a different key and every
+    restart invalidates a pinned one — fine locally, wrong in production."""
+    return not (os.getenv("RULEMIND_SIGNING_PRIVATE_KEY") or "").strip()
+
+
 def _parse_public_key(header_value: Optional[str]):
     if not header_value:
         return None
@@ -73,15 +92,44 @@ def _sign_payload(payload: bytes) -> str:
     return base64.b64encode(signature).decode("utf-8")
 
 
+class BundleEncryptionRequired(RuntimeError):
+    """Raised when SDK_BUNDLE_REQUIRE_CLIENT_KEY=1 and the caller sent no public key."""
+
+
 def _encrypt_bundle_payload(payload: bytes, client_public_key_header: Optional[str]) -> Tuple[str, Optional[str]]:
+    """Return (transport_payload, wrapped_key).
+
+    Two modes, decided by whether the caller supplied X-Client-Public-Key:
+
+    * **Key supplied** — AES-256-GCM the payload and RSA-OAEP wrap the AES key with
+      the caller's public key. Only that device can unwrap it.
+    * **No key** — return base64 plaintext and no key. This is the mode every SDK
+      release actually takes, and it is what `CryptoManager.decryptBundle()` expects
+      when `encryptedKey` is empty.
+
+    The old code encrypted with a freshly generated AES key in BOTH modes and then
+    threw the key away in the second one, so a bundle fetched without a public key
+    was undecryptable by anyone — on-device evaluation could never work. Encrypting
+    with a key nobody will ever hold is not security, it is data loss.
+
+    The bundle is still authenticated (RSA signature over the canonical bytes) and
+    still travels over TLS to an authenticated caller. Operators who require the
+    stronger per-device wrap can set SDK_BUNDLE_REQUIRE_CLIENT_KEY=1, which rejects
+    keyless fetches outright instead of silently downgrading.
+    """
+    public_key = _parse_public_key(client_public_key_header)
+    if public_key is None:
+        if (os.getenv("SDK_BUNDLE_REQUIRE_CLIENT_KEY", "") or "").strip().lower() in ("1", "true", "yes"):
+            raise BundleEncryptionRequired(
+                "This deployment requires an X-Client-Public-Key header on bundle requests."
+            )
+        return base64.b64encode(payload).decode("utf-8"), None
+
     aes_key = AESGCM.generate_key(bit_length=256)
     aesgcm = AESGCM(aes_key)
     nonce = os.urandom(12)
     encrypted = aesgcm.encrypt(nonce, payload, None)
     encrypted_payload = base64.b64encode(nonce + encrypted).decode("utf-8")
-    public_key = _parse_public_key(client_public_key_header)
-    if public_key is None:
-        return encrypted_payload, None
     encrypted_key = public_key.encrypt(
         aes_key,
         padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),

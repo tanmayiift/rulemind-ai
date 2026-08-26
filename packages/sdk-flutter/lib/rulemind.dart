@@ -2,6 +2,7 @@ import "dart:convert";
 
 import "package:flutter/foundation.dart";
 import "package:hive/hive.dart";
+import "package:path_provider/path_provider.dart";
 import "package:http/http.dart" as http;
 
 import "src/bundle_manager.dart";
@@ -31,8 +32,32 @@ class RuleMind {
   static DecisionSyncer? _decisionSyncer;
   static http.Client _httpClient = http.Client();
 
+  static bool _hiveReady = false;
+
+  /// Hive must be given a storage path before ANY box is opened. Three SDK
+  /// components open boxes (decision cache, event logger, execution store), so
+  /// without this every `RuleMind.initialize()` on a real device threw
+  /// "You need to initialize Hive or provide a path to store the box." The unit
+  /// tests never caught it because they call `Hive.init(tempDir)` themselves.
+  ///
+  /// A host app that already called `Hive.init`/`Hive.initFlutter` can pass
+  /// `initializeHive: false` to keep its own path.
+  static Future<void> _ensureHive(RuleMindConfig config) async {
+    if (_hiveReady || !config.initializeHive) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      Hive.init(dir.path);
+    } catch (error) {
+      // Headless/desktop/test contexts without a platform path provider: leave
+      // Hive to whatever the host configured rather than hard-failing init.
+      debugPrint("RuleMind: could not resolve a Hive path ($error)");
+    }
+    _hiveReady = true;
+  }
+
   static Future<void> initialize(RuleMindConfig config) async {
     _config = config;
+    await _ensureHive(config);
     _bundleManager = BundleManager(config: config, httpClient: _httpClient);
     _eventLogger = EventLogger(config: config, httpClient: _httpClient);
     _executionStore = ExecutionStore();
