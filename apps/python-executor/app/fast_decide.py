@@ -220,7 +220,7 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple
     return values, payloads, errors
 
 
-def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], tenant_id: str, log: bool = True) -> Dict[str, Any]:
+def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], tenant_id: str, log: bool = True, user_id: Optional[str] = None) -> Dict[str, Any]:
     started = time.perf_counter()
     bundle = _serving_bundle(storage, tenant_id, policy)
     values, resolved_payload, variable_errors = _compute_variables(bundle, payload or {})
@@ -267,7 +267,7 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
         "latency_ms": latency_ms,
     }
     if log:
-        _log_decision(storage, tenant_id, decision, resolved_payload, values)
+        _log_decision(storage, tenant_id, decision, resolved_payload, values, user_id)
         # Dark launch: if a shadow candidate is registered for this policy, evaluate it on the same
         # payload and log what it WOULD have decided — never affects this returned decision.
         try:
@@ -279,12 +279,16 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
     return decision
 
 
-def _log_decision(storage: Any, tenant_id: str, decision: Dict[str, Any], payload: Dict[str, Any], values: Dict[str, Any]) -> None:
+def _log_decision(storage: Any, tenant_id: str, decision: Dict[str, Any], payload: Dict[str, Any], values: Dict[str, Any], user_id: Optional[str] = None) -> None:
     record = {
         "id": str(uuid.uuid4()),
         "tenant_id": tenant_id,
         "policy_id": decision["policy_id"],
-        "payload": redact_payload(payload),
+        # Match the slow path exactly: carry the case id, and honour the tenant's
+        # configured PII redaction keys. Passing no extra_keys here meant enabling
+        # FAST_DECIDE silently dropped tenant-configured redaction.
+        "client_id": user_id or (payload.get("client_id") or payload.get("clientId") if isinstance(payload, dict) else None),
+        "payload": redact_payload(payload, extra_keys=storage.tenant_pii_redact_keys(tenant_id)),
         "computed_variables": values,
         "rule_results": decision["rule_results"],
         "scorecard_result": decision["scorecard_result"],

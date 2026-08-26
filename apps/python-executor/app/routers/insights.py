@@ -65,10 +65,14 @@ def analytics_sdk(request: Request) -> Dict[str, Any]:
 
 # ── Audit trail ────────────────────────────────────────────────────────────
 @router.get("/api/v1/audit/decisions")
-def audit_decisions(limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+def audit_decisions(limit: int = 200, offset: int = 0, client_id: Optional[str] = None,
+                    policy_id: Optional[str] = None, outcome: Optional[str] = None) -> List[Dict[str, Any]]:
     # Paginated — the decisions table is unbounded in production; an unpaged fetch
     # of tens of thousands of full-context rows would time out and exhaust memory.
-    return main.storage.list_decisions(limit=limit, offset=offset)
+    # client_id/policy_id/outcome filter in SQL so "show me this customer's history"
+    # is one query rather than a full-table page-and-scan by the caller.
+    return main.storage.list_decisions(limit=limit, offset=offset, client_id=client_id,
+                                       policy_id=policy_id, outcome=outcome)
 
 
 @router.get("/api/v1/audit/decisions/count")

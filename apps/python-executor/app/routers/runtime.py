@@ -121,7 +121,7 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         from ..fast_decide import fast_decide, fast_path_eligible
 
         if fast_path_eligible(main.storage, policy, active_tenant_id()):
-            decision = fast_decide(main.storage, policy, request.payload or {}, active_tenant_id())
+            decision = fast_decide(main.storage, policy, request.payload or {}, active_tenant_id(), user_id=request.user_id)
             if decision["outcome"] == "reject":
                 record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {})
             return decision
@@ -132,6 +132,9 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {"trace": outcome["result"].get("trace", [])})
     return {
         "policy_id": policy["id"],
+        # The id of the Decision row this call just wrote — lets a caller fetch
+        # /decisions/{id}/reason-codes or deep-link the case without a second lookup.
+        "decision_id": outcome["result"].get("decision_id"),
         "outcome": outcome["result"]["outcome"],
         "score": outcome["result"].get("scorecard_result", {}).get("score") if outcome["result"].get("scorecard_result") else None,
         "variables": outcome["values"],
@@ -518,7 +521,17 @@ def _validate_tree_depth(tree: Dict[str, Any], issues: List[str], depth: int, ma
     if depth > max_depth:
         issues.append(f"Tree depth exceeds maximum ({max_depth})")
         return
-    for child in tree.get("children", []):
+    # Import payloads are user-supplied: a `tree` that is a string/list/None must be
+    # reported as an invalid entity, not raise AttributeError into a 500. The whole
+    # point of /import/validate is to survive malformed input and describe it.
+    if not isinstance(tree, dict):
+        issues.append(f"Tree must be an object, got {type(tree).__name__}")
+        return
+    children = tree.get("children") or []
+    if not isinstance(children, list):
+        issues.append(f"Tree 'children' must be a list, got {type(children).__name__}")
+        children = []
+    for child in children:
         _validate_tree_depth(child, issues, depth + 1, max_depth)
     child_node = tree.get("child")
     if isinstance(child_node, dict):

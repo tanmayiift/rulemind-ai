@@ -163,6 +163,9 @@ class ExecutionContext:
     policy_id: str
     execution_id: str
     user_id: Optional[str] = None
+    # Set by _log_decision so callers can return it — /decide used to emit no id at
+    # all, leaving no way to deep-link the case it had just created.
+    decision_id: Optional[str] = None
     variables: Dict[str, Any] = field(default_factory=dict)
     rule_results: List[Dict[str, Any]] = field(default_factory=list)
     scorecard_results: Dict[str, Any] = field(default_factory=dict)
@@ -868,9 +871,21 @@ class PolicyExecutor:
             pass
 
     def _log_decision(self, ctx: ExecutionContext, source: str, sdk_version: Optional[str], experiment_variant: Optional[str]) -> None:
+        # client_id is the CASE identifier — what "show me this customer's decision
+        # history" filters on. storage.add_decision() reads it off this record, but
+        # nothing used to put it here, so the column was always NULL on the /decide
+        # path and case-wise history was unreachable through the public API.
+        # ctx.user_id is /decide's `userId`; fall back to an explicit client_id in
+        # the payload for callers that carry it there.
+        payload_client_id = None
+        if isinstance(ctx.payload, dict):
+            payload_client_id = ctx.payload.get("client_id") or ctx.payload.get("clientId")
+        decision_id = str(uuid.uuid4())
+        ctx.decision_id = decision_id
         record = {
             "tenant_id": ctx.tenant_id,
-            "id": str(uuid.uuid4()),
+            "id": decision_id,
+            "client_id": ctx.user_id or payload_client_id,
             "policy_id": ctx.policy_id,
             "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
             "computed_variables": copy.deepcopy(ctx.variables),
