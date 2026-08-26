@@ -1,0 +1,343 @@
+{
+  "summary": {
+    "pass": 22,
+    "warn": 3,
+    "fail": 6
+  },
+  "results": [
+    {
+      "id": "1.1",
+      "name": "Unauthenticated request is rejected",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 2.0148750045336783
+    },
+    {
+      "id": "1.2",
+      "name": "Seeded dev API key is accepted",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 172.04045900143683
+    },
+    {
+      "id": "1.3",
+      "name": "Malformed/unknown API key rejected",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 0.6603749934583902
+    },
+    {
+      "id": "1.3b",
+      "name": "Empty API key rejected",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 0.38600002881139517
+    },
+    {
+      "id": "1.4",
+      "name": "API key CRUD + role scoping",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "keys": [
+          "id",
+          "kid",
+          "masked_key",
+          "plaintext",
+          "environment",
+          "label",
+          "role",
+          "created_at"
+        ]
+      },
+      "ms": 336.60216600401327
+    },
+    {
+      "id": "1.9",
+      "name": "Rate limiting present (headers or 429 under burst)",
+      "status": "warn",
+      "detail": "no 429 and no RateLimit-* headers across 80 rapid requests",
+      "data": {
+        "429s": 0,
+        "rl_headers": {}
+      },
+      "ms": 78.00370798213407
+    },
+    {
+      "id": "2.1",
+      "name": "Connectors list + schema present",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "count": 9,
+        "ids": [
+          "bureau",
+          "bank",
+          "gst",
+          "device",
+          "kyc",
+          "custom",
+          "travel",
+          "loan",
+          "sme"
+        ]
+      },
+      "ms": 1.2587499804794788
+    },
+    {
+      "id": "2.2",
+      "name": "Config import validate \u2014 well-formed payload",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 4.101083031855524
+    },
+    {
+      "id": "2.3",
+      "name": "Config import validate \u2014 malformed entity flagged, not 500",
+      "status": "fail",
+      "detail": "expected 200/422, got 500: Internal Server Error",
+      "data": null,
+      "ms": 4.103624960407615
+    },
+    {
+      "id": "3.1",
+      "name": "Variable draft executes in sandbox",
+      "status": "fail",
+      "detail": "ReadError: [Errno 54] Connection reset by peer",
+      "data": null,
+      "ms": 8.213000022806227
+    },
+    {
+      "id": "3.2.1",
+      "name": "Sandbox blocks: import os",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 1.9029169925488532
+    },
+    {
+      "id": "3.2.2",
+      "name": "Sandbox blocks: __import__",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 0.612374977208674
+    },
+    {
+      "id": "3.2.3",
+      "name": "Sandbox blocks: open file",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 0.6068749935366213
+    },
+    {
+      "id": "3.2.4",
+      "name": "Sandbox blocks: builtins via subclass",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 0.678334035910666
+    },
+    {
+      "id": "3.2.5",
+      "name": "Sandbox blocks: eval",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 0.5172499804757535
+    },
+    {
+      "id": "3.2.6",
+      "name": "Sandbox blocks: exec",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 0.5421250243671238
+    },
+    {
+      "id": "3.2.7",
+      "name": "Sandbox blocks: globals",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 0.5203330074436963
+    },
+    {
+      "id": "3.3",
+      "name": "Sandbox enforces timeout on infinite loop",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "elapsed_ms": 1,
+        "status": 422,
+        "body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"source_id\"],\"msg\":\"Field required\",\"input\":{\"code\":\"while True: pass\\nresult = 1\",\"payload\":{}}}]}"
+      },
+      "ms": 0.6166669772937894
+    },
+    {
+      "id": "3.4",
+      "name": "Rule test endpoint returns per-condition detail",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "keys": [
+          "rule",
+          "expression",
+          "variable_results",
+          "values",
+          "result"
+        ]
+      },
+      "ms": 24.28454195614904
+    },
+    {
+      "id": "3.10",
+      "name": "Excel function library exposed",
+      "status": "fail",
+      "detail": "no excel functions returned",
+      "data": {
+        "count": 0
+      },
+      "ms": 1.3377920258790255
+    },
+    {
+      "id": "4.1",
+      "name": "/decide returns an outcome",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "outcome": "approve",
+        "score": 710,
+        "latency_ms": 52.131
+      },
+      "ms": 56.869457999709994
+    },
+    {
+      "id": "4.1b",
+      "name": "/decide on unknown policy \u2192 404, not 500",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 1.1804999667219818
+    },
+    {
+      "id": "4.4",
+      "name": "/decide tolerates empty / null / junk payload",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 89.48195801349357
+    },
+    {
+      "id": "4.7",
+      "name": "Determinism: identical payload \u21d2 identical outcome",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "outcomes": [
+          "approve",
+          "approve",
+          "approve",
+          "approve",
+          "approve",
+          "approve"
+        ],
+        "scores": [
+          710,
+          710,
+          710,
+          710,
+          710,
+          710
+        ]
+      },
+      "ms": 115.61600002460182
+    },
+    {
+      "id": "4.9",
+      "name": "Batch decide",
+      "status": "fail",
+      "detail": "422: {\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"targetType\"],\"msg\":\"Field required\",\"input\":{\"policyId\":\"policy_instant_personal_loan\",\"payloads\":[{\"age\":30},{\"age\":40},{\"age\":50}]}}]}",
+      "data": null,
+      "ms": 1.748209004290402
+    },
+    {
+      "id": "5.1",
+      "name": "Decision trace covers every policy step",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "policy_steps": 9,
+        "traced": 9,
+        "missing": []
+      },
+      "ms": 19.45662498474121
+    },
+    {
+      "id": "5.2",
+      "name": "Trace exposes per-condition variable, operator, threshold, value",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "conditions": 5,
+        "sample": {
+          "variable_id": "loan_bureau_score",
+          "variable_name": "Loan Bureau Score",
+          "source_id": "loan",
+          "operator": ">=",
+          "threshold": 700,
+          "value": 756,
+          "passed": true,
+          "group": "AND"
+        }
+      },
+      "ms": 18.162209016736597
+    },
+    {
+      "id": "5.3",
+      "name": "Decision is persisted and retrievable by id",
+      "status": "warn",
+      "detail": "/decide response carries no decision id (keys=['policy_id', 'outcome', 'score', 'variables', 'rule_results', 'scorecard_result', 'trace', 'latency_ms']) \u2014 cannot deep-link a case",
+      "data": null,
+      "ms": 18.91558396164328
+    },
+    {
+      "id": "6.1",
+      "name": "Decision history queryable (case-wise)",
+      "status": "fail",
+      "detail": "expected >=3 decisions for e2e-hist-dcd324fb, found 0",
+      "data": {
+        "returned": 18,
+        "matching_marker": 0
+      },
+      "ms": 2081.3082910026424
+    },
+    {
+      "id": "6.2",
+      "name": "Audit log records mutations (who/what/when)",
+      "status": "fail",
+      "detail": "new rule e2e_audit_c9f8a1 not found in audit trail",
+      "data": {
+        "create_status": 200,
+        "body": "{\"id\":\"e2e_audit_probe\",\"name\":\"E2E Audit Probe\",\"nodes\":[{\"id\":\"c1\",\"type\":\"condition\",\"variable\":\"age\",\"operator\":\">=\",\"value\":\"18\",\"label\":\"Condition\"}],\"tree\":{\"type\":\"group\",\"id\":\"g\",\"logic\":\"AND"
+      },
+      "ms": 1062.6887080143206
+    },
+    {
+      "id": "6.6",
+      "name": "PII redaction configurable + applied",
+      "status": "warn",
+      "detail": "raw card-like value echoed back in audit payload (no default redaction)",
+      "data": {
+        "decide": 200
+      },
+      "ms": 1541.834417032078
+    }
+  ]
+}

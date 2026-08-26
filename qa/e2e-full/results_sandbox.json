@@ -1,0 +1,236 @@
+{
+  "summary": {
+    "pass": 21
+  },
+  "results": [
+    {
+      "id": "3.1",
+      "name": "CONTROL \u2014 benign variable executes and returns correct value",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": 42,
+        "error": null
+      },
+      "ms": 6.629583018366247
+    },
+    {
+      "id": "3.2.1",
+      "name": "Sandbox blocks: import os",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: os"
+      },
+      "ms": 3.9781249943189323
+    },
+    {
+      "id": "3.2.2",
+      "name": "Sandbox blocks: __import__ builtin",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Blocked symbol detected: __import__"
+      },
+      "ms": 3.3111669472418725
+    },
+    {
+      "id": "3.2.3",
+      "name": "Sandbox blocks: open() file read",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Blocked call detected: open"
+      },
+      "ms": 3.2090420136228204
+    },
+    {
+      "id": "3.2.4",
+      "name": "Sandbox blocks: subclass walk to Popen",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Access to dunder attribute not allowed: __name__"
+      },
+      "ms": 2.450500032864511
+    },
+    {
+      "id": "3.2.5",
+      "name": "Sandbox blocks: eval()",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Blocked call detected: eval"
+      },
+      "ms": 2.258082968182862
+    },
+    {
+      "id": "3.2.6",
+      "name": "Sandbox blocks: exec()",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Blocked call detected: exec"
+      },
+      "ms": 2.4917080299928784
+    },
+    {
+      "id": "3.2.7",
+      "name": "Sandbox blocks: globals() access",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Blocked symbol detected: globals"
+      },
+      "ms": 2.1280410001054406
+    },
+    {
+      "id": "3.2.8",
+      "name": "Sandbox blocks: func __globals__",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Access to dunder attribute not allowed: __globals__"
+      },
+      "ms": 1.9366249907761812
+    },
+    {
+      "id": "3.2.9",
+      "name": "Sandbox blocks: class __mro__ escape",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Access to dunder attribute not allowed: __mro__"
+      },
+      "ms": 2.240833011455834
+    },
+    {
+      "id": "3.2.10",
+      "name": "Sandbox blocks: str.format leak",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Method not allowed: format (use an f-string or %-formatting)"
+      },
+      "ms": 2.3956249933689833
+    },
+    {
+      "id": "3.2.11",
+      "name": "Sandbox blocks: import via importlib",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: importlib"
+      },
+      "ms": 2.01745901722461
+    },
+    {
+      "id": "3.2.12",
+      "name": "Sandbox blocks: read env",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: os"
+      },
+      "ms": 2.072292030788958
+    },
+    {
+      "id": "3.2.13",
+      "name": "Sandbox blocks: socket egress",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: socket"
+      },
+      "ms": 2.0376670290715992
+    },
+    {
+      "id": "3.2.14",
+      "name": "Sandbox blocks: subprocess",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: subprocess"
+      },
+      "ms": 2.25349998800084
+    },
+    {
+      "id": "3.2.15",
+      "name": "Sandbox blocks: write file",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Blocked call detected: open"
+      },
+      "ms": 1.8605419900268316
+    },
+    {
+      "id": "3.2.16",
+      "name": "Secret not readable from sandbox even if import slips",
+      "status": "pass",
+      "detail": "",
+      "data": null,
+      "ms": 2.002666995394975
+    },
+    {
+      "id": "3.3",
+      "name": "Infinite loop is terminated by timeout",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "elapsed_ms": 2005,
+        "error": "Variable execution timed out.",
+        "http": 200
+      },
+      "ms": 2005.0570830353536
+    },
+    {
+      "id": "3.3b",
+      "name": "Memory bomb does not take down the API",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "elapsed_ms": 172,
+        "http": 200,
+        "error": "None"
+      },
+      "ms": 174.26420899573714
+    },
+    {
+      "id": "3.3c",
+      "name": "Deep recursion does not crash the worker",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "error": "maximum recursion depth exceeded"
+      },
+      "ms": 4.569375014398247
+    },
+    {
+      "id": "3.3d",
+      "name": "ReDoS guard on catastrophic regex",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "elapsed_ms": 2008,
+        "error": "Variable execution timed out."
+      },
+      "ms": 2007.5305830105208
+    }
+  ]
+}
