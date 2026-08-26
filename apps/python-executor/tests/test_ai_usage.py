@@ -46,6 +46,20 @@ class EstimateCostTests(unittest.TestCase):
     def test_unknown_model_uses_default_not_zero(self):
         self.assertGreater(ai.estimate_cost("anthropic", "some-future-model", 1000, 1000), 0)
 
+    def test_current_opus_priced_at_5_25_not_legacy_15_75(self):
+        # Opus 4.6/4.7/4.8/5 are $5/$25 per 1M. A bare "opus" substring rule used to
+        # bill them at the legacy 4.1 rate and overstate spend ~3x.
+        for m in ("claude-opus-5", "claude-opus-4-8", "claude-opus-4-7"):
+            self.assertAlmostEqual(ai.estimate_cost("anthropic", m, 1_000_000, 0), 5.0, places=6, msg=m)
+            self.assertAlmostEqual(ai.estimate_cost("anthropic", m, 0, 1_000_000), 25.0, places=6, msg=m)
+
+    def test_legacy_opus_41_keeps_its_own_rate(self):
+        self.assertAlmostEqual(ai.estimate_cost("anthropic", "claude-opus-4-1", 1_000_000, 0), 15.0, places=6)
+
+    def test_haiku_45_priced_above_haiku_35(self):
+        self.assertAlmostEqual(ai.estimate_cost("anthropic", "claude-haiku-4-5", 1_000_000, 0), 1.0, places=6)
+        self.assertAlmostEqual(ai.estimate_cost("anthropic", "claude-3-5-haiku-latest", 1_000_000, 0), 0.80, places=6)
+
 
 class AIUsageApiTests(unittest.TestCase):
     def setUp(self):

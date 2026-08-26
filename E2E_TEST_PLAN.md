@@ -120,22 +120,27 @@ At concurrency 16, 222/400 requests returned **429** — the hardcoded 1 000 req
 * `/settings` — React prop warning → **F-17**, fixed.
 * Sidebar IA — **F-18**.
 
-## 10. Regression baseline
+## 10. Regression baseline — re-run against merged `main`
 | Suite | Result |
 |---|---|
-| Vitest (TS) | ✅ **157/157** across 9 files |
-| Flutter SDK unit tests | ✅ **126/126** |
-| Demo-app unit tests | ✅ 4/4 |
-| Demo-app iOS integration tests | ✅ **20/20** |
-| Python unittest | ✅ **708 passed**, 4 skipped, 0 failed (189 s) |
-| Kotlin core (`rulemind-core`) | ✅ **18 passed** |
-| Playwright `e2e/` | ⬜ (config pins ports 8100/3100 + system `python3`) |
+| Python unittest | ✅ **708 passed**, 4 skipped, 0 failed (195 s) |
+| Vitest (TS) | ✅ **157 passed** across 9 files |
+| Flutter SDK | ✅ **127 passed** |
+| Kotlin (`rulemind-core` + `sample-app`) | ✅ **20 passed** |
+| Demo app — unit | ✅ **4 passed** |
+| Demo app — iOS integration | ✅ **20 passed** (incl. 16/16 server-vs-device parity) |
+| Web route sweep | ✅ **34/36 clean** (2 expected admin 401s) |
+| Rust core + decide-service | ✅ type-check (test binaries cannot link — pre-existing pyo3 config) |
+| **Total** | **1,036 passing · 0 failing** |
+
+Every suite above was re-run against `main` after all seven PRs merged, not only
+per-branch, so the combined state is what these numbers describe.
 
 ---
 
 # Findings
 
-**21 found · 20 fixed · 1 open.** Every fix was verified against the running stack and
+**24 found · 23 fixed · 1 open.** Every fix was verified against the running stack and
 the full regression suite re-run afterwards.
 
 ### Shipped — PR #114 · setup & configuration
@@ -183,6 +188,14 @@ the full regression suite re-run afterwards.
 | **F-18** | Medium | The shell grid let the sidebar stretch past the viewport where `body{overflow:hidden}` clipped it — nine nav items unreachable at 1280×720. |
 | **F-19** | Low | 25 collapsed nav links had **no accessible name** (WCAG 2.4.4 / 4.1.2). |
 | **F-17** | Low | `InlineInput`/`InlineSelect` spread a custom `testId` prop into the DOM. |
+
+### Shipped — PR #120 · AI model catalogue
+| ID | Sev | Finding |
+|----|-----|---------|
+| **F-26** | Medium | `_PRICING` **over-billed Opus by 3x** — a bare `opus` key mapped to the legacy $15/$75 while Opus 4.6–5 are $5/$25. Fable 5 and Haiku 4.5 were absent and fell through to the mid-range default. |
+| **F-27** | Low | `_TEMPERATURE_FREE_RE` missed Opus 4.7/4.8, costing an extra round trip and a logged 400 on every such call (the retry masked it). |
+| **F-28** | Low | `CURATED_MODELS["anthropic"]` omitted the current flagship — what a keyless install sees. |
+| **F-29** | Low | `pnpm-lock.yaml` still carried importers for `apps/api` and `apps/worker`, workspaces that no longer exist. |
 
 ### Still open
 | ID | Sev | Finding |
