@@ -66,10 +66,13 @@ class AIError(RuntimeError):
 
 
 # Newer models reject the `temperature` param outright (a 400, not a warning) because they
-# manage sampling internally: the Claude 5 family (claude-<tier>-5…) and OpenAI's o-series
+# manage sampling internally: the Claude 5 family (claude-<tier>-5…), Opus 4.7/4.8, and OpenAI's o-series
 # reasoning models. We omit it for those, and additionally retry once without it if any other
 # model turns out to reject it — so a future model launch never hard-fails every AI call.
-_TEMPERATURE_FREE_RE = re.compile(r"claude-(?:opus|sonnet|haiku|fable)-5(?:$|[-.\d])")
+_TEMPERATURE_FREE_RE = re.compile(
+    r"claude-(?:opus|sonnet|haiku|fable)-5(?:$|[-.\d])"   # Claude 5 family
+    r"|claude-opus-4-[78](?:$|[-.\d])"                   # Opus 4.7 / 4.8
+)
 
 
 def _model_omits_temperature(model: Optional[str]) -> bool:
@@ -138,7 +141,7 @@ _PROVIDERS = {"anthropic": _call_anthropic, "openai": _call_openai}
 # fails. Kept current with releases; the live fetch below supersedes these when a
 # key is configured, so newly launched models appear without a code change.
 CURATED_MODELS = {
-    "anthropic": ["claude-opus-4-1", "claude-sonnet-4-5", "claude-sonnet-5", "claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"],
+    "anthropic": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-8", "claude-sonnet-4-6"],
     "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini", "o1"],
 }
 
@@ -187,8 +190,15 @@ async def list_models(provider: str, api_key: Optional[str] = None) -> Dict[str,
 # for visibility + budget guardrails, not a bill. Unknown models fall back to a
 # mid-range default so cost is never silently zero.
 _PRICING = {
+    # Order matters: the lookup takes the FIRST key that is a substring of the model
+    # id, so more specific ids must come before the generic tier name.
     "anthropic": [
-        ("opus", (15.0, 75.0)), ("haiku", (0.80, 4.0)), ("sonnet", (3.0, 15.0)),
+        ("opus-4-1", (15.0, 75.0)),   # legacy Opus 4.1 pricing
+        ("opus", (5.0, 25.0)),        # Opus 4.6 / 4.7 / 4.8 / 5
+        ("fable", (10.0, 50.0)),
+        ("haiku-4-5", (1.0, 5.0)),
+        ("haiku", (0.80, 4.0)),       # Haiku 3.5
+        ("sonnet", (3.0, 15.0)),
     ],
     "openai": [
         ("gpt-4o-mini", (0.15, 0.60)), ("gpt-4o", (2.50, 10.0)), ("o3-mini", (1.10, 4.40)),

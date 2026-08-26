@@ -231,6 +231,15 @@ class AITests(unittest.TestCase):
         for m in ("claude-3-5-sonnet-latest", "claude-3-7-sonnet", "gpt-4o", "gpt-4o-mini", ""):
             self.assertFalse(ai._model_omits_temperature(m), m)
 
+    def test_opus_47_48_also_omit_temperature(self) -> None:
+        # Opus 4.7 and 4.8 removed sampling params too — without this the request
+        # 400s and only succeeds via the retry, wasting a round trip per call.
+        for m in ("claude-opus-4-7", "claude-opus-4-8"):
+            self.assertTrue(ai._model_omits_temperature(m), m)
+        # The 4.6 generation still accepts `temperature` — do not over-match.
+        for m in ("claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"):
+            self.assertFalse(ai._model_omits_temperature(m), m)
+
     def test_anthropic_request_omits_temperature_for_claude5(self) -> None:
         # Live regression: the mock-provider tests never exercised the real request body, so a
         # Claude-5 `temperature` 400 shipped. Capture the outgoing body and assert the shape.
