@@ -1370,7 +1370,9 @@ class Storage:
                     duplicates += 1
         return {"received": len(decisions), "inserted": inserted, "duplicates": duplicates, "acked": acked}
 
-    def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+    def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0,
+                       client_id: Optional[str] = None, policy_id: Optional[str] = None,
+                       outcome: Optional[str] = None) -> List[Dict[str, Any]]:
         from . import decision_log
         decision_log.flush()  # read-after-write: see any just-submitted async writes
         resolved = self._tenant_id(tenant_id)
@@ -1378,7 +1380,17 @@ class Storage:
             # Bounded by default: the decisions table grows without limit in
             # production (every /decide writes a row), so an unpaged fetch would
             # load tens of thousands of full-context rows and time out / OOM.
-            query = select(Decision).where(Decision.tenant_id == resolved).order_by(desc(Decision.created_at)).limit(max(1, min(limit, 1000))).offset(max(0, offset))
+            # Filters are applied IN SQL: case-wise history ("this customer's
+            # decisions") is unusable if the caller has to page the whole table
+            # and filter client-side.
+            query = select(Decision).where(Decision.tenant_id == resolved)
+            if client_id:
+                query = query.where(Decision.client_id == client_id)
+            if policy_id:
+                query = query.where(Decision.policy_id == policy_id)
+            if outcome:
+                query = query.where(Decision.outcome == outcome)
+            query = query.order_by(desc(Decision.created_at)).limit(max(1, min(limit, 1000))).offset(max(0, offset))
             rows = session.scalars(query).all()
             return [self._decision_to_dict(row) for row in rows]
 

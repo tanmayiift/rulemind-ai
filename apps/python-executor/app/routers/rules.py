@@ -52,7 +52,7 @@ def get_rule(rule_id: str) -> Dict[str, Any]:
 @router.post("/api/v1/rules")
 def create_rule(request: RuleUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
     normalized = normalize_rule_payload(request)
-    rule_id = make_id(request.name, current_rule_map())
+    rule_id = make_id(request.name, current_rule_map(), getattr(request, "id", None))
     created = main.storage.create_rule(
         {
             "id": rule_id,
@@ -140,7 +140,7 @@ def get_scorecard(scorecard_id: str) -> Dict[str, Any]:
 def create_scorecard(request: ScorecardUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
     bins = [item.model_dump() for item in request.bins]
     validate_scorecard_bins(bins)
-    scorecard_id = make_id(request.name, current_scorecard_map())
+    scorecard_id = make_id(request.name, current_scorecard_map(), getattr(request, "id", None))
     created = main.storage.create_scorecard(
         {
             "id": scorecard_id,

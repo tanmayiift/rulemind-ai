@@ -134,6 +134,8 @@ class ConnectorUpdateRequest(BaseModel):
 
 
 class ConnectorCreateRequest(BaseModel):
+    # Optional caller-chosen id — see the note on VariableUpsertRequest.
+    id: Optional[str] = None
     name: str
     icon: Optional[str] = None
     color: Optional[str] = None
@@ -154,6 +156,10 @@ class PromoteRequest(BaseModel):
 
 
 class VariableUpsertRequest(BaseModel):
+    # Optional caller-chosen id. Without this Pydantic drops an "id" the client sent
+    # and the server derives one from `name`, so provisioning the same config twice
+    # produces `thing`, `thing_2`, ... and every id-based cross-reference breaks.
+    id: Optional[str] = None
     name: str
     category: str
     source_id: str
@@ -178,6 +184,10 @@ class RuleNodeModel(BaseModel):
 
 
 class RuleUpsertRequest(BaseModel):
+    # Optional caller-chosen id. Without this Pydantic drops an "id" the client sent
+    # and the server derives one from `name`, so provisioning the same config twice
+    # produces `thing`, `thing_2`, ... and every id-based cross-reference breaks.
+    id: Optional[str] = None
     name: str
     nodes: List[RuleNodeModel] = Field(default_factory=list)
     tree: Optional[Dict[str, Any]] = None
@@ -217,6 +227,10 @@ class ScorecardBinModel(BaseModel):
 
 
 class ScorecardUpsertRequest(BaseModel):
+    # Optional caller-chosen id. Without this Pydantic drops an "id" the client sent
+    # and the server derives one from `name`, so provisioning the same config twice
+    # produces `thing`, `thing_2`, ... and every id-based cross-reference breaks.
+    id: Optional[str] = None
     name: str
     base_score: int = 300
     max_score: int = 900
@@ -242,6 +256,10 @@ class PolicyStepModel(BaseModel):
 
 
 class PolicyUpsertRequest(BaseModel):
+    # Optional caller-chosen id. Without this Pydantic drops an "id" the client sent
+    # and the server derives one from `name`, so provisioning the same config twice
+    # produces `thing`, `thing_2`, ... and every id-based cross-reference breaks.
+    id: Optional[str] = None
     name: str
     steps: List[PolicyStepModel]
     trigger: Optional[Dict[str, Any]] = None
@@ -467,9 +485,30 @@ def ensure_promotable(entity: Dict[str, Any]) -> None:
         raise HTTPException(status_code=409, detail="Latest test must pass before promotion.")
 
 
-def make_id(name: str, existing: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
-    base = slugify(name) or "item"
+def make_id(name: str, existing: Optional[Dict[str, Dict[str, Any]]] = None,
+            requested: Optional[str] = None) -> str:
+    """Resolve the id for a newly created entity.
+
+    An explicit `requested` id wins when it is free. Silently discarding a
+    client-supplied id — which is what happened before, deriving one from `name`
+    instead — breaks idempotent provisioning (re-running a config apply creates
+    `thing`, `thing_2`, `thing_3`) and the export -> import round trip, where every
+    cross-reference is by id. PUT already honours the id in its path; POST now
+    agrees with it.
+
+    A requested id that is already taken is rejected by the caller rather than
+    silently suffixed, so a collision is visible instead of producing a surprise id.
+    """
     existing_map = existing or {}
+    if requested:
+        candidate = slugify(requested) or requested
+        if candidate not in existing_map:
+            return candidate
+        raise HTTPException(
+            status_code=409,
+            detail="id '{0}' already exists. Use PUT to update it, or choose another id.".format(candidate),
+        )
+    base = slugify(name) or "item"
     if base not in existing_map:
         return base
     index = 2
@@ -801,6 +840,7 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
     scorecard_result = next(iter(ctx.scorecard_results.values()), None)
     outcome = {
         "policy_id": policy.get("id"),
+        "decision_id": ctx.decision_id,
         "outcome": ctx.outcome if ctx.outcome != "pending" else (policy.get("defaultOutcome") or "review"),
         "scorecard_result": scorecard_result,
         "trace": copy.deepcopy(ctx.step_trace),
@@ -1285,31 +1325,63 @@ async def shutdown() -> None:
         pass
 
 
-@app.get("/health")
-@app.get("/api/v1/health")
-def health() -> Dict[str, str]:
+def _dependency_status() -> Dict[str, Any]:
+    """Health of the things a request actually needs.
+
+    Redis is OPTIONAL: with REDIS_URL unset the app uses documented in-process
+    fallbacks for rate limiting and pub/sub, so "not configured" is a supported
+    single-node deployment and must not read as a fault. Only a Redis that was
+    configured and cannot be reached is an error.
+    """
     try:
         with storage.connect():
             db_status = "ok"
     except Exception:
         db_status = "error"
-    try:
-        client = redis_client()
-        redis_status = "ok" if client is not None and client.ping() else "error"
-    except Exception:
-        redis_status = "error"
-    overall = "ok" if db_status == "ok" and redis_status == "ok" else "degraded"
-    return {"status": overall, "db": db_status, "redis": redis_status, "version": "4.0.0"}
 
-
-@app.get("/ready")
-def ready() -> Dict[str, bool]:
-    try:
-        with storage.connect():
+    if not (os.getenv("REDIS_URL") or "").strip():
+        redis_status = "not_configured"
+    else:
+        try:
             client = redis_client()
-            return {"ready": bool(client is not None and client.ping())}
-    except Exception:
-        return {"ready": False}
+            redis_status = "ok" if client is not None and client.ping() else "error"
+        except Exception:
+            redis_status = "error"
+
+    healthy = db_status == "ok" and redis_status in ("ok", "not_configured")
+    return {
+        "status": "ok" if healthy else "degraded",
+        "db": db_status,
+        "redis": redis_status,
+        "version": "4.0.0",
+        "healthy": healthy,
+    }
+
+
+@app.get("/health")
+@app.get("/api/v1/health")
+def health(response: Response) -> Dict[str, Any]:
+    """Liveness. Returns 503 when a hard dependency is down so an orchestrator's
+    HTTP check can actually fail — it inspects the status code, not the body."""
+    state = _dependency_status()
+    healthy = state.pop("healthy")
+    if not healthy:
+        response.status_code = 503
+    return state
+
+
+# /health/ready is the path k8s/rulemind.yaml probes; without it the probe 404s
+# forever and pods never become Ready.
+@app.get("/ready")
+@app.get("/health/ready")
+def ready(response: Response) -> Dict[str, Any]:
+    """Readiness. A readinessProbe only looks at the status code, so returning 200
+    with {"ready": false} — as this used to — meant the gate never fired."""
+    state = _dependency_status()
+    is_ready = state.pop("healthy")
+    if not is_ready:
+        response.status_code = 503
+    return {"ready": is_ready, **state}
 
 
 @app.get("/metrics")

@@ -45,7 +45,7 @@ def list_connectors() -> List[Dict[str, Any]]:
 
 @router.post("/api/v1/connectors")
 def create_connector(request: ConnectorCreateRequest) -> Dict[str, Any]:
-    connector_id = make_id(request.name, current_connectors())
+    connector_id = make_id(request.name, current_connectors(), getattr(request, "id", None))
     return main.storage.create_connector(
         {
             "id": connector_id,
@@ -124,7 +124,7 @@ def create_variable(request: VariableUpsertRequest, background_tasks: Background
     connectors = current_connectors()
     if request.source_id not in connectors:
         raise HTTPException(status_code=422, detail="Unknown source connector.")
-    variable_id = make_id(request.name, current_variable_map())
+    variable_id = make_id(request.name, current_variable_map(), getattr(request, "id", None))
     created = main.storage.create_variable(
         {
             "id": variable_id,

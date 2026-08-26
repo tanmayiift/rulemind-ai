@@ -75,7 +75,7 @@ def policy_input_schema(policy_id: str) -> Dict[str, Any]:
 def create_policy(request: PolicyUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
     steps = [item.model_dump() for item in request.steps]
     validate_policy_steps(steps)
-    policy_id = make_id(request.name, current_policy_map())
+    policy_id = make_id(request.name, current_policy_map(), getattr(request, "id", None))
     created = main.storage.create_policy(
         {
             "id": policy_id,
