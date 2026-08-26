@@ -1,0 +1,296 @@
+[
+  {
+    "route": "/",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/ab-tests",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/access",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/admin",
+    "status": "warn",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "failedReqs": [
+      "GET http://localhost:3000/admin/login — net::ERR_ABORTED"
+    ]
+  },
+  {
+    "route": "/ai",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/api-console",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/approvals",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/audit",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/batch",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/branding",
+    "status": "warn",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "failedReqs": []
+  },
+  {
+    "route": "/collab",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/connectors",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/decision-explorer",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/decision-tables",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/deploy",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/evaluations",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/exports",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/lifecycle",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/login",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/models",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/onboarding",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/policies",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/prototype",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/reports",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/review-queue",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/rules",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/schedules",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/scorecards",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/segments",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/settings",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/simulation",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/studio",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/test-console",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/variables",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/workflow-builder",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/workflows",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  }
+]
