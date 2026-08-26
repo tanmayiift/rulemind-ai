@@ -17,6 +17,7 @@ from .context import (
 )
 from .mtls import MtlsSettings, evaluate_client_cert
 from .rbac import is_allowed
+from . import rate_limit
 from .runtime import rate_limit_allow
 from .session_cookie import (
     CSRF_PROTECTED_METHODS,
@@ -132,10 +133,23 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if not tenant.get("is_active", True):
             return JSONResponse(status_code=403, content={"error": "Tenant is inactive"})
 
-        limit = 5000 if tenant.get("plan") == "enterprise" else 1000
-        allowed, retry_after = rate_limit_allow(tenant["id"], limit)
-        if not allowed:
-            return JSONResponse(status_code=429, headers={"Retry-After": str(retry_after)}, content={"error": "Rate limit exceeded"})
+        # Limits come from app/rate_limit.py: per-tenant config, then per-plan env,
+        # then a global env, then a built-in default. RATE_LIMIT_ENABLED=0 turns the
+        # whole thing off, which is how load tests and benchmarks should run.
+        limit_decision = (
+            rate_limit.ALLOW_ALL if rate_limit.is_exempt(path)
+            else rate_limit.check(tenant)
+        )
+        if not limit_decision.allowed:
+            return JSONResponse(
+                status_code=429,
+                headers=limit_decision.headers(),
+                content={
+                    "error": "Rate limit exceeded",
+                    "detail": "Limit is {0} requests/minute for this tenant. Retry in {1}s.".format(
+                        limit_decision.limit, max(1, limit_decision.retry_after)),
+                },
+            )
 
         # RBAC: the caller's role must hold the capability this request needs.
         if not is_allowed(role, request.method, path):
@@ -154,6 +168,11 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         role_token = set_current_role(role)
         try:
             response = await call_next(request)
+            # Advertise the budget on every response, not just on rejection — a client
+            # that can see Remaining can slow down before it gets a 429.
+            if limit_decision.enforced:
+                for header, value in limit_decision.headers().items():
+                    response.headers[header] = value
             return response
         finally:
             reset_current_role(role_token)
