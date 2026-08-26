@@ -193,9 +193,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
-        minHeight: "100vh",
+        // Desktop: pin the shell to the viewport and let <main> scroll internally.
+        // With minHeight the grid grew to content height, so the static sidebar
+        // scrolled away with the page and the lower nav groups (Audit, Reports,
+        // Review Queue, Settings…) sat below the fold on a 720px-tall screen.
+        ...(isMobile ? { minHeight: "100vh" } : { height: "100vh" }),
         display: "grid",
         gridTemplateColumns: isMobile ? "1fr" : `${sidebarOpen ? 224 : 64}px minmax(0, 1fr)`,
+        // Rows default to auto, so a tall sidebar stretched its own row past the
+        // container and body{overflow:hidden} then clipped the bottom nav groups
+        // outright. minmax(0,1fr) caps the row at the container height and lets the
+        // sidebar's inner <nav> scroll instead.
+        ...(isMobile ? {} : { gridTemplateRows: "minmax(0, 1fr)" }),
         background: theme.bg,
         color: theme.text,
         transition: isMobile ? "none" : "grid-template-columns 0.2s ease",
@@ -224,6 +233,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
+            // minHeight:0 lets the flex child <nav> actually shrink, so its own
+            // overflowY:auto engages instead of the column stretching to fit.
+            minHeight: 0,
             ...(isMobile
               ? {
                   position: "fixed",
@@ -320,6 +332,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <Link
                       key={item.href}
                       href={item.href}
+                      // Collapsed, the link renders an icon and no text, so without
+                      // these it has no accessible name at all (WCAG 2.4.4 / 4.1.2)
+                      // and a screen reader announces a bare "link".
+                      aria-label={item.label}
+                      title={item.label}
+                      aria-current={active ? "page" : undefined}
                       data-testid={"nav-" + item.label.toLowerCase().replace(/\s+/g, "-")}
                       onClick={() => {
                         if (isMobile) setMobileMenuOpen(false);

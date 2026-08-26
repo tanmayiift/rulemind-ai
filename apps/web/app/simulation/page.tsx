@@ -5,6 +5,7 @@ import { Upload, Sparkles, Braces, FileSpreadsheet } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { Button, Card, Field, Select, Textarea, Stat, Badge, EmptyState, PageHeader, SectionTitle } from "../../src/v3/ui";
+import { coerce, parseCsv } from "../../src/lib/csv";
 
 type Policy = { id: string; name: string };
 type BatchRow = { index: number; result: { outcome: string; latency_ms?: number; error?: string } };
@@ -16,45 +17,6 @@ type Mode = "synthetic" | "upload" | "json";
 const OUTCOME_TONE: Record<string, "success" | "warning" | "danger"> = { approve: "success", review: "warning", reject: "danger" };
 
 // ---- data helpers -------------------------------------------------------------
-
-function coerce(v: unknown): unknown {
-  if (typeof v !== "string") return v;
-  const s = v.trim();
-  if (s === "") return "";
-  if (s === "true" || s === "TRUE") return true;
-  if (s === "false" || s === "FALSE") return false;
-  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
-  return s;
-}
-
-// Minimal RFC-4180-ish CSV parser (quotes, escaped quotes, commas, newlines).
-function parseCsv(text: string): Record<string, unknown>[] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
-      } else field += c;
-    } else if (c === '"') inQuotes = true;
-    else if (c === ",") { row.push(field); field = ""; }
-    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
-    else if (c === "\r") { /* skip */ }
-    else field += c;
-  }
-  if (field.length || row.length) { row.push(field); rows.push(row); }
-  const nonEmpty = rows.filter((r) => r.some((c) => c.trim() !== ""));
-  if (nonEmpty.length < 1) return [];
-  const headers = nonEmpty[0].map((h) => h.trim());
-  return nonEmpty.slice(1).map((r) => {
-    const obj: Record<string, unknown> = {};
-    headers.forEach((h, i) => { if (h) obj[h] = coerce(r[i]); });
-    return obj;
-  });
-}
 
 type SchemaField = { name: string; sample: unknown; source_id: string };
 
