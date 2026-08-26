@@ -26,6 +26,7 @@ os.environ.setdefault("RULEMIND_SEED_DEMO", "1")  # tests use the sample lending
 os.environ.setdefault("RULEMIND_ADMIN_JWT_SECRET", "rulemind-test-admin-secret")
 
 import app.main as app_main
+from app import rate_limit
 from app import cli as app_cli
 from app.main import ConnectorUpdateRequest, RuleUpsertRequest, VariableUpsertRequest
 from app.models import Tenant
@@ -307,19 +308,39 @@ class RuleMindPlatformTests(unittest.TestCase):
             },
         }
 
-        with patch.object(app_main.storage, "get_tenant_by_api_key", side_effect=lambda key: lookup.get(key)):
-            standard_last = None
-            for _ in range(1001):
-                standard_last = self.client.get("/api/v1/connectors", headers={"x-api-key": standard_key})
-            self.assertIsNotNone(standard_last)
-            self.assertEqual(standard_last.status_code, 429)
-            self.assertIn("Retry-After", standard_last.headers)
+        # Limits are a token bucket (app/rate_limit.py) whose burst capacity is the
+        # whole minute's budget, so draining a 1000/min tenant by looping 1001 times
+        # is both slow and unreliable — the bucket refills while the loop runs. Set
+        # small per-plan budgets instead: that exercises the same contract (a plan's
+        # budget is enforced, and a bigger plan gets a bigger one) deterministically.
+        os.environ["RATE_LIMIT_RPM_STANDARD"] = "5"
+        os.environ["RATE_LIMIT_RPM_ENTERPRISE"] = "500"
+        rate_limit.reset_local_state()
+        self.addCleanup(rate_limit.reset_local_state)
+        self.addCleanup(os.environ.pop, "RATE_LIMIT_RPM_STANDARD", None)
+        self.addCleanup(os.environ.pop, "RATE_LIMIT_RPM_ENTERPRISE", None)
 
-            enterprise_last = None
-            for _ in range(1001):
-                enterprise_last = self.client.get("/api/v1/connectors", headers={"x-api-key": enterprise_key})
-            self.assertIsNotNone(enterprise_last)
-            self.assertEqual(enterprise_last.status_code, 200)
+        with patch.object(app_main.storage, "get_tenant_by_api_key", side_effect=lambda key: lookup.get(key)):
+            standard = [
+                self.client.get("/api/v1/connectors", headers={"x-api-key": standard_key})
+                for _ in range(12)
+            ]
+            codes = [r.status_code for r in standard]
+            self.assertEqual(codes[:5], [200] * 5, "the plan's budget should be honoured in full")
+            self.assertIn(429, codes, "standard plan was never throttled past its budget")
+
+            rejected = next(r for r in standard if r.status_code == 429)
+            self.assertIn("Retry-After", rejected.headers)
+            self.assertEqual(rejected.headers["RateLimit-Limit"], "5")
+
+            # Every response advertises the budget so a client can self-throttle.
+            self.assertIn("RateLimit-Remaining", standard[0].headers)
+
+            enterprise_codes = [
+                self.client.get("/api/v1/connectors", headers={"x-api-key": enterprise_key}).status_code
+                for _ in range(12)
+            ]
+            self.assertNotIn(429, enterprise_codes, "enterprise plan throttled inside its larger budget")
 
     def test_v2_rule_round_trip_persists_nodes_and_tree(self) -> None:
         created = app_main.create_rule(
