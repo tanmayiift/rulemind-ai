@@ -35,22 +35,27 @@ RuleMind accepts JSON payloads from pluggable connectors (bureau, bank, GST, dev
 ```
 apps/
   web/                  Next.js 14 dashboard (visual rule builder, scorecard editor, policy designer)
-  python-executor/      FastAPI backend (canonical runtime, sandbox, ML model hosting)
-  api/                  Legacy Fastify backend (retained, not active)
-  worker/               Background job worker
+  python-executor/      FastAPI backend — canonical runtime, sandbox, ML model hosting.
+                        Also runs the background worker (`python3 -m app.worker`).
 
 packages/
   rule-engine/          Core rule evaluation engine (TypeScript) + Excel functions + WoE scoring
+  rulemind-core-rs/     Rust core engine with Python bindings
+  rulemind-decide-service/  Standalone Rust /decide service (own Dockerfile)
   shared/               Shared TypeScript types (WoE, metrics, models, import validation)
+  sdk/                  Shared SDK surface
   sdk-js/               JavaScript SDK
   sdk-python/           Python SDK
-  sdk-android/          Android SDK (Kotlin) + sample app
-  sdk-flutter/          Flutter SDK (Dart) + sample app
-  schemas/              Shared JSON schemas
+  sdk-android/          Android SDK (Kotlin) + on-device engine + sample app
+  sdk-flutter/          Flutter SDK (Dart) + on-device engine + sample app
+  ui/                   Shared UI primitives
   widget/               Embeddable widget
 
-e2e/                    Playwright end-to-end tests (43 edge-case + 5 workflow tests)
-test/                   TypeScript unit tests (34 tests: engine, SDK, auth, parity)
+e2e/                    Playwright end-to-end tests
+test/                   TypeScript unit tests (engine, SDK, auth, cross-platform parity)
+qa/                     Automated QA suite + workbook manifest
+infra/ k8s/ helm/       Deployment manifests
+observability/          Grafana / Prometheus / Tempo / OTel collector config
 ```
 
 ## Quick Start
@@ -59,6 +64,10 @@ test/                   TypeScript unit tests (34 tests: engine, SDK, auth, pari
 
 - **Node.js** >= 18 and **pnpm** >= 9
 - **Python** >= 3.10 with pip
+- **macOS only:** `brew install libomp` — xgboost and lightgbm link against
+  `libomp.dylib`, which their wheels do not bundle. Without it the ML model-hosting
+  imports fail with `Library not loaded: @rpath/libomp.dylib`. Linux wheels bundle
+  their own OpenMP, so the Docker image needs nothing extra.
 - (Optional) Docker and Docker Compose for production-like setup
 
 ### 1. Clone and Install
@@ -76,12 +85,20 @@ pip install -r apps/python-executor/requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` to set your secrets. For local development, defaults work out of the box:
+Edit `.env` to set your secrets. The API loads this file on startup (real environment
+variables still win, so compose and k8s config is unaffected). For local development
+the defaults work out of the box:
 
 ```bash
-AUTH_MODE=none              # Use 'apikey' or 'jwt' in production
+AUTH_MODE=none              # Must be set explicitly — leaving it unset keeps auth ON.
+                            # Use 'apikey' or 'jwt' in production.
 DATABASE_URL=sqlite:///.runtime/rulemind_v4.db
+RATE_LIMIT_ENABLED=1        # 0 turns limiting off — use that for load tests.
+RATE_LIMIT_RPM=1000         # Per-tenant budget; see .env.example for per-plan keys.
 ```
+
+See `.env.example` for the full list — it is generated from the code that reads each
+value and is the authority when docs and code disagree.
 
 ### 3. Start Development Servers
 

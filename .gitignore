@@ -37,6 +37,7 @@ target/
 
 # Python venv / caches
 **/.venv/
+.venv-rulemind/
 **/__pycache__/
 
 # wasm-pack build outputs

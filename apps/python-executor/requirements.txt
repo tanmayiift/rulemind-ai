@@ -10,6 +10,11 @@ httpx==0.28.1
 APScheduler==3.10.4
 PyYAML==6.0.2
 
+# Loads a local .env for development (see app/__init__.py). Real environment
+# variables always win, so compose/k8s config is unaffected. Without this the
+# README's `cp .env.example .env` step is silently a no-op.
+python-dotenv==1.0.1
+
 # Enterprise SSO. OIDC needs only PyJWT + cryptography (already present); SAML 2.0
 # assertion-signature verification uses signxml (pure-Python XML-DSig over lxml).
 # Both ship manylinux/macos wheels — no system libxmlsec build step.
@@ -22,12 +27,20 @@ psycopg2-binary==2.9.9
 # ML model hosting — required to unpickle and run uploaded models (advertised
 # feature + /models UI + policy "model" step). Without these the runtime cannot
 # deserialize real models. Full stack (sklearn + boosted trees); adds ~400MB.
+# macOS note: xgboost and lightgbm link against libomp.dylib, which is NOT bundled
+# in their wheels. Without it `import xgboost` fails with "Library not loaded:
+# @rpath/libomp.dylib" and ML model hosting is silently unavailable. Install it with
+#   brew install libomp
+# (Linux wheels bundle their own OpenMP, so the Docker image needs nothing extra.)
 numpy==2.2.1
 # scipy: 1.15.1 is the version tested on Linux CI/prod (compatible with scikit-learn 1.6.1).
-# On modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to dlopen, so pin 1.18.0 there only —
-# a platform marker keeps Linux on the tested pin while unblocking a fresh `pip install` on macOS.
+# On modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to dlopen, so newer interpreters
+# take 1.18.0 there. BOTH sides need a python_version guard: 1.18.0 itself requires >=3.12, so a
+# bare `sys_platform == "darwin"` pin makes macOS + the documented py3.10/3.11 resolve to a wheel
+# that does not exist — pip then aborts the ENTIRE install, not just scipy.
 scipy==1.15.1; sys_platform != "darwin"
-scipy==1.18.0; sys_platform == "darwin"
+scipy==1.15.1; sys_platform == "darwin" and python_version < "3.12"
+scipy==1.18.0; sys_platform == "darwin" and python_version >= "3.12"
 scikit-learn==1.6.1
 joblib==1.4.2
 xgboost==2.1.3
