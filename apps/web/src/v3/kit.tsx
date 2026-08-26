@@ -326,12 +326,15 @@ export function StatusBadge(props: { status: string; testId?: string }) {
 
 export function InlineInput(props: React.InputHTMLAttributes<HTMLInputElement> & { testId?: string; "data-testid"?: string }) {
   const theme = useTheme();
+  // Same reason as InlineTextarea below: `testId` is ours, not a DOM attribute, so
+  // it must not reach <input> via the spread or React logs a warning on every render.
+  const { testId, "data-testid": dataTestId, style, ...rest } = props;
   return (
     <input
-      {...props}
-      data-testid={props.testId ?? props["data-testid"]}
+      {...rest}
+      data-testid={testId ?? dataTestId}
       style={{
-        ...(props.style ?? {}),
+        ...(style ?? {}),
         background: theme.input,
         border: "1px solid " + theme.border,
         color: theme.text,
@@ -346,12 +349,13 @@ export function InlineInput(props: React.InputHTMLAttributes<HTMLInputElement> &
 
 export function InlineSelect(props: React.SelectHTMLAttributes<HTMLSelectElement> & { testId?: string; "data-testid"?: string }) {
   const theme = useTheme();
+  const { testId, "data-testid": dataTestId, style, ...rest } = props;
   return (
     <select
-      {...props}
-      data-testid={props.testId ?? props["data-testid"]}
+      {...rest}
+      data-testid={testId ?? dataTestId}
       style={{
-        ...(props.style ?? {}),
+        ...(style ?? {}),
         background: theme.input,
         border: "1px solid " + theme.border,
         color: theme.text,

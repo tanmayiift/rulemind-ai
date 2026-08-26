@@ -5,6 +5,7 @@ import { LineChart, Trash2, Play } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { Button, Card, Field, Input, Select, Textarea, Badge, EmptyState, PageHeader, SectionTitle, Stat } from "../../src/v3/ui";
+import { parseRows } from "../../src/lib/csv";
 
 type EvalSummary = { id: string; name: string; task: string; gate_status: string; model_id?: string | null; created_at?: string };
 type EvalDetail = EvalSummary & {
@@ -15,25 +16,6 @@ type EvalDetail = EvalSummary & {
   dataset_summary: Record<string, any>;
 };
 type Model = { id: string; name: string };
-
-// Accept a pasted dataset as JSON rows (starts with '[') or CSV (header + rows).
-function parseRows(text: string): Record<string, any>[] {
-  const t = text.trim();
-  if (!t) return [];
-  if (t.startsWith("[")) return JSON.parse(t);
-  const lines = t.split(/\r?\n/).filter((l) => l.trim());
-  const headers = lines[0].split(",").map((h) => h.trim());
-  return lines.slice(1).map((line) => {
-    const cells = line.split(",");
-    const row: Record<string, any> = {};
-    headers.forEach((h, i) => {
-      const raw = (cells[i] ?? "").trim();
-      const num = Number(raw);
-      row[h] = raw !== "" && !Number.isNaN(num) ? num : raw;
-    });
-    return row;
-  });
-}
 
 const fmt = (v: any, d = 4) => (v === null || v === undefined ? "—" : typeof v === "number" ? v.toFixed(d) : String(v));
 
