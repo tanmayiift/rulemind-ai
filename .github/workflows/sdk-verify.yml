@@ -88,7 +88,11 @@ jobs:
   android:
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest. The Android emulator booted fine on image
+    # 20260816.277.1 and stopped booting on 20260823.283.1 with
+    # "Timeout waiting for emulator to boot" -- a runner-image regression,
+    # not a repo change. KVM setup was already present and did not help.
+    runs-on: ubuntu-22.04
     env:
       ANDROID_SAMPLE_KEYSTORE_BASE64: ${{ secrets.ANDROID_SAMPLE_KEYSTORE_BASE64 }}
       ANDROID_SAMPLE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_SAMPLE_KEYSTORE_PASSWORD }}
@@ -199,7 +203,11 @@ jobs:
   flutter:
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest. The Android emulator booted fine on image
+    # 20260816.277.1 and stopped booting on 20260823.283.1 with
+    # "Timeout waiting for emulator to boot" -- a runner-image regression,
+    # not a repo change. KVM setup was already present and did not help.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
