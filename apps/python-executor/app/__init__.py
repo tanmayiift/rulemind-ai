@@ -18,12 +18,17 @@ except ImportError:  # dotenv is a convenience, never a hard requirement
     load_dotenv = None
 
 if load_dotenv is not None and os.getenv("RULEMIND_SKIP_DOTENV") != "1":
-    # Search upward from this file: apps/python-executor/.env then the repo root .env.
-    # Both are plausible locations and the repo root is where the README puts it.
+    # Search upward from this file for a .env: the service directory
+    # (apps/python-executor/.env) and the repo root are both plausible, and the repo
+    # root is where the README puts it.
+    #
+    # Indexing `parents` directly is not safe. In the Docker image the package sits at
+    # /app/app, so there is no parents[3] and a bare index raised IndexError at import
+    # time — which meant the API container could not start at all. Walk whatever
+    # ancestors actually exist instead, and stop at the first .env found so a service
+    # directory file wins over one at the root.
     _here = pathlib.Path(__file__).resolve()
-    for _candidate in (
-        _here.parents[1] / ".env",   # apps/python-executor/.env
-        _here.parents[3] / ".env",   # repo root .env
-    ):
+    for _candidate in (parent / ".env" for parent in _here.parents[1:4]):
         if _candidate.is_file():
             load_dotenv(_candidate, override=False)
+            break
