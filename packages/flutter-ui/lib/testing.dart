@@ -6,6 +6,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+
 import 'package:flutter_test/flutter_test.dart';
 
 /// A device surface to exercise.
@@ -155,45 +156,87 @@ String _describe(RenderObject node) {
 }
 
 
-/// True for render objects belonging to a Material chip's internal slots.
+
+
+
+
+/// True for render objects that actually put pixels on the screen.
 ///
-/// Material lays a chip's avatar/checkmark slot at a negative offset relative to
-/// the chip and never paints it when hidden. Probed directly: a bare
-/// `ChoiceChip` at 320x568 @1.3x reports its own box at 16.0..248.9 -- fully
-/// inside the screen -- while an internal 26x26 Stack reports -1.0..25.0. The
-/// chip is correctly positioned; only the hidden slot's coordinates are
-/// negative, so flagging it is a false positive.
-///
-/// Scoped deliberately narrowly: this exempts chip internals, not chips, and
-/// not anything else.
-bool _isChipInternal(RenderObject node) {
-  if (node.debugCreator is! DebugCreator) return false;
-  bool found = false;
-  int hops = 0;
-  (node.debugCreator! as DebugCreator).element.visitAncestorElements((Element a) {
-    if (a.widget.runtimeType.toString().contains('ChipRenderWidget')) {
-      found = true;
-      return false;
-    }
-    hops++;
-    return hops < 8;
-  });
-  return found;
+/// Layout-only boxes — `SizedBox`, `Padding`, `ConstrainedBox`, `Stack` — are
+/// precisely what the framework parks outside its own bounds: a chip's hidden
+/// checkmark slot, a `NavigationBar`'s destination indicator. They paint
+/// nothing there, so their coordinates are not a defect. Restricting the check
+/// to painters removes that entire class of false positive without weakening
+/// it, because a real overhang is always something visible: text, an image, or
+/// a filled shape.
+bool _paintsContent(RenderObject node) {
+  if (node is RenderParagraph ||
+      node is RenderImage ||
+      node is RenderDecoratedBox ||
+      node is RenderPhysicalModel ||
+      node is RenderPhysicalShape) {
+    return true;
+  }
+  // ColoredBox's render object is private, so it can only be matched by name.
+  return node.runtimeType.toString().contains('ColoredBox');
 }
 
-bool _insideHorizontalScrollable(RenderObject node) {
-  RenderObject? current = node.parent;
-  while (current != null) {
-    if (current is RenderViewport && current.axis == Axis.horizontal) {
-      return true;
-    }
-    if (current is RenderShrinkWrappingViewport &&
-        current.axis == Axis.horizontal) {
-      return true;
-    }
-    current = current.parent;
+/// The region of [node] that can actually reach the screen, in global
+/// coordinates, after every ancestor clip is applied.
+///
+/// Without this the check is unusable. Framework widgets routinely lay out
+/// internals outside their own box and rely on a clip to hide them — probed
+/// directly at 320x568:
+///
+///   * `ChoiceChip` sits at 16.0..248.9 while its hidden checkmark slot
+///     reports -1.0..25.0;
+///   * `NavigationBar` sits at 0.0..320.0 while its destination indicator
+///     reports 280.0..344.0;
+///   * `TextFormField` sits at 16.0..304.0 while its editable paint region
+///     reports 16.0..1091.5, because a text field scrolls its content.
+///
+/// All three are correct rendering. Flagging them produced 44 failures that
+/// said nothing about the app. Asking the framework what it clips — rather
+/// than special-casing widget names — keeps the check honest and still catches
+/// a genuinely unclipped overhang, such as an oversized SizedBox in a Column.
+Rect? _visibleRect(RenderObject node) {
+  if (node is! RenderBox || !node.hasSize) return null;
+
+  Rect visible;
+  try {
+    visible = node.localToGlobal(Offset.zero) & node.size;
+  } catch (_) {
+    return null;
   }
-  return false;
+  // A degenerate transform yields NaN, and every NaN comparison is false, so an
+  // unguarded NaN would silently pass the bounds check rather than fail it.
+  if (visible.left.isNaN ||
+      visible.right.isNaN ||
+      visible.top.isNaN ||
+      visible.bottom.isNaN) {
+    return null;
+  }
+
+  RenderObject child = node;
+  RenderObject? parent = node.parent;
+  int hops = 0;
+  while (parent != null && hops < 200) {
+    final Rect? clip = parent.describeApproximatePaintClip(child);
+    if (clip != null) {
+      try {
+        final Offset origin = (parent as RenderBox).localToGlobal(Offset.zero);
+        visible = visible.intersect(clip.shift(origin));
+        if (visible.isEmpty) return Rect.zero;
+      } catch (_) {
+        // Parent is not a RenderBox (a sliver, say); its clip is not directly
+        // comparable, so skip it rather than guess.
+      }
+    }
+    child = parent;
+    parent = parent.parent;
+    hops++;
+  }
+  return visible;
 }
 
 /// Asserts nothing paints past the left or right edge of the surface.
@@ -216,23 +259,16 @@ void rmExpectNoHorizontalSpill(
   void visit(RenderObject node) {
     if (node is RenderBox && node.hasSize && node.attached) {
       final Size size = node.size;
-      if (size.width > 0 &&
-          size.height > 0 &&
-          !_insideHorizontalScrollable(node) &&
-          !_isChipInternal(node)) {
-        try {
-          final Offset origin = node.localToGlobal(Offset.zero);
-          final double left = origin.dx;
-          final double right = origin.dx + size.width;
-          if (left < -0.5 || right > surface.size.width + 0.5) {
+      if (size.width > 0 && size.height > 0 && _paintsContent(node)) {
+        final Rect? visible = _visibleRect(node);
+        if (visible != null && !visible.isEmpty) {
+          if (visible.left < -0.5 || visible.right > surface.size.width + 0.5) {
             offenders.add(
-              '${_describe(node)} spans '
-              '${left.toStringAsFixed(1)}..${right.toStringAsFixed(1)} '
+              '${_describe(node)} paints '
+              '${visible.left.toStringAsFixed(1)}..${visible.right.toStringAsFixed(1)} '
               'outside 0..${surface.size.width.toStringAsFixed(0)}',
             );
           }
-        } catch (_) {
-          // Unattached or untransformable; nothing meaningful to assert.
         }
       }
     }

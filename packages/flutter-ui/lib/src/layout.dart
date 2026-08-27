@@ -104,18 +104,23 @@ class RmAdaptiveGrid extends StatelessWidget {
             (i + columns).clamp(0, children.length),
           );
           rows.add(
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                for (int j = 0; j < columns; j++) ...<Widget>[
-                  if (j > 0) SizedBox(width: spacing),
-                  // Pad the final row with empty cells so a lone tile keeps its
-                  // column width instead of stretching full-bleed.
-                  Expanded(
-                    child: j < slice.length ? slice[j] : const SizedBox.shrink(),
-                  ),
+            // IntrinsicHeight gives the Row a bounded height, without which
+            // CrossAxisAlignment.stretch asserts inside a scrolling column.
+            // Stretch is what keeps tiles in a row the same height.
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  for (int j = 0; j < columns; j++) ...<Widget>[
+                    if (j > 0) SizedBox(width: spacing),
+                    // Pad the final row with empty cells so a lone tile keeps
+                    // its column width instead of stretching full-bleed.
+                    Expanded(
+                      child: j < slice.length ? slice[j] : const SizedBox.shrink(),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           );
           if (i + columns < children.length) {
