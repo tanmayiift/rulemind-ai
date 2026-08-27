@@ -1,0 +1,23 @@
+name: rulemind_ui
+description: "Shared responsive layout primitives for the RuleMind Flutter apps."
+publish_to: 'none'
+version: 1.0.0
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # flutter_test is a real dependency, not a dev one: lib/testing.dart is a test
+  # harness consumed by the apps' own test suites. No app-reachable library
+  # imports it, so it tree-shakes out of release builds.
+  flutter_test:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
