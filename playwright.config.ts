@@ -1,6 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const apiBaseUrl = "http://127.0.0.1:8100";
+// The backend needs Python >= 3.10, but a bare `python3` is often an older system
+// interpreter (macOS ships 3.9), which fails to start the app and leaves the whole
+// suite unrunnable locally. Point PYTHON_BIN at a venv to override.
+const pythonBin = process.env.PYTHON_BIN || "python3";
 const webBaseUrl = "http://127.0.0.1:3100";
 
 export default defineConfig({
@@ -25,7 +29,8 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8100",
+      // Quoted: a checkout path containing a space otherwise splits into argv.
+      command: `${JSON.stringify(pythonBin)} -m uvicorn app.main:app --host 127.0.0.1 --port 8100`,
       cwd: "./apps/python-executor",
       url: `${apiBaseUrl}/health`,
       reuseExistingServer: false,

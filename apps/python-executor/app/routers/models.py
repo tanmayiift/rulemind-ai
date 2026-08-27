@@ -4,7 +4,7 @@ storage calls use main.storage live."""
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -59,9 +59,25 @@ def create_model(request: ModelCreateRequest) -> Dict[str, Any]:
     return main.storage.create_model(model_data)
 
 
+def _expected_features(model: Dict[str, Any], request) -> Optional[List[str]]:
+    """The ordered feature list to score against.
+
+    Falls back to the model's declared `input_schema.features` when the caller
+    sends none — otherwise a request that simply omits a feature would define its
+    own (shorter) feature list and the missing-value check could never fire.
+    """
+    if request.features:
+        return request.features
+    schema = model.get("input_schema") or {}
+    declared = schema.get("features") if isinstance(schema, dict) else None
+    if isinstance(declared, list) and declared:
+        return [str(f) for f in declared]
+    return None
+
+
 @router.post("/api/v1/models/{model_id}/predict")
 def predict_model(model_id: str, request: ModelPredictRequest) -> Dict[str, Any]:
-    from ..model_executor import execute_model
+    from ..model_executor import INVALID_INPUT, execute_model
 
     model = main.storage.get_model(model_id, include_blob=True)
     if not model:
@@ -70,9 +86,13 @@ def predict_model(model_id: str, request: ModelPredictRequest) -> Dict[str, Any]
     if not model_blob:
         raise HTTPException(status_code=422, detail="Model has no binary data.")
 
-    result = execute_model(model_blob, request.input_data, features=request.features)
+    result = execute_model(model_blob, request.input_data,
+                           features=_expected_features(model, request),
+                           allow_missing=request.allow_missing)
     if result.get("error"):
-        raise HTTPException(status_code=500, detail=result["error"])
+        # A bad feature value is the caller's error, not the server's.
+        status = 422 if result.get("error_kind") == INVALID_INPUT else 500
+        raise HTTPException(status_code=status, detail=result["error"])
     return result
 
 
@@ -87,7 +107,9 @@ def test_model(model_id: str, request: ModelPredictRequest) -> Dict[str, Any]:
     if not model_blob:
         raise HTTPException(status_code=422, detail="Model has no binary data.")
 
-    result = execute_model(model_blob, request.input_data, features=request.features)
+    result = execute_model(model_blob, request.input_data,
+                           features=_expected_features(model, request),
+                           allow_missing=request.allow_missing)
     main.storage.update_model(model_id, {"last_test_result": {
         "prediction": result.get("prediction"),
         "latency_ms": result.get("latency_ms"),
