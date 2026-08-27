@@ -40,6 +40,8 @@ class EvalResult {
     this.gates = const <GateResult>[],
     this.variables = const <String, dynamic>{},
     this.error,
+    this.serverOnlyStepsSkipped = const <String>[],
+    this.pendingSyncCount,
   });
 
   final String outcome;
@@ -49,6 +51,17 @@ class EvalResult {
   final List<GateResult> gates;
   final Map<String, dynamic> variables;
   final String? error;
+
+  /// Workflow-only steps the on-device engine could not run.
+  ///
+  /// Edge mode evaluates variables, rules, scorecards and policies; workflow
+  /// steps (connectors, actions, review gates) are server-only. When this is
+  /// non-empty the verdict is PARTIAL, and comparing it against a server
+  /// decision is not a like-for-like parity check.
+  final List<String> serverOnlyStepsSkipped;
+
+  /// Decisions queued locally and not yet accepted by the backend.
+  final int? pendingSyncCount;
 
   bool get isError => error != null;
   List<GateResult> get failedGates => gates.where((g) => !g.passed).toList();
@@ -159,6 +172,19 @@ class RuleMindClient {
       await ensureSdk();
       final Decision d = await RuleMind.evaluate(policyId, payload, userId: userId);
       sw.stop();
+
+      // evaluate() enqueues completed decisions to the durable outbox, but the
+      // outbox is only drained by syncPendingDecisions() or the periodic
+      // background sync. Draining it here means the demo actually exercises the
+      // upload path (/sdk/v1/decisions) rather than relying on a timer, and the
+      // remaining depth is a truthful signal when the backend is unreachable.
+      try {
+        await RuleMind.syncPendingDecisions();
+      } catch (_) {
+        // Offline is an expected state; the outbox keeps the decision.
+      }
+      final int pending = await RuleMind.pendingDecisionCount();
+
       return EvalResult(
         outcome: d.outcome,
         mode: EvalMode.onDevice,
@@ -166,6 +192,8 @@ class RuleMindClient {
         latencyMs: d.latencyMs == 0 ? sw.elapsedMilliseconds : d.latencyMs,
         gates: _gatesFromSdk(d.ruleResults),
         variables: d.variables,
+        serverOnlyStepsSkipped: d.serverOnlyStepsSkipped,
+        pendingSyncCount: pending,
       );
     } catch (e, st) {
       lastOnDeviceStack = st.toString();

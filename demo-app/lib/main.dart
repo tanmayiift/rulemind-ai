@@ -432,6 +432,9 @@ class ResultCard extends StatelessWidget {
     }
     final c = _palette[result.outcome] ?? _palette['error']!;
     final matches = expected == null || expected == result.outcome;
+    // An on-device verdict that skipped workflow-only steps is not comparable
+    // to a server verdict, so it must not be reported as "as expected".
+    final partial = result.serverOnlyStepsSkipped.isNotEmpty;
 
     return Card(
       elevation: 0,
@@ -484,13 +487,70 @@ class ResultCard extends StatelessWidget {
                   ),
                 if (expected != null)
                   _MetaChip(
-                    icon: matches ? Icons.check_circle : Icons.warning_amber_rounded,
-                    label: matches ? 'as expected' : 'expected $expected',
-                    color: matches ? const Color(0xFF15803D) : const Color(0xFFB45309),
+                    icon: partial
+                        ? Icons.info_outline
+                        : (matches ? Icons.check_circle : Icons.warning_amber_rounded),
+                    label: partial
+                        ? 'partial — not comparable'
+                        : (matches ? 'as expected' : 'expected $expected'),
+                    color: partial
+                        ? const Color(0xFF1D4ED8)
+                        : (matches ? const Color(0xFF15803D) : const Color(0xFFB45309)),
+                    style: t.textTheme.labelSmall,
+                  ),
+                if (result.pendingSyncCount != null)
+                  _MetaChip(
+                    icon: result.pendingSyncCount! == 0
+                        ? Icons.cloud_done_outlined
+                        : Icons.cloud_upload_outlined,
+                    label: result.pendingSyncCount! == 0
+                        ? 'synced'
+                        : '${result.pendingSyncCount} queued',
+                    color: result.pendingSyncCount! == 0
+                        ? const Color(0xFF15803D)
+                        : const Color(0xFFB45309),
                     style: t.textTheme.labelSmall,
                   ),
               ],
             ),
+            if (partial) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Icon(Icons.info_outline, size: 15, color: Color(0xFF1D4ED8)),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Partial decision — ${result.serverOnlyStepsSkipped.length} '
+                          'server-only step${result.serverOnlyStepsSkipped.length == 1 ? '' : 's'} skipped',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: t.textTheme.labelMedium?.copyWith(
+                              color: const Color(0xFF1D4ED8), fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 6),
+                    Text(
+                      'On-device mode evaluates variables, rules, scorecards and '
+                      'policies. These steps need the server: '
+                      '${result.serverOnlyStepsSkipped.join(', ')}.',
+                      style: t.textTheme.bodySmall?.copyWith(color: const Color(0xFF1E40AF), height: 1.35),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const Divider(height: 24),
             Text('WHY', style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
             const SizedBox(height: 6),
