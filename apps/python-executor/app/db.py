@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+
+from . import env
 from pathlib import Path
 from typing import Optional
 
@@ -63,10 +65,10 @@ def engine_for(path: Optional[str] = None) -> Engine:
         # replica; raise for higher concurrency, keeping total <= DB max_connections).
         engine = create_engine(
             url, future=True, pool_pre_ping=True,
-            pool_size=int(os.getenv("DB_POOL_SIZE", "20")),
-            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
-            pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
-            pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
+            pool_size=env.env_int("DB_POOL_SIZE", 20),
+            max_overflow=env.env_int("DB_MAX_OVERFLOW", 20),
+            pool_recycle=env.env_int("DB_POOL_RECYCLE", 1800),
+            pool_timeout=env.env_int("DB_POOL_TIMEOUT", 30),
         )
     _engine_cache[url] = engine
     return engine

@@ -73,7 +73,7 @@ const kJourneys = <Journey>[
   // ───────────────────────────── INSURANCE ─────────────────────────────
   Journey(
     id: 'claims',
-    policyId: 'motor_claim_triage',
+    policyId: 'policy_claim_triage',
     sourceId: 'claim',
     title: 'Motor Claim Triage',
     sector: 'Insurance',
@@ -136,7 +136,7 @@ const kJourneys = <Journey>[
   // ──────────────────────────── E-COMMERCE ────────────────────────────
   Journey(
     id: 'checkout',
-    policyId: 'checkout_fraud_screening',
+    policyId: 'policy_checkout_fraud',
     sourceId: 'checkout',
     title: 'Checkout Fraud Screening',
     sector: 'E-commerce',
@@ -199,7 +199,7 @@ const kJourneys = <Journey>[
   // ─────────────────────────── MARKETPLACE ───────────────────────────
   Journey(
     id: 'seller',
-    policyId: 'marketplace_seller_onboarding',
+    policyId: 'policy_seller_onboarding',
     sourceId: 'seller',
     title: 'Seller Onboarding',
     sector: 'Marketplace',
@@ -258,7 +258,7 @@ const kJourneys = <Journey>[
   // ───────────────────────────── TELECOM ─────────────────────────────
   Journey(
     id: 'telecom',
-    policyId: 'telecom_postpaid_eligibility',
+    policyId: 'policy_telecom_postpaid',
     sourceId: 'telecom',
     title: 'Postpaid Eligibility',
     sector: 'Telecom',

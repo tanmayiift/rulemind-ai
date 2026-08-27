@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import os
+
+from . import env
 import threading
 from typing import Any, Dict, List, Optional, Set
 
@@ -38,11 +40,14 @@ _appended: Set[str] = set()
 
 def enabled() -> bool:
     """WAL is opt-in (DECISION_WAL=1). Off by default: the async path already flushes on SIGTERM."""
-    return os.getenv("DECISION_WAL", "0") == "1"
+    return env.env_bool("DECISION_WAL", False)
 
 
 def _dir() -> str:
-    path = os.getenv("DECISION_WAL_DIR", os.path.join(os.getcwd(), "data", "wal"))
+    # env_str, not os.getenv: `.env.example` ships `DECISION_WAL_DIR=` (blank), and a
+    # blank value defeats a getenv default — which made this call os.makedirs("") and
+    # raise, so with DECISION_WAL=1 every decision 500'd.
+    path = env.env_str("DECISION_WAL_DIR", os.path.join(os.getcwd(), "data", "wal"))
     os.makedirs(path, exist_ok=True)
     return path
 

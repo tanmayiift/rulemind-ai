@@ -4,6 +4,8 @@ import base64
 import hashlib
 import hmac
 import os
+
+from . import env
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -54,7 +56,7 @@ def api_key_kid(key: str) -> str:
 
 
 def create_admin_jwt(subject: str, email: str, expires_hours: int = 12) -> str:
-    secret = os.getenv("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
+    secret = env.env_str("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
     payload = {
         "sub": subject,
         "email": email,
@@ -65,7 +67,7 @@ def create_admin_jwt(subject: str, email: str, expires_hours: int = 12) -> str:
 
 
 def decode_admin_jwt(token: str) -> Dict[str, Any]:
-    secret = os.getenv("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
+    secret = env.env_str("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
     return jwt.decode(token, secret, algorithms=["HS256"])
 
 
