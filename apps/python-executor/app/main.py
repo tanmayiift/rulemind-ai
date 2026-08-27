@@ -278,9 +278,21 @@ class DecideRequest(BaseModel):
 
 
 class BatchSimulationRequest(BaseModel):
-    targetType: str
+    """Shared by the internal test console and the public /decide/batch.
+
+    `/decide` takes `policyId`, so a caller reasonably expects `/decide/batch` to
+    as well — but this shape came from the test console, where a batch can target a
+    variable, a rule or a policy. Rather than break existing callers, `policyId` is
+    accepted as an alias: supplying it implies `targetType="policy"`.
+    """
+    targetType: str = "policy"
     targetId: Optional[str] = None
+    policyId: Optional[str] = None
     payloads: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @property
+    def resolved_target_id(self) -> Optional[str]:
+        return self.targetId or self.policyId
 
 
 class DeployItemModel(BaseModel):
@@ -1505,6 +1517,10 @@ class ModelCreateRequest(BaseModel):
 class ModelPredictRequest(BaseModel):
     input_data: Dict[str, Any]
     features: Optional[List[str]] = None
+    # Opt in to substituting 0 for absent features. Off by default: silently
+    # imputing produced confident, wrong predictions when an upstream system
+    # dropped a field. When on, the response lists what it imputed.
+    allow_missing: bool = False
 
 
 

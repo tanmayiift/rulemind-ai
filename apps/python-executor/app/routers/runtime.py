@@ -87,9 +87,9 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
                 raise HTTPException(status_code=422, detail="targetId is required for rule batch simulation.")
             result = test_rule(request.targetId, TestPayloadRequest(payload=payload))
         elif request.targetType == "policy":
-            if not request.targetId:
+            if not request.resolved_target_id:
                 raise HTTPException(status_code=422, detail="targetId is required for policy batch simulation.")
-            result = execute_policy_endpoint(request.targetId, TestPayloadRequest(payload=payload))
+            result = execute_policy_endpoint(request.resolved_target_id, TestPayloadRequest(payload=payload))
         elif request.targetType == "decide":
             if not request.targetId:
                 raise HTTPException(status_code=422, detail="targetId is required for decision batch simulation.")
@@ -97,7 +97,7 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
         else:
             raise HTTPException(status_code=422, detail="Unsupported batch targetType.")
         rows.append({"index": index, "payload": payload, "result": result})
-    return {"targetType": request.targetType, "targetId": request.targetId, "rows": rows, "count": len(rows)}
+    return {"targetType": request.targetType, "targetId": request.resolved_target_id, "rows": rows, "count": len(rows)}
 
 
 @router.post("/api/v1/decide")
@@ -348,11 +348,15 @@ def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
     what-if cases execute without DB-write contention. Uses the fast (cached-bundle
     / Rust) path for pure-compute policies, the full executor otherwise. Returns a
     `performance` block with real server-side throughput."""
-    if not request.targetId:
-        raise HTTPException(status_code=422, detail="targetId is required for decision batches.")
+    target_id = request.resolved_target_id
+    if not target_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Supply the policy to run: policyId (as /decide takes) or targetId.",
+        )
     # Resolve tenant + policy in the request thread (worker threads have no context).
     tenant_id = active_tenant_id()
-    policy = ensure_exists(main.storage.get_policy(request.targetId, tenant_id=tenant_id), "policy", request.targetId)
+    policy = ensure_exists(main.storage.get_policy(target_id, tenant_id=tenant_id), "policy", target_id)
     return _run_decision_batch(policy, request.payloads or [], tenant_id)
 
 

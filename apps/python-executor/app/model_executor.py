@@ -16,10 +16,71 @@ from typing import Any, Dict, List, Optional
 MAX_MODEL_SIZE_MB = 50
 
 
+# Errors the CALLER caused (bad or absent feature values) are tagged so the router
+# can answer 422 instead of 500. A malformed request is not a server fault, and a
+# 5xx on it pages on-call and burns the error budget for someone else's typo.
+INVALID_INPUT = "invalid_input"
+
+
+def prepare_features(
+    input_data: Dict[str, Any],
+    features: Optional[List[str]] = None,
+    allow_missing: bool = False,
+) -> Dict[str, Any]:
+    """Turn a feature dict into the ordered numeric row a model expects.
+
+    Two failure modes used to pass silently or blow up:
+
+    * A feature absent from `input_data` was substituted with `0`. For a scoring
+      model that is indistinguishable from a genuine zero, so an upstream
+      integration that dropped a field got a confident, wrong prediction with no
+      error and no warning. Missing features are now rejected by default; pass
+      `allow_missing=True` to opt into imputation, and the response then names
+      every feature that was imputed.
+    * A non-numeric value raised out of `numpy.array(..., dtype=float)` and
+      surfaced as a 500.
+    """
+    ordered = list(features) if features else list(input_data.keys())
+    if not ordered:
+        return {"error": "No features supplied.", "error_kind": INVALID_INPUT}
+
+    missing = [f for f in ordered if input_data.get(f) is None]
+    if missing and not allow_missing:
+        return {
+            "error": "Missing value for feature(s): {0}. Supply them, or set "
+                     "allow_missing=true to impute 0 (the response will say which were imputed).".format(
+                         ", ".join(sorted(missing))),
+            "error_kind": INVALID_INPUT,
+        }
+
+    row: List[float] = []
+    bad: List[str] = []
+    for name in ordered:
+        raw = input_data.get(name)
+        if raw is None:
+            row.append(0.0)
+            continue
+        if isinstance(raw, bool):
+            row.append(1.0 if raw else 0.0)
+            continue
+        try:
+            row.append(float(raw))
+        except (TypeError, ValueError):
+            bad.append("{0}={1!r}".format(name, raw))
+    if bad:
+        return {
+            "error": "Non-numeric value for feature(s): {0}.".format(", ".join(bad)),
+            "error_kind": INVALID_INPUT,
+        }
+
+    return {"values": [row], "features": ordered, "imputed_features": sorted(missing)}
+
+
 def execute_model(
     model_blob: bytes,
     input_data: Dict[str, Any],
     features: Optional[List[str]] = None,
+    allow_missing: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute a pickle model with the given input data.
@@ -50,13 +111,15 @@ def execute_model(
 
         model = pickle.loads(model_blob)  # noqa: S301
 
-        # Build input array
-        if features:
-            values = [[input_data.get(f, 0) for f in features]]
-        else:
-            values = [list(input_data.values())]
+        prepared = prepare_features(input_data, features, allow_missing=allow_missing)
+        if prepared.get("error"):
+            prepared["prediction"] = None
+            prepared["latency_ms"] = _ms(started)
+            return prepared
+        values = prepared["values"]
+        features = prepared["features"]
+        imputed = prepared["imputed_features"]
 
-        # Try numpy array if available
         try:
             import numpy as np
             values_array = np.array(values, dtype=float)
@@ -105,6 +168,9 @@ def execute_model(
             "feature_importances": feature_importances,
             "input_features": features or list(input_data.keys()),
             "input_values": values[0],
+            # Non-empty only when the caller opted into allow_missing, so an imputed
+            # zero is never mistaken for a value the caller actually supplied.
+            "imputed_features": imputed,
             "latency_ms": _ms(started),
             "error": None,
         }

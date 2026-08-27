@@ -3,6 +3,11 @@ import { expect, test } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
 
+// The colour literals below are the visual contract and must track
+// apps/web/src/v3/theme.ts. They drifted when the UI overhaul (#15) changed the
+// palette and were never updated, because this suite could not start at all —
+// playwright.config.ts invoked a bare `python3`, which on macOS is 3.9 and cannot
+// run the backend. Both are fixed; keep these in step with the theme.
 test("theme toggle switches the full shell and persists after reload", async ({ page }) => {
   await page.goto("/variables");
 
@@ -13,18 +18,18 @@ test("theme toggle switches the full shell and persists after reload", async ({ 
   await expect(page.getByTestId("theme-toggle")).toHaveText("Dark");
   await expect(sidebar).toHaveCSS("background-color", "rgb(255, 255, 255)");
   await expect(topbar).toHaveCSS("background-color", "rgb(255, 255, 255)");
-  await expect(editor).toHaveCSS("background-color", "rgb(248, 249, 252)");
+  await expect(editor).toHaveCSS("background-color", "rgb(246, 249, 252)");
 
   await page.getByTestId("theme-toggle").click();
 
   await expect(page.getByTestId("theme-toggle")).toHaveText("Light");
-  await expect(sidebar).toHaveCSS("background-color", "rgb(19, 22, 32)");
-  await expect(topbar).toHaveCSS("background-color", "rgb(23, 25, 35)");
-  await expect(editor).toHaveCSS("background-color", "rgb(13, 15, 20)");
+  await expect(sidebar).toHaveCSS("background-color", "rgb(14, 18, 32)");
+  await expect(topbar).toHaveCSS("background-color", "rgb(17, 23, 38)");
+  await expect(editor).toHaveCSS("background-color", "rgb(12, 16, 28)");
 
   await page.reload();
   await expect(page.getByTestId("theme-toggle")).toHaveText("Light");
-  await expect(sidebar).toHaveCSS("background-color", "rgb(19, 22, 32)");
+  await expect(sidebar).toHaveCSS("background-color", "rgb(14, 18, 32)");
 });
 
 test("connector toggle hides the source filter and removes inactive variables from rule dropdowns", async ({ page }) => {
