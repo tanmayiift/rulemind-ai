@@ -259,21 +259,34 @@ class _JourneyScreenState extends State<JourneyScreen> {
         children: [
           Text('SCENARIOS', style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
           const SizedBox(height: 8),
-          Wrap(
-            spacing: 8, runSpacing: 8,
-            children: j.scenarios.map((s) {
-              final sel = _active?.name == s.name;
-              return ChoiceChip(
-                label: Text(s.name),
-                selected: sel,
-                onSelected: (_) => _apply(s),
-                selectedColor: j.color.withValues(alpha: 0.18),
-                labelStyle: TextStyle(
-                  color: sel ? j.color : null,
-                  fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
-                ),
+          // LayoutBuilder, not MediaQuery: the cap must come from the box these
+          // chips are actually given. A scenario name is content-driven, and at
+          // large text scales its intrinsic width can exceed the screen -- which
+          // a widget test cannot detect, because tests render with a placeholder
+          // font rather than the real one. Caught on an iOS simulator at 2.0x,
+          // where "Serial claimant, new policy" was truncated by the screen edge.
+          LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) {
+              return Wrap(
+                spacing: 8, runSpacing: 8,
+                children: j.scenarios.map((s) {
+                  final sel = _active?.name == s.name;
+                  return ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                    child: ChoiceChip(
+                      label: Text(s.name, maxLines: 2, overflow: TextOverflow.ellipsis),
+                      selected: sel,
+                      onSelected: (_) => _apply(s),
+                      selectedColor: j.color.withValues(alpha: 0.18),
+                      labelStyle: TextStyle(
+                        color: sel ? j.color : null,
+                        fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                  );
+                }).toList(),
               );
-            }).toList(),
+            },
           ),
           if (_active != null) ...[
             const SizedBox(height: 8),
