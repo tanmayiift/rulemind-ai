@@ -34,9 +34,13 @@ def get_provider_template(provider_id: str) -> Dict[str, Any]:
 
 # ── AI config / usage / budget ─────────────────────────────────────────────
 class AIConfigRequest(BaseModel):
+    # One field per entry in ai.SUPPORTED_PROVIDERS. storage.set_ai_config() already
+    # iterates that tuple, so a provider missing HERE is silently unconfigurable: the
+    # request validates, returns 200, and the key is dropped on the floor.
     default_provider: Optional[str] = None
     anthropic: Optional[Dict[str, Any]] = None  # {"model": "...", "key": "sk-..."} ("__CLEAR__" to remove)
     openai: Optional[Dict[str, Any]] = None
+    gemini: Optional[Dict[str, Any]] = None
     enabled: Optional[bool] = None  # admin master switch (AI still needs a key to be "on")
 
 

@@ -37,10 +37,23 @@ def create_model(request: ModelCreateRequest) -> Dict[str, Any]:
     if not validation["valid"]:
         raise HTTPException(status_code=422, detail=f"Invalid model: {validation['error']}")
 
-    model_id = slugify(request.name)
+    # Models were the one entity type still deriving their id from `name`, and on a
+    # collision appending random hex — so uploading the same model twice produced
+    # `my_model` and `my_model_a3f19c`, neither predictable by the caller. Honour an
+    # explicit id like the other types do, and reject a collision rather than
+    # inventing a different id.
     existing_ids = {m["id"] for m in main.storage.list_models()}
-    if model_id in existing_ids:
-        model_id = f"{model_id}_{uuid.uuid4().hex[:6]}"
+    if request.id:
+        model_id = slugify(request.id) or request.id
+        if model_id in existing_ids:
+            raise HTTPException(
+                status_code=409,
+                detail=f"model id '{model_id}' already exists. Use PUT to update it, or choose another id.",
+            )
+    else:
+        model_id = slugify(request.name)
+        if model_id in existing_ids:
+            model_id = f"{model_id}_{uuid.uuid4().hex[:6]}"
 
     model_data = {
         "id": model_id,

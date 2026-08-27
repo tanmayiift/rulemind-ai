@@ -371,8 +371,21 @@ def extract_json(text: str) -> Any:
         elif c in "}]":
             depth -= 1
             if depth == 0:
-                return json.loads(candidate[start:i + 1])
-    return json.loads(candidate[start:])
+                try:
+                    return json.loads(candidate[start:i + 1])
+                except json.JSONDecodeError as exc:
+                    raise AIError(f"Model returned malformed JSON: {exc}") from exc
+    # Never closed. Almost always means the response hit max_tokens mid-object, so
+    # say that rather than letting a raw JSONDecodeError escape as a 500 — the caller
+    # sent a valid request and deserves a message it can act on.
+    try:
+        return json.loads(candidate[start:])
+    except json.JSONDecodeError as exc:
+        raise AIError(
+            "Model output was cut off before the JSON closed "
+            f"({len(candidate) - start} chars, unbalanced). This usually means the "
+            "response hit the token limit; retry or reduce the input size."
+        ) from exc
 
 
 # ---- feature: NL -> rule tree -------------------------------------------------
@@ -502,7 +515,7 @@ async def analyze_experiment(provider: str, api_key: str, experiment: Dict[str, 
     user = (f"Experiment: {experiment.get('name')} (hash_key={experiment.get('hash_key')}, "
             f"status={experiment.get('status')})\nVariants: {_json.dumps(experiment.get('variants', []))[:1500]}\n\n"
             f"Results:\n{_json.dumps(results)[:3500]}\n\nReturn the JSON now.")
-    raw = await complete(provider, api_key, _EXPERIMENT_SYSTEM, user, model=model, max_tokens=900, temperature=0.2)
+    raw = await complete(provider, api_key, _EXPERIMENT_SYSTEM, user, model=model, max_tokens=1500, temperature=0.2)
     obj = extract_json(raw)
     if not isinstance(obj, dict) or "recommendation" not in obj:
         raise AIError("Model output was not a valid experiment analysis.")
@@ -526,7 +539,9 @@ async def analyze_rejections(provider: str, api_key: str, policy_name: str, driv
     import json as _json
     user = (f"Policy: {policy_name}\n\nRejection drivers (most impactful first):\n"
             f"{_json.dumps(drivers)[:3500]}\n\nReturn the JSON now.")
-    raw = await complete(provider, api_key, _REJECTION_SYSTEM, user, model=model, max_tokens=900, temperature=0.2)
+    # 900 truncated mid-JSON on a policy with several drivers — this response carries
+    # top_reasons plus recommendations, so it is the largest of the generators.
+    raw = await complete(provider, api_key, _REJECTION_SYSTEM, user, model=model, max_tokens=2000, temperature=0.2)
     obj = extract_json(raw)
     if not isinstance(obj, dict) or "top_reasons" not in obj:
         raise AIError("Model output was not a valid rejection analysis.")

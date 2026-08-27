@@ -1,6 +1,6 @@
 # RuleMind AI — End-to-End Test Plan & Findings Log
 
-**Living document.** Last full pass: 2026-08-27. Environment: macOS 26.6 (Darwin 25.6, arm64) · Python 3.11.16 · Node 20.20.2 ·
+**Living document.** Last full pass: 2026-08-27, against **PostgreSQL 16** (not just SQLite). Environment: macOS 26.6 (Darwin 25.6, arm64) · Python 3.11.16 · Node 20.20.2 ·
 pnpm 9.15.4 · Flutter 3.47.1 / Dart 3.13.1 · Xcode 26.6 · CocoaPods 1.11.3 · **no Docker**.
 
 Legend: ✅ pass · ⚠️ pass-with-finding · ❌ fail · ⛔ blocked · ⬜ not run
@@ -120,27 +120,38 @@ At concurrency 16, 222/400 requests returned **429** — the hardcoded 1 000 req
 * `/settings` — React prop warning → **F-17**, fixed.
 * Sidebar IA — **F-18**.
 
-## 10. Regression baseline — re-run against merged `main`
+## 10. Regression baseline — re-run against merged `main` on **PostgreSQL 16**
 | Suite | Result |
 |---|---|
-| Python unittest | ✅ **708 passed**, 4 skipped, 0 failed (195 s) |
-| Vitest (TS) | ✅ **157 passed** across 9 files |
+| Python unittest — **PostgreSQL** | ✅ **733 passed**, 4 skipped, 0 failed |
+| Python unittest — SQLite | ✅ 733 passed (same result) |
+| Vitest (TS) | ✅ **157 passed** |
 | Flutter SDK | ✅ **127 passed** |
 | Kotlin (`rulemind-core` + `sample-app`) | ✅ **20 passed** |
 | Demo app — unit | ✅ **4 passed** |
-| Demo app — iOS integration | ✅ **20 passed** (incl. 16/16 server-vs-device parity) |
-| Web route sweep | ✅ **34/36 clean** (2 expected admin 401s) |
-| Rust core + decide-service | ✅ type-check (test binaries cannot link — pre-existing pyo3 config) |
-| **Total** | **1,036 passing · 0 failing** |
+| Demo app — iOS integration | ✅ **20 passed** (16/16 server-vs-device parity) |
+| Playwright `e2e/` | ⚠️ **44 / 48** — 1 order-dependent failure (#125), 3 blocked behind it |
+| Web route sweep | ✅ 34/36 clean |
 
-Every suite above was re-run against `main` after all seven PRs merged, not only
-per-branch, so the combined state is what these numbers describe.
+All 16 journey scenarios return outcomes **identical on Postgres and SQLite**.
+All 16 Alembic migrations apply cleanly to Postgres (32 tables).
+
+## 11. Load — measured on PostgreSQL 16, 4 workers, limiter off
+| Config | conc 4 | conc 16 | conc 32 |
+|---|---|---|---|
+| defaults | 73 rps · p50 50 ms | 109 rps · p50 138 ms | 107 rps · p50 246 ms |
+| `COMPUTE_ONLY_USED_VARS=1` | 135 rps · p50 24 ms | 157 rps · p50 93 ms | 151 rps · p50 199 ms |
+| `+ FAST_DECIDE=1` | 115 rps · p50 31 ms | 198 rps · p50 73 ms | **207 rps · p50 132 ms** |
+
+A single worker on Postgres plateaus at ~47-51 rps and holds there; SQLite fell from
+45 rps to 28 rps over the same range. Throughput scales with worker **processes**,
+not with request concurrency. Outcome distributions were byte-identical throughout.
 
 ---
 
 # Findings
 
-**24 found · 23 fixed · 1 open.** Every fix was verified against the running stack and
+**38 found · 37 fixed · 1 open.** Every fix was verified against the running stack and
 the full regression suite re-run afterwards.
 
 ### Shipped — PR #114 · setup & configuration
