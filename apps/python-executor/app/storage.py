@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import logging
 import hashlib
 import hmac
 import json
@@ -12,9 +13,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from cryptography.fernet import Fernet
-from sqlalchemy import case, delete, desc, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import case, delete, desc, func, inspect, or_, select, update
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
+
+LOGGER = logging.getLogger(__name__)
 
 from .auth import (
     api_key_kid,
@@ -198,7 +201,7 @@ class Storage:
         self.path = path
         self.engine = engine_for(path)
         self.SessionLocal = session_factory(path)
-        Base.metadata.create_all(self.engine)
+        self._create_schema()
         self._reconcile_sqlite_columns()
         self.default_tenant_id: Optional[str] = None
         self.default_api_key: Optional[str] = None
@@ -454,6 +457,50 @@ class Storage:
             # entities before the inventory backfill checks query for existing rows.
             session.flush()
             self._ensure_seed_inventory(session, tenant.id)
+
+    def _create_schema(self) -> None:
+        """Create any missing tables, tolerating another process doing the same.
+
+        `create_all(checkfirst=True)` inspects and then creates in two steps, so it
+        is NOT atomic. Every process that opens a Storage runs it, and compose starts
+        the API and the worker together — both saw an empty schema, both issued the
+        DDL, and Postgres failed the loser with
+
+            UniqueViolation: duplicate key value violates unique constraint
+            "pg_type_typname_nsp_index"
+
+        which killed the worker on startup. The same race hits any multi-replica
+        rollout. Serialise with a Postgres advisory lock where one is available, and
+        still swallow a lost race: by the time the error is raised the object exists,
+        which is the outcome we wanted. Alembic in entrypoint.sh remains the real
+        schema authority; this is the fresh-database convenience path.
+        """
+        is_postgres = self.engine.dialect.name == "postgresql"
+        if not is_postgres:
+            Base.metadata.create_all(self.engine)
+            return
+
+        # Arbitrary constant, shared by every process creating this schema.
+        lock_id = 8_493_217_006
+        try:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql("SELECT pg_advisory_xact_lock(%s)", (lock_id,))
+                Base.metadata.create_all(conn)
+            return
+        except (IntegrityError, ProgrammingError, OperationalError) as error:
+            # A concurrent creator won, or advisory locks are unavailable (pgbouncer
+            # in transaction mode, for instance). Verify the schema really is there
+            # rather than assuming.
+            if not self._schema_present():
+                raise
+            LOGGER.warning("schema creation raced with another process; schema is present (%s)",
+                           str(error).splitlines()[0][:160])
+
+    def _schema_present(self) -> bool:
+        try:
+            return inspect(self.engine).has_table(Tenant.__tablename__)
+        except Exception:
+            return False
 
     def _reconcile_sqlite_columns(self) -> None:
         """Add any additive, nullable columns the ORM models declare but an existing SQLite
