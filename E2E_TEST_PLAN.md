@@ -149,6 +149,56 @@ not with request concurrency. Outcome distributions were byte-identical througho
 
 ---
 
+## 15. Mobile responsiveness & SDK integration — ✅ (with one limitation named)
+
+Both Flutter apps had **zero** width-reactive primitives: no `MediaQuery`,
+`LayoutBuilder`, `FractionallySizedBox`, `AspectRatio`, `OrientationBuilder` or
+`ConstrainedBox`, and no breakpoint logic anywhere.
+
+**Automated matrix** — 6 surfaces (320×568, 393×851, 430×932, 320×1024 iPad split,
+834×1112, 1194×834) × text scales 1.0 / 1.3 / 2.0, in `demo-app/test/responsive_test.dart`
+and `packages/sdk-flutter/example/test/responsive_test.dart`. Written **before** any fix:
+
+| app | before | after |
+|---|---|---|
+| `demo-app` | 28 / 54 failing (8 at default 1.0x) | 54 / 54 ✅ |
+| `sdk-flutter/example` | 58 / 126 failing (18 at default 1.0x) | 126 / 126 ✅ |
+
+Overflows reached 506 px. Failing at 1.0x means these were broken at normal settings, not
+only at accessibility sizes. Proven load-bearing: reverting only the INPUTS-row fix turns
+10 cases red.
+
+**The harness is itself tested** (`packages/flutter-ui/test/harness_self_test.dart`, 6
+cases) because making the spill check clip-aware could otherwise have reduced it to a
+no-op. Three framework internals were probed and confirmed benign rather than assumed —
+at 320×568 a `ChoiceChip` sits at 16.0..248.9 while its hidden checkmark slot reports
+−1.0..25.0; a `NavigationBar` sits at 0.0..320.0 while its indicator reports 280.0..344.0;
+a `TextFormField` sits at 16.0..304.0 while its editable region reports 16.0..1091.5.
+
+**⛔ Known limitation — widget tests cannot catch real-font text clipping.** Flutter renders
+tests with a placeholder font, so text width in a test ≠ text width on a device. Proven, not
+theorised: at 2.0x on an iPhone simulator the chip "Serial claimant, new policy" was
+truncated by the screen edge while the same screen at 393×851 @2.0x reported nothing out of
+bounds in a test. **A device pass is therefore mandatory, not optional.** Use
+`demo-app/lib/main_visual_probe.dart` (documented `simctl` commands in its header).
+
+**Device pass** — iPhone 17 @1.0x and @2.0x, iPad Pro 11 @1.0x. Screenshots in
+`qa/results/mobile-visual/`, including before/after of the chip fix. iPad confirms the
+adaptive path is real: scenario chips collapse to one row and the INPUTS row becomes
+horizontal above the 600 dp breakpoint. ✅
+
+Android emulator not exercised locally — the machine has the Android SDK but no
+`cmdline-tools` and no AVD, and CI's emulator is blocked by a runner-image regression
+(issue #133).
+
+**SDK integration.** The demo never drained the decision outbox and never read
+`serverOnlyStepsSkipped`, so a partial on-device decision was shown with a green
+"as expected" tick against the server's expected outcome — which quietly undermined the
+parity claim the app exists to make. Now disclosed as "partial — not comparable" with every
+skipped step named, and the outbox is drained per evaluation with depth shown. `sdk-js`,
+`sdk-python` and `sdk` had no README at all; all three now have one.
+
+
 # Findings
 
 **38 found · 37 fixed · 1 open.** Every fix was verified against the running stack and
@@ -207,6 +257,19 @@ the full regression suite re-run afterwards.
 | **F-27** | Low | `_TEMPERATURE_FREE_RE` missed Opus 4.7/4.8, costing an extra round trip and a logged 400 on every such call (the retry masked it). |
 | **F-28** | Low | `CURATED_MODELS["anthropic"]` omitted the current flagship — what a keyless install sees. |
 | **F-29** | Low | `pnpm-lock.yaml` still carried importers for `apps/api` and `apps/worker`, workspaces that no longer exist. |
+
+### Shipped — PR #132 / #134 · mobile responsiveness & SDK integration
+
+| ID | Sev | Finding |
+|---|---|---|
+| F-34 | High | Neither Flutter app used any width-reactive primitive; 28/54 and 58/126 matrix cases failed, 26 of them at default text size. Overflow up to 506 px. |
+| F-35 | High | `demo-app` never read `serverOnlyStepsSkipped`, so a partial on-device decision was reported as agreeing with the server — undermining the parity claim. |
+| F-36 | Medium | The decision outbox was never drained by the demo, so `POST /sdk/v1/decisions` was never exercised; no visibility into pending depth (`RuleMind.pendingDecisionCount()` added). |
+| F-37 | Medium | `sdk-js`, `sdk-python` and `sdk` shipped with no README. |
+| F-38 | Medium | The responsive harness intersected every ancestor clip **including the root view**, so anything the screen cut off looked safely clipped. |
+| F-39 | Medium | Scenario chips were uncapped; at 2.0x a content-driven name was truncated by the screen edge. Only visible on a device — see the limitation in §15. |
+| F-40 | Low | `demo-app/lib/engine.dart:64` hardcodes an API key in a shipped app (same smell as `test/load/evaluate.k6.js:15`). |
+| F-41 | Low | CI uploaded the entire Flutter build tree every run with no retention: 817 artifacts / 134 GB, which blocked all uploads once the repo went private. |
 
 ### Still open
 | ID | Sev | Finding |
