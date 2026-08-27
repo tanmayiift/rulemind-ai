@@ -17,7 +17,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 # Latest, most capable defaults; overridable via ai_config.model.
-DEFAULT_MODELS = {"anthropic": "claude-sonnet-5", "openai": "gpt-4o"}
+# The single source of truth for which providers exist. storage.py imports this
+# rather than repeating the tuple, which is how "openai"/"anthropic" ended up
+# hardcoded in three separate places and had to be edited in lockstep.
+SUPPORTED_PROVIDERS = ("anthropic", "openai", "gemini")
+
+DEFAULT_MODELS = {"anthropic": "claude-sonnet-5", "openai": "gpt-4o", "gemini": "gemini-2.5-pro"}
 
 # ---- scope guardrail (token-saving) ------------------------------------------
 
@@ -131,10 +136,55 @@ async def _call_openai(api_key: str, model: str, system: str, user: str, max_tok
     return text, {"input_tokens": int(usage.get("prompt_tokens", 0)), "output_tokens": int(usage.get("completion_tokens", 0))}
 
 
+async def _call_gemini(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+    """Google Gemini via the Generative Language API.
+
+    Shaped differently from the other two: the key rides in a header rather than
+    a query string (keeping it out of proxy and access logs), the system prompt is
+    its own `systemInstruction` rather than a message with role "system", and
+    sampling settings live under `generationConfig`.
+    """
+    base = model if model.startswith("models/") else f"models/{model}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/{base}:generateContent"
+    headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
+    generation: Dict[str, Any] = {"maxOutputTokens": max_tokens}
+    if not _model_omits_temperature(model):
+        generation["temperature"] = temperature
+    body: Dict[str, Any] = {
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": generation,
+    }
+    if system:
+        body["systemInstruction"] = {"parts": [{"text": system}]}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, headers=headers, json=body)
+            if _temperature_rejected(resp, generation):
+                generation.pop("temperature", None)
+                resp = await client.post(url, headers=headers, json=body)
+    except Exception as e:
+        raise AIError(f"Gemini request failed: {e}")
+    if resp.status_code != 200:
+        raise AIError(f"Gemini error {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    candidates = data.get("candidates") or []
+    parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+    if not text and candidates:
+        # A response can come back empty because generation was cut short (safety
+        # filter, recitation, token cap). Say which, instead of an empty string.
+        reason = candidates[0].get("finishReason")
+        if reason and reason not in ("STOP", "MAX_TOKENS"):
+            raise AIError(f"Gemini returned no content (finishReason={reason}).")
+    usage = data.get("usageMetadata") or {}
+    return text, {"input_tokens": int(usage.get("promptTokenCount", 0) or 0),
+                  "output_tokens": int(usage.get("candidatesTokenCount", 0) or 0)}
+
+
 # Indirection so tests can inject a mock without a network / real key. Providers are
 # async so a slow LLM never blocks a Starlette threadpool thread (the endpoints are
 # async and await these directly).
-_PROVIDERS = {"anthropic": _call_anthropic, "openai": _call_openai}
+_PROVIDERS = {"anthropic": _call_anthropic, "openai": _call_openai, "gemini": _call_gemini}
 
 
 # Curated fallback lists — shown when no key is set, or the live /models call
@@ -143,6 +193,7 @@ _PROVIDERS = {"anthropic": _call_anthropic, "openai": _call_openai}
 CURATED_MODELS = {
     "anthropic": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-8", "claude-sonnet-4-6"],
     "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini", "o1"],
+    "gemini": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
 }
 
 
@@ -164,7 +215,25 @@ async def _fetch_live_models_openai(api_key: str) -> List[str]:
                   and not any(x in m for x in ("audio", "realtime", "transcribe", "tts", "embedding", "moderation", "search")))
 
 
-_LIVE_FETCHERS = {"anthropic": _fetch_live_models_anthropic, "openai": _fetch_live_models_openai}
+async def _fetch_live_models_gemini(api_key: str) -> List[str]:
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get("https://generativelanguage.googleapis.com/v1beta/models",
+                                headers={"x-goog-api-key": api_key})
+    resp.raise_for_status()
+    ids = []
+    for entry in resp.json().get("models", []):
+        name = (entry.get("name") or "").removeprefix("models/")
+        # Keep only models that can actually answer a prompt — the same list also
+        # carries embedding and media models, which would 400 if selected here.
+        methods = entry.get("supportedGenerationMethods") or []
+        if name and (not methods or "generateContent" in methods):
+            ids.append(name)
+    return sorted(ids)
+
+
+_LIVE_FETCHERS = {"anthropic": _fetch_live_models_anthropic,
+                  "openai": _fetch_live_models_openai,
+                  "gemini": _fetch_live_models_gemini}
 
 
 async def list_models(provider: str, api_key: Optional[str] = None) -> Dict[str, Any]:
@@ -203,6 +272,21 @@ _PRICING = {
     "openai": [
         ("gpt-4o-mini", (0.15, 0.60)), ("gpt-4o", (2.50, 10.0)), ("o3-mini", (1.10, 4.40)),
         ("o1", (15.0, 60.0)), ("o3", (10.0, 40.0)), ("gpt-4", (10.0, 30.0)),
+    ],
+    # Google publishes tiered Gemini pricing (rates step up above a context
+    # threshold on some models); these are the base tier. Same caveat as the rest
+    # of this table: an estimate for budget visibility, not a bill. Longest key
+    # first — "gemini-1.5-flash-8b" must win over "gemini-1.5-flash".
+    "gemini": [
+        ("gemini-2.5-pro", (1.25, 10.0)),
+        ("gemini-2.5-flash-lite", (0.10, 0.40)),
+        ("gemini-2.5-flash", (0.30, 2.50)),
+        ("gemini-2.0-flash-lite", (0.075, 0.30)),
+        ("gemini-2.0-flash", (0.10, 0.40)),
+        ("gemini-1.5-pro", (1.25, 5.0)),
+        ("gemini-1.5-flash-8b", (0.0375, 0.15)),
+        ("gemini-1.5-flash", (0.075, 0.30)),
+        ("gemini", (0.30, 2.50)),
     ],
 }
 _DEFAULT_RATE = (3.0, 15.0)

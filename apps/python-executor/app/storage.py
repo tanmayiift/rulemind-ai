@@ -31,6 +31,7 @@ from .auth import (
 from .context import get_current_tenant_id
 from .db import engine_for, session_factory
 from .logic import generate_rule_expression_definition, json_dumps, now_iso
+from . import ai as ai_module
 from .models import (
     ModelEvaluation,
     ActionLog,
@@ -1881,7 +1882,7 @@ class Storage:
         provider_view = {
             name: {"configured": bool((providers.get(name) or {}).get("key_encrypted")),
                    "model": (providers.get(name) or {}).get("model", "")}
-            for name in ("anthropic", "openai")
+            for name in ai_module.SUPPORTED_PROVIDERS
         }
         any_configured = any(p["configured"] for p in provider_view.values())
         # AI is "on" only when a key is present AND the admin hasn't explicitly
@@ -1900,11 +1901,11 @@ class Storage:
             row = self._ai_config_row(session, resolved)
             cfg = copy.deepcopy(row.ai_config or {})
             cfg.setdefault("providers", {})
-            if patch.get("default_provider") in ("anthropic", "openai"):
+            if patch.get("default_provider") in ai_module.SUPPORTED_PROVIDERS:
                 cfg["default_provider"] = patch["default_provider"]
             if "enabled" in patch:  # admin can turn AI off even while a key stays stored
                 cfg["enabled"] = bool(patch["enabled"])
-            for name in ("anthropic", "openai"):
+            for name in ai_module.SUPPORTED_PROVIDERS:
                 ppatch = patch.get(name) or {}
                 slot = cfg["providers"].setdefault(name, {})
                 if "model" in ppatch:

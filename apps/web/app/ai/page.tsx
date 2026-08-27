@@ -24,8 +24,19 @@ type GenResult = {
   draft?: { name?: string; tree?: unknown; steps?: Array<Record<string, unknown>> };
 };
 
-const PROVIDER_LABEL: Record<string, string> = { anthropic: "Anthropic (Claude)", openai: "OpenAI (GPT)" };
-const DEFAULT_MODEL: Record<string, string> = { anthropic: "claude-sonnet-5", openai: "gpt-4o" };
+// Keep in step with ai.SUPPORTED_PROVIDERS on the backend. The selector itself is
+// driven by whatever /ai/config returns, so a provider missing from this map would
+// still be selectable but render a blank label.
+const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: "Anthropic (Claude)",
+  openai: "OpenAI (GPT)",
+  gemini: "Google (Gemini)",
+};
+const DEFAULT_MODEL: Record<string, string> = {
+  anthropic: "claude-sonnet-5",
+  openai: "gpt-4o",
+  gemini: "gemini-2.5-pro",
+};
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "danger" }) {
   return (

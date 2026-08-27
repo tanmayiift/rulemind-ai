@@ -325,10 +325,11 @@ function AiAssistantSection({ theme, apiBaseUrl, apiKey }: { theme: (typeof THEM
         <select style={inputStyle(theme)} value={provider} onChange={(e) => setProvider(e.target.value)}>
           <option value="anthropic">Anthropic (Claude)</option>
           <option value="openai">OpenAI</option>
+          <option value="gemini">Google (Gemini)</option>
         </select>
       </Field>
       <Field theme={theme} label={providerConfigured ? "Replace API key" : "API key"} hint={providerConfigured ? "A key is already stored (encrypted). Leave blank to keep it." : "Stored encrypted at rest; never shown again."}>
-        <input style={inputStyle(theme)} type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={provider === "anthropic" ? "sk-ant-…" : "sk-…"} />
+        <input style={inputStyle(theme)} type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={{ anthropic: "sk-ant-…", openai: "sk-…", gemini: "AIza…" }[provider] ?? "API key"} />
       </Field>
       <div style={{ display: "flex", gap: 10 }}>
         <button onClick={saveKey} disabled={busy || !key} style={ctaStyle(theme, busy || !key)}>{busy ? "Saving…" : "Save key & enable"}</button>

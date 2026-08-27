@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import atexit
 import os
+
+from . import env
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, Optional, Set
@@ -86,13 +88,13 @@ def record_write_failure(storage: Any, tenant_id: Optional[str], context: Option
 
 def is_async() -> bool:
     """Async by default; ASYNC_DECISION_LOG=0 forces synchronous writes."""
-    return os.getenv("ASYNC_DECISION_LOG", "1") != "0"
+    return env.env_str("ASYNC_DECISION_LOG", "1") != "0"
 
 
 def _max_queue() -> int:
     """Max outstanding (queued + in-flight) async writes before submit() falls back to inline."""
     try:
-        return max(1, int(os.getenv("DECISION_LOG_MAX_QUEUE", "1000")))
+        return max(1, env.env_int("DECISION_LOG_MAX_QUEUE", 1000))
     except ValueError:
         return 1000
 
@@ -100,7 +102,7 @@ def _max_queue() -> int:
 def _get_pool() -> ThreadPoolExecutor:
     global _pool, _atexit_registered
     if _pool is None:
-        _pool = ThreadPoolExecutor(max_workers=int(os.getenv("DECISION_LOG_WORKERS", "4")),
+        _pool = ThreadPoolExecutor(max_workers=env.env_int("DECISION_LOG_WORKERS", 4),
                                    thread_name_prefix="decision-log")
         if not _atexit_registered:
             atexit.register(shutdown)

@@ -1,5 +1,5 @@
 {
- "motor_claim_triage": [
+ "policy_claim_triage": [
   {
    "label": "clean low-value claim",
    "payload": {
@@ -65,7 +65,7 @@
    "score": 670
   }
  ],
- "checkout_fraud_screening": [
+ "policy_checkout_fraud": [
   {
    "label": "trusted repeat buyer",
    "payload": {
@@ -131,7 +131,7 @@
    "score": 260
   }
  ],
- "marketplace_seller_onboarding": [
+ "policy_seller_onboarding": [
   {
    "label": "verified established",
    "payload": {
@@ -197,7 +197,7 @@
    "score": 610
   }
  ],
- "telecom_postpaid_eligibility": [
+ "policy_telecom_postpaid": [
   {
    "label": "loyal high spender",
    "payload": {
