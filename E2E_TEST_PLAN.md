@@ -201,7 +201,7 @@ skipped step named, and the outbox is drained per evaluation with depth shown. `
 
 # Findings
 
-**38 found · 37 fixed · 1 open.** Every fix was verified against the running stack and
+**46 found · 45 fixed · 1 open.** Every fix was verified against the running stack and
 the full regression suite re-run afterwards.
 
 ### Shipped — PR #114 · setup & configuration
