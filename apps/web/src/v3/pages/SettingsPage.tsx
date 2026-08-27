@@ -256,7 +256,7 @@ export function SettingsPage(props: { data: BootstrapPayload; refresh: () => voi
 
             <div style={{ border: "1px solid " + theme.border, borderRadius: 10, padding: 12, display: "grid", gap: 6 }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: theme.muted, fontWeight: 700 }}>Retention window (days)</div>
-              <InlineInput type="number" value={String(dp.retention_days)} onChange={(event) => setDp((current) => (current ? { ...current, retention_days: Math.max(1, Number(event.target.value || 0)) } : current))} testId="data-protection-retention" />
+              <InlineInput aria-label="Decision retention period in days" type="number" value={String(dp.retention_days)} onChange={(event) => setDp((current) => (current ? { ...current, retention_days: Math.max(1, Number(event.target.value || 0)) } : current))} testId="data-protection-retention" />
               <div style={{ fontSize: 11.5, color: theme.muted }}>Decisions older than this are archived (if a sink is set) then purged. Minimum 1 day.</div>
             </div>
           </div>
