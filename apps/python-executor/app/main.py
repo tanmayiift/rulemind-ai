@@ -1505,6 +1505,10 @@ class OnboardingAIRequest(BaseModel):
 
 class ModelCreateRequest(BaseModel):
     name: str
+    # Optional caller-chosen id, matching every other entity type. See the note on
+    # VariableUpsertRequest — silently deriving one from `name` breaks idempotent
+    # provisioning and the export -> import round trip.
+    id: Optional[str] = None
     description: Optional[str] = None
     model_type: str = "sklearn"
     model_base64: str
