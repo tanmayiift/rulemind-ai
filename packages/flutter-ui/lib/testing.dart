@@ -128,6 +128,59 @@ Future<void> rmScrollThrough(WidgetTester tester) async {
   }
 }
 
+
+/// Names the widget behind a [RenderObject], plus its nearest named ancestors.
+///
+/// A bare `RenderStack spans -1.0..25.0` is unactionable; knowing it is the
+/// thumb of a `Slider` inside a `_FieldRow` is the whole diagnosis.
+String _describe(RenderObject node) {
+  final String self = node.debugCreator is DebugCreator
+      ? (node.debugCreator! as DebugCreator).element.widget.runtimeType.toString()
+      : node.runtimeType.toString();
+
+  final List<String> trail = <String>[];
+  if (node.debugCreator is DebugCreator) {
+    Element? e = (node.debugCreator! as DebugCreator).element;
+    int hops = 0;
+    e.visitAncestorElements((Element ancestor) {
+      final String name = ancestor.widget.runtimeType.toString();
+      if (!name.startsWith('_Render') && !name.startsWith('RawGesture')) {
+        trail.add(name);
+      }
+      hops++;
+      return trail.length < 4 && hops < 30;
+    });
+  }
+  return trail.isEmpty ? self : '$self  (in ${trail.join(" < ")})';
+}
+
+
+/// True for render objects belonging to a Material chip's internal slots.
+///
+/// Material lays a chip's avatar/checkmark slot at a negative offset relative to
+/// the chip and never paints it when hidden. Probed directly: a bare
+/// `ChoiceChip` at 320x568 @1.3x reports its own box at 16.0..248.9 -- fully
+/// inside the screen -- while an internal 26x26 Stack reports -1.0..25.0. The
+/// chip is correctly positioned; only the hidden slot's coordinates are
+/// negative, so flagging it is a false positive.
+///
+/// Scoped deliberately narrowly: this exempts chip internals, not chips, and
+/// not anything else.
+bool _isChipInternal(RenderObject node) {
+  if (node.debugCreator is! DebugCreator) return false;
+  bool found = false;
+  int hops = 0;
+  (node.debugCreator! as DebugCreator).element.visitAncestorElements((Element a) {
+    if (a.widget.runtimeType.toString().contains('ChipRenderWidget')) {
+      found = true;
+      return false;
+    }
+    hops++;
+    return hops < 8;
+  });
+  return found;
+}
+
 bool _insideHorizontalScrollable(RenderObject node) {
   RenderObject? current = node.parent;
   while (current != null) {
@@ -163,14 +216,17 @@ void rmExpectNoHorizontalSpill(
   void visit(RenderObject node) {
     if (node is RenderBox && node.hasSize && node.attached) {
       final Size size = node.size;
-      if (size.width > 0 && size.height > 0 && !_insideHorizontalScrollable(node)) {
+      if (size.width > 0 &&
+          size.height > 0 &&
+          !_insideHorizontalScrollable(node) &&
+          !_isChipInternal(node)) {
         try {
           final Offset origin = node.localToGlobal(Offset.zero);
           final double left = origin.dx;
           final double right = origin.dx + size.width;
           if (left < -0.5 || right > surface.size.width + 0.5) {
             offenders.add(
-              '${node.runtimeType} spans '
+              '${_describe(node)} spans '
               '${left.toStringAsFixed(1)}..${right.toStringAsFixed(1)} '
               'outside 0..${surface.size.width.toStringAsFixed(0)}',
             );
