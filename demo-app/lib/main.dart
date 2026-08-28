@@ -4,6 +4,7 @@ import 'package:rulemind_ui/rulemind_ui.dart';
 import 'theme/theme.dart';
 import 'theme/tokens.dart';
 import 'widgets/section_header.dart';
+import 'widgets/states.dart';
 
 import 'engine.dart';
 import 'journeys.dart';
@@ -227,17 +228,36 @@ class _JourneyScreenState extends State<JourneyScreen> {
       _result = r;
       _busy = false;
     });
-    // The form is taller than the viewport, so the verdict lands below the fold.
-    // Without this the button just stops spinning and nothing visibly happens.
+    // The result region sits at the top of the list, so bring it into view.
+    // The reason this exists is unchanged -- the verdict must not land where
+    // the viewer cannot see it -- but the target moved with the region.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
+          0,
           duration: const Duration(milliseconds: 350),
           curve: Curves.easeOut,
         );
       }
     });
+  }
+
+  /// Empty, running, error or result — all in one always-present slot.
+  Widget _resultRegion() {
+    if (_busy) {
+      return RmRunningState(
+        label: _mode == EvalMode.server ? 'Running on server' : 'Running on device',
+      );
+    }
+    final EvalResult? r = _result;
+    if (r == null) return const RmResultPlaceholder();
+    if (r.isError) {
+      return RmErrorBand(
+        message: r.error ?? 'Unknown error',
+        onRetry: _evaluate,
+      );
+    }
+    return ResultCard(result: r, expected: _active?.expected);
   }
 
   @override
@@ -276,6 +296,11 @@ class _JourneyScreenState extends State<JourneyScreen> {
         controller: _scroll,
         padding: RmScreenPadding.of(context),
         children: [
+          // The result region is first and always present, so a viewer can see
+          // where the answer will appear before they ever press run, and the
+          // region does not pop into existence and shove the form down.
+          _resultRegion(),
+          const SizedBox(height: RmSpace.x5),
           const RmSectionHeader('SCENARIOS'),
           const SizedBox(height: 8),
           // LayoutBuilder, not MediaQuery: the cap must come from the box these
@@ -358,8 +383,6 @@ class _JourneyScreenState extends State<JourneyScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          if (_result != null) ResultCard(result: _result!, expected: _active?.expected),
         ],
       ),
       // A bottomNavigationBar rather than a floatingActionButton: Scaffold then
