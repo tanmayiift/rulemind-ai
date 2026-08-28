@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rulemind_journeys/engine.dart';
-import 'package:rulemind_journeys/journeys.dart';
 import 'package:rulemind_journeys/main.dart';
 
 Widget _wrap(Widget child) => MaterialApp(
@@ -9,7 +8,6 @@ Widget _wrap(Widget child) => MaterialApp(
     );
 
 void main() {
-  final Color c = kJourneys.first.color;
 
   group('a partial on-device decision is disclosed, not hidden', () {
     testWidgets('renders the skipped-steps banner naming each step',
@@ -22,7 +20,6 @@ void main() {
           serverOnlyStepsSkipped: <String>['kyc_connector', 'manual_review_gate'],
         ),
         expected: 'approve',
-        color: c,
       )));
       await tester.pump();
 
@@ -44,7 +41,6 @@ void main() {
         // The outcome matches, so the old code would have shown a green
         // "as expected" tick even though workflow steps never ran.
         expected: 'approve',
-        color: c,
       )));
       await tester.pump();
 
@@ -58,7 +54,6 @@ void main() {
       await tester.pumpWidget(_wrap(ResultCard(
         result: EvalResult(outcome: 'approve', mode: EvalMode.onDevice),
         expected: 'approve',
-        color: c,
       )));
       await tester.pump();
 
@@ -77,7 +72,6 @@ void main() {
           pendingSyncCount: 3,
         ),
         expected: null,
-        color: c,
       )));
       await tester.pump();
       expect(find.text('3 queued'), findsOneWidget);
@@ -91,7 +85,6 @@ void main() {
           pendingSyncCount: 0,
         ),
         expected: null,
-        color: c,
       )));
       await tester.pump();
       expect(find.text('synced'), findsOneWidget);

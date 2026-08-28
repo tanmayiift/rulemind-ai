@@ -151,10 +151,10 @@ class _JourneyCard extends StatelessWidget {
               Container(
                 width: 46, height: 46,
                 decoration: BoxDecoration(
-                  color: journey.color.withValues(alpha: 0.12),
+                  color: RmC.surfaceSunk,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(journey.icon, color: journey.color, size: 24),
+                child: Icon(journey.icon, color: journey.identity.mark, size: 24),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -163,7 +163,7 @@ class _JourneyCard extends StatelessWidget {
                   children: [
                     Text(journey.sector.toUpperCase(),
                         style: t.textTheme.labelSmall
-                            ?.copyWith(color: journey.color, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
+                            ?.copyWith(color: journey.identity.mark, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
                     const SizedBox(height: 2),
                     Text(journey.title,
                         style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
@@ -253,8 +253,24 @@ class _JourneyScreenState extends State<JourneyScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(j.title),
-        backgroundColor: j.color,
-        foregroundColor: Colors.white,
+        backgroundColor: RmC.surface,
+        foregroundColor: RmC.ink,
+        // A hairline plus a 3dp identity rail. That rail is the entire
+        // on-screen identity for the journey -- enough to say "you are in
+        // Claims", not enough to compete with a verdict. The app bar itself
+        // used to be a fully saturated journey colour, which made it the
+        // largest colour field on the screen and the one place a
+        // verdict-coloured fill is most confusing.
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Divider(height: 1, thickness: 1, color: RmC.line),
+              Container(height: 3, color: j.identity.mark),
+            ],
+          ),
+        ),
       ),
       body: ListView(
         controller: _scroll,
@@ -280,7 +296,7 @@ class _JourneyScreenState extends State<JourneyScreen> {
                       label: Text(s.name, maxLines: 2, overflow: TextOverflow.ellipsis),
                       selected: sel,
                       onSelected: (_) => _apply(s),
-                      selectedColor: j.color.withValues(alpha: 0.18),
+                      selectedColor: RmC.accentSoft,
                       // copyWith on the theme style, not a bare TextStyle --
                       // a bare one inherits nothing, so the chip label silently
                       // opted out of the TextTheme entirely.
@@ -334,7 +350,6 @@ class _JourneyScreenState extends State<JourneyScreen> {
                 children: j.fields.map((f) => _FieldRow(
                       field: f,
                       value: _values[f.key] ?? f.min,
-                      color: j.color,
                       onChanged: (v) => setState(() {
                         _values[f.key] = v;
                         _result = null;
@@ -344,7 +359,7 @@ class _JourneyScreenState extends State<JourneyScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          if (_result != null) ResultCard(result: _result!, expected: _active?.expected, color: j.color),
+          if (_result != null) ResultCard(result: _result!, expected: _active?.expected),
         ],
       ),
       // A bottomNavigationBar rather than a floatingActionButton: Scaffold then
@@ -358,10 +373,9 @@ class _JourneyScreenState extends State<JourneyScreen> {
           width: double.infinity,
           child: FilledButton.icon(
             onPressed: _busy ? null : _evaluate,
-            style: FilledButton.styleFrom(
-              backgroundColor: j.color,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-            ),
+            // Colour comes from filledButtonTheme; there is no per-journey
+            // override any more.
+            style: null,
             icon: _busy
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                 : const Icon(Icons.play_arrow_rounded),
@@ -374,11 +388,10 @@ class _JourneyScreenState extends State<JourneyScreen> {
 }
 
 class _FieldRow extends StatelessWidget {
-  const _FieldRow({required this.field, required this.value, required this.onChanged, required this.color});
+  const _FieldRow({required this.field, required this.value, required this.onChanged});
   final JourneyField field;
   final num value;
   final ValueChanged<num> onChanged;
-  final Color color;
 
   @override
   Widget build(BuildContext context) {
@@ -387,7 +400,6 @@ class _FieldRow extends StatelessWidget {
       return SwitchListTile(
         contentPadding: EdgeInsets.zero,
         dense: true,
-        activeThumbColor: color,
         title: Text(field.label, style: t.textTheme.bodyMedium),
         value: value == 1,
         onChanged: (v) => onChanged(v ? 1 : 0),
@@ -401,7 +413,7 @@ class _FieldRow extends StatelessWidget {
           Row(children: [
             Expanded(child: Text(field.label, style: t.textTheme.bodyMedium)),
             Text('${field.suffix == '₹' ? '₹' : ''}${value.toInt()}${field.suffix != null && field.suffix != '₹' ? ' ${field.suffix}' : ''}',
-                style: t.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700, color: color)),
+                style: t.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700, color: RmC.ink)),
           ]),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(trackHeight: 3),
@@ -409,7 +421,6 @@ class _FieldRow extends StatelessWidget {
               value: value.toDouble().clamp(field.min.toDouble(), field.max.toDouble()),
               min: field.min.toDouble(),
               max: field.max.toDouble(),
-              activeColor: color,
               onChanged: (v) => onChanged(v.round()),
             ),
           ),
@@ -420,10 +431,9 @@ class _FieldRow extends StatelessWidget {
 }
 
 class ResultCard extends StatelessWidget {
-  const ResultCard({super.key, required this.result, required this.expected, required this.color});
+  const ResultCard({super.key, required this.result, required this.expected});
   final EvalResult result;
   final String? expected;
-  final Color color;
 
 
   @override

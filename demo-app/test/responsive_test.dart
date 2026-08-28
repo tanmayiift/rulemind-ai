@@ -55,7 +55,6 @@ void main() {
             ResultCard(
               result: _fullResult(),
               expected: 'approve',
-              color: journey.color,
             ),
           ],
         ),
