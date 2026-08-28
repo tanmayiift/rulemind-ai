@@ -117,13 +117,21 @@ abstract final class RmTheme {
       ),
       // Pinning cardTheme alone is not enough: chips, buttons and segmented
       // buttons each carry their own M3 stadium shape.
-      chipTheme: const ChipThemeData(
+      // Dense on purpose. With default M3 chip padding these scenario labels
+      // take a full row each, so four of them push the inputs below the fold --
+      // and the scenario row is the first thing a prospect looks at.
+      chipTheme: ChipThemeData(
         backgroundColor: RmC.surface,
         selectedColor: RmC.accentSoft,
-        side: BorderSide(color: RmC.line),
-        shape: RoundedRectangleBorder(borderRadius: RmRadius.rSm),
-        showCheckmark: true,
-        checkmarkColor: RmC.accent,
+        side: const BorderSide(color: RmC.line),
+        shape: const RoundedRectangleBorder(borderRadius: RmRadius.rSm),
+        showCheckmark: false,
+        labelPadding: const EdgeInsets.symmetric(horizontal: RmSpace.x1),
+        padding: const EdgeInsets.symmetric(
+          horizontal: RmSpace.x2,
+          vertical: RmSpace.x2,
+        ),
+        labelStyle: text.labelMedium?.copyWith(color: RmC.ink),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(

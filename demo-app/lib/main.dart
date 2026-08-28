@@ -54,7 +54,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+          padding: RmScreenPadding.of(context, top: RmSpace.x5, extraBottom: RmSpace.x2),
           children: [
             Row(
               children: [
@@ -140,9 +140,9 @@ class _JourneyCard extends StatelessWidget {
     final t = Theme.of(context);
     return Material(
       color: t.cardColor,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: RmRadius.rLg,
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: RmRadius.rLg,
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -152,7 +152,7 @@ class _JourneyCard extends StatelessWidget {
                 width: 46, height: 46,
                 decoration: BoxDecoration(
                   color: RmC.surfaceSunk,
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: RmRadius.rMd,
                 ),
                 child: Icon(journey.icon, color: journey.identity.mark, size: 24),
               ),
@@ -300,9 +300,9 @@ class _JourneyScreenState extends State<JourneyScreen> {
                       // copyWith on the theme style, not a bare TextStyle --
                       // a bare one inherits nothing, so the chip label silently
                       // opted out of the TextTheme entirely.
-                      labelStyle: t.textTheme.bodyMedium?.copyWith(
+                      labelStyle: t.chipTheme.labelStyle?.copyWith(
                         color: sel ? RmC.accent : RmC.ink,
-                        fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                        fontWeight: sel ? FontWeight.w700 : FontWeight.w600,
                       ),
                     ),
                   );
@@ -540,7 +540,7 @@ class ResultCard extends StatelessWidget {
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: RmSem.info.soft,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: RmRadius.rSm,
                   border: Border.all(color: RmSem.info.base),
                 ),
                 child: Column(
