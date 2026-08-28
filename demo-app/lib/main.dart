@@ -486,28 +486,62 @@ class ResultCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Wrap, not Row+Spacer: the outcome chip and the score are both
+            // Wrap, not Row+Spacer: the verdict and the score are both
             // variable-width, so there is no slack to give a Spacer.
             Wrap(
-              spacing: 12,
-              runSpacing: 8,
+              spacing: RmSpace.x4,
+              runSpacing: RmSpace.x3,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: <Widget>[
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(color: c.soft, borderRadius: RmRadius.rSm),
-                  child: Text(result.outcome.toUpperCase(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: t.textTheme.titleSmall?.copyWith(color: c.ink, letterSpacing: 0.5)),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    if (partial)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: RmSpace.x1),
+                        child: _Badge(label: 'PARTIAL', tone: RmSem.info),
+                      ),
+                    Text(result.outcome.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: t.textTheme.headlineSmall?.copyWith(color: c.ink)),
+                  ],
                 ),
                 if (result.score != null)
-                  Text('Score ${result.score}',
-                      maxLines: 1,
-                      style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Text(partial ? 'SCORE · PROVISIONAL' : 'SCORE',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: t.textTheme.labelSmall?.copyWith(color: RmC.inkFaint)),
+                      Text('${result.score}',
+                          maxLines: 1,
+                          style: t.textTheme.displaySmall?.copyWith(color: c.ink)),
+                    ],
+                  ),
               ],
             ),
-            const SizedBox(height: 8),
+            if (result.score != null) ...[
+              const SizedBox(height: RmSpace.x3),
+              // The scorecards this demo runs are all base 500 / max 900, so
+              // the bar is drawn against 900 rather than a guessed round
+              // number. Omitted entirely if a score ever falls outside that,
+              // rather than drawing a misleading fill.
+              if (result.score! >= 0 && result.score! <= _kScoreMax)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: result.score! / _kScoreMax,
+                    minHeight: 4,
+                    backgroundColor: RmC.surfaceSunk,
+                    valueColor: AlwaysStoppedAnimation<Color>(c.base),
+                  ),
+                ),
+            ],
+            const SizedBox(height: RmSpace.x3),
             // Each metadatum is an indivisible icon+label pair, so they wrap as
             // units rather than being torn apart mid-pair.
             Wrap(
@@ -576,7 +610,9 @@ class ResultCard extends StatelessWidget {
                         child: Text(
                           'Partial decision — ${result.serverOnlyStepsSkipped.length} '
                           'server-only step${result.serverOnlyStepsSkipped.length == 1 ? '' : 's'} skipped',
-                          maxLines: 2,
+                          // Three lines, not two: at 2.0x this headline truncates
+                          // mid-word on a phone with only two.
+                          maxLines: 3,
                           overflow: TextOverflow.ellipsis,
                           style: t.textTheme.labelMedium?.copyWith(
                               color: RmSem.info.ink, fontWeight: FontWeight.w700),
@@ -676,6 +712,41 @@ class _MetaChip extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Maximum score the seeded scorecards can produce.
+///
+/// Every journey in `qa/e2e-full/seed_journeys.py` declares
+/// `base_score: 500, max_score: 900`. Named here so the score bar is drawn
+/// against the real ceiling rather than a guessed round number.
+const num _kScoreMax = 900;
+
+/// A small uppercase state badge in a semantic tone.
+class _Badge extends StatelessWidget {
+  const _Badge({required this.label, required this.tone});
+
+  final String label;
+  final RmTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: RmSpace.x2,
+        vertical: 2,
+      ),
+      decoration: BoxDecoration(color: tone.soft, borderRadius: RmRadius.rSm),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context)
+            .textTheme
+            .labelSmall
+            ?.copyWith(color: tone.ink, fontWeight: FontWeight.w700),
+      ),
     );
   }
 }

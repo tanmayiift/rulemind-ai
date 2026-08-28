@@ -35,6 +35,54 @@ void main() {
       data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
       child: child!,
     ),
-    home: JourneyScreen(journey: kJourneys.first, client: RuleMindClient()),
+    home: const String.fromEnvironment('RM_SCREEN') == 'result'
+        ? Scaffold(
+            appBar: AppBar(title: const Text('Motor Claim Triage')),
+            body: ListView(
+              padding: const EdgeInsets.all(16),
+              children: <Widget>[
+                ResultCard(
+                  result: EvalResult(
+                    outcome: 'review',
+                    mode: EvalMode.onDevice,
+                    score: 742,
+                    latencyMs: 2,
+                    serverOnlyStepsSkipped: const <String>['kyc_connector'],
+                    pendingSyncCount: 0,
+                    gates: <GateResult>[
+                      GateResult(
+                        label: 'Documentation complete',
+                        passed: true,
+                        conditions: <ConditionResult>[
+                          ConditionResult(
+                            variable: 'claim_documents_ok',
+                            operator: '==',
+                            threshold: 1,
+                            value: 1,
+                            passed: true,
+                          ),
+                        ],
+                      ),
+                      GateResult(
+                        label: 'Fraud signals',
+                        passed: false,
+                        conditions: <ConditionResult>[
+                          ConditionResult(
+                            variable: 'claim_policy_age_months',
+                            operator: '>=',
+                            threshold: 6,
+                            value: 1,
+                            passed: false,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  expected: 'approve',
+                ),
+              ],
+            ),
+          )
+        : JourneyScreen(journey: kJourneys.first, client: RuleMindClient()),
   ));
 }
