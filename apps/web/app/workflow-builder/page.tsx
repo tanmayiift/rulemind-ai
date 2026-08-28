@@ -21,15 +21,23 @@ type Ref = { id: string; name?: string; label?: string };
 type MeceResult = { valid?: boolean; overlaps?: unknown[]; gaps?: unknown[]; issues?: unknown[]; message?: string };
 
 // Palette — the executor's supported step types, grouped for discoverability.
-const PALETTE: Array<{ type: string; label: string; needsRef?: "connector" | "rule" | "scorecard"; tone: keyof Pick<ThemeTokens, "accent" | "success" | "warning" | "danger" | "purple"> }> = [
+// The entity kinds a step can reference. Declared once and reused everywhere a
+// `refs` map is threaded, so the palette, the Inspector and the nested editors
+// cannot drift apart again -- which is how `model` ended up in the palette with
+// no way to configure it.
+type RefKind = "connector" | "rule" | "scorecard" | "decision_table" | "model";
+type RefMap = Record<RefKind, Ref[]>;
+
+const PALETTE: Array<{ type: string; label: string; needsRef?: RefKind; tone: keyof Pick<ThemeTokens, "accent" | "success" | "warning" | "danger" | "purple"> }> = [
   { type: "connector", label: "Connector", needsRef: "connector", tone: "accent" },
   { type: "rule", label: "Rule", needsRef: "rule", tone: "purple" },
+  { type: "decision_table", label: "Decision table", needsRef: "decision_table", tone: "purple" },
   { type: "scorecard", label: "Scorecard", needsRef: "scorecard", tone: "purple" },
   { type: "transform", label: "Transform", tone: "accent" },
   { type: "branch", label: "Branch", tone: "warning" },
   { type: "loop", label: "Loop", tone: "warning" },
   { type: "workflow", label: "Sub-workflow", tone: "accent" },
-  { type: "model", label: "ML model", tone: "purple" },
+  { type: "model", label: "ML model", needsRef: "model", tone: "purple" },
   { type: "action", label: "Action", tone: "accent" },
   { type: "monitor", label: "Monitor", tone: "warning" },
   { type: "review_gate", label: "Review gate", tone: "warning" },
@@ -59,7 +67,7 @@ export default function WorkflowBuilderPage() {
   const [policyId, setPolicyId] = React.useState("");
   const [steps, setSteps] = React.useState<Step[]>([]);
   const [selected, setSelected] = React.useState<string | null>(null);
-  const [refs, setRefs] = React.useState<{ connector: Ref[]; rule: Ref[]; scorecard: Ref[] }>({ connector: [], rule: [], scorecard: [] });
+  const [refs, setRefs] = React.useState<RefMap>({ connector: [], rule: [], scorecard: [], decision_table: [], model: [] });
   const [dirty, setDirty] = React.useState(false);
   const [status, setStatus] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -69,14 +77,16 @@ export default function WorkflowBuilderPage() {
   React.useEffect(() => {
     (async () => {
       try {
-        const [ps, c, r, s] = await Promise.all([
+        const [ps, c, r, s, dt, m] = await Promise.all([
           apiJson<Policy[]>(apiBaseUrl, "/api/v1/policies", {}, apiKey),
           apiJson<Ref[]>(apiBaseUrl, "/api/v1/connectors", {}, apiKey),
           apiJson<Ref[]>(apiBaseUrl, "/api/v1/rules", {}, apiKey),
           apiJson<Ref[]>(apiBaseUrl, "/api/v1/scorecards", {}, apiKey),
+          apiJson<Ref[]>(apiBaseUrl, "/api/v1/decision-tables", {}, apiKey),
+          apiJson<Ref[]>(apiBaseUrl, "/api/v1/models", {}, apiKey),
         ]);
         setPolicies(ps);
-        setRefs({ connector: c, rule: r, scorecard: s });
+        setRefs({ connector: c, rule: r, scorecard: s, decision_table: dt, model: m });
         if (ps[0]) selectPolicy(ps[0].id, ps);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unable to load policies.");
@@ -285,7 +295,7 @@ function NodeCard({ theme, step, index, selected, onSelect, onRemove, onDragStar
 
 // ---- inspector ----------------------------------------------------------------
 
-function Inspector({ theme, step, refs, onPatch }: { theme: ThemeTokens; step: Step; refs: { connector: Ref[]; rule: Ref[]; scorecard: Ref[] }; onPatch: (p: Partial<Step>) => void }) {
+function Inspector({ theme, step, refs, onPatch }: { theme: ThemeTokens; step: Step; refs: RefMap; onPatch: (p: Partial<Step>) => void }) {
   const needsRef = PALETTE.find((p) => p.type === step.type)?.needsRef;
   const options = needsRef ? refs[needsRef] : [];
   return (
@@ -295,7 +305,7 @@ function Inspector({ theme, step, refs, onPatch }: { theme: ThemeTokens; step: S
         <input value={step.label ?? ""} onChange={(e) => onPatch({ label: e.target.value })} style={inputStyle(theme)} />
       </Field>
       {needsRef ? (
-        <Field theme={theme} label={`${needsRef} reference`}>
+        <Field theme={theme} label={`${needsRef.replace(/_/g, " ")} reference`}>
           <select value={step.ref_id ?? ""} onChange={(e) => onPatch({ ref_id: e.target.value })} style={selectStyle(theme)}>
             <option value="">— select —</option>
             {options.map((o) => <option key={o.id} value={o.id}>{o.name || o.label || o.id}</option>)}
@@ -314,8 +324,8 @@ function Inspector({ theme, step, refs, onPatch }: { theme: ThemeTokens; step: S
           <input value={step.ref_id ?? ""} onChange={(e) => onPatch({ ref_id: e.target.value })} placeholder="policy id" style={inputStyle(theme)} />
         </Field>
       ) : null}
-      {(step.type === "action" || step.type === "monitor") ? (
-        <Field theme={theme} label="Config (JSON)" hint="request / webhook / schedule">
+      {(step.type === "action" || step.type === "monitor" || step.type === "transform") ? (
+        <Field theme={theme} label="Config (JSON)" hint={step.type === "transform" ? "mapping / outputKey" : "request / webhook / schedule"}>
           <JsonEditor theme={theme} value={step.config ?? {}} onChange={(cfg) => onPatch({ config: cfg })} />
         </Field>
       ) : null}
@@ -343,7 +353,7 @@ function Inspector({ theme, step, refs, onPatch }: { theme: ThemeTokens; step: S
 
 type LoopConfig = { over?: string; as?: string; indexAs?: string; maxIterations?: number; mode?: string; concurrency?: number; steps?: Step[] };
 
-function LoopEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; refs: { connector: Ref[]; rule: Ref[]; scorecard: Ref[] }; config: LoopConfig; onChange: (c: LoopConfig) => void }) {
+function LoopEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; refs: RefMap; config: LoopConfig; onChange: (c: LoopConfig) => void }) {
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <div style={{ fontSize: 12, color: theme.muted, lineHeight: 1.5 }}>
@@ -396,7 +406,7 @@ function LoopEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; ref
 type Branch = { label?: string; condition?: string; steps?: Step[] };
 type BranchConfig = { branches?: Branch[]; default?: Step[] };
 
-function BranchEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; refs: { connector: Ref[]; rule: Ref[]; scorecard: Ref[] }; config: BranchConfig; onChange: (c: BranchConfig) => void }) {
+function BranchEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; refs: RefMap; config: BranchConfig; onChange: (c: BranchConfig) => void }) {
   const branches = config.branches ?? [];
   const setBranches = (b: Branch[]) => onChange({ ...config, branches: b });
   const patchBranch = (i: number, p: Partial<Branch>) => setBranches(branches.map((b, j) => (j === i ? { ...b, ...p } : b)));
@@ -426,7 +436,7 @@ function BranchEditor({ theme, refs, config, onChange }: { theme: ThemeTokens; r
   );
 }
 
-function StepRows({ theme, refs, steps, onChange }: { theme: ThemeTokens; refs: { connector: Ref[]; rule: Ref[]; scorecard: Ref[] }; steps: Step[]; onChange: (s: Step[]) => void }) {
+function StepRows({ theme, refs, steps, onChange }: { theme: ThemeTokens; refs: RefMap; steps: Step[]; onChange: (s: Step[]) => void }) {
   const [addType, setAddType] = React.useState("rule");
   const patch = (i: number, p: Partial<Step>) => onChange(steps.map((s, j) => (j === i ? { ...s, ...p } : s)));
   return (
