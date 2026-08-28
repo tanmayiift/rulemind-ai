@@ -77,6 +77,7 @@ jobs:
         run: python qa/mobile_e2e/generate_closeout_report.py
 
       - name: Upload closeout artifacts
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: mobile-closeout-report
@@ -188,6 +189,7 @@ jobs:
       - name: Upload Android artifacts
         # Diagnostics only, and only when there is something to diagnose.
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: android-sample-artifacts
@@ -200,6 +202,7 @@ jobs:
         # The signed APK is a real deliverable, so it uploads on success — but only
         # the APK and its checksums, never the whole build/outputs tree.
         if: ${{ env.ANDROID_SAMPLE_KEYSTORE_BASE64 != '' && env.ANDROID_SAMPLE_KEYSTORE_PASSWORD != '' && env.ANDROID_SAMPLE_KEY_ALIAS != '' && env.ANDROID_SAMPLE_KEY_PASSWORD != '' }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: android-sample-release-apk
@@ -302,6 +305,7 @@ jobs:
         # uploaded the entire example/build tree (~440 MB) on every run, which alone
         # accounted for ~96% of the account's artifact storage.
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: flutter-example-artifacts
