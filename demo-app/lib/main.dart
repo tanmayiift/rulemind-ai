@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:rulemind_ui/rulemind_ui.dart';
 
+import 'theme/theme.dart';
+
 import 'engine.dart';
 import 'journeys.dart';
 
@@ -16,15 +18,13 @@ class RuleMindDemoApp extends StatelessWidget {
     return MaterialApp(
       title: 'RuleMind Journeys',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: _brand),
-        scaffoldBackgroundColor: const Color(0xFFF7F7FB),
-      ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: _brand, brightness: Brightness.dark),
-      ),
+      theme: RmTheme.light,
+      // Light only, and stated explicitly rather than left to the absence of a
+      // darkTheme. The app previously shipped a dark ThemeData with no
+      // themeMode, which meant it was *reachable* from the system setting --
+      // and since every colour was light-tuned and that theme did not even set
+      // a scaffold background, anyone with a dark phone saw a broken app.
+      themeMode: ThemeMode.light,
       home: const HomeScreen(),
     );
   }

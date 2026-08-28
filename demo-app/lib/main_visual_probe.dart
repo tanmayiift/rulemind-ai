@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'engine.dart';
 import 'journeys.dart';
 import 'main.dart';
+import 'theme/theme.dart';
 
 void main() {
   const String scaleStr = String.fromEnvironment('RM_TEXT_SCALE', defaultValue: '1.0');
@@ -26,10 +27,10 @@ void main() {
 
   runApp(MaterialApp(
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4F46E5)),
-      useMaterial3: true,
-    ),
+    // The same theme the app ships, not a re-declared seed -- the probe used to
+    // duplicate the brand colour, which is exactly how a probe drifts from the
+    // thing it is supposed to be probing.
+    theme: RmTheme.light,
     builder: (BuildContext context, Widget? child) => MediaQuery(
       data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
       child: child!,
