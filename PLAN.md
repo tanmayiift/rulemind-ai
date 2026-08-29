@@ -79,30 +79,30 @@ outbox state leaks between tests.
 
 ## 4 · Testing gap 2 — wire the unrun suites into CI
 
-- [ ] **4.1** *Free tier (≈0 wall clock).* New parallel `rust` job —
+- [x] **4.1** *Free tier (≈0 wall clock).* New parallel `rust` job —
       **`cargo test --no-default-features`**, because `default = ["python"]` → pyo3
       `extension-module` deliberately does not link libpython and a plain `cargo test` fails
       at link time. Append 3× `flutter test` (`demo-app`, `packages/flutter-ui`,
       `packages/sdk-flutter/example` — **~200 widget tests currently unrun**) to the existing
       `flutter` job. Append `suite_sandbox` to `repo-validation`, reusing
       `qa/mobile_e2e/start_fastapi.sh`.
-- [ ] **4.2** *Cheap tier.* Postgres `services:` container + matrix dim on the Python step.
+- [x] **4.2** *Cheap tier.* Postgres `services:` container + matrix dim on the Python step.
       `DATABASE_URL` is the only config — `storage.py:480,488` calls `create_all` and
       `psycopg2-binary` is already in requirements. Alembic **not** required.
-- [ ] **4.3** Playwright as its own parallel job (**48 tests, not 52** — the 52 in
+- [x] **4.3** Playwright as its own parallel job (**48 tests, not 52** — the 52 in
       `docs/parity/` is stale), paths-filtered
-- [ ] **4.4** k6 — **do not gate.** `RULE_ID` defaults to the literal `"replace-me"`
+- [x] **4.4** k6 — **do not gate.** `RULE_ID` defaults to the literal `"replace-me"`
       (`evaluate.k6.js:13`) and `p(95)<500` at 50 VUs will not hold on a 2-core runner.
       `workflow_dispatch` + nightly.
-- [ ] **4.5** Delete the dead `qa/*.ts` suite + its 3 root scripts.
+- [x] **4.5** Delete the dead `qa/*.ts` suite + its 3 root scripts.
       `run-automated-suite.ts:6` imports `../apps/api/src/server`, which does not exist; four
       files hardcode `/Users/tanmaykumar/Downloads/RuleMind.AI` — a different machine. Keep
       `qa/workbook-runner.ts` (healthy, imported by `test/workbook-matrix.test.ts`).
-- [ ] **4.6** Rotate the hardcoded key out of `demo-app/lib/engine.dart:77` — a **shipped**
+- [x] **4.6** Rotate the hardcoded key out of `demo-app/lib/engine.dart:77` — a **shipped**
       app, so it lands in the APK/IPA and `strings` recovers it
-- [ ] **4.7** Add `concurrency` groups to both workflows (neither has one, so every push runs
+- [x] **4.7** Add `concurrency` groups to both workflows (neither has one, so every push runs
       a duplicate set)
-- [ ] **4.8** File an issue for `playwright.config.ts:45,60` setting `AUTH_MODE=none` on both
+- [x] **4.8** Filed as **#139**. `playwright.config.ts:45,60` set `AUTH_MODE=none` on both
       servers — `middleware.py:93` early-returns on it, bypassing API key, RBAC **and** CSRF,
       so all 48 browser tests exercise a permanently unauthenticated app
 
