@@ -1,6 +1,6 @@
 # RuleMind — execution plan
 
-**Status:** `0/46 complete` · started 2026-08-28 · working section 0
+**Status:** `1/46 complete` · started 2026-08-28 · working section 1 (merge PRs)
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
@@ -14,7 +14,7 @@ with what was tried, then move to the next step.
 
 ## 0 · Housekeeping
 
-- [ ] **0.1** Reclaim disk. Repo is 6.4 GB; ~5.6 GB is regenerable build cache —
+- [x] **0.1** Reclaim disk. Repo is 6.4 GB; ~5.6 GB is regenerable build cache —
       `demo-app/build` (2.6 GB), `demo-app/.dart_tool` (2.5 GB),
       `packages/rulemind-core-rs/target` (239 MB), `rulemind-decide-service/target` (76 MB),
       and the Flutter `build`/`.dart_tool` dirs under `packages/`. **Keep `node_modules`
