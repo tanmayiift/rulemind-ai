@@ -74,17 +74,33 @@ String get defaultBaseUrl {
   return 'http://127.0.0.1:8080';
 }
 
-const String kDefaultApiKey = 'rm_live_devlocaltenantkey000000000000';
+/// The tenant API key, supplied at build time.
+///
+/// Deliberately has **no fallback**. This used to default to the seeded dev key
+/// `rm_live_devlocaltenantkey000000000000`, which meant the literal was compiled
+/// into every APK and IPA and was recoverable with `strings` -- and worse, any
+/// embedder who forgot to pass a key shipped silently using a well-known
+/// credential rather than failing.
+///
+///   flutter run --dart-define=RM_API_KEY=rm_live_...
+///
+/// An empty value is allowed to compile so the app can start and explain itself
+/// (see [RuleMindClient.apiKeyMissing]) rather than crash on launch.
+const String kApiKey = String.fromEnvironment('RM_API_KEY');
 
 String? lastOnDeviceStack;
 
 class RuleMindClient {
   RuleMindClient({String? baseUrl, String? apiKey})
       : baseUrl = baseUrl ?? defaultBaseUrl,
-        apiKey = apiKey ?? kDefaultApiKey;
+        apiKey = apiKey ?? kApiKey;
 
   final String baseUrl;
   final String apiKey;
+
+  /// True when no key was supplied at build time. The UI surfaces this instead
+  /// of letting every request fail with an opaque 401.
+  bool get apiKeyMissing => apiKey.isEmpty;
   bool _sdkReady = false;
 
   Future<void> ensureSdk() async {
