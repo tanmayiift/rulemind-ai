@@ -59,22 +59,22 @@ Python, not Dart: `RuleMind._httpClient` (`rulemind.dart:33`) is private with no
 seam, and `resetForTest` (`:355-366`) never clears `_decisionOutbox`/`_decisionSyncer`, so
 outbox state leaks between tests.
 
-- [ ] **3.1** New `apps/python-executor/tests/test_sdk_offline_round_trip.py`, house setUp
+- [x] **3.1** New `apps/python-executor/tests/test_sdk_offline_round_trip.py`, house setUp
       from `test_sdk_decision_sync.py:9-47` incl. `os.environ.pop("AUTH_MODE", None)` so the
       test traverses real auth
-- [ ] **3.2** Round trip: record built from the **exact** `_toPending` key set
+- [x] **3.2** Round trip: record built from the **exact** `_toPending` key set
       (`rulemind.dart:164-187`); offline = never POST; assert audit empty → POST → assert
       `{received:1,inserted:1,duplicates:0,acked:[id]}` → assert exactly one row.
       **Key detail:** the SDK's `executionId` lands in the audit row's **`client_id`**, not
       `id` (`storage.py:1385`, `:782`) — so query `?client_id=<executionId>`
-- [ ] **3.3** Idempotency: replay identical batch → `{inserted:0,duplicates:1}`, still one row
-- [ ] **3.4** Multi-decision drain, oldest-first, `acked` covers every id
-- [ ] **3.5** `/sdk/v1/signing-key` — **zero** test references today. Assert 200/401, RS256,
+- [x] **3.3** Idempotency: replay identical batch → `{inserted:0,duplicates:1}`, still one row
+- [x] **3.4** Multi-decision drain, oldest-first, `acked` covers every id
+- [x] **3.5** `/sdk/v1/signing-key` — **zero** test references today. Assert 200/401, RS256,
       PEM parses, and that it **verifies a real `/sdk/v1/blocks/{id}` signature** (pattern at
       `test_decision_block.py:85-92`)
 - [ ] **3.6** Dart companion: `SqfliteDecisionOutbox` via `sqflite_common_ffi` through a stub
       uploader that fails then succeeds past `backoffMs`
-- [ ] **3.7** File an issue for the SDK testability defect (leaky `resetForTest`, no
+- [x] **3.7** File an issue for the SDK testability defect (leaky `resetForTest`, no
       injectable client)
 
 ## 4 · Testing gap 2 — wire the unrun suites into CI
