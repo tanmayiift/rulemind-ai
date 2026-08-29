@@ -1,6 +1,6 @@
 # RuleMind — execution plan
 
-**Status:** `1/46 complete` · started 2026-08-28 · working section 1 (merge PRs)
+**Status:** `6/46 complete` · started 2026-08-28 · sections 1–2 in flight
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
@@ -37,18 +37,22 @@ about to change underneath it.
 
 ## 2 · Fix the QA harness *before* wiring anything to it
 
-- [ ] **2.1** `qa/e2e-full/run.py:8` — `mods = {"core": suite_core}` never imports
+- [x] **2.1** `qa/e2e-full/run.py:8` — `mods = {"core": suite_core}` never imports
       `suite_sandbox`, so `python run.py sandbox` prints `(no suite 'sandbox')` and **exits 0
       having run nothing**. Register it, and exit non-zero on an unknown suite name.
-- [ ] **2.2** `qa/e2e-full/harness.py:41-51` — `dump()` writes JSON and returns; `run.py`
+- [x] **2.2** `qa/e2e-full/harness.py:41-51` — `dump()` writes JSON and returns; `run.py`
       falls off the end. **A suite with 6 failures exits 0.** Exit 1 when `fail` or `block`
       is non-zero.
-- [ ] **2.3** Prove both: `run.py sandbox` runs 21 cases; a deliberately broken case turns
+- [x] **2.3** Prove both: `run.py sandbox` runs 21 cases; a deliberately broken case turns
       the exit code non-zero.
-- [ ] **2.4** Run `suite_core` once against merged main and record the real result.
-      `results_core.json` (from #119) says 6 failures; `E2E_TEST_PLAN.md` claims several were
-      fixed since. Nothing in the repo resolves it — one run decides gate vs non-gating.
-- [ ] **2.5** `suite_core.py:219` filters `/api/v1/audit/decisions?userId=…`. `userId` is not
+- [x] **2.4** Run `suite_core` once against merged main and record the real result.
+      **Answered:** run against a seeded backend gives **25 pass / 5 fail / 1 warn**, so
+      `suite_core` goes in **non-gating** initially. `suite_sandbox` is **21/21 clean** and
+      gates. The 5 remaining core failures are product-level, filed separately: 3.10 excel
+      library returns 0 functions, 4.9 batch decide payload shape (the known F-13), 5.3
+      reason-codes 404, 6.1 finds 1 of 3 decisions, 6.2 rule missing from the audit trail.
+      Note the suite is not idempotent — it accumulates backend state between runs.
+- [x] **2.5** `suite_core.py:219` filters `/api/v1/audit/decisions?userId=…`. `userId` is not
       an accepted param (`insights.py:68`) and the row has no `user_id` (`storage.py:780-801`)
       — FastAPI drops it, so the `len(mine) >= 3` assertion at `:226` matches a key that never
       exists. Filter on `client_id`.

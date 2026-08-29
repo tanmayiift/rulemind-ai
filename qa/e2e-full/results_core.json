@@ -1,8 +1,8 @@
 {
   "summary": {
-    "pass": 22,
-    "warn": 3,
-    "fail": 6
+    "pass": 25,
+    "fail": 5,
+    "warn": 1
   },
   "results": [
     {
@@ -11,7 +11,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 2.0148750045336783
+      "ms": 3.788125002756715
     },
     {
       "id": "1.2",
@@ -19,7 +19,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 172.04045900143683
+      "ms": 5.505208042450249
     },
     {
       "id": "1.3",
@@ -27,7 +27,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 0.6603749934583902
+      "ms": 1.2397909304127097
     },
     {
       "id": "1.3b",
@@ -35,7 +35,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 0.38600002881139517
+      "ms": 0.6548749515786767
     },
     {
       "id": "1.4",
@@ -54,18 +54,22 @@
           "created_at"
         ]
       },
-      "ms": 336.60216600401327
+      "ms": 402.434833929874
     },
     {
       "id": "1.9",
       "name": "Rate limiting present (headers or 429 under burst)",
-      "status": "warn",
-      "detail": "no 429 and no RateLimit-* headers across 80 rapid requests",
+      "status": "pass",
+      "detail": "",
       "data": {
         "429s": 0,
-        "rl_headers": {}
+        "rl_headers": {
+          "ratelimit-limit": "1000",
+          "ratelimit-remaining": "919",
+          "ratelimit-reset": "5"
+        }
       },
-      "ms": 78.00370798213407
+      "ms": 140.58883301913738
     },
     {
       "id": "2.1",
@@ -86,7 +90,7 @@
           "sme"
         ]
       },
-      "ms": 1.2587499804794788
+      "ms": 3.07691702619195
     },
     {
       "id": "2.2",
@@ -94,23 +98,31 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 4.101083031855524
+      "ms": 4.019874962978065
     },
     {
       "id": "2.3",
       "name": "Config import validate \u2014 malformed entity flagged, not 500",
-      "status": "fail",
-      "detail": "expected 200/422, got 500: Internal Server Error",
+      "status": "pass",
+      "detail": "",
       "data": null,
-      "ms": 4.103624960407615
+      "ms": 3.3883750438690186
     },
     {
       "id": "3.1",
       "name": "Variable draft executes in sandbox",
-      "status": "fail",
-      "detail": "ReadError: [Errno 54] Connection reset by peer",
-      "data": null,
-      "ms": 8.213000022806227
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "result": {
+          "value": 42,
+          "error": null,
+          "latency_ms": 0.22,
+          "passed": true,
+          "tested_at": "2026-08-29T15:19:52Z"
+        }
+      },
+      "ms": 3.0640829354524612
     },
     {
       "id": "3.2.1",
@@ -118,7 +130,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 1.9029169925488532
+      "ms": 1.2235830072313547
     },
     {
       "id": "3.2.2",
@@ -126,7 +138,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 0.612374977208674
+      "ms": 1.1515420628711581
     },
     {
       "id": "3.2.3",
@@ -134,7 +146,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 0.6068749935366213
+      "ms": 0.8528749458491802
     },
     {
       "id": "3.2.4",
@@ -142,7 +154,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 0.678334035910666
+      "ms": 0.8717500604689121
     },
     {
       "id": "3.2.5",
@@ -150,7 +162,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 0.5172499804757535
+      "ms": 0.8237919537350535
     },
     {
       "id": "3.2.6",
@@ -158,7 +170,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 0.5421250243671238
+      "ms": 0.7520830258727074
     },
     {
       "id": "3.2.7",
@@ -166,7 +178,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 0.5203330074436963
+      "ms": 0.6128749810159206
     },
     {
       "id": "3.3",
@@ -178,7 +190,7 @@
         "status": 422,
         "body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"source_id\"],\"msg\":\"Field required\",\"input\":{\"code\":\"while True: pass\\nresult = 1\",\"payload\":{}}}]}"
       },
-      "ms": 0.6166669772937894
+      "ms": 0.9197089821100235
     },
     {
       "id": "3.4",
@@ -194,7 +206,7 @@
           "result"
         ]
       },
-      "ms": 24.28454195614904
+      "ms": 19.087124965153635
     },
     {
       "id": "3.10",
@@ -204,7 +216,7 @@
       "data": {
         "count": 0
       },
-      "ms": 1.3377920258790255
+      "ms": 1.4557080576196313
     },
     {
       "id": "4.1",
@@ -214,9 +226,9 @@
       "data": {
         "outcome": "approve",
         "score": 710,
-        "latency_ms": 52.131
+        "latency_ms": 23.12
       },
-      "ms": 56.869457999709994
+      "ms": 27.32724999077618
     },
     {
       "id": "4.1b",
@@ -224,7 +236,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 1.1804999667219818
+      "ms": 1.509416033513844
     },
     {
       "id": "4.4",
@@ -232,7 +244,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 89.48195801349357
+      "ms": 98.55674998834729
     },
     {
       "id": "4.7",
@@ -257,15 +269,15 @@
           710
         ]
       },
-      "ms": 115.61600002460182
+      "ms": 146.8243330018595
     },
     {
       "id": "4.9",
       "name": "Batch decide",
       "status": "fail",
-      "detail": "422: {\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"targetType\"],\"msg\":\"Field required\",\"input\":{\"policyId\":\"policy_instant_personal_loan\",\"payloads\":[{\"age\":30},{\"age\":40},{\"age\":50}]}}]}",
+      "detail": "expected 3 results, got 0",
       "data": null,
-      "ms": 1.748209004290402
+      "ms": 20.73254098650068
     },
     {
       "id": "5.1",
@@ -277,7 +289,7 @@
         "traced": 9,
         "missing": []
       },
-      "ms": 19.45662498474121
+      "ms": 28.56470795813948
     },
     {
       "id": "5.2",
@@ -297,37 +309,37 @@
           "group": "AND"
         }
       },
-      "ms": 18.162209016736597
+      "ms": 25.479958043433726
     },
     {
       "id": "5.3",
       "name": "Decision is persisted and retrievable by id",
-      "status": "warn",
-      "detail": "/decide response carries no decision id (keys=['policy_id', 'outcome', 'score', 'variables', 'rule_results', 'scorecard_result', 'trace', 'latency_ms']) \u2014 cannot deep-link a case",
+      "status": "fail",
+      "detail": "reason-codes -> 404",
       "data": null,
-      "ms": 18.91558396164328
+      "ms": 26.741915964521468
     },
     {
       "id": "6.1",
       "name": "Decision history queryable (case-wise)",
       "status": "fail",
-      "detail": "expected >=3 decisions for e2e-hist-dcd324fb, found 0",
+      "detail": "expected >=3 decisions for e2e-hist-a63e395c, found 1",
       "data": {
-        "returned": 18,
-        "matching_marker": 0
+        "returned": 1,
+        "matching_marker": 1
       },
-      "ms": 2081.3082910026424
+      "ms": 2076.877332990989
     },
     {
       "id": "6.2",
       "name": "Audit log records mutations (who/what/when)",
       "status": "fail",
-      "detail": "new rule e2e_audit_c9f8a1 not found in audit trail",
+      "detail": "new rule e2e_audit_d98b79 not found in audit trail",
       "data": {
         "create_status": 200,
-        "body": "{\"id\":\"e2e_audit_probe\",\"name\":\"E2E Audit Probe\",\"nodes\":[{\"id\":\"c1\",\"type\":\"condition\",\"variable\":\"age\",\"operator\":\">=\",\"value\":\"18\",\"label\":\"Condition\"}],\"tree\":{\"type\":\"group\",\"id\":\"g\",\"logic\":\"AND"
+        "body": "{\"id\":\"e2e_audit_d98b79\",\"name\":\"E2E Audit Probe\",\"nodes\":[{\"id\":\"c1\",\"type\":\"condition\",\"variable\":\"age\",\"operator\":\">=\",\"value\":\"18\",\"label\":\"Condition\"}],\"tree\":{\"type\":\"group\",\"id\":\"g\",\"logic\":\"AN"
       },
-      "ms": 1062.6887080143206
+      "ms": 1018.4223329415545
     },
     {
       "id": "6.6",
@@ -337,7 +349,7 @@
       "data": {
         "decide": 200
       },
-      "ms": 1541.834417032078
+      "ms": 1600.454792031087
     }
   ]
 }
