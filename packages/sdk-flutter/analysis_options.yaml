@@ -6,6 +6,14 @@ analyzer:
     prefer_single_quotes: ignore
     unnecessary_library_name: ignore
     unnecessary_question_mark: ignore
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
 
 linter:
   rules:

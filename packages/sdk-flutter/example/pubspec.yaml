@@ -7,6 +7,8 @@ dependencies:
     sdk: flutter
   rulemind:
     path: ../
+  rulemind_ui:
+    path: ../../flutter-ui
   shared_preferences: ^2.2.0
 dev_dependencies:
   flutter_test:

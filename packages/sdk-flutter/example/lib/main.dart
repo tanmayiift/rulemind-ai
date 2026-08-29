@@ -1,6 +1,7 @@
 import 'dart:ui' show FontVariation;
 
 import 'package:flutter/material.dart';
+import 'package:rulemind_ui/rulemind_ui.dart';
 import 'package:rulemind/rulemind.dart';
 
 import 'state/app_state.dart';
@@ -431,18 +432,15 @@ class _HomeDashboardView extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
-        for (final List<Map<String, dynamic>> row in _chunk(state.logMetrics.cast<Map<String, dynamic>>(), 2)) ...<Widget>[
-          Row(
-            children: <Widget>[
-              for (final Map<String, dynamic> metric in row) ...<Widget>[
-                Expanded(child: _metricCard(context, metric)),
-                if (metric != row.last) const SizedBox(width: 12),
-              ],
-              if (row.length == 1) const Expanded(child: SizedBox.shrink()),
-            ],
-          ),
-          const SizedBox(height: 12),
-        ],
+        // Column count follows the width it is handed rather than a hardcoded 2,
+        // which wasted space on tablets and crushed the cards at 320dp.
+        RmAdaptiveGrid(
+          children: <Widget>[
+            for (final Map<String, dynamic> metric in state.logMetrics.cast<Map<String, dynamic>>())
+              _metricCard(context, metric),
+          ],
+        ),
+        const SizedBox(height: 12),
         const SizedBox(height: 8),
         for (final Map<String, dynamic> journey in state.journeys.cast<Map<String, dynamic>>()) ...<Widget>[
           _journeyDashboardCard(context, state, journey),
@@ -477,17 +475,32 @@ class _ScenarioHubView extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: <Widget>[
-                            Text(scenario['title'] as String, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
-                            Text('${scenario['badge']} • expects ${scenario['expectedOutcome']}/${scenario['expectedStatus']}'),
+                            Text(scenario['title'] as String,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+                            Text('${scenario['badge']} • expects ${scenario['expectedOutcome']}/${scenario['expectedStatus']}',
+                                maxLines: 2, overflow: TextOverflow.ellipsis),
                           ],
                         ),
                       ),
-                      Chip(label: Text(scenario['badge'] as String)),
+                      const SizedBox(width: 8),
+                      // Flexible, not bare: the chip's label is data-driven, so at
+                      // large text scales its intrinsic width alone can exceed the
+                      // card. The badge is already repeated in the subtitle, so
+                      // truncating it loses nothing.
+                      Flexible(
+                        child: Chip(
+                          label: Text(scenario['badge'] as String,
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -877,10 +890,13 @@ class _OutcomeView extends StatelessWidget {
             context,
             Row(
               children: <Widget>[
-                SizedBox(
-                  width: 120,
-                  height: 120,
-                  child: Stack(
+                // Shrinks with the card instead of pinning 120px and squeezing
+                // the score text out of the row at narrow widths.
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 120, maxHeight: 120),
+                  child: AspectRatio(
+                    aspectRatio: 1,
+                    child: Stack(
                     alignment: Alignment.center,
                     children: <Widget>[
                       CircularProgressIndicator(
@@ -896,6 +912,7 @@ class _OutcomeView extends StatelessWidget {
                         ],
                       ),
                     ],
+                    ),
                   ),
                 ),
                 const SizedBox(width: 16),
@@ -1082,29 +1099,33 @@ class _SandboxView extends StatelessWidget {
               Text('Input Fields', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
               const SizedBox(height: 8),
               for (int i = 0; i < state.sandboxFields.length; i++) ...<Widget>[
-                Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: TextFormField(
-                        key: ValueKey<String>('sandbox_key_$i'),
-                        initialValue: state.sandboxFields[i]['key'],
-                        onChanged: (String v) => state.updateSandboxField(i, key: v),
-                        decoration: const InputDecoration(labelText: 'Key'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextFormField(
-                        key: ValueKey<String>('sandbox_value_$i'),
-                        initialValue: state.sandboxFields[i]['value'],
-                        onChanged: (String v) => state.updateSandboxField(i, value: v),
-                        decoration: const InputDecoration(labelText: 'Value'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    DropdownButton<String>(
+                // Four controls in one Row is unworkable below ~600dp or at
+                // large text: the DropdownButton sizes to its widest item and
+                // is not flexible, so it takes width from both fields, and the
+                // IconButton then loses its 44x44 tap target. Below the compact
+                // breakpoint the key/value fields take a line of their own and
+                // the type selector and delete button sit underneath.
+                Builder(
+                  builder: (BuildContext context) {
+                    final Widget keyField = TextFormField(
+                      key: ValueKey<String>('sandbox_key_$i'),
+                      initialValue: state.sandboxFields[i]['key'],
+                      onChanged: (String v) => state.updateSandboxField(i, key: v),
+                      decoration: const InputDecoration(labelText: 'Key'),
+                    );
+                    final Widget valueField = TextFormField(
+                      key: ValueKey<String>('sandbox_value_$i'),
+                      initialValue: state.sandboxFields[i]['value'],
+                      onChanged: (String v) => state.updateSandboxField(i, value: v),
+                      decoration: const InputDecoration(labelText: 'Value'),
+                    );
+                    final Widget typeSelector = DropdownButton<String>(
                       key: ValueKey<String>('sandbox_type_$i'),
                       value: state.sandboxFields[i]['type'] ?? 'string',
+                      // isExpanded lets the button use the width Flexible gives
+                      // it and ellipsise internally; without it the internal
+                      // label+arrow Row overflows the constraint by ~49px.
+                      isExpanded: true,
                       items: const <DropdownMenuItem<String>>[
                         DropdownMenuItem<String>(value: 'string', child: Text('string')),
                         DropdownMenuItem<String>(value: 'number', child: Text('number')),
@@ -1113,13 +1134,44 @@ class _SandboxView extends StatelessWidget {
                       onChanged: (String? v) {
                         if (v != null) state.updateSandboxField(i, type: v);
                       },
-                    ),
-                    IconButton(
+                    );
+                    final Widget removeButton = IconButton(
                       key: ValueKey<String>('sandbox_remove_$i'),
                       icon: const Icon(Icons.clear),
+                      tooltip: 'Remove field',
                       onPressed: () => state.removeSandboxField(i),
-                    ),
-                  ],
+                    );
+
+                    if (context.rmIsCompact || context.rmIsLargeText) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          keyField,
+                          const SizedBox(height: 8),
+                          valueField,
+                          const SizedBox(height: 8),
+                          Row(
+                            children: <Widget>[
+                              Flexible(child: typeSelector),
+                              const Spacer(),
+                              removeButton,
+                            ],
+                          ),
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      children: <Widget>[
+                        Expanded(child: keyField),
+                        const SizedBox(width: 8),
+                        Expanded(child: valueField),
+                        const SizedBox(width: 8),
+                        Flexible(child: typeSelector),
+                        removeButton,
+                      ],
+                    );
+                  },
                 ),
                 const SizedBox(height: 8),
               ],
@@ -1133,25 +1185,41 @@ class _SandboxView extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
-        Row(
-          children: <Widget>[
-            Expanded(
-              child: FilledButton.icon(
-                key: const ValueKey<String>('sandbox_evaluate'),
-                onPressed: () => state.evaluateSandbox(),
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Run Evaluation'),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: OutlinedButton(
-                key: const ValueKey<String>('sandbox_clear'),
-                onPressed: state.clearSandbox,
-                child: const Text('Clear'),
-              ),
-            ),
-          ],
+        // Expanded is not enough here: FilledButton.icon has an intrinsic
+        // minimum width (icon plus label) that it cannot shrink below, so on a
+        // 320dp screen the two halves overflow their own row. Stack them when
+        // there is not enough width to sit side by side.
+        Builder(
+          builder: (BuildContext context) {
+            final Widget run = FilledButton.icon(
+              key: const ValueKey<String>('sandbox_evaluate'),
+              onPressed: () => state.evaluateSandbox(),
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('Run Evaluation', maxLines: 1, overflow: TextOverflow.ellipsis),
+            );
+            final Widget clear = OutlinedButton(
+              key: const ValueKey<String>('sandbox_clear'),
+              onPressed: state.clearSandbox,
+              child: const Text('Clear', maxLines: 1, overflow: TextOverflow.ellipsis),
+            );
+            if (context.rmIsCompact || context.rmIsLargeText) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  run,
+                  const SizedBox(height: 8),
+                  clear,
+                ],
+              );
+            }
+            return Row(
+              children: <Widget>[
+                Expanded(child: run),
+                const SizedBox(width: 12),
+                Expanded(child: clear),
+              ],
+            );
+          },
         ),
         if (state.sandboxError != null) ...<Widget>[
           const SizedBox(height: 12),
@@ -1449,13 +1517,6 @@ void _goForwardInJourney(AppState state, Map<String, dynamic> journey, Map<Strin
   }
 }
 
-List<List<T>> _chunk<T>(List<T> items, int size) {
-  final List<List<T>> chunks = <List<T>>[];
-  for (int i = 0; i < items.length; i += size) {
-    chunks.add(items.sublist(i, i + size > items.length ? items.length : i + size));
-  }
-  return chunks;
-}
 
 extension<T> on Iterable<T> {
   T? get firstOrNull => isEmpty ? null : first;

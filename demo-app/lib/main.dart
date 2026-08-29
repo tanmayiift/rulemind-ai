@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:rulemind_ui/rulemind_ui.dart';
 
 import 'engine.dart';
 import 'journeys.dart';
@@ -254,7 +255,7 @@ class _JourneyScreenState extends State<JourneyScreen> {
       ),
       body: ListView(
         controller: _scroll,
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
+        padding: RmScreenPadding.of(context),
         children: [
           Text('SCENARIOS', style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
           const SizedBox(height: 8),
@@ -279,22 +280,35 @@ class _JourneyScreenState extends State<JourneyScreen> {
             Text(_active!.blurb, style: t.textTheme.bodySmall?.copyWith(color: t.hintColor, height: 1.35)),
           ],
           const SizedBox(height: 18),
-          Row(children: [
-            Text('INPUTS', style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
-            const Spacer(),
-            SegmentedButton<EvalMode>(
+          RmLabeledRow(
+            label: Text('INPUTS',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
+            trailing: SegmentedButton<EvalMode>(
               style: const ButtonStyle(visualDensity: VisualDensity.compact),
-              segments: const [
-                ButtonSegment(value: EvalMode.server, label: Text('Server'), icon: Icon(Icons.cloud_outlined, size: 15)),
-                ButtonSegment(value: EvalMode.onDevice, label: Text('On-device'), icon: Icon(Icons.smartphone, size: 15)),
+              // Icons are dropped once text is scaled up: at that point the two
+              // labels alone consume the available width.
+              showSelectedIcon: false,
+              segments: <ButtonSegment<EvalMode>>[
+                ButtonSegment(
+                  value: EvalMode.server,
+                  label: const Text('Server'),
+                  icon: context.rmIsLargeText ? null : const Icon(Icons.cloud_outlined, size: 15),
+                ),
+                ButtonSegment(
+                  value: EvalMode.onDevice,
+                  label: const Text('On-device'),
+                  icon: context.rmIsLargeText ? null : const Icon(Icons.smartphone, size: 15),
+                ),
               ],
-              selected: {_mode},
-              onSelectionChanged: (s) => setState(() {
+              selected: <EvalMode>{_mode},
+              onSelectionChanged: (Set<EvalMode> s) => setState(() {
                 _mode = s.first;
                 _result = null;
               }),
             ),
-          ]),
+          ),
           const SizedBox(height: 8),
           Card(
             elevation: 0,
@@ -314,12 +328,16 @@ class _JourneyScreenState extends State<JourneyScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          if (_result != null) _ResultCard(result: _result!, expected: _active?.expected, color: j.color),
+          if (_result != null) ResultCard(result: _result!, expected: _active?.expected, color: j.color),
         ],
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+      // A bottomNavigationBar rather than a floatingActionButton: Scaffold then
+      // reserves the space itself, so the body's bottom padding no longer needs
+      // a hand-tuned constant that was only ever right on one device. It also
+      // makes the button a real hit target -- as a centre-floating FAB over a
+      // scrolling body, synthesised taps were absorbed by the list.
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         child: SizedBox(
           width: double.infinity,
           child: FilledButton.icon(
@@ -385,8 +403,8 @@ class _FieldRow extends StatelessWidget {
   }
 }
 
-class _ResultCard extends StatelessWidget {
-  const _ResultCard({required this.result, required this.expected, required this.color});
+class ResultCard extends StatelessWidget {
+  const ResultCard({super.key, required this.result, required this.expected, required this.color});
   final EvalResult result;
   final String? expected;
   final Color color;
@@ -422,49 +440,64 @@ class _ResultCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(color: c.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)),
-                child: Text(result.outcome.toUpperCase(),
-                    style: t.textTheme.titleSmall?.copyWith(color: c, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
-              ),
-              const Spacer(),
-              if (result.score != null)
-                Text('Score ${result.score}',
-                    style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
-            ]),
-            const SizedBox(height: 8),
-            Row(children: [
-              Icon(result.mode == EvalMode.server ? Icons.cloud_outlined : Icons.smartphone,
-                  size: 14, color: t.hintColor),
-              const SizedBox(width: 5),
-              Text(result.mode == EvalMode.server ? 'Server' : 'On-device',
-                  style: t.textTheme.labelSmall?.copyWith(color: t.hintColor)),
-              if (result.latencyMs != null) ...[
-                const SizedBox(width: 10),
-                Icon(Icons.timer_outlined, size: 14, color: t.hintColor),
-                const SizedBox(width: 4),
-                Text('${result.latencyMs} ms', style: t.textTheme.labelSmall?.copyWith(color: t.hintColor)),
+            // Wrap, not Row+Spacer: the outcome chip and the score are both
+            // variable-width, so there is no slack to give a Spacer.
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: <Widget>[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(color: c.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)),
+                  child: Text(result.outcome.toUpperCase(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: t.textTheme.titleSmall?.copyWith(color: c, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+                ),
+                if (result.score != null)
+                  Text('Score ${result.score}',
+                      maxLines: 1,
+                      style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
               ],
-              const Spacer(),
-              if (expected != null)
-                Row(children: [
-                  Icon(matches ? Icons.check_circle : Icons.warning_amber_rounded,
-                      size: 15, color: matches ? const Color(0xFF15803D) : const Color(0xFFB45309)),
-                  const SizedBox(width: 4),
-                  Text(matches ? 'as expected' : 'expected $expected',
-                      style: t.textTheme.labelSmall?.copyWith(
-                          color: matches ? const Color(0xFF15803D) : const Color(0xFFB45309))),
-                ]),
-            ]),
+            ),
+            const SizedBox(height: 8),
+            // Each metadatum is an indivisible icon+label pair, so they wrap as
+            // units rather than being torn apart mid-pair.
+            Wrap(
+              spacing: 12,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: <Widget>[
+                _MetaChip(
+                  icon: result.mode == EvalMode.server ? Icons.cloud_outlined : Icons.smartphone,
+                  label: result.mode == EvalMode.server ? 'Server' : 'On-device',
+                  color: t.hintColor,
+                  style: t.textTheme.labelSmall,
+                ),
+                if (result.latencyMs != null)
+                  _MetaChip(
+                    icon: Icons.timer_outlined,
+                    label: '${result.latencyMs} ms',
+                    color: t.hintColor,
+                    style: t.textTheme.labelSmall,
+                  ),
+                if (expected != null)
+                  _MetaChip(
+                    icon: matches ? Icons.check_circle : Icons.warning_amber_rounded,
+                    label: matches ? 'as expected' : 'expected $expected',
+                    color: matches ? const Color(0xFF15803D) : const Color(0xFFB45309),
+                    style: t.textTheme.labelSmall,
+                  ),
+              ],
+            ),
             const Divider(height: 24),
             Text('WHY', style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
             const SizedBox(height: 6),
             if (result.gates.isEmpty)
               Text('No rule gates reported.', style: t.textTheme.bodySmall?.copyWith(color: t.hintColor))
             else
-              ...result.gates.map((g) => _GateTile(gate: g)),
+              ...result.gates.map((g) => GateTile(gate: g)),
           ],
         ),
       ),
@@ -472,8 +505,8 @@ class _ResultCard extends StatelessWidget {
   }
 }
 
-class _GateTile extends StatelessWidget {
-  const _GateTile({required this.gate});
+class GateTile extends StatelessWidget {
+  const GateTile({super.key, required this.gate});
   final GateResult gate;
 
   @override
@@ -506,6 +539,40 @@ class _GateTile extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// An icon + label pair that stays together when its parent wraps.
+class _MetaChip extends StatelessWidget {
+  const _MetaChip({
+    required this.icon,
+    required this.label,
+    required this.color,
+    this.style,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color? color;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style?.copyWith(color: color),
+          ),
+        ),
+      ],
     );
   }
 }
