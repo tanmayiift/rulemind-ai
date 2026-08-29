@@ -1,6 +1,6 @@
 # RuleMind AI — End-to-End Test Plan & Findings Log
 
-**Living document.** Last full pass: 2026-08-27, against **PostgreSQL 16** (not just SQLite). Environment: macOS 26.6 (Darwin 25.6, arm64) · Python 3.11.16 · Node 20.20.2 ·
+**Living document.** Last full pass: 2026-08-27, against **PostgreSQL 16** and a **full Docker stack**, with the **AI layer validated against a live provider key**. Environment: macOS 26.6 (Darwin 25.6, arm64) · Python 3.11.16 · Node 20.20.2 ·
 pnpm 9.15.4 · Flutter 3.47.1 / Dart 3.13.1 · Xcode 26.6 · CocoaPods 1.11.3 · **no Docker**.
 
 Legend: ✅ pass · ⚠️ pass-with-finding · ❌ fail · ⛔ blocked · ⬜ not run
@@ -147,11 +147,87 @@ A single worker on Postgres plateaus at ~47-51 rps and holds there; SQLite fell 
 45 rps to 28 rps over the same range. Throughput scales with worker **processes**,
 not with request concurrency. Outcome distributions were byte-identical throughout.
 
+## 12. AI layer — validated against a live Anthropic key
+| # | Case | Result |
+|---|------|--------|
+| 12.1 | Connectivity (`/ai/test`) | ✅ |
+| 12.2 | Live model list supersedes the curated fallback | ✅ 11 models incl. `claude-fable-5`, `claude-opus-4-7` |
+| 12.3 | `generate-rule` — valid draft, real variable ids | ✅ |
+| 12.4 | `generate-policy` — valid steps, real rule ids | ✅ |
+| 12.5 | `explain-decision` — reason codes match the gates that fired | ✅ |
+| 12.6 | `generate-predictor` — valid scorecard | ✅ |
+| 12.7 | `analyze-experiment` — real variant statistics | ✅ |
+| 12.8 | `analyze-rejections` | ✅ (was a **500** — truncated JSON, fixed) |
+| 12.9 | Scope guardrail refuses off-topic **without a provider call** | ✅ 0.00 s, usage unchanged |
+| 12.10 | Usage accounting vs real token counts | ✅ **exact** — $0.050757 for 7,079 in / 1,968 out |
+| 12.11 | Budget guardrail | ✅ 402 once exceeded |
+| 12.12 | Live suite `tests/test_ai_live.py` (key-gated) | ✅ 8/8 |
+
+### Accuracy test — 500 simulated claims, known ground truth
+Constructed a 62.4% reject rate with a deliberate dominant driver, then asked the
+product's own "Explain rejections" feature (API **and** the UI's AI Copilot) to find it.
+
+| Ground truth (by construction) | AI reported | |
+|---|---|---|
+| 266 rejects — prior claims > 2 | 266 fails · 53.2% of claims · 65.5% of outcomes | ✅ exact |
+| 94 reviews — missing documents | 94 fails · 18.8% · 23.2% | ✅ exact |
+| 46 rejects — policy age < 3 months | 46 fails · 9.2% · 11.3% | ✅ exact |
+| 94 clean approvals | approve: 94 | ✅ exact |
+
+It named **"Prior Claims (12m) <= 2"** as the dominant driver — correct — and reported
+claim amount as a *non*-factor rather than inventing one.
+
+## 13. Docker — full stack, no sudo
+Docker Engine 29.5.2 via Colima + Lima on Apple's Virtualization framework (Docker
+Desktop needs admin; this does not). `docker compose up --build` from an empty volume:
+
+| Service | Status |
+|---|---|
+| api · db · redis · web · worker | ✅ all healthy |
+
+All 16 journey scenarios correct against the containerised stack. Two startup bugs
+found and fixed that **no repo-based test could reach** — see F-30 and F-31.
+
+## 14. Frontend — element-level audit against the containerised production build
+Not "does the page render" but every interactive control on every route, at three
+viewports, in both themes.
+
+| Check | Before | After |
+|---|---|---|
+| Routes with element findings | 8 / 36 | **0 / 36** |
+| Controls with no accessible name | 24 (8 buttons, 16 inputs) | **0** |
+| Layout/theme problems across 3 viewports | 1 genuine | **0** |
+| Keyboard focus ring on sampled controls | — | ✅ all |
+| Dark mode via the in-app toggle | — | ✅ applies |
+
+**F-32 — 24 controls had no accessible name.** Connector on/off switches and variable
+source-filter chips are icon-only, so a screen reader announced 8 unnamed buttons with
+no state. Sixteen inputs across `/batch`, `/collab`, `/exports`, `/rules`, `/settings`
+and `/test-console` had `<label>` elements sitting *beside* them with no `htmlFor`/`id`
+pairing, which assistive tech does not associate. WCAG 2.1 4.1.2 and 3.3.2.
+
+**F-33 — the Decision Explorer table was clipped on mobile.** Its container used
+`overflow: hidden` while the table needs ~429 px in a ~341 px column at 375 px wide, so
+the Latency column was cut off with no way to scroll to it and the page did not scroll
+either. Now scrolls inside its own container.
+
+Two findings my first audit reported turned out to be **false positives**, checked
+before reporting: the "spill" on 13 mobile routes was entirely content inside
+`overflow-x: auto` containers (54/54 on `/simulation`, genuine = 0) — correct
+behaviour for wide tables; and dark mode "not applying" was the app deliberately using
+an explicit toggle rather than following `prefers-color-scheme`. Both audit scripts
+were corrected so they do not mislead the next person.
+
+Flows driven in the browser against the Docker build: environment switching filters
+DEV/PROD correctly, a policy trace renders the full explainability chain
+(connector → per-condition rule results with actual values → scorecard), dark mode
+holds legibility, and report preview returns real rows.
+
 ---
 
 # Findings
 
-**38 found · 37 fixed · 1 open.** Every fix was verified against the running stack and
+**46 found · 45 fixed · 1 open.** Every fix was verified against the running stack and
 the full regression suite re-run afterwards.
 
 ### Shipped — PR #114 · setup & configuration

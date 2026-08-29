@@ -177,12 +177,16 @@ export default function CollabEditorPage() {
       <div style={{ ...card, padding: 12, marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <label style={{ fontSize: 12, color: theme.muted }}>Document</label>
         <input
+          // The <label> above is visual only (no htmlFor/id pairing), so without this
+          // the field has no accessible name.
+          aria-label="Document id"
           value={docId}
           onChange={(e) => setDocId(e.target.value)}
           style={{ border: "1px solid " + theme.border, background: theme.bg, color: theme.text, borderRadius: 8, padding: "6px 10px", fontSize: 13, fontFamily: "var(--font-mono)" }}
         />
         <label style={{ fontSize: 12, color: theme.muted, marginLeft: 8 }}>You</label>
         <input
+          aria-label="Your name (shown to other editors)"
           value={actor}
           onChange={(e) => { setActor(e.target.value); window.localStorage.setItem("rm_collab_actor", e.target.value); }}
           style={{ border: "1px solid " + theme.border, background: theme.bg, color: colorFor(actor), fontWeight: 700, borderRadius: 8, padding: "6px 10px", fontSize: 13, width: 140 }}
@@ -231,6 +235,7 @@ export default function CollabEditorPage() {
                 </label>
                 {f.kind === "select" ? (
                   <select
+                    aria-label={f.label}
                     data-testid={`field-${f.key}`} disabled={isTraveling}
                     value={String(shown[f.key] ?? "")}
                     onFocus={() => setCursor(f.key)} onBlur={() => setCursor(null)}
@@ -242,6 +247,7 @@ export default function CollabEditorPage() {
                   </select>
                 ) : (
                   <input
+                    aria-label={f.label}
                     data-testid={`field-${f.key}`} disabled={isTraveling}
                     type={f.kind === "number" ? "number" : "text"}
                     value={String(shown[f.key] ?? "")}

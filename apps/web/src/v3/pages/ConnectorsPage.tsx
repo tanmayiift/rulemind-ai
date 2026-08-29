@@ -173,6 +173,13 @@ export function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => v
                 <StatusBadge status={connector.is_active ? "prod" : "uat"} />
                 <button
                   type="button"
+                  // The control is a bare styled <button> with no text, so a screen
+                  // reader announced only "button" — no name, and no way to tell
+                  // whether the connector is currently on. role/aria-checked give it
+                  // switch semantics; aria-label says which connector it belongs to.
+                  role="switch"
+                  aria-checked={connector.is_active}
+                  aria-label={`${connector.name} — ${connector.is_active ? "active, click to deactivate" : "inactive, click to activate"}`}
                   data-testid={"connector-toggle-" + connector.id}
                   disabled={busyId === connector.id}
                   onClick={() => updateConnector(connector, { is_active: !connector.is_active })}

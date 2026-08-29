@@ -319,7 +319,7 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
           <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Rule tester</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <InlineSelect value={ruleId} onChange={(event) => setRuleId(event.target.value)} style={{ flex: 1 }}>
+            <InlineSelect aria-label="Rule to test" value={ruleId} onChange={(event) => setRuleId(event.target.value)} style={{ flex: 1 }}>
               {environmentRules.map((rule) => (
                 <option key={rule.id} value={rule.id}>
                   {rule.name}
@@ -348,7 +348,7 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
           <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Policy trace</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <InlineSelect value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ flex: 1 }}>
+            <InlineSelect aria-label="Policy to test" value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ flex: 1 }}>
               {environmentPolicies.map((policy) => (
                 <option key={policy.id} value={policy.id}>
                   {policy.name}
@@ -372,13 +372,13 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
           <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Batch simulation</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <InlineSelect value={batchTargetType} onChange={(event) => setBatchTargetType(event.target.value as "rule" | "policy" | "decide")} style={{ width: 140 }}>
+            <InlineSelect aria-label="Batch target type" value={batchTargetType} onChange={(event) => setBatchTargetType(event.target.value as "rule" | "policy" | "decide")} style={{ width: 140 }}>
               <option value="rule">Rule</option>
               <option value="policy">Policy</option>
               <option value="decide">Decide</option>
             </InlineSelect>
             {batchTargetType === "rule" ? (
-              <InlineSelect value={ruleId} onChange={(event) => setRuleId(event.target.value)} style={{ flex: 1 }}>
+              <InlineSelect aria-label="Rule to test" value={ruleId} onChange={(event) => setRuleId(event.target.value)} style={{ flex: 1 }}>
                 {environmentRules.map((rule) => (
                   <option key={rule.id} value={rule.id}>
                     {rule.name}
@@ -386,7 +386,7 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
                 ))}
               </InlineSelect>
             ) : (
-              <InlineSelect value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ flex: 1 }}>
+              <InlineSelect aria-label="Policy to test" value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ flex: 1 }}>
                 {environmentPolicies.map((policy) => (
                   <option key={policy.id} value={policy.id}>
                     {policy.name}
@@ -406,7 +406,7 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
 
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
           <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Decision API simulation</div>
-          <InlineSelect value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ maxWidth: 280 }}>
+          <InlineSelect aria-label="Policy for the batch run" value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ maxWidth: 280 }}>
             {environmentPolicies.map((policy) => (
               <option key={policy.id} value={policy.id}>
                 {policy.name}

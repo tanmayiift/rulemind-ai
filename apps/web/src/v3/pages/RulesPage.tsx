@@ -1027,7 +1027,7 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
         <div style={{ display: "grid", gridTemplateRows: "auto auto 1fr auto auto", flex: 1 }}>
           <div style={{ padding: 16, borderBottom: "1px solid " + theme.border, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <InlineInput value={ruleName} onChange={(event) => setRuleName(event.target.value)} style={{ minWidth: 220 }} data-testid="rule-name" />
+              <InlineInput aria-label="Rule name" value={ruleName} onChange={(event) => setRuleName(event.target.value)} style={{ minWidth: 220 }} data-testid="rule-name" />
               <span style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{activeNodeCount} nodes</span>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
