@@ -135,8 +135,12 @@ export default function DecisionExplorerPage() {
 
       {!loading && decisions.length > 0 ? (
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.3fr 1fr", gap: 16, alignItems: "start" }}>
-          <div style={{ ...card, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          {/* overflow-x must be auto, not hidden: the table needs ~429px and the
+              column is ~341px on a 375px screen, so `hidden` silently clipped the
+              Latency column with no way to scroll to it. Wide content scrolls inside
+              its own container; the page itself still must not scroll sideways. */}
+          <div style={{ ...card, overflowY: "hidden", overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 420 }}>
               <thead>
                 <tr>
                   {["ID", "Policy", "Outcome", "Latency"].map((h) => (

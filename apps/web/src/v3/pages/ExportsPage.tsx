@@ -175,6 +175,7 @@ export function ExportsPage(props: { data: BootstrapPayload; refresh: () => void
         {importSummary ? <InfoBanner message={"Imported " + importSummary} toneKey="success" /> : null}
         <input
           type="file"
+          aria-label="Import a configuration bundle (JSON)"
           accept=".json,application/json"
           data-testid="import-json"
           onChange={(event) => {

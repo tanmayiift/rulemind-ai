@@ -344,6 +344,10 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
                 key={connector.id}
                 type="button"
                 onClick={() => setActiveConnectorFilter(connector.id)}
+                // Icon-only chip: without these it announces as an unnamed button and
+                // gives no indication of which filter is active.
+                aria-label={`Filter variables by ${connector.name}`}
+                aria-pressed={activeConnectorFilter === connector.id}
                 data-testid={"variable-filter-" + connector.id}
                 style={{
                   padding: isMobile ? "8px 12px" : "4px 8px",
