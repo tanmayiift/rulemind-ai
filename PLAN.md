@@ -1,6 +1,6 @@
 # RuleMind — execution plan
 
-**Status:** `35/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
+**Status:** `36/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
@@ -122,7 +122,7 @@ outbox state leaks between tests.
 
 ## 7 · Track B3–B6 — the revenue blockers *(weeks each)*
 
-- [ ] **7.1** B3 audit immutability (2–3 wk) — **biggest deal-blocker**. `AuditEvent` has no
+- [x] **7.1** B3 audit immutability (2–3 wk) — **biggest deal-blocker**. `AuditEvent` has no
       hash chain and the archiver purges the hot copy, so an operator with DB access can
       rewrite history undetectably. The Alembic revision must mark pre-existing rows
       *pre-chain* rather than fraudulently verified.
