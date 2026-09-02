@@ -340,6 +340,37 @@ class UsageRecord(Base):
     )
 
 
+class IdempotencyRecord(Base):
+    """One remembered response for an Idempotency-Key, scoped to a tenant.
+
+    Keyed per TENANT, not globally: two customers picking the same uuid must not collide, and a
+    globally unique key would let one tenant probe another's key space.
+
+    `request_hash` is what makes this safe rather than merely convenient. Replaying a key with a
+    DIFFERENT body is a client bug -- usually a key generated once and reused across distinct
+    operations -- and returning the first response for it would silently drop the second write.
+    The hash turns that into a loud 422 instead.
+    """
+
+    __tablename__ = "idempotency_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # NULL while the first request is still running -- that is how a concurrent duplicate is
+    # detected and answered 409 rather than being allowed to execute the write a second time.
+    status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        # The claim. Two concurrent requests with one key race to INSERT here; exactly one wins
+        # and executes, the loser gets 409. Without this both would execute the write.
+        UniqueConstraint("tenant_id", "key", name="uq_idempotency_tenant_key"),
+    )
+
+
 class ErrorEvent(Base):
     __tablename__ = "error_events"
 

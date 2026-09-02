@@ -30,7 +30,7 @@ from .logic import (
     nodes_to_tree,
     slugify,
 )
-from .middleware import TenantContextMiddleware
+from .middleware import IdempotencyMiddleware, TenantContextMiddleware
 from .runtime import is_local_dev, redis_client
 from .security_config import verify_production_secrets
 from .sandbox import execute_variable
@@ -87,6 +87,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Registered BEFORE TenantContextMiddleware so it ends up INSIDE it: Starlette makes the
+# last-added middleware outermost, and idempotency must run after auth has passed and after
+# request.state.tenant_id is set (keys are scoped per tenant).
+app.add_middleware(IdempotencyMiddleware, storage=current_storage)
 app.add_middleware(TenantContextMiddleware, storage=current_storage)
 
 # Optional OpenTelemetry tracing (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set).

@@ -17,6 +17,7 @@ from sqlalchemy import case, delete, desc, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
 from .audit_chain import GENESIS_HASH, compute_hash as compute_audit_hash, verify as verify_audit_chain_rows
+from .idempotency import is_expired as is_idempotency_expired, should_remember as should_remember_idempotent
 from .quota import METRIC_DECISIONS
 from sqlalchemy.orm import Session
 
@@ -66,6 +67,7 @@ from .models import (
     Scorecard,
     SdkEvent,
     Setting,
+    IdempotencyRecord,
     Tenant,
     UsageRecord,
     Variable,
@@ -1828,6 +1830,83 @@ class Storage:
             query = select(ErrorEvent).where(ErrorEvent.tenant_id == resolved).order_by(desc(ErrorEvent.created_at)).limit(max(1, min(limit, 1000))).offset(max(0, offset))
             rows = session.scalars(query).all()
             return [self._error_event_to_dict(row) for row in rows]
+
+    # ── idempotency (Track B6) ──────────────────────────────────────────────
+
+    def claim_idempotency_key(self, key: str, request_hash: str,
+                              tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Try to claim `key` for this request. Returns what the caller should do next.
+
+          {"action": "execute"}                           -- we won the claim; run the handler
+          {"action": "replay", "status": .., "body": ..}  -- a completed response exists
+          {"action": "in_flight"}                         -- claimed but unfinished: a
+                                                             concurrent duplicate, answer 409
+          {"action": "mismatch"}                          -- same key, DIFFERENT request: 422
+
+        The claim is an INSERT against uq(tenant_id, key), so two concurrent requests race at
+        the database and exactly one wins. Checking-then-inserting in Python would let both
+        pass the check and execute the write twice -- the exact bug this feature exists to
+        prevent.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            existing = session.scalar(
+                select(IdempotencyRecord).where(
+                    IdempotencyRecord.tenant_id == resolved, IdempotencyRecord.key == key))
+            if existing is not None:
+                if is_idempotency_expired(existing.created_at):
+                    # Expired: the key is free again. Reset in place rather than deleting and
+                    # re-inserting, which would reopen the race the constraint closes.
+                    existing.request_hash = request_hash
+                    existing.status_code = None
+                    existing.response_body = None
+                    existing.created_at = datetime.utcnow()
+                    return {"action": "execute"}
+                if existing.request_hash != request_hash:
+                    return {"action": "mismatch"}
+                if existing.status_code is None:
+                    return {"action": "in_flight"}
+                return {"action": "replay", "status": int(existing.status_code),
+                        "body": existing.response_body or ""}
+            try:
+                session.add(IdempotencyRecord(tenant_id=resolved, key=key,
+                                              request_hash=request_hash,
+                                              created_at=datetime.utcnow()))
+                session.flush()
+                return {"action": "execute"}
+            except IntegrityError:
+                # Lost the race to a concurrent claim between the SELECT and the INSERT.
+                session.rollback()
+                return {"action": "in_flight"}
+
+    def complete_idempotency_key(self, key: str, status_code: int, body: str,
+                                 tenant_id: Optional[str] = None) -> None:
+        """Record the response, or RELEASE the claim if the status must not be remembered."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(
+                select(IdempotencyRecord).where(
+                    IdempotencyRecord.tenant_id == resolved, IdempotencyRecord.key == key))
+            if row is None:
+                return
+            if not should_remember_idempotent(status_code):
+                # A 5xx is usually transient. Deleting frees the key so an honest retry can
+                # actually be retried, instead of being pinned to a failure that has passed.
+                session.delete(row)
+                return
+            row.status_code = int(status_code)
+            row.response_body = body
+
+    def release_idempotency_key(self, key: str, tenant_id: Optional[str] = None) -> None:
+        """Drop a claim outright -- used when the handler raised, so the key is not left
+        permanently in-flight and answering 409 forever."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(
+                select(IdempotencyRecord).where(
+                    IdempotencyRecord.tenant_id == resolved, IdempotencyRecord.key == key))
+            if row is not None:
+                session.delete(row)
 
     # ── usage metering (Track B4) ───────────────────────────────────────────
 

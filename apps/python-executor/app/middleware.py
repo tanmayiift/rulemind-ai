@@ -4,7 +4,7 @@ import os
 from typing import Callable
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .context import (
@@ -17,7 +17,7 @@ from .context import (
 )
 from .mtls import MtlsSettings, evaluate_client_cert
 from .rbac import is_allowed
-from . import rate_limit
+from . import idempotency, rate_limit
 from .session_cookie import (
     CSRF_PROTECTED_METHODS,
     SESSION_COOKIE,
@@ -181,3 +181,85 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
 
 def admin_cookie_secure() -> bool:
     return os.getenv("NODE_ENV", "development") != "development"
+
+
+class IdempotencyMiddleware(BaseHTTPMiddleware):
+    """Replay the original response when a write is retried with the same Idempotency-Key.
+
+    Registered INSIDE TenantContextMiddleware (i.e. added before it, since Starlette makes the
+    last-added middleware outermost) for two reasons: auth must run first, so an unauthenticated
+    request never gets to claim a key; and request.state.tenant_id must already be set, because
+    keys are scoped per tenant.
+    """
+
+    def __init__(self, app, storage) -> None:
+        super().__init__(app)
+        self.storage = storage
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        key = (request.headers.get(idempotency.HEADER) or "").strip()
+        path = request.url.path
+        if (
+            not key
+            or request.method not in idempotency.IDEMPOTENT_METHODS
+            or len(key) > idempotency.MAX_KEY_LENGTH
+            or not (path.startswith("/api/v1") or path.startswith("/sdk/v1"))
+        ):
+            return await call_next(request)
+
+        # Safe to consume: BaseHTTPMiddleware wraps the request in starlette's _CachedRequest,
+        # which caches the body precisely when dispatch() calls .body() and replays it to the
+        # downstream app (starlette/middleware/base.py, verified against 0.41.3). Hand-rolling
+        # a receive-channel replay here is therefore redundant -- but the caching IS a
+        # dependency on that behaviour, so test_the_request_body_still_reaches_the_handler
+        # guards it against a future starlette upgrade rather than trusting it silently.
+        body = await request.body()
+
+        # `storage` is a live accessor, not an instance -- the test harness swaps the object it
+        # returns, so resolving it per request (as TenantContextMiddleware does at :104) is
+        # required, not stylistic. Binding the instance once would write claims to a database
+        # the handler is no longer using.
+        storage = self.storage() if callable(self.storage) else self.storage
+        tenant_id = getattr(request.state, "tenant_id", None)
+        fingerprint = idempotency.request_fingerprint(request.method, path, body)
+        try:
+            claim = storage.claim_idempotency_key(key, fingerprint, tenant_id=tenant_id)
+        except Exception:  # noqa: BLE001 - a broken key store must not take writes offline
+            return await call_next(request)
+
+        if claim["action"] == "replay":
+            return Response(content=claim["body"], status_code=claim["status"],
+                            media_type="application/json",
+                            headers={"Idempotent-Replay": "true"})
+        if claim["action"] == "in_flight":
+            return JSONResponse(status_code=409, content={
+                "detail": {
+                    "error": "idempotency_key_in_flight",
+                    "message": "A request with this Idempotency-Key is still being processed.",
+                }})
+        if claim["action"] == "mismatch":
+            return JSONResponse(status_code=422, content={
+                "detail": {
+                    "error": "idempotency_key_reused",
+                    "message": ("This Idempotency-Key was already used for a different request. "
+                                "Generate a new key per operation."),
+                }})
+
+        try:
+            response = await call_next(request)
+        except Exception:
+            # Release rather than leave the key claimed: a crashed handler must not make the
+            # key answer 409 forever, which would be worse than the original failure.
+            storage.release_idempotency_key(key, tenant_id=tenant_id)
+            raise
+
+        chunks = [chunk async for chunk in response.body_iterator]
+        payload = b"".join(chunks)
+        try:
+            storage.complete_idempotency_key(key, response.status_code,
+                                                  payload.decode("utf-8", "replace"),
+                                                  tenant_id=tenant_id)
+        except Exception:  # noqa: BLE001 - the response is already correct; remembering is best-effort
+            pass
+        return Response(content=payload, status_code=response.status_code,
+                        headers=dict(response.headers), media_type=response.media_type)
