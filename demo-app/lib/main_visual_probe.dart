@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'engine.dart';
 import 'journeys.dart';
 import 'main.dart';
+import 'theme/theme.dart';
 
 void main() {
   const String scaleStr = String.fromEnvironment('RM_TEXT_SCALE', defaultValue: '1.0');
@@ -26,14 +27,62 @@ void main() {
 
   runApp(MaterialApp(
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4F46E5)),
-      useMaterial3: true,
-    ),
+    // The same theme the app ships, not a re-declared seed -- the probe used to
+    // duplicate the brand colour, which is exactly how a probe drifts from the
+    // thing it is supposed to be probing.
+    theme: RmTheme.light,
     builder: (BuildContext context, Widget? child) => MediaQuery(
       data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
       child: child!,
     ),
-    home: JourneyScreen(journey: kJourneys.first, client: RuleMindClient()),
+    home: const String.fromEnvironment('RM_SCREEN') == 'result'
+        ? Scaffold(
+            appBar: AppBar(title: const Text('Motor Claim Triage')),
+            body: ListView(
+              padding: const EdgeInsets.all(16),
+              children: <Widget>[
+                ResultCard(
+                  result: EvalResult(
+                    outcome: 'review',
+                    mode: EvalMode.onDevice,
+                    score: 742,
+                    latencyMs: 2,
+                    serverOnlyStepsSkipped: const <String>['kyc_connector'],
+                    pendingSyncCount: 0,
+                    gates: <GateResult>[
+                      GateResult(
+                        label: 'Documentation complete',
+                        passed: true,
+                        conditions: <ConditionResult>[
+                          ConditionResult(
+                            variable: 'claim_documents_ok',
+                            operator: '==',
+                            threshold: 1,
+                            value: 1,
+                            passed: true,
+                          ),
+                        ],
+                      ),
+                      GateResult(
+                        label: 'Fraud signals',
+                        passed: false,
+                        conditions: <ConditionResult>[
+                          ConditionResult(
+                            variable: 'claim_policy_age_months',
+                            operator: '>=',
+                            threshold: 6,
+                            value: 1,
+                            passed: false,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  expected: 'approve',
+                ),
+              ],
+            ),
+          )
+        : JourneyScreen(journey: kJourneys.first, client: RuleMindClient()),
   ));
 }

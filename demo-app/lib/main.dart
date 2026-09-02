@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:rulemind_ui/rulemind_ui.dart';
 
+import 'theme/theme.dart';
+import 'theme/tokens.dart';
+import 'widgets/section_header.dart';
+import 'widgets/states.dart';
+
 import 'engine.dart';
 import 'journeys.dart';
 
 void main() => runApp(const RuleMindDemoApp());
 
-const _brand = Color(0xFF4F46E5);
 
 class RuleMindDemoApp extends StatelessWidget {
   const RuleMindDemoApp({super.key});
@@ -16,15 +20,13 @@ class RuleMindDemoApp extends StatelessWidget {
     return MaterialApp(
       title: 'RuleMind Journeys',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: _brand),
-        scaffoldBackgroundColor: const Color(0xFFF7F7FB),
-      ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: _brand, brightness: Brightness.dark),
-      ),
+      theme: RmTheme.light,
+      // Light only, and stated explicitly rather than left to the absence of a
+      // darkTheme. The app previously shipped a dark ThemeData with no
+      // themeMode, which meant it was *reachable* from the system setting --
+      // and since every colour was light-tuned and that theme did not even set
+      // a scaffold background, anyone with a dark phone saw a broken app.
+      themeMode: ThemeMode.light,
       home: const HomeScreen(),
     );
   }
@@ -53,13 +55,13 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+          padding: RmScreenPadding.of(context, top: RmSpace.x5, extraBottom: RmSpace.x2),
           children: [
             Row(
               children: [
                 Container(
                   width: 42, height: 42,
-                  decoration: BoxDecoration(color: _brand, borderRadius: BorderRadius.circular(12)),
+                  decoration: const BoxDecoration(color: RmC.accent, borderRadius: RmRadius.rMd),
                   child: const Icon(Icons.account_tree_outlined, color: Colors.white, size: 24),
                 ),
                 const SizedBox(width: 12),
@@ -70,7 +72,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       Text('RuleMind Journeys',
                           style: t.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
                       Text('On-device & server decisioning demo',
-                          style: t.textTheme.bodySmall?.copyWith(color: t.hintColor)),
+                          style: t.textTheme.bodySmall?.copyWith(color: RmC.inkMuted)),
                     ],
                   ),
                 ),
@@ -84,7 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Text(
               'Four non-lending policies running on the same rule engine. Each shows the '
               'decision, the score, and exactly which gate decided it.',
-              style: t.textTheme.bodySmall?.copyWith(color: t.hintColor),
+              style: t.textTheme.bodySmall?.copyWith(color: RmC.inkMuted),
             ),
             const SizedBox(height: 16),
             for (final j in kJourneys) ...[
@@ -99,7 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 8),
             Center(
               child: Text('API: ${_client.baseUrl}',
-                  style: t.textTheme.labelSmall?.copyWith(color: t.hintColor)),
+                  style: t.textTheme.labelSmall?.copyWith(color: RmC.inkMuted)),
             ),
           ],
         ),
@@ -115,9 +117,11 @@ class _StatusDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (color, label) = switch (online) {
-      true => (Colors.green, 'API up'),
-      false => (Colors.red, 'API down'),
-      _ => (Colors.orange, 'checking'),
+      true => (RmSem.approve.base, 'API up'),
+      false => (RmSem.reject.base, 'API down'),
+      // Neutral, not amber: 'checking' is not a warning, and the old amber
+      // was a third one competing with the review verdict.
+      _ => (RmC.inkFaint, 'checking'),
     };
     return Row(mainAxisSize: MainAxisSize.min, children: [
       Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
@@ -137,9 +141,9 @@ class _JourneyCard extends StatelessWidget {
     final t = Theme.of(context);
     return Material(
       color: t.cardColor,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: RmRadius.rLg,
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: RmRadius.rLg,
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -148,10 +152,10 @@ class _JourneyCard extends StatelessWidget {
               Container(
                 width: 46, height: 46,
                 decoration: BoxDecoration(
-                  color: journey.color.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(12),
+                  color: RmC.surfaceSunk,
+                  borderRadius: RmRadius.rMd,
                 ),
-                child: Icon(journey.icon, color: journey.color, size: 24),
+                child: Icon(journey.icon, color: journey.identity.mark, size: 24),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -160,17 +164,17 @@ class _JourneyCard extends StatelessWidget {
                   children: [
                     Text(journey.sector.toUpperCase(),
                         style: t.textTheme.labelSmall
-                            ?.copyWith(color: journey.color, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
+                            ?.copyWith(color: journey.identity.mark, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
                     const SizedBox(height: 2),
                     Text(journey.title,
                         style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
                     const SizedBox(height: 4),
                     Text(journey.blurb,
-                        style: t.textTheme.bodySmall?.copyWith(color: t.hintColor, height: 1.35)),
+                        style: t.textTheme.bodySmall?.copyWith(color: RmC.inkMuted, height: 1.35)),
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right, color: t.hintColor),
+              const Icon(Icons.chevron_right, color: RmC.inkFaint),
             ],
           ),
         ),
@@ -224,17 +228,36 @@ class _JourneyScreenState extends State<JourneyScreen> {
       _result = r;
       _busy = false;
     });
-    // The form is taller than the viewport, so the verdict lands below the fold.
-    // Without this the button just stops spinning and nothing visibly happens.
+    // The result region sits at the top of the list, so bring it into view.
+    // The reason this exists is unchanged -- the verdict must not land where
+    // the viewer cannot see it -- but the target moved with the region.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
+          0,
           duration: const Duration(milliseconds: 350),
           curve: Curves.easeOut,
         );
       }
     });
+  }
+
+  /// Empty, running, error or result — all in one always-present slot.
+  Widget _resultRegion() {
+    if (_busy) {
+      return RmRunningState(
+        label: _mode == EvalMode.server ? 'Running on server' : 'Running on device',
+      );
+    }
+    final EvalResult? r = _result;
+    if (r == null) return const RmResultPlaceholder();
+    if (r.isError) {
+      return RmErrorBand(
+        message: r.error ?? 'Unknown error',
+        onRetry: _evaluate,
+      );
+    }
+    return ResultCard(result: r, expected: _active?.expected);
   }
 
   @override
@@ -250,14 +273,35 @@ class _JourneyScreenState extends State<JourneyScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(j.title),
-        backgroundColor: j.color,
-        foregroundColor: Colors.white,
+        backgroundColor: RmC.surface,
+        foregroundColor: RmC.ink,
+        // A hairline plus a 3dp identity rail. That rail is the entire
+        // on-screen identity for the journey -- enough to say "you are in
+        // Claims", not enough to compete with a verdict. The app bar itself
+        // used to be a fully saturated journey colour, which made it the
+        // largest colour field on the screen and the one place a
+        // verdict-coloured fill is most confusing.
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Divider(height: 1, thickness: 1, color: RmC.line),
+              Container(height: 3, color: j.identity.mark),
+            ],
+          ),
+        ),
       ),
       body: ListView(
         controller: _scroll,
         padding: RmScreenPadding.of(context),
         children: [
-          Text('SCENARIOS', style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
+          // The result region is first and always present, so a viewer can see
+          // where the answer will appear before they ever press run, and the
+          // region does not pop into existence and shove the form down.
+          _resultRegion(),
+          const SizedBox(height: RmSpace.x5),
+          const RmSectionHeader('SCENARIOS'),
           const SizedBox(height: 8),
           // LayoutBuilder, not MediaQuery: the cap must come from the box these
           // chips are actually given. A scenario name is content-driven, and at
@@ -277,10 +321,13 @@ class _JourneyScreenState extends State<JourneyScreen> {
                       label: Text(s.name, maxLines: 2, overflow: TextOverflow.ellipsis),
                       selected: sel,
                       onSelected: (_) => _apply(s),
-                      selectedColor: j.color.withValues(alpha: 0.18),
-                      labelStyle: TextStyle(
-                        color: sel ? j.color : null,
-                        fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                      selectedColor: RmC.accentSoft,
+                      // copyWith on the theme style, not a bare TextStyle --
+                      // a bare one inherits nothing, so the chip label silently
+                      // opted out of the TextTheme entirely.
+                      labelStyle: t.chipTheme.labelStyle?.copyWith(
+                        color: sel ? RmC.accent : RmC.ink,
+                        fontWeight: sel ? FontWeight.w700 : FontWeight.w600,
                       ),
                     ),
                   );
@@ -290,14 +337,11 @@ class _JourneyScreenState extends State<JourneyScreen> {
           ),
           if (_active != null) ...[
             const SizedBox(height: 8),
-            Text(_active!.blurb, style: t.textTheme.bodySmall?.copyWith(color: t.hintColor, height: 1.35)),
+            Text(_active!.blurb, style: t.textTheme.bodySmall?.copyWith(color: RmC.inkMuted, height: 1.35)),
           ],
           const SizedBox(height: 18),
           RmLabeledRow(
-            label: Text('INPUTS',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
+            label: const RmSectionHeader('INPUTS'),
             trailing: SegmentedButton<EvalMode>(
               style: const ButtonStyle(visualDensity: VisualDensity.compact),
               // Icons are dropped once text is scaled up: at that point the two
@@ -331,7 +375,6 @@ class _JourneyScreenState extends State<JourneyScreen> {
                 children: j.fields.map((f) => _FieldRow(
                       field: f,
                       value: _values[f.key] ?? f.min,
-                      color: j.color,
                       onChanged: (v) => setState(() {
                         _values[f.key] = v;
                         _result = null;
@@ -340,8 +383,6 @@ class _JourneyScreenState extends State<JourneyScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          if (_result != null) ResultCard(result: _result!, expected: _active?.expected, color: j.color),
         ],
       ),
       // A bottomNavigationBar rather than a floatingActionButton: Scaffold then
@@ -355,10 +396,9 @@ class _JourneyScreenState extends State<JourneyScreen> {
           width: double.infinity,
           child: FilledButton.icon(
             onPressed: _busy ? null : _evaluate,
-            style: FilledButton.styleFrom(
-              backgroundColor: j.color,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-            ),
+            // Colour comes from filledButtonTheme; there is no per-journey
+            // override any more.
+            style: null,
             icon: _busy
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                 : const Icon(Icons.play_arrow_rounded),
@@ -371,11 +411,10 @@ class _JourneyScreenState extends State<JourneyScreen> {
 }
 
 class _FieldRow extends StatelessWidget {
-  const _FieldRow({required this.field, required this.value, required this.onChanged, required this.color});
+  const _FieldRow({required this.field, required this.value, required this.onChanged});
   final JourneyField field;
   final num value;
   final ValueChanged<num> onChanged;
-  final Color color;
 
   @override
   Widget build(BuildContext context) {
@@ -384,7 +423,6 @@ class _FieldRow extends StatelessWidget {
       return SwitchListTile(
         contentPadding: EdgeInsets.zero,
         dense: true,
-        activeThumbColor: color,
         title: Text(field.label, style: t.textTheme.bodyMedium),
         value: value == 1,
         onChanged: (v) => onChanged(v ? 1 : 0),
@@ -398,7 +436,7 @@ class _FieldRow extends StatelessWidget {
           Row(children: [
             Expanded(child: Text(field.label, style: t.textTheme.bodyMedium)),
             Text('${field.suffix == '₹' ? '₹' : ''}${value.toInt()}${field.suffix != null && field.suffix != '₹' ? ' ${field.suffix}' : ''}',
-                style: t.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700, color: color)),
+                style: t.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700, color: RmC.ink)),
           ]),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(trackHeight: 3),
@@ -406,7 +444,6 @@ class _FieldRow extends StatelessWidget {
               value: value.toDouble().clamp(field.min.toDouble(), field.max.toDouble()),
               min: field.min.toDouble(),
               max: field.max.toDouble(),
-              activeColor: color,
               onChanged: (v) => onChanged(v.round()),
             ),
           ),
@@ -417,33 +454,26 @@ class _FieldRow extends StatelessWidget {
 }
 
 class ResultCard extends StatelessWidget {
-  const ResultCard({super.key, required this.result, required this.expected, required this.color});
+  const ResultCard({super.key, required this.result, required this.expected});
   final EvalResult result;
   final String? expected;
-  final Color color;
 
-  static const _palette = {
-    'approve': Color(0xFF15803D),
-    'reject': Color(0xFFB91C1C),
-    'review': Color(0xFFB45309),
-    'error': Color(0xFF6B7280),
-  };
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
     if (result.isError) {
       return Card(
-        color: const Color(0xFFFEF2F2),
+        color: RmSem.reject.soft,
         elevation: 0,
         child: ListTile(
-          leading: const Icon(Icons.error_outline, color: Color(0xFFB91C1C)),
+          leading: Icon(Icons.error_outline, color: RmSem.reject.base),
           title: const Text('Evaluation failed'),
           subtitle: Text(result.error!, style: t.textTheme.bodySmall),
         ),
       );
     }
-    final c = _palette[result.outcome] ?? _palette['error']!;
+    final c = RmSem.forOutcome(result.outcome);
     final matches = expected == null || expected == result.outcome;
     // An on-device verdict that skipped workflow-only steps is not comparable
     // to a server verdict, so it must not be reported as "as expected".
@@ -456,28 +486,62 @@ class ResultCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Wrap, not Row+Spacer: the outcome chip and the score are both
+            // Wrap, not Row+Spacer: the verdict and the score are both
             // variable-width, so there is no slack to give a Spacer.
             Wrap(
-              spacing: 12,
-              runSpacing: 8,
+              spacing: RmSpace.x4,
+              runSpacing: RmSpace.x3,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: <Widget>[
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(color: c.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)),
-                  child: Text(result.outcome.toUpperCase(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: t.textTheme.titleSmall?.copyWith(color: c, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    if (partial)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: RmSpace.x1),
+                        child: _Badge(label: 'PARTIAL', tone: RmSem.info),
+                      ),
+                    Text(result.outcome.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: t.textTheme.headlineSmall?.copyWith(color: c.ink)),
+                  ],
                 ),
                 if (result.score != null)
-                  Text('Score ${result.score}',
-                      maxLines: 1,
-                      style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Text(partial ? 'SCORE · PROVISIONAL' : 'SCORE',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: t.textTheme.labelSmall?.copyWith(color: RmC.inkFaint)),
+                      Text('${result.score}',
+                          maxLines: 1,
+                          style: t.textTheme.displaySmall?.copyWith(color: c.ink)),
+                    ],
+                  ),
               ],
             ),
-            const SizedBox(height: 8),
+            if (result.score != null) ...[
+              const SizedBox(height: RmSpace.x3),
+              // The scorecards this demo runs are all base 500 / max 900, so
+              // the bar is drawn against 900 rather than a guessed round
+              // number. Omitted entirely if a score ever falls outside that,
+              // rather than drawing a misleading fill.
+              if (result.score! >= 0 && result.score! <= _kScoreMax)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: result.score! / _kScoreMax,
+                    minHeight: 4,
+                    backgroundColor: RmC.surfaceSunk,
+                    valueColor: AlwaysStoppedAnimation<Color>(c.base),
+                  ),
+                ),
+            ],
+            const SizedBox(height: RmSpace.x3),
             // Each metadatum is an indivisible icon+label pair, so they wrap as
             // units rather than being torn apart mid-pair.
             Wrap(
@@ -488,14 +552,14 @@ class ResultCard extends StatelessWidget {
                 _MetaChip(
                   icon: result.mode == EvalMode.server ? Icons.cloud_outlined : Icons.smartphone,
                   label: result.mode == EvalMode.server ? 'Server' : 'On-device',
-                  color: t.hintColor,
+                  color: RmC.inkFaint,
                   style: t.textTheme.labelSmall,
                 ),
                 if (result.latencyMs != null)
                   _MetaChip(
                     icon: Icons.timer_outlined,
                     label: '${result.latencyMs} ms',
-                    color: t.hintColor,
+                    color: RmC.inkFaint,
                     style: t.textTheme.labelSmall,
                   ),
                 if (expected != null)
@@ -507,8 +571,8 @@ class ResultCard extends StatelessWidget {
                         ? 'partial — not comparable'
                         : (matches ? 'as expected' : 'expected $expected'),
                     color: partial
-                        ? const Color(0xFF1D4ED8)
-                        : (matches ? const Color(0xFF15803D) : const Color(0xFFB45309)),
+                        ? RmSem.info.ink
+                        : (matches ? RmSem.approve.ink : RmSem.review.ink),
                     style: t.textTheme.labelSmall,
                   ),
                 if (result.pendingSyncCount != null)
@@ -520,8 +584,8 @@ class ResultCard extends StatelessWidget {
                         ? 'synced'
                         : '${result.pendingSyncCount} queued',
                     color: result.pendingSyncCount! == 0
-                        ? const Color(0xFF15803D)
-                        : const Color(0xFFB45309),
+                        ? RmSem.approve.ink
+                        : RmSem.review.ink,
                     style: t.textTheme.labelSmall,
                   ),
               ],
@@ -532,24 +596,26 @@ class ResultCard extends StatelessWidget {
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFEFF6FF),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                  color: RmSem.info.soft,
+                  borderRadius: RmRadius.rSm,
+                  border: Border.all(color: RmSem.info.base),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(children: [
-                      const Icon(Icons.info_outline, size: 15, color: Color(0xFF1D4ED8)),
+                      Icon(Icons.info_outline, size: 15, color: RmSem.info.base),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
                           'Partial decision — ${result.serverOnlyStepsSkipped.length} '
                           'server-only step${result.serverOnlyStepsSkipped.length == 1 ? '' : 's'} skipped',
-                          maxLines: 2,
+                          // Three lines, not two: at 2.0x this headline truncates
+                          // mid-word on a phone with only two.
+                          maxLines: 3,
                           overflow: TextOverflow.ellipsis,
                           style: t.textTheme.labelMedium?.copyWith(
-                              color: const Color(0xFF1D4ED8), fontWeight: FontWeight.w700),
+                              color: RmSem.info.ink, fontWeight: FontWeight.w700),
                         ),
                       ),
                     ]),
@@ -558,17 +624,17 @@ class ResultCard extends StatelessWidget {
                       'On-device mode evaluates variables, rules, scorecards and '
                       'policies. These steps need the server: '
                       '${result.serverOnlyStepsSkipped.join(', ')}.',
-                      style: t.textTheme.bodySmall?.copyWith(color: const Color(0xFF1E40AF), height: 1.35),
+                      style: t.textTheme.bodySmall?.copyWith(color: RmSem.info.ink, height: 1.35),
                     ),
                   ],
                 ),
               ),
             ],
             const Divider(height: 24),
-            Text('WHY', style: t.textTheme.labelSmall?.copyWith(letterSpacing: 0.8, color: t.hintColor)),
+            const RmSectionHeader('WHY'),
             const SizedBox(height: 6),
             if (result.gates.isEmpty)
-              Text('No rule gates reported.', style: t.textTheme.bodySmall?.copyWith(color: t.hintColor))
+              Text('No rule gates reported.', style: t.textTheme.bodySmall?.copyWith(color: RmC.inkMuted))
             else
               ...result.gates.map((g) => GateTile(gate: g)),
           ],
@@ -585,7 +651,7 @@ class GateTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
-    final c = gate.passed ? const Color(0xFF15803D) : const Color(0xFFB91C1C);
+    final c = gate.passed ? RmSem.approve.base : RmSem.reject.base;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Column(
@@ -606,8 +672,8 @@ class GateTile extends StatelessWidget {
               child: Text(
                 '${cond.variable} ${cond.operator} ${cond.threshold}  ·  actual ${cond.value}',
                 style: t.textTheme.labelSmall?.copyWith(
-                    color: cond.passed ? t.hintColor : const Color(0xFFB91C1C),
-                    fontFeatures: const []),
+                    color: cond.passed ? RmC.inkMuted : RmSem.reject.ink,
+                    fontFeatures: kTabular),
               ),
             ),
         ],
@@ -646,6 +712,41 @@ class _MetaChip extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Maximum score the seeded scorecards can produce.
+///
+/// Every journey in `qa/e2e-full/seed_journeys.py` declares
+/// `base_score: 500, max_score: 900`. Named here so the score bar is drawn
+/// against the real ceiling rather than a guessed round number.
+const num _kScoreMax = 900;
+
+/// A small uppercase state badge in a semantic tone.
+class _Badge extends StatelessWidget {
+  const _Badge({required this.label, required this.tone});
+
+  final String label;
+  final RmTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: RmSpace.x2,
+        vertical: 2,
+      ),
+      decoration: BoxDecoration(color: tone.soft, borderRadius: RmRadius.rSm),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context)
+            .textTheme
+            .labelSmall
+            ?.copyWith(color: tone.ink, fontWeight: FontWeight.w700),
+      ),
     );
   }
 }

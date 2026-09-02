@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'theme/tokens.dart';
+
 /// One input field on a journey form.
 class JourneyField {
   const JourneyField({
@@ -48,7 +50,7 @@ class Journey {
     required this.sector,
     required this.blurb,
     required this.icon,
-    required this.color,
+    required this.identity,
     required this.fields,
     required this.scenarios,
   });
@@ -60,7 +62,10 @@ class Journey {
   final String sector;
   final String blurb;
   final IconData icon;
-  final Color color;
+  /// Visual identity. Deliberately an [RmIdentity], not a [Color]: it is legal
+  /// only as a glyph tint and a header rail, and the type makes it incapable of
+  /// filling a container or colouring a paragraph.
+  final RmIdentity identity;
   final List<JourneyField> fields;
   final List<Scenario> scenarios;
 
@@ -79,7 +84,7 @@ const kJourneys = <Journey>[
     sector: 'Insurance',
     blurb: 'Route a first notice of loss to fast-track settlement, investigation, or decline.',
     icon: Icons.car_crash_outlined,
-    color: Color(0xFFC2410C),
+    identity: RmIdentity.claims,
     fields: [
       JourneyField(key: 'claim_amount_inr', label: 'Claim amount', min: 0, max: 600000, suffix: '₹'),
       JourneyField(key: 'policy_age_months', label: 'Policy age', min: 0, max: 120, suffix: 'mo'),
@@ -142,7 +147,7 @@ const kJourneys = <Journey>[
     sector: 'E-commerce',
     blurb: 'Approve, step up to 3-D Secure, or block an order in real time at checkout.',
     icon: Icons.shopping_cart_checkout,
-    color: Color(0xFF7C3AED),
+    identity: RmIdentity.checkout,
     fields: [
       JourneyField(key: 'order_value_inr', label: 'Order value', min: 0, max: 100000, suffix: '₹'),
       JourneyField(key: 'account_age_days', label: 'Account age', min: 0, max: 1500, suffix: 'd'),
@@ -205,7 +210,7 @@ const kJourneys = <Journey>[
     sector: 'Marketplace',
     blurb: 'Activate a new seller, send to manual KYB review, or reject on sanctions.',
     icon: Icons.storefront_outlined,
-    color: Color(0xFF0F766E),
+    identity: RmIdentity.seller,
     fields: [
       JourneyField(key: 'business_vintage_months', label: 'Business vintage', min: 0, max: 120, suffix: 'mo'),
       JourneyField(key: 'category_risk_tier', label: 'Category risk tier', min: 1, max: 5),
@@ -264,7 +269,7 @@ const kJourneys = <Journey>[
     sector: 'Telecom',
     blurb: 'Decide whether a subscriber qualifies for a postpaid plan without a deposit.',
     icon: Icons.sim_card_outlined,
-    color: Color(0xFFB45309),
+    identity: RmIdentity.telecom,
     fields: [
       JourneyField(key: 'tenure_months', label: 'Tenure', min: 0, max: 120, suffix: 'mo'),
       JourneyField(key: 'avg_monthly_spend_inr', label: 'Avg monthly spend', min: 0, max: 3000, suffix: '₹'),

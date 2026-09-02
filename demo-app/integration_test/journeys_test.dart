@@ -56,18 +56,20 @@ void main() {
     await tester.tap(find.text(kJourneys.first.title));
     await tester.pumpAndSettle();
 
-    // The FAB sits in a Padding at centerFloat and the scrolling body absorbs the
-    // synthesised hit, so drive its callback directly — the point of this test is
-    // the state -> engine -> result-card render path, not FAB hit geometry.
-    tester.widget<FilledButton>(find.byType(FilledButton)).onPressed!();
+    // A real tap now. The run action used to be a centre-floating FAB whose
+    // synthesised hits were absorbed by the scrolling body, so this drove its
+    // callback directly; it is a bottomNavigationBar child now, and a genuine
+    // hit target.
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
 
-    // Real wall time for the HTTP round trip (pump() only moves a fake clock),
-    // then scroll: the verdict renders at the bottom of a scrollable form, so a
-    // ListView never builds it while it is off-screen.
+    // Real wall time for the HTTP round trip — pump() only moves a fake clock.
+    // No dragging: the result region is the first child of the list and the
+    // screen scrolls itself to the top when a decision lands, so a drag here
+    // would push the verdict back out of the viewport and a ListView would
+    // dispose it.
     for (var i = 0; i < 40 && find.text('WHY').evaluate().isEmpty; i++) {
       await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200)));
-      await tester.pump();
-      await tester.drag(find.byType(ListView), const Offset(0, -400));
       await tester.pump();
     }
 
