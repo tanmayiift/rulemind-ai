@@ -1,6 +1,6 @@
 # RuleMind — execution plan
 
-**Status:** `34/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
+**Status:** `35/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
@@ -72,7 +72,7 @@ outbox state leaks between tests.
 - [x] **3.5** `/sdk/v1/signing-key` — **zero** test references today. Assert 200/401, RS256,
       PEM parses, and that it **verifies a real `/sdk/v1/blocks/{id}` signature** (pattern at
       `test_decision_block.py:85-92`)
-- [ ] **3.6** Dart companion: `SqfliteDecisionOutbox` via `sqflite_common_ffi` through a stub
+- [x] **3.6** Dart companion: `SqfliteDecisionOutbox` via `sqflite_common_ffi` through a stub
       uploader that fails then succeeds past `backoffMs`
 - [x] **3.7** File an issue for the SDK testability defect (leaky `resetForTest`, no
       injectable client)
