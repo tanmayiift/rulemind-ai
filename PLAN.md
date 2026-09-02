@@ -1,6 +1,6 @@
 # RuleMind — execution plan
 
-**Status:** `38/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
+**Status:** `39/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
@@ -128,7 +128,7 @@ outbox state leaks between tests.
       *pre-chain* rather than fraudulently verified.
 - [x] **7.2** B4 usage metering + quota (2–3 wk) — **no way to bill today**
 - [x] **7.3** B5 tenant-isolation matrix (1 wk), parameterised over the router list
-- [ ] **7.4** B6 SCIM, backup with a *verified* restore, `Idempotency-Key`, OpenAPI diff gate
+- [x] **7.4** B6 SCIM, backup with a *verified* restore, `Idempotency-Key`, OpenAPI diff gate
 - [ ] **7.5** Close issues #123, #125, #127
 
 ## 8 · Phases 3–8 — parity *(months; each needs a checkpoint before starting)*
