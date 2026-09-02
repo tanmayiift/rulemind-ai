@@ -40,6 +40,8 @@ class EvalResult {
     this.gates = const <GateResult>[],
     this.variables = const <String, dynamic>{},
     this.error,
+    this.serverOnlyStepsSkipped = const <String>[],
+    this.pendingSyncCount,
   });
 
   final String outcome;
@@ -49,6 +51,17 @@ class EvalResult {
   final List<GateResult> gates;
   final Map<String, dynamic> variables;
   final String? error;
+
+  /// Workflow-only steps the on-device engine could not run.
+  ///
+  /// Edge mode evaluates variables, rules, scorecards and policies; workflow
+  /// steps (connectors, actions, review gates) are server-only. When this is
+  /// non-empty the verdict is PARTIAL, and comparing it against a server
+  /// decision is not a like-for-like parity check.
+  final List<String> serverOnlyStepsSkipped;
+
+  /// Decisions queued locally and not yet accepted by the backend.
+  final int? pendingSyncCount;
 
   bool get isError => error != null;
   List<GateResult> get failedGates => gates.where((g) => !g.passed).toList();
@@ -61,17 +74,33 @@ String get defaultBaseUrl {
   return 'http://127.0.0.1:8080';
 }
 
-const String kDefaultApiKey = 'rm_live_devlocaltenantkey000000000000';
+/// The tenant API key, supplied at build time.
+///
+/// Deliberately has **no fallback**. This used to default to the seeded dev key
+/// `rm_live_devlocaltenantkey000000000000`, which meant the literal was compiled
+/// into every APK and IPA and was recoverable with `strings` -- and worse, any
+/// embedder who forgot to pass a key shipped silently using a well-known
+/// credential rather than failing.
+///
+///   flutter run --dart-define=RM_API_KEY=rm_live_...
+///
+/// An empty value is allowed to compile so the app can start and explain itself
+/// (see [RuleMindClient.apiKeyMissing]) rather than crash on launch.
+const String kApiKey = String.fromEnvironment('RM_API_KEY');
 
 String? lastOnDeviceStack;
 
 class RuleMindClient {
   RuleMindClient({String? baseUrl, String? apiKey})
       : baseUrl = baseUrl ?? defaultBaseUrl,
-        apiKey = apiKey ?? kDefaultApiKey;
+        apiKey = apiKey ?? kApiKey;
 
   final String baseUrl;
   final String apiKey;
+
+  /// True when no key was supplied at build time. The UI surfaces this instead
+  /// of letting every request fail with an opaque 401.
+  bool get apiKeyMissing => apiKey.isEmpty;
   bool _sdkReady = false;
 
   Future<void> ensureSdk() async {
@@ -159,6 +188,19 @@ class RuleMindClient {
       await ensureSdk();
       final Decision d = await RuleMind.evaluate(policyId, payload, userId: userId);
       sw.stop();
+
+      // evaluate() enqueues completed decisions to the durable outbox, but the
+      // outbox is only drained by syncPendingDecisions() or the periodic
+      // background sync. Draining it here means the demo actually exercises the
+      // upload path (/sdk/v1/decisions) rather than relying on a timer, and the
+      // remaining depth is a truthful signal when the backend is unreachable.
+      try {
+        await RuleMind.syncPendingDecisions();
+      } catch (_) {
+        // Offline is an expected state; the outbox keeps the decision.
+      }
+      final int pending = await RuleMind.pendingDecisionCount();
+
       return EvalResult(
         outcome: d.outcome,
         mode: EvalMode.onDevice,
@@ -166,6 +208,8 @@ class RuleMindClient {
         latencyMs: d.latencyMs == 0 ? sw.elapsedMilliseconds : d.latencyMs,
         gates: _gatesFromSdk(d.ruleResults),
         variables: d.variables,
+        serverOnlyStepsSkipped: d.serverOnlyStepsSkipped,
+        pendingSyncCount: pending,
       );
     } catch (e, st) {
       lastOnDeviceStack = st.toString();
