@@ -1,6 +1,8 @@
 # RuleMind — execution plan
 
-**Status:** `39/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
+**Status:** `39/46 complete` · sections 0–6 done · Track B done (B3 audit chain, B4 metering,
+B5 isolation matrix, B6 SCIM/backup/idempotency/OpenAPI gate) · 7.5 partial, #123 and #127
+blocked on external dependencies (see Blockers) · section 8 is months of parity work, unstarted
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
