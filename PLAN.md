@@ -1,6 +1,6 @@
 # RuleMind — execution plan
 
-**Status:** `36/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
+**Status:** `37/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
@@ -126,7 +126,7 @@ outbox state leaks between tests.
       hash chain and the archiver purges the hot copy, so an operator with DB access can
       rewrite history undetectably. The Alembic revision must mark pre-existing rows
       *pre-chain* rather than fraudulently verified.
-- [ ] **7.2** B4 usage metering + quota (2–3 wk) — **no way to bill today**
+- [x] **7.2** B4 usage metering + quota (2–3 wk) — **no way to bill today**
 - [ ] **7.3** B5 tenant-isolation matrix (1 wk), parameterised over the router list
 - [ ] **7.4** B6 SCIM, backup with a *verified* restore, `Idempotency-Key`, OpenAPI diff gate
 - [ ] **7.5** Close issues #123, #125, #127
