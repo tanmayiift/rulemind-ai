@@ -28,7 +28,15 @@ Then:
 
 ```bash
 cd demo-app
-flutter run                      # pick a simulator/emulator or device
+flutter run --dart-define=RM_API_KEY=rm_live_devlocaltenantkey000000000000
+
+# The key is required: the app no longer falls back to a built-in default,
+# because that default was compiled into every APK and IPA and recoverable
+# with `strings`. Started without one, the app says so rather than failing
+# every request with an opaque 401.
+#
+# The value above is the local seeded dev key. Use a real tenant key against
+# anything that is not your own machine.
 ```
 
 The API base URL defaults per platform — `10.0.2.2:8080` on the Android emulator (the

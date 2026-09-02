@@ -221,6 +221,11 @@ Rect? _visibleRect(RenderObject node) {
   RenderObject? parent = node.parent;
   int hops = 0;
   while (parent != null && hops < 200) {
+    // Stop at the root view. Its clip IS the screen, so intersecting with it
+    // would mask the very thing this check exists to find: content the screen
+    // cuts off. Caught on a real simulator at 2.0x text, where a ChoiceChip
+    // label was visibly truncated at the right edge while this check passed.
+    if (parent is RenderView || parent.parent == null) break;
     final Rect? clip = parent.describeApproximatePaintClip(child);
     if (clip != null) {
       try {
