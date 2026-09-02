@@ -8,11 +8,18 @@ on:
 permissions:
   contents: read
 
+# Neither workflow had one, so every push to a PR branch ran a full duplicate
+# set alongside the one it superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
       mobile: ${{ steps.filter.outputs.mobile }}
+      web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,7 +30,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "mobile=true" >> "$GITHUB_OUTPUT"
-            echo "not a PR - running mobile jobs"
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "not a PR - running everything"
             exit 0
           fi
           BASE="${{ github.event.pull_request.base.sha }}"
@@ -37,9 +45,64 @@ jobs:
             echo "mobile=false" >> "$GITHUB_OUTPUT"
             echo "-> mobile jobs skipped (no mobile/backend/workflow files touched)"
           fi
+          # Playwright drives the web app against the backend, so either one
+          # changing is a reason to run it. It is the most expensive job here
+          # (~8 min), so a mobile-only or docs-only PR should not pay for it.
+          if echo "$CHANGED" | grep -qE '^(apps/web/|apps/python-executor/|e2e/|playwright\.config\.ts|\.github/workflows/)'; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "-> Playwright WILL run"
+          else
+            echo "web=false" >> "$GITHUB_OUTPUT"
+            echo "-> Playwright skipped (no web/backend files touched)"
+          fi
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            packages/rulemind-core-rs
+            packages/rulemind-decide-service
+
+      # --no-default-features is required, not a preference. Cargo.toml sets
+      # default = ["python"], which pulls pyo3 with `extension-module` -- that
+      # feature deliberately does NOT link libpython, so a plain `cargo test`
+      # builds a test binary with unresolved CPython symbols and fails at link
+      # time. Documented at packages/rulemind-core-rs/README.md:8.
+      - name: Run Rust core conformance tests
+        working-directory: packages/rulemind-core-rs
+        run: cargo test --no-default-features --verbose
+
+      # The service has no tests of its own; this is a compile gate.
+      - name: Check the decide service builds
+        working-directory: packages/rulemind-decide-service
+        run: cargo check --verbose
 
   repo-validation:
     runs-on: ubuntu-latest
+    # CI has only ever run SQLite; every Postgres pass in E2E_TEST_PLAN.md was
+    # manual. A service container costs ~10s to become healthy and no extra
+    # runner, so the suite can be run against the engine production actually
+    # uses. psycopg2-binary is already in requirements.txt -- no new dependency.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rulemind
+          POSTGRES_PASSWORD: rulemind
+          POSTGRES_DB: rulemind
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -67,6 +130,53 @@ jobs:
       - name: Run Python backend tests
         run: python -m unittest discover -s apps/python-executor/tests -p 'test_*.py'
 
+      # The 21-case sandbox-escape matrix -- import os, __import__, open, eval,
+      # subclass-walks to Popen, socket, subprocess, file writes. It is the
+      # highest-value security test in the repo and has never run in CI.
+      #
+      # It gates. suite_core does NOT yet: it is 25 pass / 5 fail against a
+      # seeded backend (excel library returns 0 functions, batch-decide payload
+      # shape, reason-codes 404, history finds 1 of 3, rule missing from the
+      # audit trail). Those are product bugs to fix, not reasons to leave the
+      # sandbox matrix unrun.
+      #
+      # start_fastapi.sh already sets RULEMIND_SEED_DEMO=1, which the suite
+      # needs -- its control case drafts against the seeded `custom` connector
+      # and 422s without it.
+      # The same suite against Postgres. Only DATABASE_URL changes:
+      # storage.py:480,488 calls create_all, which builds the whole schema on a
+      # fresh container, so Alembic is not needed here (alembic.ini hardcodes a
+      # SQLite URL -- pointing it at Postgres is separate, larger work).
+      - name: Run Python backend tests against PostgreSQL
+        working-directory: apps/python-executor
+        env:
+          DATABASE_URL: postgresql://rulemind:rulemind@localhost:5432/rulemind
+        run: python -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Start FastAPI backend for QA suites
+        run: |
+          bash qa/mobile_e2e/start_fastapi.sh
+          bash qa/mobile_e2e/wait_for_health.sh
+
+      - name: Run sandbox escape matrix
+        working-directory: qa/e2e-full
+        env:
+          RM_BASE: http://127.0.0.1:8080
+          RM_OUT: ${{ github.workspace }}/qa/results/results_sandbox.json
+        run: python run.py sandbox
+
+      - name: Run core QA suite (non-gating until its 5 failures are fixed)
+        continue-on-error: true
+        working-directory: qa/e2e-full
+        env:
+          RM_BASE: http://127.0.0.1:8080
+          RM_OUT: ${{ github.workspace }}/qa/results/results_core.json
+        run: python run.py core
+
+      - name: Stop FastAPI backend
+        if: always()
+        run: bash qa/mobile_e2e/stop_fastapi.sh
+
       - name: Run TypeScript checks
         run: pnpm typecheck
 
@@ -85,6 +195,59 @@ jobs:
           path: |
             qa/results/mobile-e2e-closeout.md
             qa/results/mobile-e2e-closeout.json
+
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          python -m pip install --upgrade pip
+          pip install -r apps/python-executor/requirements.txt
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # 48 tests that ran in no workflow. playwright.config.ts starts both
+      # servers itself (uvicorn on 8100, next dev on 3100) and health-gates on
+      # them, so nothing needs starting here.
+      #
+      # Caveat recorded rather than hidden: the config sets AUTH_MODE=none on
+      # BOTH servers, and middleware.py:93 early-returns on that -- bypassing
+      # the API-key check, RBAC and CSRF. So these 48 tests exercise a
+      # permanently unauthenticated app and cannot see an authz regression.
+      # Fixing that will break many of them and is tracked separately; it is
+      # not a reason to leave the suite unrun in the meantime.
+      - name: Run Playwright suite
+        env:
+          PYTHON_BIN: python
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          retention-days: 7
+          path: |
+            playwright-report
+            test-results
 
   android:
     needs: changes
@@ -247,9 +410,33 @@ jobs:
         working-directory: packages/sdk-flutter
         run: flutter test
 
+      # ~200 widget tests that ran in no workflow at all: the 54-case responsive
+      # matrix in demo-app, the 126-case one in the SDK example, and the harness
+      # self-test in flutter-ui. Before the emulator step on purpose -- a layout
+      # regression should fail in seconds, not after a 12-minute emulator boot.
+      - name: Analyze and test the demo app
+        working-directory: demo-app
+        run: |
+          flutter pub get
+          dart analyze --no-fatal-warnings
+          flutter test
+
+      - name: Test the shared UI package
+        working-directory: packages/flutter-ui
+        run: |
+          flutter pub get
+          dart analyze --no-fatal-warnings
+          flutter test
+
       - name: Install example app dependencies
         working-directory: packages/sdk-flutter/example
         run: flutter pub get
+
+      - name: Analyze and test the SDK example app
+        working-directory: packages/sdk-flutter/example
+        run: |
+          dart analyze --no-fatal-warnings
+          flutter test
 
       - name: Enable KVM
         run: |
