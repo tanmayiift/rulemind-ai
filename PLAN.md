@@ -129,7 +129,9 @@ outbox state leaks between tests.
 - [x] **7.2** B4 usage metering + quota (2–3 wk) — **no way to bill today**
 - [x] **7.3** B5 tenant-isolation matrix (1 wk), parameterised over the router list
 - [x] **7.4** B6 SCIM, backup with a *verified* restore, `Idempotency-Key`, OpenAPI diff gate
-- [ ] **7.5** Close issues #123, #125, #127
+- [~] **7.5** Issues: **#125 closed**. #123 harness shipped, needs one live run with a
+  provider key. #127 now 4/7 rows closed (3 were already stale when filed) — the last 3
+  need Keycloak / SMTP / Redis stood up. See **Blockers**.
 
 ## 8 · Phases 3–8 — parity *(months; each needs a checkpoint before starting)*
 
@@ -152,6 +154,37 @@ chained status-line edits silently no-oped and the counter never advanced past
 work it describes is committed. Do not tick it from a feature branch.
 
 ## Blockers
+
+### 7.5 — #123 and #127 cannot be finished from this environment
+
+Not a matter of more work; both need something this environment cannot supply.
+
+**#123 — AI generation against a real provider.** The flag-gated suite the issue asks for is
+shipped (`tests/test_ai_live.py`, a79ff2d): 5 local guardrail tests always run, 5 live tests
+skip unless `RULEMIND_AI_LIVE=1` and a key is set. The harness is not the validation, and
+closing on a skipped test would recreate the "assumed rather than validated" state the issue
+exists to end. **Needs:** one run with a real key, and the result recorded.
+
+```bash
+RULEMIND_AI_LIVE=1 RULEMIND_AI_LIVE_KEY=... python -m unittest tests.test_ai_live
+```
+
+**#127 — remaining unexercised surface.** Checked every row against the test tree rather than
+against the issue text, and three were already covered on the day it was filed (collab
+WebSocket, circuit breaker, WAL replay — all landed 2026-08-08, nineteen days earlier). Model
+evaluation endpoints closed here in bb9038c. The remaining three each need a dependency stood
+up, which is the `qa/` harness the issue itself proposes:
+
+| row | needs |
+|---|---|
+| SSO OIDC/SAML | a test IdP (Keycloak or a mock SAML responder) |
+| Scheduled reports + email | a capture SMTP server + a scheduler fast-forward |
+| Redis pub/sub + caching | Redis |
+
+**Tried and rejected:** mocking these. A mocked IdP or SMTP server asserts the shape the test
+author already assumed, which is the assumption under doubt — the same reason #123's live
+tests are gated rather than faked.
+
 
 **FinBox authorship — PR #1 only, and unfixable from here.** All 12 commits authored by
 `Tanmay <tanmay.kumar@finbox.in>` lived on one stale branch, `claude/kind-herschel`, which is
