@@ -8,6 +8,7 @@ request-scoped source of truth."""
 from __future__ import annotations
 
 import os
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -379,3 +380,50 @@ def verify_audit_chain(request: Request, limit: Optional[int] = Query(None, ge=1
     """
     tenant_id = main.active_tenant_id(request)
     return main.storage.verify_audit_chain(tenant_id=tenant_id, limit=limit)
+
+
+# ── Usage metering & quota (Track B4) ──────────────────────────────────────
+@router.get("/api/v1/usage")
+def usage_summary(request: Request) -> Dict[str, Any]:
+    """This workspace's metered usage for the current calendar month, with its quota position.
+
+    `used` here is the billable number: server-side decisions plus decisions ingested from
+    devices, counting each exactly once (a device replaying an unacked batch is not re-billed).
+
+    `enforced` reports whether exceeding the limit actually rejects traffic. It is false by
+    default -- an operator is expected to watch real numbers accumulate before switching
+    enforcement on, so that turning it on is a decision rather than an upgrade side effect.
+    """
+    from .. import quota
+
+    tenant_id = main.active_tenant_id(request)
+    start, end = quota.period_bounds()
+    used = main.storage.get_usage_total(quota.METRIC_DECISIONS, tenant_id=tenant_id, start=start, end=end)
+    status = quota.evaluate(main.storage.get_tenant(tenant_id), used)
+    return {
+        "quota": status,
+        "daily": main.storage.get_usage_daily(tenant_id=tenant_id, start=start, end=end),
+        # The lifetime AI counters, kept for display. They carry no time dimension and are NOT
+        # a billing basis -- see the UsageRecord docstring.
+        "ai_usage_lifetime": (main.storage.get_tenant(tenant_id) or {}).get("config", {}).get("ai_usage", {}),
+    }
+
+
+@router.get("/api/v1/usage/history")
+def usage_history(request: Request, days: int = Query(90, ge=1, le=730)) -> Dict[str, Any]:
+    """Daily usage rows for the last `days` days, oldest first — the series behind a usage chart
+    and the source an invoice for a past period is reconciled against."""
+    from datetime import timedelta
+
+    from .. import quota
+
+    tenant_id = main.active_tenant_id(request)
+    end = date.today() + timedelta(days=1)  # exclusive, so today is included
+    start = end - timedelta(days=days + 1)
+    rows = main.storage.get_usage_daily(tenant_id=tenant_id, start=start, end=end)
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "daily": rows,
+        "total": sum(r["count"] for r in rows if r["metric"] == quota.METRIC_DECISIONS),
+    }

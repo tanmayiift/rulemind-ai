@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -305,6 +305,38 @@ class AuditEvent(Base):
         # the chain -- the loser retries. NULL seqs (legacy rows) are distinct under SQL NULL
         # semantics on both SQLite and Postgres, so this does not constrain them.
         UniqueConstraint("tenant_id", "seq", name="uq_audit_events_tenant_seq"),
+    )
+
+
+class UsageRecord(Base):
+    """Metered usage, bucketed per tenant per UTC day per metric.
+
+    DAILY buckets, not monthly. A monthly counter cannot answer "show me the trend", cannot
+    prorate a mid-month plan change, and cannot be recomputed if a period boundary was wrong --
+    and a month is just a SUM over days, so nothing is lost by storing the finer grain.
+
+    Contrast with the pre-existing AI counters, which live in `Tenant.config["ai_usage"]` as
+    lifetime totals with no time dimension. Those cannot be invoiced from: there is no way to
+    ask what a workspace used in August. This table is the billable record; that blob stays as
+    a convenience display.
+    """
+
+    __tablename__ = "usage_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    # Stored as a DATE, not a timestamp: the bucket IS the day, and a time component would let
+    # two writers create two rows for the same day and silently split the count.
+    day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        # The upsert target. Without this a concurrent increment inserts a second row for the
+        # same bucket and the tenant is under-billed -- the failure mode that silently loses
+        # revenue rather than loudly erroring.
+        UniqueConstraint("tenant_id", "day", "metric", name="uq_usage_tenant_day_metric"),
     )
 
 

@@ -9,7 +9,7 @@ import json
 import os
 import time as _time
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from cryptography.fernet import Fernet
@@ -17,6 +17,7 @@ from sqlalchemy import case, delete, desc, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
 from .audit_chain import GENESIS_HASH, compute_hash as compute_audit_hash, verify as verify_audit_chain_rows
+from .quota import METRIC_DECISIONS
 from sqlalchemy.orm import Session
 
 LOGGER = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ from .models import (
     SdkEvent,
     Setting,
     Tenant,
+    UsageRecord,
     Variable,
     Webhook,
     WorkflowExecution,
@@ -1345,6 +1347,11 @@ class Storage:
         from . import decision_bus
 
         decision_bus.publish_decision(resolved, result)
+        # One server-side decision = one billable unit. Metered here, at the single place a
+        # Decision row is written, rather than at /api/v1/decide -- that endpoint has two code
+        # paths (fast and executor) and there are three more entry points besides it, so
+        # metering at the handler would silently miss whichever path was added last.
+        self.record_usage(METRIC_DECISIONS, 1, tenant_id=resolved)
         return result
 
     def add_decisions_batch(self, decisions: List[Dict[str, Any]], tenant_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1421,6 +1428,11 @@ class Storage:
                     inserted += 1
                 except IntegrityError:
                     duplicates += 1
+        # Bill `inserted`, NOT `received`. A device retrying an unacked batch re-sends decisions
+        # the server already stored; counting those would charge a customer for their own
+        # network being unreliable. Outside the `with` block on purpose -- record_usage opens
+        # its own session, and nesting one inside this transaction deadlocks on SQLite.
+        self.record_usage(METRIC_DECISIONS, inserted, tenant_id=resolved)
         return {"received": len(decisions), "inserted": inserted, "duplicates": duplicates, "acked": acked}
 
     def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0,
@@ -1816,6 +1828,86 @@ class Storage:
             query = select(ErrorEvent).where(ErrorEvent.tenant_id == resolved).order_by(desc(ErrorEvent.created_at)).limit(max(1, min(limit, 1000))).offset(max(0, offset))
             rows = session.scalars(query).all()
             return [self._error_event_to_dict(row) for row in rows]
+
+    # ── usage metering (Track B4) ───────────────────────────────────────────
+
+    def record_usage(self, metric: str, amount: int = 1, tenant_id: Optional[str] = None,
+                     day: Optional[date] = None) -> None:
+        """Add `amount` to a tenant's counter for one metric on one UTC day.
+
+        UPDATE-then-INSERT rather than read-modify-write: the UPDATE is atomic at the database,
+        so two concurrent decisions increment rather than clobber. A read-modify-write would
+        lose one of them and under-bill -- the failure mode that costs money silently instead
+        of erroring loudly.
+
+        Best effort by contract. Metering must never fail a decision the customer already
+        received: refusing to serve because the meter is down is strictly worse than an
+        under-count that reconciliation can repair. Enforcement is a separate, deliberate gate
+        (see app/quota.py); this is only the counter.
+        """
+        if amount <= 0:
+            return
+        resolved = self._tenant_id(tenant_id)
+        bucket = day or datetime.utcnow().date()
+        try:
+            with self.connect() as session:
+                updated = session.execute(
+                    update(UsageRecord)
+                    .where(UsageRecord.tenant_id == resolved, UsageRecord.day == bucket,
+                           UsageRecord.metric == metric)
+                    .values(count=UsageRecord.count + amount, updated_at=datetime.utcnow())
+                ).rowcount
+                if updated:
+                    return
+                try:
+                    session.add(UsageRecord(tenant_id=resolved, day=bucket, metric=metric,
+                                            count=amount, updated_at=datetime.utcnow()))
+                    session.flush()
+                except IntegrityError:
+                    # Another writer created the bucket between our UPDATE and INSERT. Roll back
+                    # the failed insert and apply the increment to the row that now exists --
+                    # dropping it here is exactly the lost-revenue bug the constraint exists to
+                    # prevent.
+                    session.rollback()
+                    session.execute(
+                        update(UsageRecord)
+                        .where(UsageRecord.tenant_id == resolved, UsageRecord.day == bucket,
+                               UsageRecord.metric == metric)
+                        .values(count=UsageRecord.count + amount, updated_at=datetime.utcnow())
+                    )
+        except Exception:  # noqa: BLE001 - see the best-effort contract above
+            LOGGER.warning("usage: failed to record %s+%s for tenant %s", metric, amount, resolved)
+
+    def get_usage_daily(self, tenant_id: Optional[str] = None, start: Optional[date] = None,
+                        end: Optional[date] = None, metric: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Daily rows in [start, end) -- end EXCLUSIVE, matching quota.period_bounds."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            stmt = select(UsageRecord).where(UsageRecord.tenant_id == resolved)
+            if start is not None:
+                stmt = stmt.where(UsageRecord.day >= start)
+            if end is not None:
+                stmt = stmt.where(UsageRecord.day < end)
+            if metric:
+                stmt = stmt.where(UsageRecord.metric == metric)
+            rows = session.scalars(stmt.order_by(UsageRecord.day.asc(), UsageRecord.metric.asc())).all()
+            return [
+                {"day": row.day.isoformat(), "metric": row.metric, "count": int(row.count)}
+                for row in rows
+            ]
+
+    def get_usage_total(self, metric: str, tenant_id: Optional[str] = None,
+                        start: Optional[date] = None, end: Optional[date] = None) -> int:
+        """Summed count for one metric over [start, end). This is the billable number."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            stmt = select(func.coalesce(func.sum(UsageRecord.count), 0)).where(
+                UsageRecord.tenant_id == resolved, UsageRecord.metric == metric)
+            if start is not None:
+                stmt = stmt.where(UsageRecord.day >= start)
+            if end is not None:
+                stmt = stmt.where(UsageRecord.day < end)
+            return int(session.execute(stmt).scalar() or 0)
 
     def add_audit_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Append one audit event, linked into the tenant's tamper-evident chain.

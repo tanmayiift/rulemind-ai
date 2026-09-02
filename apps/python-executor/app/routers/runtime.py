@@ -100,6 +100,45 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
     return {"targetType": request.targetType, "targetId": request.resolved_target_id, "rows": rows, "count": len(rows)}
 
 
+def _enforce_quota() -> None:
+    """Refuse a decision when the workspace is over its monthly allowance.
+
+    No-op unless QUOTA_ENFORCE=1 -- see app/quota.py for why enforcement is opt-in while
+    metering is always on.
+
+    402, not 429. 429 means "you are going too fast" and every well-behaved HTTP client
+    responds by backing off and RETRYING, which is exactly wrong here: no amount of waiting
+    restores the allowance before the period rolls over, so the retry storm is pure waste and
+    it makes a billing event indistinguishable from a burst in the logs. 402 Payment Required
+    says the only thing that will fix this is a plan change.
+
+    WHERE THIS IS AND IS NOT APPLIED, and why:
+      * /api/v1/decide -- gated. It writes a Decision row, so it is the billable unit.
+      * /api/v1/decide/batch and .../batch/jsonl -- NOT gated. Both run in simulation mode and
+        log no decision (see their docstrings), so they are not billable and rejecting them
+        would charge a customer's quota against what-if runs they were never billed for.
+      * POST /sdk/v1/decisions -- metered but NOT gated, deliberately. Those decisions were
+        already taken on the device; refusing the upload does not prevent the usage, it only
+        destroys the audit record and strands the device's outbox in a retry loop it can never
+        drain. Over-quota device volume is a billing conversation, not a data-loss event.
+    """
+    from .. import quota
+
+    if not quota.enforcement_enabled():
+        return
+    tenant_id = active_tenant_id()
+    tenant = main.storage.get_tenant(tenant_id)
+    start, end = quota.period_bounds()
+    used = main.storage.get_usage_total(quota.METRIC_DECISIONS, tenant_id=tenant_id, start=start, end=end)
+    status = quota.evaluate(tenant, used)
+    if status["exceeded"]:
+        raise HTTPException(status_code=402, detail={
+            "error": "quota_exceeded",
+            "message": "Monthly decision quota exhausted for this workspace.",
+            **{k: status[k] for k in ("plan", "limit", "used", "period_start", "period_end")},
+        })
+
+
 @router.post("/api/v1/decide")
 def decide(request: DecideRequest) -> Dict[str, Any]:
     """Run a policy decision.
@@ -112,6 +151,7 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
     So a partial flat and a partial nested of the same field can decide differently; send the full
     source payload under its key when you want an exact, reproducible decision.
     """
+    _enforce_quota()
     policy = ensure_exists(main.storage.get_policy(request.policy_id), "policy", request.policy_id)
     # Scalable hot path: serve pure-compute policies from the cached bundle via the stateless
     # core (Rust when available), bypassing the heavy PolicyExecutor. fast_path_eligible is the
