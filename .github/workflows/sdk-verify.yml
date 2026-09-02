@@ -185,6 +185,14 @@ jobs:
           ruff check app tests
           mypy app
 
+      # Contract breaks used to ship silently -- nothing compared the public API surface
+      # between commits. This fails ONLY on breaking changes (removed operation or field,
+      # newly required field, removed enum value); additive changes print and pass, because a
+      # gate that fires on every addition gets regenerated reflexively and stops being a check.
+      - name: Check the public API contract
+        working-directory: apps/python-executor
+        run: python scripts/openapi_gate.py
+
       - name: Run TypeScript checks
         run: pnpm typecheck
 
