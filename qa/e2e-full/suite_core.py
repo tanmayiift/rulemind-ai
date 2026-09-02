@@ -76,13 +76,22 @@ def run(r: Runner):
 
     # ================= 3. AUTHORING + SANDBOX =================
     with r.case("3.1", "Variable draft executes in sandbox") as c:
+        # source_id is required by the endpoint (authoring.py:126). Omitting it
+        # made this a 422 that looked like a sandbox failure rather than a
+        # malformed request -- suite_sandbox.py:14 has always sent it.
         resp = r.post("/api/v1/variables/test-draft", json={
-            "code": "result = payload.get('a', 0) + payload.get('b', 0)",
+            "source_id": "custom",
+            # The sandbox executes a decorated function, not a bare script --
+            # a bare `result = ...` raises "name 'payload' is not defined".
+            # suite_sandbox.py:10 has always used this form.
+            "code": '@variable(source="custom")\ndef probe(payload, variables, apis):\n'
+                    "    return payload.get('a', 0) + payload.get('b', 0)",
             "payload": {"a": 2, "b": 40}})
         c.ok(resp.status_code == 200, f"{resp.status_code}: {resp.text[:300]}")
         if resp.status_code == 200:
             body = resp.json(); c.info(body)
-            got = body.get("result", body.get("value"))
+            res = body.get("result", body)
+            got = res.get("value") if isinstance(res, dict) else res
             c.ok(got == 42, f"expected 42, got {got!r} (body={json.dumps(body)[:200]})")
 
     SANDBOX_ESCAPES = [
@@ -216,12 +225,17 @@ def run(r: Runner):
         for i in range(3):
             r.post("/api/v1/decide", json={"policyId": pol, "payload": {"age": 30 + i}, "userId": marker})
         time.sleep(2.0)  # async decision log
-        resp = r.get("/api/v1/audit/decisions", params={"userId": marker, "limit": 50})
+        # client_id, not userId: /decide's `userId` is stored as client_id
+        # (executor.py:878) and the row exposes only client_id
+        # (storage.py:780-801). `userId` is not an accepted query param
+        # (insights.py:68), so FastAPI dropped it and this assertion was
+        # matching a key that never existed.
+        resp = r.get("/api/v1/audit/decisions", params={"client_id": marker, "limit": 50})
         c.ok(resp.status_code == 200, f"{resp.status_code}: {resp.text[:200]}")
         if resp.status_code == 200:
             b = resp.json()
             rows = b if isinstance(b, list) else b.get("items", b.get("decisions", b.get("results", [])))
-            mine = [x for x in rows if x.get("user_id") == marker or x.get("userId") == marker]
+            mine = [x for x in rows if x.get("client_id") == marker]
             c.info({"returned": len(rows), "matching_marker": len(mine)})
             c.ok(len(mine) >= 3, f"expected >=3 decisions for {marker}, found {len(mine)}")
 
