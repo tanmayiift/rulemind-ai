@@ -15,6 +15,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from cryptography.fernet import Fernet
 from sqlalchemy import case, delete, desc, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
+
+from .audit_chain import GENESIS_HASH, compute_hash as compute_audit_hash, verify as verify_audit_chain_rows
 from sqlalchemy.orm import Session
 
 LOGGER = logging.getLogger(__name__)
@@ -844,6 +846,9 @@ class Storage:
             "user_id": model.user_id,
             "ip_address": model.ip_address,
             "created_at": serialize_datetime(model.created_at),
+            "seq": model.seq,
+            "prev_hash": model.prev_hash,
+            "hash": model.hash,
         }
 
     @staticmethod
@@ -1813,22 +1818,52 @@ class Storage:
             return [self._error_event_to_dict(row) for row in rows]
 
     def add_audit_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Append one audit event, linked into the tenant's tamper-evident chain.
+
+        Retries on the (tenant_id, seq) unique constraint: two concurrent appends can read the
+        same tail and compute the same next seq, and the constraint turns that race into a
+        retry instead of a silently forked chain. Serializing every audit write behind a lock
+        would be the alternative and would make audit logging a throughput ceiling.
+        """
         resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
-        with self.connect() as session:
-            model = AuditEvent(
-                tenant_id=resolved,
-                event_type=payload["event_type"],
-                entity_type=payload.get("entity_type"),
-                entity_id=payload.get("entity_id"),
-                detail=payload.get("detail", ""),
-                metadata_json=copy.deepcopy(payload.get("metadata", {})),
-                user_id=payload.get("user_id"),
-                ip_address=payload.get("ip_address"),
-                created_at=datetime.utcnow(),
-            )
-            session.add(model)
-            session.flush()
-            return self._audit_event_to_dict(model)
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                with self.connect() as session:
+                    tail = session.execute(
+                        select(AuditEvent.seq, AuditEvent.hash)
+                        .where(AuditEvent.tenant_id == resolved, AuditEvent.seq.isnot(None))
+                        .order_by(desc(AuditEvent.seq))
+                        .limit(1)
+                    ).first()
+                    seq = (tail[0] + 1) if tail else 1
+                    prev_hash = (tail[1] if tail and tail[1] else GENESIS_HASH)
+
+                    model = AuditEvent(
+                        tenant_id=resolved,
+                        event_type=payload["event_type"],
+                        entity_type=payload.get("entity_type"),
+                        entity_id=payload.get("entity_id"),
+                        detail=payload.get("detail", ""),
+                        metadata_json=copy.deepcopy(payload.get("metadata", {})),
+                        user_id=payload.get("user_id"),
+                        ip_address=payload.get("ip_address"),
+                        created_at=datetime.utcnow(),
+                        seq=seq,
+                        prev_hash=prev_hash,
+                    )
+                    session.add(model)
+                    session.flush()  # assigns id; created_at is set above
+                    # Hash the dict the VERIFIER will rebuild, not a hand-rolled copy of it --
+                    # any drift between the two shapes would show up as a false tamper report.
+                    model.hash = compute_audit_hash(self._audit_event_to_dict(model))
+                    session.flush()
+                    return self._audit_event_to_dict(model)
+            except IntegrityError:
+                if attempts >= 5:
+                    raise
+                continue
 
     def list_audit_events(self, tenant_id: Optional[str] = None, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1838,6 +1873,27 @@ class Storage:
                 stmt = stmt.where(AuditEvent.event_type == event_type)
             rows = session.scalars(stmt.order_by(desc(AuditEvent.created_at))).all()
             return [self._audit_event_to_dict(row) for row in rows]
+
+    def verify_audit_chain(self, tenant_id: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Any]:
+        """Walk this tenant's audit chain oldest-first and report on its integrity.
+
+        Ordered by `seq`, not `created_at`: created_at has second-or-better resolution but is
+        not guaranteed unique, and ordering the walk by a non-unique column would let two
+        events written in the same tick swap places and report a spurious break.
+
+        Legacy rows (seq IS NULL) sort first under both backends' NULLS-FIRST default for ASC,
+        which is what verify() expects -- they precede the chain in real time too.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            stmt = select(AuditEvent).where(AuditEvent.tenant_id == resolved).order_by(AuditEvent.seq.asc().nullsfirst())
+            if limit:
+                stmt = stmt.limit(limit)
+            rows = session.scalars(stmt).all()
+            report = verify_audit_chain_rows(self._audit_event_to_dict(row) for row in rows)
+            report["tenant_id"] = resolved
+            report["total"] = len(rows)
+            return report
 
     def get_history(self, entity_type: str, entity_id: str, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)

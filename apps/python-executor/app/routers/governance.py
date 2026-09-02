@@ -359,3 +359,23 @@ def crdt_merge_endpoint(body: CrdtMergeRequest) -> Dict[str, Any]:
     merged, conflicts = crdt.three_way_merge(
         body.base, body.edit_a, body.edit_b, body.ts_a, body.actor_a, body.ts_b, body.actor_b)
     return {"merged": merged, "conflicts": conflicts}
+
+
+# ── Audit chain integrity ──────────────────────────────────────────────────
+@router.get("/api/v1/audit/verify")
+def verify_audit_chain(request: Request, limit: Optional[int] = Query(None, ge=1, le=100000)) -> Dict[str, Any]:
+    """Walk this tenant's audit chain and report whether it is intact.
+
+    Returns 200 with ``ok: false`` on a broken chain rather than an error status: a detected
+    break is a successful answer to the question the endpoint asks, and an auditor's tooling
+    needs the body (the break list) exactly when the chain is bad. Alert on ``ok``, not on HTTP.
+
+    ``pre_chain`` counts rows written before the chain migration. They are unverifiable by
+    construction and are never included in ``verified`` -- see the 0017 migration for why they
+    are not backfilled.
+
+    ``head`` commits to the whole history. Export it somewhere the database operator cannot
+    rewrite; without that anchor the chain detects partial edits but not a full recompute.
+    """
+    tenant_id = main.active_tenant_id(request)
+    return main.storage.verify_audit_chain(tenant_id=tenant_id, limit=limit)

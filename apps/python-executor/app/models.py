@@ -292,6 +292,21 @@ class AuditEvent(Base):
     ip_address: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
+    # --- tamper-evident chain (see app/audit_chain.py) ---
+    # All three are NULLABLE on purpose. Rows written before the chain existed keep NULLs and are
+    # reported as `pre_chain` -- explicitly NOT verified. Backfilling them with computed hashes
+    # would make forged-looking history verify clean, which is worse than admitting the gap.
+    seq: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    prev_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        # Two concurrent writers computing the same next seq collide here rather than forking
+        # the chain -- the loser retries. NULL seqs (legacy rows) are distinct under SQL NULL
+        # semantics on both SQLite and Postgres, so this does not constrain them.
+        UniqueConstraint("tenant_id", "seq", name="uq_audit_events_tenant_seq"),
+    )
+
 
 class ErrorEvent(Base):
     __tablename__ = "error_events"
