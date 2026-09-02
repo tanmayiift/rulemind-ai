@@ -32,29 +32,59 @@ test("theme toggle switches the full shell and persists after reload", async ({ 
   await expect(sidebar).toHaveCSS("background-color", "rgb(14, 18, 32)");
 });
 
+// This test mutates SHARED state — it deactivates the `device` connector — so it has to both
+// assert its precondition and restore unconditionally. Neither was true before: it restored
+// only on its last line, so any earlier failure left the connector off, and the next run
+// toggled it back ON and failed again. That made the failure self-perpetuating and, because a
+// --grep run inherits the same database, it failed standalone too once poisoned.
+// (Issue #125 read the symptom as order coupling between tests. It is leakage between runs;
+// e2e/global-setup.ts now resets the database so a run cannot inherit one.)
 test("connector toggle hides the source filter and removes inactive variables from rule dropdowns", async ({ page }) => {
   await page.goto("/connectors");
 
-  await page.getByTestId("connector-toggle-device").click();
-  await expect(page.getByTestId("app-notice")).toContainText("Connector updated.");
+  const deviceToggle = page.getByTestId("connector-toggle-device");
+  // Assert the starting state instead of assuming it. Without this the test silently inverts
+  // when the connector is already off, and the failure it then reports points at the variables
+  // list rather than at the state it actually depends on.
+  await expect(deviceToggle).toHaveAttribute("aria-checked", "true");
 
-  await page.goto("/variables");
-  await expect(page.getByTestId("variable-filter-device")).toHaveCount(0);
-  await expect(page.getByTestId("variable-list-item-lending_apps")).toContainText("source inactive");
+  try {
+    await deviceToggle.click();
+    await expect(page.getByTestId("app-notice")).toContainText("Connector updated.");
 
-  await page.goto("/rules");
-  await page.getByTestId("rule-clear").click();
-  await page.getByRole("button", { name: "Simple" }).click();
-  await page.getByTestId("rule-add-condition").click();
+    await page.goto("/variables");
+    await expect(page.getByTestId("variable-filter-device")).toHaveCount(0);
+    await expect(page.getByTestId("variable-list-item-lending_apps")).toContainText("source inactive");
 
-  const firstCondition = page.locator('select[data-testid^="rule-condition-variable-"]').first();
-  const optionTexts = await firstCondition.locator("option").allTextContents();
-  expect(optionTexts.join(" ")).not.toContain("Lending Apps");
-  expect(optionTexts.join(" ")).not.toContain("Device Risk");
+    await page.goto("/rules");
+    await page.getByTestId("rule-clear").click();
+    await page.getByRole("button", { name: "Simple" }).click();
+    await page.getByTestId("rule-add-condition").click();
 
-  await page.goto("/connectors");
-  await page.getByTestId("connector-toggle-device").click();
-  await expect(page.getByTestId("app-notice")).toContainText("Connector updated.");
+    const firstCondition = page.locator('select[data-testid^="rule-condition-variable-"]').first();
+    const optionTexts = await firstCondition.locator("option").allTextContents();
+    expect(optionTexts.join(" ")).not.toContain("Lending Apps");
+    expect(optionTexts.join(" ")).not.toContain("Device Risk");
+
+  } finally {
+    // Restore in a finally so a failure above cannot poison the next run.
+    //
+    // Wrapped in its own try/catch on purpose: when the body times out, Playwright has
+    // already closed the page, and an unguarded page.goto here throws "Target page ... has
+    // been closed", REPLACING the real failure in the report. A cleanup step must never be
+    // the reason you cannot see what actually broke.
+    try {
+      await page.goto("/connectors");
+      if ((await deviceToggle.getAttribute("aria-checked")) === "false") {
+        await deviceToggle.click();
+        await expect(page.getByTestId("app-notice")).toContainText("Connector updated.");
+      }
+    } catch {
+      // The database is reset at the start of every run (see playwright.config.ts), so a
+      // failed restore cannot leak into the next run -- it is only a courtesy for the
+      // remaining tests in THIS one.
+    }
+  }
 });
 
 test("variable creation, testing, promotion, and rule availability work end to end", async ({ page }) => {

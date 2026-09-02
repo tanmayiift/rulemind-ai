@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { defineConfig, devices } from "@playwright/test";
 
 const apiBaseUrl = "http://127.0.0.1:8100";
@@ -6,6 +8,13 @@ const apiBaseUrl = "http://127.0.0.1:8100";
 // suite unrunnable locally. Point PYTHON_BIN at a venv to override.
 const pythonBin = process.env.PYTHON_BIN || "python3";
 const webBaseUrl = "http://127.0.0.1:3100";
+
+// ABSOLUTE on purpose. This used to be the relative "sqlite:///.runtime/playwright-v3.db",
+// which the backend resolves against ITS cwd (apps/python-executor) rather than the repo
+// root — so `rm .runtime/playwright-v3.db` from the root deleted a file nothing used, and
+// "I tested it on a fresh database" was not true. That misdirection is most of why #125 was
+// diagnosed as order coupling.
+const e2eDbPath = path.join(__dirname, "apps", "python-executor", ".runtime", "playwright-v3.db");
 
 export default defineConfig({
   testDir: "./e2e",
@@ -30,7 +39,14 @@ export default defineConfig({
   webServer: [
     {
       // Quoted: a checkout path containing a space otherwise splits into argv.
-      command: `${JSON.stringify(pythonBin)} -m uvicorn app.main:app --host 127.0.0.1 --port 8100`,
+      // The `rm` is part of the server command ON PURPOSE. Playwright starts webServer
+      // BEFORE globalSetup, so resetting the database from globalSetup unlinks the file out
+      // from under the already-running backend: SQLite keeps writing to the unlinked inode
+      // while later connections create a fresh empty file, and the suite then runs against
+      // two different databases. Doing it here makes the ordering unambiguous.
+      // -wal and -shm go too; deleting only the main file leaves a WAL that SQLite replays
+      // on open, resurrecting the rows the reset is meant to discard.
+      command: `rm -f ${JSON.stringify(e2eDbPath)} ${JSON.stringify(e2eDbPath + "-wal")} ${JSON.stringify(e2eDbPath + "-shm")} && ${JSON.stringify(pythonBin)} -m uvicorn app.main:app --host 127.0.0.1 --port 8100`,
       cwd: "./apps/python-executor",
       url: `${apiBaseUrl}/health`,
       reuseExistingServer: false,
@@ -38,7 +54,14 @@ export default defineConfig({
       stderr: "pipe",
       env: {
         ...process.env,
-        DATABASE_URL: "sqlite:///.runtime/playwright-v3.db",
+        DATABASE_URL: `sqlite:///${e2eDbPath}`,
+        // Required now that the server command actually resets the database. seed_if_empty()
+        // (storage.py:319) loads the demo connectors/variables/rules ONLY when this is "1",
+        // so a genuinely fresh database is empty and the suite has nothing to act on.
+        // Until the reset existed, the suite was quietly depending on a database file seeded
+        // by some earlier run and never cleared -- which is what made its state, and
+        // therefore #125, depend on history rather than on the code under test.
+        RULEMIND_SEED_DEMO: "1",
         CORS_ORIGINS: webBaseUrl,
         PYTHON_SANDBOX_TIMEOUT: "2000",
         PYTHON_SANDBOX_MEMORY: "128",
