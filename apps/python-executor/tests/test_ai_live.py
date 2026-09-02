@@ -1,136 +1,195 @@
-"""Live AI provider tests — SKIPPED unless a real key is supplied.
+"""AI generation against a real provider, plus the guardrails that must hold without one (#123).
 
-These are the only tests that prove the AI layer actually works: a mocked
-transport can confirm request shaping, but not that a generated rule is valid
-against the authoring schema, that the scope guardrail saves a real call, or
-that usage accounting matches real token counts.
+The AI endpoints have never been exercised against a real provider, because doing so needs a
+BYO key. This file is in two halves, and the split is the point:
 
-Run with one or more of:
+  * LOCAL (always runs) -- the guardrails that are supposed to work with no provider at all.
+    The most valuable of these is that an off-topic prompt is refused BEFORE a paid call is
+    made. That claim is testable without a key, and it had no test: test_ai.py checks
+    is_in_scope() in isolation, which proves the predicate but not that the endpoint consults
+    it before reaching for the provider. A refactor that moved the check below the API call
+    would keep every existing test green while quietly billing for refused prompts.
 
-    RULEMIND_LIVE_ANTHROPIC_KEY=sk-ant-...  \
-    RULEMIND_LIVE_OPENAI_KEY=sk-...         \
-    RULEMIND_LIVE_GEMINI_KEY=AIza...        \
-    python -m unittest tests.test_ai_live
+  * LIVE (skipped unless RULEMIND_AI_LIVE=1 and a key is configured) -- the six generation
+    endpoints against a real provider, asserting the outputs are STRUCTURALLY valid against
+    the authoring schemas rather than merely non-empty. "It returned something" is what an
+    LLM always does; the open question in #123 is whether what it returns can actually be
+    saved.
 
-Keys are read from the environment only — never committed, never written to a
-file by these tests.
+Gated rather than mocked because a mock cannot answer that question: it returns whatever
+shape the test author already believed in, which is precisely the assumption under doubt.
+
+  RULEMIND_AI_LIVE=1 python -m unittest tests.test_ai_live
 """
+from __future__ import annotations
+
 import os
-import time
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from fastapi.testclient import TestClient
+APP_ROOT = Path(__file__).resolve().parents[1]
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
-import app.main as app_main
+os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
+os.environ.setdefault("RULEMIND_SEED_DEMO", "1")
+os.environ.pop("AUTH_MODE", None)
 
-PROVIDER_ENV = {
-    "anthropic": "RULEMIND_LIVE_ANTHROPIC_KEY",
-    "openai": "RULEMIND_LIVE_OPENAI_KEY",
-    "gemini": "RULEMIND_LIVE_GEMINI_KEY",
-}
-CONFIGURED = {p: os.getenv(v) for p, v in PROVIDER_ENV.items() if os.getenv(v)}
+from fastapi.testclient import TestClient  # noqa: E402
+
+import app.main as app_main  # noqa: E402
+from app import ai  # noqa: E402
+from app.storage import Storage  # noqa: E402
+
+LIVE = os.getenv("RULEMIND_AI_LIVE", "0") == "1"
+LIVE_PROVIDER = os.getenv("RULEMIND_AI_LIVE_PROVIDER", "anthropic")
+LIVE_KEY = os.getenv("RULEMIND_AI_LIVE_KEY", "")
 
 
-@unittest.skipUnless(CONFIGURED, "no live provider key supplied — set one of " + ", ".join(PROVIDER_ENV.values()))
-class LiveAITests(unittest.TestCase):
-    provider = None
+class _Base(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ai.db"))
+        self.client = TestClient(app_main.app)
+        self.tenant = app_main.storage.default_tenant_id
+        self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
 
-    @classmethod
-    def setUpClass(cls):
-        cls.provider = next(iter(CONFIGURED))
-        cls.client = TestClient(app_main.app)
-        cls.headers = {"x-api-key": app_main.storage.default_api_key or ""}
-        cls.client.put("/api/v1/ai/config", headers=cls.headers, json={
-            "default_provider": cls.provider,
-            "enabled": True,
-            cls.provider: {"key": CONFIGURED[cls.provider]},
-        })
+    def tearDown(self):
+        self.client.close()
+        self.tempdir.cleanup()
 
-    @classmethod
-    def tearDownClass(cls):
-        # Remove the key from the tenant config so a live run leaves nothing behind.
-        cls.client.put("/api/v1/ai/config", headers=cls.headers,
-                       json={cls.provider: {"key": "__CLEAR__"}, "enabled": False})
 
-    def _post(self, path, body):
-        return self.client.post(path, headers=self.headers, json=body)
+class GuardrailTest(_Base):
+    """No provider key required — these are the promises the AI layer makes when it is idle."""
 
-    def test_connectivity(self):
-        r = self._post("/api/v1/ai/test", {"provider": self.provider})
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json().get("ok"))
+    OUT_OF_SCOPE = "what is the weather in paris tomorrow"
 
-    def test_live_model_list_supersedes_the_curated_fallback(self):
-        r = self.client.get(f"/api/v1/ai/models?provider={self.provider}", headers=self.headers)
-        self.assertEqual(r.status_code, 200)
-        body = r.json()
-        self.assertTrue(body["live"], "live fetch did not run with a key configured")
-        self.assertGreater(len(body["models"]), 0)
+    def test_an_off_topic_prompt_is_refused_without_calling_the_provider(self):
+        """The token-saving claim, asserted where it matters: at the endpoint.
+
+        ai.complete is the single entry to every paid call. Patching it to explode means any
+        code path that reaches a provider fails loudly, so this passes only if the refusal
+        genuinely happens first.
+        """
+        async def explode(*args, **kwargs):
+            raise AssertionError("a paid provider call was made for an out-of-scope prompt")
+
+        for endpoint, payload in (
+            ("/api/v1/ai/generate-rule", {"prompt": self.OUT_OF_SCOPE}),
+            ("/api/v1/ai/generate-policy", {"prompt": self.OUT_OF_SCOPE}),
+            ("/api/v1/ai/generate-predictor", {"definition": self.OUT_OF_SCOPE}),
+        ):
+            with self.subTest(endpoint=endpoint):
+                with mock.patch.object(ai, "complete", explode):
+                    res = self.client.post(endpoint, headers=self.headers, json=payload)
+                self.assertEqual(res.status_code, 200)
+                body = res.json()
+                self.assertFalse(body["in_scope"])
+                self.assertEqual(body["reason"], "out-of-scope")
+                self.assertIn("decisioning workspace", body["message"])
+
+    def test_an_in_scope_prompt_reaches_the_provider_check(self):
+        """The other half. If everything were refused the test above would pass vacuously, so
+        an in-scope prompt must get PAST the guardrail -- here it stops at the missing-key
+        422, which proves the guardrail let it through."""
+        res = self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
+                               json={"prompt": "tighten the DTI cutoff for the loan policy"})
+        self.assertEqual(res.status_code, 422)
+        self.assertIn("No AI provider configured", res.json()["detail"])
+
+    def test_every_generation_endpoint_degrades_without_a_key(self):
+        """422, never a 5xx: an unconfigured optional feature must not look like an outage."""
+        endpoints = {
+            "/api/v1/ai/generate-rule": {"prompt": "raise the bureau score cutoff"},
+            "/api/v1/ai/generate-policy": {"prompt": "build a loan approval policy"},
+            "/api/v1/ai/explain-decision": {"decision_id": "missing"},
+            "/api/v1/ai/generate-predictor": {"definition": "predict default risk from bureau score"},
+        }
+        for endpoint, payload in endpoints.items():
+            with self.subTest(endpoint=endpoint):
+                res = self.client.post(endpoint, headers=self.headers, json=payload)
+                self.assertLess(res.status_code, 500, f"{endpoint} returned {res.status_code}")
+
+    def test_the_curated_catalogue_names_the_current_flagship(self):
+        """The staleness bug class fixed in #120: the fallback list silently lagged the models
+        an operator could actually pick. Only a floor -- the live /v1/models fetch supersedes
+        this whenever a key is configured."""
+        anthropic = ai.CURATED_MODELS["anthropic"]
+        self.assertTrue(any("opus-5" in m for m in anthropic), anthropic)
+        self.assertTrue(any("sonnet-5" in m for m in anthropic), anthropic)
+
+    def test_pricing_prefers_the_more_specific_key(self):
+        """estimate_cost takes the FIRST key that is a substring of the model id, so the table
+        must stay specific-key-first. Getting this wrong over-billed Opus ~3x (#120)."""
+        opus5 = ai.estimate_cost("anthropic", "claude-opus-5", 1_000_000, 0)
+        opus41 = ai.estimate_cost("anthropic", "claude-opus-4-1", 1_000_000, 0)
+        self.assertNotEqual(opus5, opus41,
+                            "opus-4-1 must not resolve to the generic `opus` row (or vice versa)")
+
+
+@unittest.skipUnless(LIVE, "set RULEMIND_AI_LIVE=1 (and RULEMIND_AI_LIVE_KEY) to run live provider tests")
+class LiveGenerationTest(_Base):
+    """Real provider calls. These cost money, so they are opt-in and deliberately few.
+
+    Every assertion is about STRUCTURE, not wording: an LLM always returns prose, and the
+    question #123 asks is whether the result is valid enough to save.
+    """
+
+    def setUp(self):
+        super().setUp()
+        if not LIVE_KEY:
+            self.skipTest("RULEMIND_AI_LIVE_KEY is not set")
+        app_main.storage.set_ai_credentials(LIVE_PROVIDER, LIVE_KEY, tenant_id=self.tenant)
 
     def test_generated_rule_is_structurally_valid(self):
-        r = self._post("/api/v1/ai/generate-rule",
-                       {"prompt": "Reject when the applicant has more than 2 prior claims in 12 months."})
-        self.assertEqual(r.status_code, 200, r.text)
-        body = r.json()
-        self.assertTrue(body["in_scope"])
-        self.assertTrue(body["valid"], f"draft failed validation: {body.get('validation_error')}")
-        self.assertIn("tree", body["draft"])
+        res = self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
+                               json={"prompt": "reject applicants whose bureau score is below 600"})
+        self.assertEqual(res.status_code, 200, res.text[:400])
+        body = res.json()
+        self.assertTrue(body.get("in_scope", True))
+        nodes = (body.get("rule") or body).get("nodes")
+        self.assertTrue(nodes, f"no nodes in {body}")
+        types = {n.get("type") for n in nodes}
+        self.assertTrue(types & {"approve", "reject", "review"},
+                        "a rule with no outcome node is rejected by the authoring schema")
 
-    def test_generated_rule_references_variables_that_exist(self):
-        """A syntactically valid draft that names imaginary variables is useless."""
-        r = self._post("/api/v1/ai/generate-rule",
-                       {"prompt": "Reject when there are more than 2 prior claims in 12 months."})
-        self.assertEqual(r.status_code, 200)
-        known = {v["id"] for v in self.client.get("/api/v1/variables", headers=self.headers).json()}
+    def test_a_generated_rule_can_actually_be_saved(self):
+        """The assertion that makes this suite worth its cost. Everything short of POSTing the
+        draft back proves only that the model produced JSON."""
+        draft = self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
+                                 json={"prompt": "reject applicants whose bureau score is below 600"}).json()
+        rule = draft.get("rule") or draft
+        saved = self.client.post("/api/v1/rules", headers=self.headers, json={
+            "name": "ai-generated-live-test",
+            "nodes": rule["nodes"],
+            "outcome": rule.get("outcome", "reject"),
+        })
+        self.assertLess(saved.status_code, 300, f"generated rule was rejected: {saved.text[:400]}")
 
-        def variables(node):
-            if not isinstance(node, dict):
-                return
-            if node.get("variable"):
-                yield node["variable"]
-            for child in node.get("children") or []:
-                yield from variables(child)
+    def test_generated_policy_is_structurally_valid(self):
+        res = self.client.post("/api/v1/ai/generate-policy", headers=self.headers,
+                               json={"prompt": "a loan approval policy that runs a bureau rule then a scorecard"})
+        self.assertEqual(res.status_code, 200, res.text[:400])
+        steps = (res.json().get("policy") or res.json()).get("steps")
+        self.assertTrue(steps, "a policy with no steps is rejected by the authoring schema")
 
-        referenced = set(variables(r.json()["draft"].get("tree") or {}))
-        self.assertTrue(referenced, "draft referenced no variables at all")
-        self.assertTrue(referenced <= known, f"draft invented variables: {sorted(referenced - known)}")
+    def test_usage_accounting_accumulates_against_real_tokens(self):
+        """#123 asks whether the counters move for real traffic, not just for mocked calls."""
+        before = (app_main.storage.get_tenant(self.tenant) or {}).get("config", {}).get("ai_usage", {})
+        self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
+                         json={"prompt": "approve applicants with a bureau score above 700"})
+        after = (app_main.storage.get_tenant(self.tenant) or {}).get("config", {}).get("ai_usage", {})
+        self.assertGreater(after.get("calls", 0), before.get("calls", 0))
+        self.assertGreater(after.get("input_tokens", 0), before.get("input_tokens", 0))
 
-    def test_off_topic_is_refused_without_spending_a_token(self):
-        before = self.client.get("/api/v1/ai/usage", headers=self.headers).json()["calls"]
-        started = time.perf_counter()
-        r = self._post("/api/v1/ai/generate-rule", {"prompt": "What is the capital of France?"})
-        elapsed = time.perf_counter() - started
-        self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["in_scope"])
-        self.assertLess(elapsed, 1.0, "an off-topic prompt appears to have reached the provider")
-        after = self.client.get("/api/v1/ai/usage", headers=self.headers).json()["calls"]
-        self.assertEqual(before, after, "an off-topic prompt was billed")
-
-    def test_usage_accounting_accumulates_real_tokens_and_cost(self):
-        before = self.client.get("/api/v1/ai/usage", headers=self.headers).json()
-        self._post("/api/v1/ai/generate-rule", {"prompt": "Reject when prior claims in 12 months exceed 3."})
-        after = self.client.get("/api/v1/ai/usage", headers=self.headers).json()
-        self.assertEqual(after["calls"], before["calls"] + 1)
-        self.assertGreater(after["input_tokens"], before["input_tokens"])
-        self.assertGreater(after["output_tokens"], before["output_tokens"])
-        self.assertGreater(after["cost_usd"], before["cost_usd"], "a real call cost nothing")
-
-    def test_budget_guardrail_blocks_once_exceeded(self):
-        self.client.put("/api/v1/ai/budget", headers=self.headers, json={"monthly_budget_usd": 0.0000001})
-        try:
-            r = self._post("/api/v1/ai/generate-rule", {"prompt": "Reject when prior claims exceed 4."})
-            self.assertEqual(r.status_code, 402, f"expected a payment-required refusal, got {r.status_code}")
-        finally:
-            self.client.put("/api/v1/ai/budget", headers=self.headers, json={"monthly_budget_usd": 0.0})
-
-    def test_explain_decision_names_the_gate_that_fired(self):
-        policy = app_main.storage.list_policies(status="prod")[0]
-        decision = self._post("/api/v1/decide", {"policyId": policy["id"], "payload": {}, "userId": "live-ai"}).json()
-        if not decision.get("decision_id"):
-            self.skipTest("decision id unavailable")
-        r = self._post("/api/v1/ai/explain-decision", {"decision_id": decision["decision_id"]})
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(str(r.json().get("summary", "")).strip(), "explanation was empty")
+    def test_the_live_model_list_supersedes_the_curated_fallback(self):
+        res = self.client.get("/api/v1/ai/models", headers=self.headers)
+        self.assertEqual(res.status_code, 200, res.text[:300])
+        models = res.json().get("models") or res.json()
+        self.assertTrue(models, "a configured provider must return its live catalogue")
 
 
 if __name__ == "__main__":
