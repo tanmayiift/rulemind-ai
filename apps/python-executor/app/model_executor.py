@@ -8,7 +8,6 @@ Supports scikit-learn compatible models (predict / predict_proba).
 from __future__ import annotations
 
 import base64
-import io
 import time
 from typing import Any, Dict, List, Optional
 

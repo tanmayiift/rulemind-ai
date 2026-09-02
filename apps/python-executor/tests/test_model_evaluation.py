@@ -4,7 +4,6 @@ Pure-numpy metrics checked against known-answer fixtures: perfect separation, ra
 calibration, PSI stability, decile monotonicity, multi-label, and uplift (Qini)."""
 from __future__ import annotations
 
-import os
 import sys
 import unittest
 from pathlib import Path

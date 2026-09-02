@@ -17,7 +17,7 @@ import re
 import statistics
 from datetime import date, datetime, timedelta
 from functools import reduce
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # Type helpers
@@ -774,7 +774,16 @@ def DDB(cost: Numeric, salvage: Numeric, life: Numeric, period: Numeric, factor:
     return 0.0
 
 def VDB(cost: Numeric, salvage: Numeric, life: Numeric, start_period: Numeric, end_period: Numeric, factor: Numeric = 2, no_switch: bool = False) -> float:
-    c, s, l, sp, ep, f = _num(cost), _num(salvage), _num(life), _num(start_period), _num(end_period), _num(factor)
+    # Only the period bounds are needed here -- DDB coerces cost/salvage/life/
+    # factor itself, so unpacking them again left four dead locals.
+    #
+    # NOTE: `no_switch` is accepted and ignored. Excel's VDB switches to
+    # straight-line depreciation once that yields more than declining-balance,
+    # unless no_switch is true; this sums DDB unconditionally. Correcting it
+    # changes Excel-function semantics, which the five-engine conformance
+    # contract requires changing in Python, TypeScript, Rust, Kotlin and Dart
+    # together -- out of scope for a lint pass.
+    sp, ep = _num(start_period), _num(end_period)
     total = 0.0
     for p in range(int(sp) + 1, int(ep) + 1):
         total += DDB(cost, salvage, life, p, factor)

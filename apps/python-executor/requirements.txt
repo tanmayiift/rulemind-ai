@@ -56,3 +56,8 @@ opentelemetry-instrumentation-sqlalchemy>=0.48b0
 regex==2024.11.6
 # WebSocket support for uvicorn (collaborative editor live-sync channel).
 websockets==13.1
+
+# Dev tooling. `lint` and `typecheck` were both `py_compile app/*.py`,
+# which does not match app/routers/ or app/core/.
+ruff==0.16.5
+mypy==1.14.1

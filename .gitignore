@@ -44,3 +44,8 @@ target/
 packages/rulemind-core-rs/pkg/
 packages/rulemind-core-rs/pkg-node/
 apps/python-executor/data/
+
+# Runtime output from qa/mobile_e2e/start_fastapi.sh — was tracked, so every
+# local backend run dirtied the tree and blocked branch switches.
+qa/results/mobile-e2e-backend.log
+qa/results/mobile-e2e-backend.pid

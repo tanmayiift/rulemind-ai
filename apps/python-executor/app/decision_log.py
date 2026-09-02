@@ -26,7 +26,6 @@ read-after-write was never guaranteed anyway — the DB is the shared source of 
 from __future__ import annotations
 
 import atexit
-import os
 
 from . import env
 import threading
