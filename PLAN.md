@@ -1,6 +1,6 @@
 # RuleMind — execution plan
 
-**Status:** `33/46 complete` · sections 0–6 done except 3.6 and 1.7 · sections 7–8 are months and remain open
+**Status:** `34/46 complete` · sections 0–6 done except 3.6 · everything merged to main · sections 7–8 are months and remain open
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
@@ -33,7 +33,7 @@ about to change underneath it.
 - [x] **1.4** `#132` responsive mobile
 - [x] **1.5** `#134` SDK integration (retarget to main once #132 lands)
 - [x] **1.6** `#136` demo redesign (retarget once #134 lands)
-- [ ] **1.7** Verify main green; delete merged local + remote branches
+- [x] **1.7** Verify main green; delete merged local + remote branches
 
 ## 2 · Fix the QA harness *before* wiring anything to it
 
@@ -143,20 +143,6 @@ outbox state leaks between tests.
       requirement)
 
 ---
-
-## Open PRs awaiting merge
-
-Sections 2–6 are complete as code but live on unmerged branches, each with its
-own PR. `main` currently has only sections 0 and 1.
-
-| branch | section |
-|---|---|
-| `fix/qa-harness-exit-codes` | 2 — harness exit codes |
-| `test/sdk-offline-round-trip` | 3 — the round trip + signing key |
-| `ci/wire-unrun-suites` | 4 — CI wiring |
-| `chore/real-linting` | 5, 6 — ruff/mypy, CodeQL, Dependabot |
-| `feat/sdk-integration-correctness` (#137) | 1.7 SDK integration |
-| `feat/demo-app-redesign` (#136) | 1.10 demo redesign |
 
 ## Note on this file
 
