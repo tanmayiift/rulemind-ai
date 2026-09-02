@@ -11808,6 +11808,323 @@
         "summary": "Ready"
       }
     },
+    "/scim/v2/ResourceTypes": {
+      "get": {
+        "operationId": "resource_types_scim_v2_ResourceTypes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Resource Types"
+      }
+    },
+    "/scim/v2/Schemas": {
+      "get": {
+        "operationId": "schemas_scim_v2_Schemas_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Schemas"
+      }
+    },
+    "/scim/v2/ServiceProviderConfig": {
+      "get": {
+        "operationId": "service_provider_config_scim_v2_ServiceProviderConfig_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Service Provider Config"
+      }
+    },
+    "/scim/v2/Users": {
+      "get": {
+        "description": "List or search members.\n\n`startIndex` is 1-BASED per RFC 7644 s3.4.2.4. Treating it as a 0-based offset drops the\nfirst user of every page, and the symptom -- \"one user never provisions\" -- is very hard\nto trace back here.",
+        "operationId": "list_users_scim_v2_Users_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter"
+            }
+          },
+          {
+            "in": "query",
+            "name": "startIndex",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Startindex",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "count",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 0,
+              "title": "Count",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Users"
+      },
+      "post": {
+        "operationId": "create_user_scim_v2_Users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create User"
+      }
+    },
+    "/scim/v2/Users/{user_id}": {
+      "delete": {
+        "description": "DEACTIVATES rather than deleting the row.\n\nDeliberate: audit events, decisions and promotions reference the member, and hard-deleting\nwould either orphan that history or cascade it away -- destroying the audit trail of what\na person did is the opposite of what an offboarding control is for. The member stops being\nable to authenticate, which is what the IdP is asking for.",
+        "operationId": "delete_user_scim_v2_Users__user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete User"
+      },
+      "get": {
+        "operationId": "get_user_scim_v2_Users__user_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get User"
+      },
+      "patch": {
+        "description": "The deprovisioning path.\n\nA termination arrives as a PATCH setting `active` false. update_member invalidates the\nmember's cached sessions, so revocation is immediate rather than waiting for a session to\nexpire -- which is the difference between a real offboarding control and a flag.",
+        "operationId": "patch_user_scim_v2_Users__user_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch User"
+      },
+      "put": {
+        "operationId": "replace_user_scim_v2_Users__user_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace User"
+      }
+    },
     "/sdk/v1/blocks/{policy_id}": {
       "get": {
         "description": "Serve a single policy as a self-contained, cacheable **decision block**.\n\nUnlike the full tenant bundle, a block carries exactly one production policy plus only the\nrules / scorecards / decision tables it references (and the compiled variables). A client\nfetches one block, caches it by its ETag (the block checksum), and evaluates that policy\non-device with the same SDK evaluators. Supports conditional GET (If-None-Match \u2192 304) and\noptional per-client encryption when an `X-Client-Public-Key` header is supplied.",

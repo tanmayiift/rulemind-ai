@@ -68,7 +68,10 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if path.startswith("/api/admin/v1"):
             return await call_next(request)
 
-        if not (path.startswith("/api/v1") or path.startswith("/sdk/v1")):
+        # /scim/v2 is guarded here too. It is a USER-PROVISIONING api: left outside this
+        # check it would be fully unauthenticated, letting anyone enumerate and create
+        # accounts. Adding the prefix to the router without this line is the whole exploit.
+        if not (path.startswith("/api/v1") or path.startswith("/sdk/v1") or path.startswith("/scim/v2")):
             return await call_next(request)
 
         # mTLS is transport-layer auth, orthogonal to the API-key / session check below, so it

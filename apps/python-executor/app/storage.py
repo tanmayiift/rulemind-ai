@@ -2655,10 +2655,15 @@ class Storage:
             "name": row.name,
             "role": row.role,
             "auth_provider": row.auth_provider,
+            # The IdP's own id for this person. Stored since the member model was written, but
+            # never surfaced -- so SCIM could set it and never read it back, which breaks the
+            # correlation an IdP uses to match its user to ours after an email change.
+            "external_id": row.external_id,
             "is_active": row.is_active,
             "has_password": bool(row.password_hash),
             "last_login_at": serialize_datetime(row.last_login_at),
             "created_at": serialize_datetime(row.created_at),
+            "updated_at": serialize_datetime(row.updated_at),
         }
 
     def _invalidate_member(self, member_id: str) -> None:

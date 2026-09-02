@@ -1658,6 +1658,7 @@ class ModelEvalRequest(BaseModel):
 # call time (see app/routers/__init__.py) so they honour the test harness's
 # per-test storage swaps, exactly as these in-line endpoints did.
 from .routers.governance import router as governance_router  # noqa: E402
+from .routers.scim import router as scim_router  # noqa: E402
 from .routers import insights as _insights  # noqa: E402
 from .routers.insights import router as insights_router  # noqa: E402
 from .routers import authoring as _authoring  # noqa: E402
@@ -1685,6 +1686,7 @@ from .routers.evaluations import router as evaluations_router  # noqa: E402
 # which is exactly what noqa is for.
 from .webhooks import trigger_webhook  # noqa: F401
 
+app.include_router(scim_router)
 app.include_router(governance_router)
 app.include_router(insights_router)
 app.include_router(authoring_router)
