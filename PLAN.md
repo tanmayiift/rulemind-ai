@@ -135,7 +135,17 @@ outbox state leaks between tests.
 
 ## 8 · Phases 3–8 — parity *(months; each needs a checkpoint before starting)*
 
-- [ ] **8.1** Phase 3 quick wins (2–3 wk)
+- [ ] **8.1** Phase 3 quick wins (2–3 wk). **Audited 2026-09-03 against the code, not the
+  survey this list came from — two of the eight are already shipped:**
+  - ~~connector connection-test~~ — exists: `POST /api/v1/connectors/{id}/test`
+    (`routers/authoring.py:96`)
+  - ~~expose `decision_table` in the builder palette~~ — shipped in #135 (4 refs in
+    `apps/web/app/workflow-builder/page.tsx`)
+  - still open, all confirmed absent by grep: sub-workflow **by alias** (the `workflow` step
+    type exists at `executor.py:462`; alias resolution does not), nested-key model input
+    validation, per-resource rate limits, retention in **months** (`models.py:536` is
+    `audit_retention_days`, days only), the 504/evaluation-timeout contract, and polling
+    conditions on the `action` step
 - [ ] **8.2** Phase 4 outbound webhooks, p12, predictor, DLQ (4–6 wk)
 - [ ] **8.3** Phase 5 canary, modelset, step-through debugger (6–8 wk)
 - [ ] **8.4** Phase 6 Monaco + matrix entity (6–10 wk)
