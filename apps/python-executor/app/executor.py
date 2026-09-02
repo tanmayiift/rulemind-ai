@@ -6,7 +6,6 @@ import copy
 import os
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -16,7 +15,7 @@ import httpx
 from . import circuit_breaker
 from .experiments import apply_experiment_overrides, resolve_experiment_assignment
 from .jsonpath import evaluate_math_expr, resolve_jsonpath
-from .logic import evaluate_rule_definition, evaluate_scorecard, json_dumps, now_iso, redact_payload
+from .logic import evaluate_rule_definition, evaluate_scorecard, json_dumps, redact_payload
 from .sandbox import execute_variable
 from .storage import Storage, mask_secret_values
 from .templates import resolve_template

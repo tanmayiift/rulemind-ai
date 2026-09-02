@@ -10,7 +10,7 @@ import os
 import time as _time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from cryptography.fernet import Fernet
 from sqlalchemy import case, delete, desc, func, inspect, or_, select, update

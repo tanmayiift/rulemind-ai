@@ -177,8 +177,24 @@ jobs:
         if: always()
         run: bash qa/mobile_e2e/stop_fastapi.sh
 
+      # Real static analysis. `pnpm typecheck` maps to py_compile for the
+      # backend, which is byte-compilation over a glob that misses every router.
+      - name: Lint and type-check the backend
+        working-directory: apps/python-executor
+        run: |
+          ruff check app tests
+          mypy app
+
       - name: Run TypeScript checks
         run: pnpm typecheck
+
+      # apps/web declared vitest with zero tests for the life of the repo. It has
+      # 7 now, but root `pnpm test` is scoped to test/** by vitest.config.ts, so
+      # they would still never run. Invoked explicitly rather than making the
+      # root config recursive, which would also sweep up e2e/ and qa/.
+      - name: Run web workspace tests
+        working-directory: apps/web
+        run: pnpm exec vitest run
 
       - name: Run TypeScript tests
         run: pnpm test

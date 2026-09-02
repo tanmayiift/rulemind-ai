@@ -1,13 +1,12 @@
 import copy
 import asyncio
 import os
-import secrets
 import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,26 +21,21 @@ from .context import get_current_api_key_id, get_current_role, get_current_tenan
 from .experience_studio import build_experience_manifest
 from .executor import ExecutionContext, PolicyExecutor
 from .logic import (
-    execute_policy,
     flatten_tree_to_nodes,
-    find_by_id,
     generate_rule_expression_definition,
     now_iso,
     redact_payload,
     evaluate_rule_definition,
-    evaluate_rule_nodes,
     evaluate_scorecard,
     nodes_to_tree,
     slugify,
 )
 from .middleware import TenantContextMiddleware
-from .reviews import submit_review_decision
 from .runtime import is_local_dev, redis_client
 from .security_config import verify_production_secrets
 from .sandbox import execute_variable
 from .scheduler import init_scheduler
 from .storage import Storage
-from .webhooks import trigger_webhook  # re-exported: app/routers/operations.py webhook_trigger reads main.trigger_webhook live (patch target)
 
 
 def parse_origins() -> List[str]:
@@ -1602,8 +1596,6 @@ def list_excel_functions() -> Dict[str, Any]:
         "engineering": [], "database": [],
     }
     for name, func in sorted(EXCEL_FUNCTIONS.items()):
-        doc = (func.__doc__ or "").strip()
-        module = getattr(func, "__module__", "")
         # Categorize by function name patterns
         if name in {"SUM", "SUMIF", "SUMIFS", "SUMPRODUCT", "SUMSQ", "ABS", "ACOS", "ACOSH", "ASIN", "ASINH", "ATAN", "ATAN2", "ATANH", "CEILING", "COMBIN", "COMBINA", "COS", "COSH", "COT", "CSC", "DEGREES", "EVEN", "EXP", "FACT", "FACTDOUBLE", "FLOOR", "FLOOR_MATH", "GCD", "INT", "LCM", "LN", "LOG", "LOG10", "MOD", "MROUND", "MULTINOMIAL", "ODD", "PI", "POWER", "PRODUCT", "QUOTIENT", "RADIANS", "RAND", "RANDBETWEEN", "ROUND", "ROUNDDOWN", "ROUNDUP", "SEC", "SIGN", "SIN", "SINH", "SQRT", "SQRTPI", "SUBTOTAL", "TAN", "TANH", "TRUNC"}:
             categories["math_trig"].append(name)
@@ -1683,6 +1675,11 @@ from .routers import runtime as _runtime  # noqa: E402
 from .routers.runtime import router as runtime_router  # noqa: E402
 from .routers.collab import router as collab_router  # noqa: E402
 from .routers.evaluations import router as evaluations_router  # noqa: E402
+# Re-exported on purpose: app/routers/operations.py reads main.trigger_webhook
+# at call time so tests can patch it on this module. Ruff removed this once as
+# an "unused import" -- it is unused *in this file* and load-bearing outside it,
+# which is exactly what noqa is for.
+from .webhooks import trigger_webhook  # noqa: F401
 
 app.include_router(governance_router)
 app.include_router(insights_router)

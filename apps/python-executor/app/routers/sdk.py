@@ -11,7 +11,7 @@ import asyncio
 import copy
 import time
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -288,7 +288,7 @@ def sdk_resume_execution(execution_id: str, request: SdkResumeExecutionRequest) 
         raise HTTPException(status_code=404, detail="Execution not found.")
     ctx = ExecutionContext.from_dict(execution["context"])
     if request.decision and ctx.review_task_id:
-        result = submit_review_decision(
+        submit_review_decision(
             main.storage,
             ctx.review_task_id,
             request.response,

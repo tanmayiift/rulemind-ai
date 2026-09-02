@@ -1,0 +1,46 @@
+# Linting for the RuleMind backend.
+#
+# This replaces `python3 -m py_compile app/*.py`, which was defined identically
+# as `lint`, `typecheck` AND `build`. That glob matched 57 top-level files and
+# missed all 22 under app/routers/ and app/core/ -- so the 18 routers were never
+# checked by the dedicated lint step at all. (They were imported during the test
+# run, so a hard syntax error still failed somewhere; the point is the checks
+# named "lint" and "typecheck" verified nothing those tests did not.)
+line-length = 120
+target-version = "py310"
+extend-exclude = [".runtime", "alembic/versions"]
+
+[lint]
+# Deliberately narrow, and green today rather than aspirational.
+#
+# A default ruff run reports ~3,200 findings here, but 2,216 of those are
+# stylistic modernisation (UP006 pep585 annotations, UP045 pep604 optionals).
+# Turning those on would mean either a 3,000-line mechanical diff nobody can
+# review, or a permanently-ignored linter. Neither is a gate.
+#
+# What is enabled catches real defects:
+#   E9  syntax and IO errors
+#   F   pyflakes -- unused imports, unused locals, undefined names
+#
+# The first run of exactly this set found 42 real issues, including four dead
+# unpacks in VDB and three discarded return values. It also caught a mistake
+# made while fixing them: removing an assignment at policies.py:105 whose value
+# is used twelve lines later, which F821 flagged immediately.
+#
+# One caution learned the hard way. `ruff check --fix` on F401 removed
+# `from .webhooks import trigger_webhook` from main.py -- a deliberate
+# re-export that app/routers/operations.py reads as main.trigger_webhook at
+# call time, and that tests patch there. It is genuinely unused *in that file*,
+# so ruff was not wrong; it simply cannot see a module used as a namespace.
+# That broke six tests. Re-exports now carry an explicit `# noqa: F401` with
+# the reason. Before running --fix on F401 again, grep for `main.<name>` and
+# `app_main.<name>` first.
+#
+# Widening comes next, one rule family at a time, each with its own green
+# commit. B (bugbear) is the obvious next step -- it reports 52 today, mostly
+# B008 function-call-in-default-argument, which is a genuine bug class.
+select = ["E9", "F"]
+
+[lint.per-file-ignores]
+# Test modules bind values for readability that assertions do not always consume.
+"tests/*" = ["F841"]

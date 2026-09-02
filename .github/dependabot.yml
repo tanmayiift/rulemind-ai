@@ -1,0 +1,46 @@
+# The repo had no dependency scanning of any kind: no Dependabot, no CodeQL,
+# no pip-audit, no pnpm audit. This is the cheapest half of fixing that.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/apps/python-executor"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine bumps rather than fifteen. Security advisories still
+      # arrive as their own PRs.
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "pub"
+    directory: "/packages/sdk-flutter"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "cargo"
+    directory: "/packages/rulemind-core-rs"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "gradle"
+    directory: "/packages/sdk-android"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

@@ -18,7 +18,6 @@ from .context import (
 from .mtls import MtlsSettings, evaluate_client_cert
 from .rbac import is_allowed
 from . import rate_limit
-from .runtime import rate_limit_allow
 from .session_cookie import (
     CSRF_PROTECTED_METHODS,
     SESSION_COOKIE,

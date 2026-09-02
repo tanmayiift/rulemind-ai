@@ -6,11 +6,9 @@ Financial, Logical, Text, Lookup & Reference, Date & Time, Information,
 Engineering, Database, and edge cases.
 """
 
-import os
 import sys
-import math
 import unittest
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[1]
