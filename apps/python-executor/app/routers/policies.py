@@ -194,7 +194,7 @@ def transition_policy_lifecycle(policy_id: str, request: LifecycleTransitionRequ
             status_code=422,
             detail=f"Cannot move from '{current}' to '{request.target}'. Allowed: {allowed_transitions(current)}",
         )
-    updated = main.storage.update_policy(policy_id, {"lifecycle_status": request.target}, bump_version=False, tenant_id=tenant_id)
+    main.storage.update_policy(policy_id, {"lifecycle_status": request.target}, bump_version=False, tenant_id=tenant_id)
     main.storage.add_audit_event(
         {
             "tenant_id": tenant_id,

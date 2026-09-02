@@ -1,0 +1,21 @@
+# Default owner for everything.
+*                                   @tanmayiift
+
+# The five-engine semantics contract. CLAUDE.md is explicit that a change to
+# operator semantics in one engine must land in all five together, with the
+# conformance suites updated; these paths are where that gets broken silently.
+/packages/rule-engine/              @tanmayiift
+/packages/rulemind-core-rs/         @tanmayiift
+/packages/sdk-flutter/lib/          @tanmayiift
+/packages/sdk-android/rulemind-core/ @tanmayiift
+/apps/python-executor/app/excel_functions.py @tanmayiift
+
+# Security-relevant surfaces.
+/apps/python-executor/app/middleware.py @tanmayiift
+/apps/python-executor/app/rbac.py       @tanmayiift
+/apps/python-executor/app/sandbox.py    @tanmayiift
+/apps/python-executor/app/sso.py        @tanmayiift
+/apps/python-executor/app/mtls.py       @tanmayiift
+
+# CI and dependency policy.
+/.github/                           @tanmayiift

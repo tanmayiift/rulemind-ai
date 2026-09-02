@@ -1,0 +1,78 @@
+name: security
+
+# The repo had no security scanning of any kind -- no CodeQL, no Dependabot,
+# no semgrep, trivy, bandit, pip-audit or pnpm audit -- and .github/ had no
+# CODEOWNERS. This is the first thing an enterprise security review asks for.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  schedule:
+    # CodeQL finds new patterns as its queries update, so a weekly run catches
+    # issues in code that has not changed.
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          language: ${{ matrix.language }}
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip install -r apps/python-executor/requirements.txt
+          pnpm install --frozen-lockfile
+
+      # Non-gating on the first pass deliberately: turning an audit on across an
+      # existing tree usually surfaces a backlog, and a red build on day one
+      # teaches everyone to ignore it. Triage what it reports, fix or document
+      # each finding, then remove continue-on-error.
+      - name: pip-audit
+        continue-on-error: true
+        run: pip-audit --requirement apps/python-executor/requirements.txt --desc
+
+      - name: pnpm audit
+        continue-on-error: true
+        run: pnpm audit --audit-level=high

@@ -83,6 +83,19 @@ class RuleMind {
   }
 
   /// Drain the durable decision outbox now (e.g. on app foreground / reconnect).
+  /// How many completed decisions are queued locally, waiting to reach the
+  /// backend.
+  ///
+  /// [evaluate] enqueues every completed decision to a durable outbox, which is
+  /// drained by [syncPendingDecisions] and by the periodic background sync. An
+  /// integrator has no way to show sync state, or to tell a genuine backlog
+  /// from a quiet one, without being able to read the depth.
+  ///
+  /// Returns 0 when the SDK is not initialised or has no durable outbox.
+  static Future<int> pendingDecisionCount() async {
+    return await _decisionOutbox?.size() ?? 0;
+  }
+
   static Future<void> syncPendingDecisions() async {
     await _decisionSyncer?.sync();
   }

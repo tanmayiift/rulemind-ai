@@ -28,7 +28,7 @@ os.environ.setdefault("RULEMIND_ADMIN_JWT_SECRET", "rulemind-test-admin-secret")
 import app.main as app_main
 from app import rate_limit
 from app import cli as app_cli
-from app.main import ConnectorUpdateRequest, RuleUpsertRequest, VariableUpsertRequest
+from app.main import RuleUpsertRequest
 from app.models import Tenant
 from app.storage import Storage
 from rulemind.client import RuleMindServerClient

@@ -1,0 +1,83 @@
+name: load-test
+
+# Deliberately NOT on pull_request. Two reasons, both measured:
+#
+#  1. test/load/evaluate.k6.js:13 defaults RULE_ID to the literal "replace-me",
+#     so without a lookup step every request 404s and the http_req_failed
+#     threshold (rate<0.01) blows through immediately.
+#  2. Its thresholds are p(95)<500 at 50 VUs. E2E_TEST_PLAN.md section 11
+#     measured that on PostgreSQL with 4 workers and the limiter off; a
+#     single-worker uvicorn on a 2-core GitHub runner will not hold it. Gating
+#     PRs on that would produce flaky red for no signal.
+#
+# So it runs nightly and on demand, and reports rather than blocks.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/python-executor/requirements.txt
+
+      - name: Start FastAPI backend
+        run: |
+          bash qa/mobile_e2e/start_fastapi.sh
+          bash qa/mobile_e2e/wait_for_health.sh
+
+      # The script needs a real rule id; its default is the string
+      # "replace-me", which 404s on every request.
+      - name: Resolve a seeded rule id
+        id: rule
+        run: |
+          RULE_ID=$(curl -sf -H "x-api-key: $RM_KEY" "$RM_BASE/api/v1/rules" \
+            | python -c "import json,sys; rs=json.load(sys.stdin); print(rs[0]['id'] if rs else '')")
+          if [ -z "$RULE_ID" ]; then
+            echo "no seeded rule found - cannot run a meaningful load test" >&2
+            exit 1
+          fi
+          echo "id=$RULE_ID" >> "$GITHUB_OUTPUT"
+          echo "using rule $RULE_ID"
+        env:
+          RM_BASE: http://127.0.0.1:8080
+          RM_KEY: rm_live_devlocaltenantkey000000000000
+
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Run k6
+        continue-on-error: true
+        env:
+          BASE_URL: http://127.0.0.1:8080
+          RULE_ID: ${{ steps.rule.outputs.id }}
+          API_KEY: rm_live_devlocaltenantkey000000000000
+        run: k6 run --summary-export=k6-summary.json test/load/evaluate.k6.js
+
+      - name: Stop FastAPI backend
+        if: always()
+        run: bash qa/mobile_e2e/stop_fastapi.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: k6-summary
+          retention-days: 14
+          path: k6-summary.json

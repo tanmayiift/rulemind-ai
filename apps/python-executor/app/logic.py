@@ -608,7 +608,7 @@ def evaluate_scorecard(scorecard: Dict[str, Any], variable_values: Dict[str, Any
         score = max(0, min(max_score, round(raw_score)))
     elif scoring_method == "formula":
         # Custom formula evaluation
-        formula = scorecard.get("formula", f"base_score + total_points")
+        formula = scorecard.get("formula", "base_score + total_points")
         formula_context = {
             "base_score": base_score, "max_score": max_score,
             "total_points": total_points, "total_woe_score": total_woe_score,

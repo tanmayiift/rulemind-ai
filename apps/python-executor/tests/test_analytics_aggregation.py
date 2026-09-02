@@ -21,7 +21,7 @@ os.environ.setdefault("RULEMIND_SEED_DEMO", "1")
 os.environ.pop("AUTH_MODE", None)
 
 import app.main as app_main  # noqa: E402
-from app.analytics import decision_analytics, experiment_analytics  # noqa: E402
+from app.analytics import experiment_analytics  # noqa: E402
 
 
 class AnalyticsAggregationTests(unittest.TestCase):

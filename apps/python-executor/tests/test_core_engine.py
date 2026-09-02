@@ -5,7 +5,6 @@ that it is hostable anywhere (K8s pod, serverless, edge, SDK host).
 """
 from __future__ import annotations
 
-import os
 import sys
 import unittest
 from pathlib import Path

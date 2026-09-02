@@ -147,9 +147,11 @@ class AITests(unittest.TestCase):
         self._set_key()
         dec = self.client.post("/api/v1/decide", headers=self.headers,
                                json={"policyId": "policy_instant_personal_loan", "payload": {"loan": {"bureau_score": 780}}}).json()
-        # find the stored decision id
-        decisions = self.client.get("/api/v1/audit/decisions?limit=5", headers=self.headers).json()
-        did = decisions[0]["id"]
+        # Use the id /decide returned rather than decisions[0] from a shared
+        # list -- that picked whatever happened to be newest, so the test
+        # explained someone else's decision as soon as anything else had run.
+        did = dec["decision_id"]
+        self.assertTrue(did, "/decide must return a decision_id")
         resp = self.client.post("/api/v1/ai/explain-decision", headers=self.headers, json={"decision_id": did}).json()
         self.assertIn("summary", resp)
         self.assertIn("reason_codes", resp)

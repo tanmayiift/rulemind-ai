@@ -27,3 +27,13 @@ dev_dependencies:
   build_runner: ^2.4.8
   # Headless SQLite for CI tests of the durable decision outbox (no device needed).
   sqflite_common_ffi: ^2.3.3
+
+# Upstream breakage, not ours: package:sqlite3 3.5.2's build.dart downloads a
+# prebuilt libsqlite3.x64.linux.so and verifies its hash, and the hosted file no
+# longer matches the pin -- so `flutter test` fails on Linux CI with
+# "Bad state: Hash of downloaded file ... expected b17729184e...". macOS is
+# unaffected because the binary is not downloaded there.
+# sqlite3 arrives only via sqflite_common_ffi, a dev dependency used by the
+# outbox test. Remove this once 3.5.3 ships.
+dependency_overrides:
+  sqlite3: 3.5.1

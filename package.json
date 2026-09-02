@@ -12,10 +12,7 @@
     "test:e2e": "playwright test",
     "typecheck": "pnpm -r typecheck",
     "migrate": "pnpm --filter @rulemind/python-executor migrate",
-    "openapi": "pnpm --filter @rulemind/python-executor openapi",
-    "qa:manifest": "python3 qa/extract-workbook.py",
-    "qa:no-demo-data": "node --import tsx qa/no-demo-data.ts",
-    "qa:run": "node --import tsx qa/run-automated-suite.ts"
+    "openapi": "pnpm --filter @rulemind/python-executor openapi"
   },
   "devDependencies": {
     "@playwright/test": "^1.53.0",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,17 +25,29 @@ os.environ.pop("AUTH_MODE", None)
 
 import app.main as app_main  # noqa: E402
 from app.experiments import assign_variant  # noqa: E402
+from app.storage import Storage  # noqa: E402
 
 
 class AbAssignmentTests(unittest.TestCase):
     def setUp(self):
+        # A private database per test. Retiring stale experiments (below) was not
+        # enough on its own: the assertion reads the most recent decisions, so any
+        # decisions already sitting in the shared .runtime DB -- from a local QA
+        # run, a load probe, or an earlier test -- push this test's own decisions
+        # out of the window and it fails with "0 not greater than 0".
+        #
+        # That made the test pass or fail on ambient local state: green on a fresh
+        # checkout, red on a machine that had run the QA suites. Verified both ways
+        # before this change.
+        self.tempdir = tempfile.TemporaryDirectory()
+        app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ab.db"))
+
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
         self.tenant_id = app_main.storage.default_tenant_id
         self.policy = app_main.storage.list_policies(status="prod", tenant_id=self.tenant_id)[0]
-        # Isolation: resolve_experiment_assignment picks the FIRST running experiment for a
-        # policy, and the shared test DB can hold leftover ones. Retire any others so this
-        # test's experiment is the one assigned.
+        # resolve_experiment_assignment picks the FIRST running experiment for a
+        # policy, so retire any the seed created for it.
         for exp in app_main.storage.list_experiments(tenant_id=self.tenant_id):
             if exp.get("status") == "running" and exp.get("target_policy_id") == self.policy["id"]:
                 app_main.storage.create_or_update_experiment({**exp, "status": "completed"}, tenant_id=self.tenant_id)
@@ -57,6 +70,8 @@ class AbAssignmentTests(unittest.TestCase):
         app_main.storage.create_or_update_experiment(
             {**self.experiment, "status": "completed"}, tenant_id=self.tenant_id
         )
+        self.client.close()
+        self.tempdir.cleanup()
 
     def _decide(self, user_id):
         return self.client.post(

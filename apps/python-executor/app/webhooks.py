@@ -32,7 +32,6 @@ async def trigger_webhook(storage: Storage, webhook_id: str, body: Dict[str, Any
     if not webhook or not webhook.get("is_active", False):
         raise ValueError("Webhook not found")
     if webhook.get("secret_hash"):
-        import hashlib
 
         secret = webhook["secret_hash"]
         valid = verify_hmac_signature(secret, json_bytes(body), signature)
