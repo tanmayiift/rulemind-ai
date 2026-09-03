@@ -1,18 +1,163 @@
 # RuleMind — execution plan
 
-**Status:** `40/46 complete` · sections 0–7 done · every open issue closed except
-#123 (needs your provider key) and #133 (a GitHub runner regression) · section 8 is months of
-parity work and remains unstarted
-
-Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
-(audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
-expected to stay unchecked for a long time — that is the honest state, not a stall.
+**Status:** sections 0–7 done. Section 8 (parity) is **dropped by decision** — replaced by the
+production-readiness tiers below, which are what stands between this repo and a rollout.
 
 Rules: work in order · after each step run the relevant suite, tick the box, commit ·
 no pausing for confirmation between steps · a real blocker goes under **Blockers** below
 with what was tried, then move to the next step.
 
 ---
+
+# Part II · Production readiness
+
+The answer to "can I roll this out" was **no**, and not because the system is fragile — because
+it can return **silently wrong decisions as HTTP 200**, on the default code path, under exactly
+the load you would deploy into. Three independent audits (deployment, failure modes, security)
+converged on that.
+
+Target: **Kubernetes via the helm chart**, **multi-tenant with untrusted authors** — the worst
+case on both axes, so nothing below is optional on trust-model grounds.
+
+Honest scale: **4–6 weeks**. Tier 1 is the smallest tier and is where the product is *wrong*.
+
+Already verified solid, so we don't redo it: the audit hash chain, quota metering,
+Idempotency-Key middleware ordering, SCIM's least-privilege default, backup-with-verified-restore,
+the tenant-isolation matrix's anti-rot design, the scheduler's DB-lease leader election, and the
+sandbox AST guard's threat model. The controls that exist are good. What was missing is an
+adversarial sweep of the full route and deserialization surface.
+
+## T1 · The product returns wrong answers
+
+- [x] **1.1** `UNIQUE(tenant_id, client_id)` + `client_id = user_id` meant only one decision per
+      customer ever persisted — no compliance artifact, no billing, WAL replay loop, 404 reason
+      codes. Subject moved to a new `user_id` column, on both the executor and fast paths.
+- [x] **1.2** A timed-out variable became `None`, and `None` flips catch-shaped risk gates toward
+      approve. Errors now propagate, `/decide` returns a `variable_errors` map, and any failed
+      variable fails closed to `review` on **both** paths (parity-tested).
+- [ ] **1.3** Enforceable evaluation budget + 504. No evaluation timeout exists anywhere.
+      `_compute_variables` runs variables serially and synchronously, so `asyncio.wait_for` can't
+      interrupt it — must offload to `asyncio.to_thread`, check a deadline between variables, and
+      shrink each variable's `timeout_ms` as the budget drains. Executor-level, not middleware:
+      `/decide` is a sync `def` in a threadpool, so cancelling the await returns 504 while the
+      work keeps running and keeps its slot. Budget lives in `engine_config` — no migration.
+- [ ] **1.4** `/decide` UPDATEs the policy row every request (`last_test_result`). Postgres
+      serializes on the row lock, so concurrency on one hot policy collapses to ~1. Delete it.
+- [x] **1.5** Rule/variable/scorecard/decision-table CRUD emitted no `AuditEvent`.
+- [x] **1.6** Two qa tests read fields the endpoints never return (3.10, 4.9).
+
+## T2 · Untrusted authors have RCE
+
+- [ ] **2.1** `pickle.loads` on an uploaded blob **in the API process** — the one holding
+      `RULEMIND_CONFIG_KEY` and every tenant's DB credentials. Gated at AUTHOR, so `policy_maker`
+      has it. Also no size guard on `validate_model`. Deserialize in a pool worker, add the guard,
+      gate `/api/v1/models` writes behind `MANAGE_ACCESS`.
+- [ ] **2.2** Sandbox pool wedges, then silently degrades to unsandboxed in-process exec.
+      `future.result(timeout=)` never cancels the worker, four `while True` pin the pool for the
+      process lifetime, a broken pool is never rebuilt, and `SANDBOX_FALLBACK_MODE` defaults to
+      `inline` — customer Python then runs in the API process with no timeout, no RLIMIT, no
+      process boundary. `RLIMIT_AS` is set inside a *reused* worker under `except: pass`, so
+      tenant A's cap silently applies to tenant B.
+      **2.2 + 1.2 together meant that under peak load the failure mode was "approve everything and
+      log nothing unusual."** That combination, not the latency, is why this was a no.
+- [ ] **2.3** SSRF + secret exfiltration on the real connector path. `_fire_action_request`
+      resolves `{{secrets.*}}` into URLs/headers/bodies with no host check; the guard exists only
+      on `/actions/test`, which deliberately does *not* inject secrets — it protects the harmless
+      path and not the dangerous one. Needs an allowlist with post-DNS-resolution IP checks (the
+      substring blocklist misses `127.1`, `2130706433`, IPv6-mapped, rebinding, redirects), plus
+      clamps on `timeoutMs`/`retries` (today one action can be `600000ms x 10`).
+- [ ] **2.4** Delete the unguarded `eval` in `logic.py`. Unreachable today only because
+      `_scorecard_to_dict` happens to drop `formula`. One column or one endpoint makes it RCE.
+- [ ] **2.5** AST validator caches on MD5 — chosen-prefix collisions skip validation entirely.
+      SHA-256, and bound all three global unbounded cross-tenant caches.
+
+## T3 · Multi-tenant isolation gaps
+
+- [ ] **3.1** Unauthenticated WebSocket with no tenant scoping — `accept()` with zero auth and a
+      hub keyed by `doc_id` alone. Tenant A reads tenant B's policy drafts. The middleware can't
+      save it for two independent reasons (`BaseHTTPMiddleware` skips non-HTTP scopes; `/ws/v1`
+      isn't in the prefix guard).
+- [ ] **3.2** The isolation matrix's discovery regex is its blind spot — `/ws/v1`, `/scim/v2`,
+      `/api/admin/v1` and nested action routes are invisible to it, so the anti-rot tripwire never
+      fires for them.
+- [ ] **3.3** RBAC's unknown-write default is fail-open (`AUTHOR`), so every new mutating prefix is
+      auto-granted to `policy_maker`. `/scim/v2` is unmapped **today**.
+- [ ] **3.4** `active_tenant_id` fails open to the default tenant. Plus 15 storage writers let a
+      body-supplied `tenant_id` outrank the auth context — not exploitable today, but one
+      `extra="allow"` from a cross-tenant write primitive.
+- [ ] **3.5** SAML signature-wrapping bypass: falls back to an Assertion from the **unverified**
+      document. No `NotOnOrAfter`/`AudienceRestriction`/`Recipient`/`Destination` validation, no
+      replay tracking, and entity expansion enabled pre-auth.
+- [ ] **3.6** Unauthenticated, unthrottled tenant + API-key minting (`/onboarding/signup` returns
+      before the rate-limit check). Also `/api/admin/v1` sits outside all middleware.
+
+## T4 · The chart does not deploy
+
+- [ ] **4.1** Empty-string config is not "unset". `DATABASE_URL=""` raises at import →
+      CrashLoopBackOff with no useful log; `RULEMIND_CONFIG_KEY=""` becomes `sha256("")`, a
+      publicly derivable key — and setting a real one later makes `decrypt_config_payload`
+      silently return `{}`, emptying every connector config. Unrecoverable.
+- [ ] **4.2** Every decrypt returns something plausible on the wrong key — ciphertext goes out as
+      a live auth header, or straight into `pickle.loads`. Raise instead; add `MultiFernet` +
+      rotation; use a real KDF.
+- [ ] **4.3** Liveness on `/health` kills the fleet on a DB blip. No probe budgets anywhere, and
+      `/health` is a sync `def` sharing the threadpool with `/decide`.
+- [ ] **4.4** No resource requests/limits, so the HPA reports `<unknown>` and never scales.
+- [ ] **4.5** Pool math is 8–30x over `max_connections` (up to 3200 vs a default 100).
+- [ ] **4.6** Migrations race (six concurrent runners, no lock) and failure is swallowed — the API
+      starts anyway against a stale schema. Job has a fixed name, so the 2nd `helm upgrade` fails.
+      Related: migration 0001 is `create_all` against live models, so a model change shipped
+      without a migration works everywhere fresh and is **missing in production**.
+- [ ] **4.7** The deployed UI cannot reach the API — build-time inlining, cluster-internal DNS the
+      browser can't resolve, no ingress API route, localhost `CORS_ORIGINS`.
+- [ ] **4.8** Containers run as root with no `securityContext`; `restricted` PSS rejects the pods.
+      Also `.dockerignore` misses `.venv-rulemind` (482MB) and `.env` — which is baked into the
+      web image.
+- [ ] **4.9** `RULEMIND_ENV=production` in every manifest; point the `Secure` cookie flags at the
+      same helper, or session and admin-JWT cookies ship without `Secure` behind TLS.
+
+## T5 · Operability
+
+- [ ] **5.1** There is no logging configuration at all — every `logger.info` is dropped. An
+      operator currently cannot tell why a decision was slow or failed.
+- [ ] **5.2** `/metrics` is per-process and wrong (no multiproc dir, no ServiceMonitor).
+- [ ] **5.3** Redis has no socket timeouts — a *hung* Redis blocks every threadpool thread.
+- [ ] **5.4** 8+N queries per decision; needs a TTL cache **with single-flight**.
+- [ ] **5.5** Decision WAL on ephemeral disk, and `recover()` unlinks files another worker is
+      appending to — enabling it can lose the decisions it exists to protect.
+- [ ] **5.6** Cross-worker read-after-write: the `decision_id` `/decide` returns 404s elsewhere.
+
+## T6 · Data protection defaults
+
+- [ ] **6.1** No default redaction for financial or health PII — a raw card number is stored
+      verbatim and returned in full to a **viewer**-role user.
+- [ ] **6.2** `rule_results`, `scorecard_result` and `trace` are plaintext, and the trace carries
+      evaluated inputs — which substantially defeats encrypting `payload_preview`.
+- [ ] **6.3** Make `pip-audit` and `pnpm audit` gating (both `continue-on-error` today).
+
+## Gates
+
+| Gate | Start | Now | Target |
+|---|---|---|---|
+| Python suite | 892 OK | **918 OK** | monotonically up, SQLite + Postgres |
+| qa core | 26/31 | — | 31/31 |
+| qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
+| Playwright | 53 | — | 53 + WebSocket authz |
+| Isolation matrix | CRUD only | — | every mutating route |
+| `helm install` clean cluster | crashloops | — | boots, probes pass, serves UI, survives upgrade |
+| Load test vs a budget | never run | — | worst-case decision time bounded + documented |
+
+New gate: a k6/locust run holding the sandbox pool **saturated** while asserting no decision
+returns a `None`-derived outcome. That is the specific regression T1.2 + T2.2 create, and no
+existing lens catches it.
+
+CI cost: gating from `cbea732` holds — push triggers `sdk-verify` (path-filtered, no emulators)
+and `security` (docs-ignored). Batch commits, push at tier boundaries, emulators stay
+`workflow_dispatch`-only.
+
+---
+
+# Part I · Sections 0–8 (complete, kept as the record)
 
 ## 0 · Housekeeping
 
