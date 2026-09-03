@@ -68,7 +68,9 @@ def _evaluate_row(
     trace: List[Dict[str, Any]] = []
     matched = True
     for input_id, inp in inputs.items():
-        cell = cells.get(input_id)
+        # `or {}` is behaviour-preserving: _is_wildcard treats None and {} identically
+        # (:35), and the wildcard branch below continues for both.
+        cell = cells.get(input_id) or {}
         variable_id = str(inp.get("variable_id") or inp.get("variable") or input_id)
         actual = variable_values.get(variable_id)
         if _is_wildcard(cell):
@@ -115,7 +117,7 @@ def evaluate_decision_table(
     # Order rows for priority hit policy (highest priority first, stable otherwise).
     def _priority(r: Dict[str, Any]) -> float:
         try:
-            return float(r.get("priority"))
+            return float(r.get("priority") or 0.0)
         except (TypeError, ValueError):
             return 0.0
 
@@ -127,7 +129,9 @@ def evaluate_decision_table(
             for out in table.get("outputs", []):
                 oid = str(out.get("id"))
                 outputs[oid] = [r.get("outputs", {}).get(oid) for r in matched_rows]
-            winning_row_id = [r.get("id") for r in matched_rows]
+            # collect-all reports every matching row, so this name holds a list here
+            # and a single id in the other branches.
+            winning_row_id = [r.get("id") for r in matched_rows]  # type: ignore[assignment]
         else:
             if hit_policy == "priority":
                 winner = max(matched_rows, key=_priority)
@@ -258,7 +262,7 @@ def _row_has_opaque_cell(inputs: Dict[str, Dict[str, Any]], row: Dict[str, Any])
 def _row_to_rule(table: Dict[str, Any], row: Dict[str, Any], inputs: Dict[str, Dict[str, Any]], index: int) -> Dict[str, Any]:
     conditions = []
     for input_id, inp in inputs.items():
-        cell = (row.get("cells", {}) or {}).get(input_id)
+        cell = (row.get("cells", {}) or {}).get(input_id) or {}
         if _is_wildcard(cell):
             continue
         field = str(inp.get("variable_id") or inp.get("variable") or inp.get("name") or input_id)
@@ -286,7 +290,9 @@ def analyze_decision_table(table: Dict[str, Any]) -> Dict[str, Any]:
     for ri, row in enumerate(rows):
         cells = row.get("cells", {}) or {}
         for input_id, inp in inputs.items():
-            cell = cells.get(input_id)
+            # `or {}` is behaviour-preserving: _is_wildcard treats None and {} identically
+            # (:35), and the wildcard branch below continues for both.
+            cell = cells.get(input_id) or {}
             if _is_wildcard(cell):
                 continue
             operator = str(cell.get("operator", "=="))

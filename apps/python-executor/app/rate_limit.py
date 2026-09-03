@@ -262,9 +262,11 @@ def _consume(key: str, rate: float, burst: int, cost: float):
         now = time.time()
         try:
             if _LUA_SHA is None:
-                _LUA_SHA = client.script_load(_LUA_TOKEN_BUCKET)
+                # redis-py's stubs type these as the sync/async union (Awaitable[Any] | Any) because
+                # one class serves both; this module is the sync client only.
+                _LUA_SHA = client.script_load(_LUA_TOKEN_BUCKET)  # type: ignore[assignment]
             try:
-                res = client.evalsha(_LUA_SHA, 1, redis_key, rate, burst, now, cost)
+                res = client.evalsha(_LUA_SHA, 1, redis_key, rate, burst, now, cost)  # type: ignore[arg-type]
             except NoScriptError:
                 # The server was flushed or failed over -- reload the script once.
                 #
@@ -277,9 +279,11 @@ def _consume(key: str, rate: float, burst: int, cost: float):
                 # error surfaced anywhere. Matching the exception TYPE cannot drift with
                 # the server's wording. Found by tests/test_redis_integration.py, which is
                 # the first thing in this repo to run against a real Redis.
-                _LUA_SHA = client.script_load(_LUA_TOKEN_BUCKET)
-                res = client.evalsha(_LUA_SHA, 1, redis_key, rate, burst, now, cost)
-            return int(res[0]), float(res[1]), float(res[2])
+                # redis-py's stubs type these as the sync/async union (Awaitable[Any] | Any) because
+                # one class serves both; this module is the sync client only.
+                _LUA_SHA = client.script_load(_LUA_TOKEN_BUCKET)  # type: ignore[assignment]
+                res = client.evalsha(_LUA_SHA, 1, redis_key, rate, burst, now, cost)  # type: ignore[arg-type]
+            return int(res[0]), float(res[1]), float(res[2])  # type: ignore[index]
         except RedisError:
             _LUA_SHA = None
             if _fail_open():

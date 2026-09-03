@@ -386,7 +386,7 @@ def _expand_and(child_ids: List[str], walk) -> List[List[FieldConstraint]]:
         cb = walk(cid)
         if not cb:
             continue
-        new_result = []
+        new_result: List[Any] = []
         for existing in result:
             for branch in cb:
                 if len(new_result) >= BRANCH_CAP:

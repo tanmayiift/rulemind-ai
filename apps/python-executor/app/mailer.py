@@ -98,7 +98,9 @@ def send_report_email(
         return {"delivered": False, "transport": "unconfigured", "recipients": recipients,
                 "note": "No SMTP configured — report queued; configure email to deliver."}
 
-    message = build_message(email_config, recipients, subject, body, csv_content, csv_filename)
+    # is_configured() above guarantees email_config is not None; mypy cannot carry that
+    # through a plain bool-returning helper.
+    message = build_message(email_config, recipients, subject, body, csv_content, csv_filename)  # type: ignore[arg-type]
     factory = _SMTP_FACTORY or _default_smtp
     try:
         client = factory(email_config)

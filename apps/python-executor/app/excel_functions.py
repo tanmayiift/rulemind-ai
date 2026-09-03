@@ -17,7 +17,7 @@ import re
 import statistics
 from datetime import date, datetime, timedelta
 from functools import reduce
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # Type helpers
@@ -299,7 +299,7 @@ def SUBTOTAL(function_num: int, *args: Any) -> float:
 def SUM_FUNC(*args: Any) -> float:
     return sum(_nums(*args))
 
-def SUMIF(range_vals: list, criteria: Any, sum_range: list = None) -> float:
+def SUMIF(range_vals: list, criteria: Any, sum_range: Optional[list] = None) -> float:
     if sum_range is None:
         sum_range = range_vals
     total = 0.0
@@ -366,7 +366,7 @@ def AVERAGEA(*args: Any) -> float:
         raise ValueError("AVERAGEA: no values")
     return sum(vals) / len(vals)
 
-def AVERAGEIF(range_vals: list, criteria: Any, avg_range: list = None) -> float:
+def AVERAGEIF(range_vals: list, criteria: Any, avg_range: Optional[list] = None) -> float:
     if avg_range is None:
         avg_range = range_vals
     vals = []
@@ -1195,7 +1195,7 @@ def CHOOSE(index_num: int, *values: Any) -> Any:
         raise ValueError("CHOOSE: index out of range")
     return values[idx - 1]
 
-def LOOKUP(lookup_value: Any, lookup_vector: list, result_vector: list = None) -> Any:
+def LOOKUP(lookup_value: Any, lookup_vector: list, result_vector: Optional[list] = None) -> Any:
     if result_vector is None:
         result_vector = lookup_vector
     flat_lookup = _flat(lookup_vector)
@@ -1253,7 +1253,7 @@ def FILTER_FUNC(array: list, include: list, if_empty: Any = None) -> list:
 def UNIQUE(array: list, by_col: bool = False, exactly_once: bool = False) -> list:
     if by_col:
         array = TRANSPOSE(array)
-    seen = []
+    seen: List[Any] = []
     counts: Dict[str, int] = {}
     for row in array:
         key = str(row)
@@ -1368,7 +1368,7 @@ def MINUTE(serial_number: Any) -> int:
 def MONTH(serial_number: Any) -> int:
     return _to_date(serial_number).month
 
-def NETWORKDAYS(start_date: Any, end_date: Any, holidays: list = None) -> int:
+def NETWORKDAYS(start_date: Any, end_date: Any, holidays: Optional[list] = None) -> int:
     sd, ed = _to_date(start_date), _to_date(end_date)
     hols = set(_to_date(h) for h in (holidays or []))
     count = 0
@@ -1417,7 +1417,7 @@ def WEEKNUM(serial_number: Any, return_type: int = 1) -> int:
     d = _to_date(serial_number)
     return d.isocalendar()[1]
 
-def WORKDAY(start_date: Any, days: int, holidays: list = None) -> date:
+def WORKDAY(start_date: Any, days: int, holidays: Optional[list] = None) -> date:
     d = _to_date(start_date)
     hols = set(_to_date(h) for h in (holidays or []))
     remaining = int(days)

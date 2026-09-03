@@ -185,7 +185,7 @@ def _serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dic
     return built
 
 
-def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, str]]:
     connectors = bundle["connectors"]
     payloads: Dict[str, Any] = {cid: dict(sample) for cid, sample in connectors.items()}
     flat_fields: Dict[str, Any] = {}

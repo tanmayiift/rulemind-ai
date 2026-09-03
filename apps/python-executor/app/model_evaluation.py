@@ -18,17 +18,22 @@ aborts a whole evaluation.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
 Number = float
 
+# Lists and numpy arrays are both accepted at runtime (_as_arrays normalizes either), but
+# np.ndarray does not satisfy typing.Sequence in numpy's stubs -- so declaring `Sequence`
+# made every internal array-passing call an error while the code was correct.
+ArrayLike = Union[Sequence[Any], np.ndarray]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _as_arrays(y_true: Sequence, y_score: Sequence) -> tuple[np.ndarray, np.ndarray]:
+def _as_arrays(y_true: ArrayLike, y_score: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     y = np.asarray(y_true, dtype=float)
     s = np.asarray(y_score, dtype=float)
     if y.shape != s.shape:
@@ -63,7 +68,7 @@ def _both_classes(y: np.ndarray) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # discrimination
 # ─────────────────────────────────────────────────────────────────────────────
-def roc_auc(y_true: Sequence, y_score: Sequence) -> Optional[Number]:
+def roc_auc(y_true: ArrayLike, y_score: ArrayLike) -> Optional[Number]:
     """AUC via the Mann-Whitney U statistic (tie-aware). None if only one class present."""
     y, s = _as_arrays(y_true, y_score)
     if not _both_classes(y):
@@ -80,7 +85,7 @@ def gini_from_auc(auc: Optional[Number]) -> Optional[Number]:
     return None if auc is None else float(2.0 * auc - 1.0)
 
 
-def ks_statistic(y_true: Sequence, y_score: Sequence) -> Optional[Number]:
+def ks_statistic(y_true: ArrayLike, y_score: ArrayLike) -> Optional[Number]:
     """Kolmogorov-Smirnov: max gap between cumulative good/bad score distributions."""
     y, s = _as_arrays(y_true, y_score)
     if not _both_classes(y):
@@ -94,7 +99,7 @@ def ks_statistic(y_true: Sequence, y_score: Sequence) -> Optional[Number]:
     return float(np.max(np.abs(cum_pos - cum_neg)))
 
 
-def pr_auc(y_true: Sequence, y_score: Sequence) -> Optional[Number]:
+def pr_auc(y_true: ArrayLike, y_score: ArrayLike) -> Optional[Number]:
     """Average precision (area under the precision-recall curve). None if no positives."""
     y, s = _as_arrays(y_true, y_score)
     if y.sum() == 0:
@@ -112,14 +117,14 @@ def pr_auc(y_true: Sequence, y_score: Sequence) -> Optional[Number]:
 # ─────────────────────────────────────────────────────────────────────────────
 # calibration
 # ─────────────────────────────────────────────────────────────────────────────
-def brier_score(y_true: Sequence, y_prob: Sequence) -> Optional[Number]:
+def brier_score(y_true: ArrayLike, y_prob: ArrayLike) -> Optional[Number]:
     y, p = _as_arrays(y_true, y_prob)
     if y.size == 0:
         return None
     return float(np.mean((p - y) ** 2))
 
 
-def expected_calibration_error(y_true: Sequence, y_prob: Sequence, n_bins: int = 10) -> Optional[Number]:
+def expected_calibration_error(y_true: ArrayLike, y_prob: ArrayLike, n_bins: int = 10) -> Optional[Number]:
     y, p = _as_arrays(y_true, y_prob)
     if y.size == 0:
         return None
@@ -135,7 +140,7 @@ def expected_calibration_error(y_true: Sequence, y_prob: Sequence, n_bins: int =
     return float(ece)
 
 
-def calibration_curve(y_true: Sequence, y_prob: Sequence, n_bins: int = 10) -> List[Dict[str, Number]]:
+def calibration_curve(y_true: ArrayLike, y_prob: ArrayLike, n_bins: int = 10) -> List[Dict[str, Number]]:
     y, p = _as_arrays(y_true, y_prob)
     edges = np.linspace(0.0, 1.0, n_bins + 1)
     idx = np.clip(np.digitize(p, edges[1:-1]), 0, n_bins - 1)
@@ -153,7 +158,7 @@ def calibration_curve(y_true: Sequence, y_prob: Sequence, n_bins: int = 10) -> L
 # ─────────────────────────────────────────────────────────────────────────────
 # rank-ordering (decile / score-band table) + stability (PSI)
 # ─────────────────────────────────────────────────────────────────────────────
-def decile_table(y_true: Sequence, y_score: Sequence, n_bands: int = 10) -> Dict[str, Any]:
+def decile_table(y_true: ArrayLike, y_score: ArrayLike, n_bands: int = 10) -> Dict[str, Any]:
     """Equal-count score bands (highest score = band 1) with observed event rate + WoE."""
     y, s = _as_arrays(y_true, y_score)
     if y.size == 0:
@@ -190,7 +195,7 @@ def decile_table(y_true: Sequence, y_score: Sequence, n_bands: int = 10) -> Dict
     return {"bands": bands, "monotonic": bool(monotonic)}
 
 
-def psi(expected: Sequence, actual: Sequence, n_bins: int = 10) -> Optional[Number]:
+def psi(expected: ArrayLike, actual: ArrayLike, n_bins: int = 10) -> Optional[Number]:
     """Population Stability Index between two score distributions. <0.1 stable, >0.25 shift."""
     e = np.asarray(expected, dtype=float)
     a = np.asarray(actual, dtype=float)
@@ -214,7 +219,7 @@ def psi(expected: Sequence, actual: Sequence, n_bins: int = 10) -> Optional[Numb
 # ─────────────────────────────────────────────────────────────────────────────
 # confusion at threshold
 # ─────────────────────────────────────────────────────────────────────────────
-def confusion_at(y_true: Sequence, y_score: Sequence, threshold: float = 0.5) -> Dict[str, Number]:
+def confusion_at(y_true: ArrayLike, y_score: ArrayLike, threshold: float = 0.5) -> Dict[str, Number]:
     y, s = _as_arrays(y_true, y_score)
     pred = (s >= threshold).astype(float)
     tp = float(np.sum((pred == 1) & (y == 1)))
@@ -236,7 +241,7 @@ def confusion_at(y_true: Sequence, y_score: Sequence, threshold: float = 0.5) ->
 # bootstrap confidence intervals
 # ─────────────────────────────────────────────────────────────────────────────
 def bootstrap_ci(
-    y_true: Sequence, y_score: Sequence, metric_fn, n_resamples: int = 500, alpha: float = 0.05, seed: int = 0
+    y_true: ArrayLike, y_score: ArrayLike, metric_fn, n_resamples: int = 500, alpha: float = 0.05, seed: int = 0
 ) -> Optional[Dict[str, Number]]:
     y, s = _as_arrays(y_true, y_score)
     if y.size == 0:
@@ -290,7 +295,7 @@ def precision_at_k(Y_true: Sequence[Sequence], Y_score: Sequence[Sequence], k: i
     return float(np.mean(hits / k))
 
 
-def qini(treatment: Sequence, outcome: Sequence, uplift_score: Sequence) -> Dict[str, Any]:
+def qini(treatment: ArrayLike, outcome: ArrayLike, uplift_score: ArrayLike) -> Dict[str, Any]:
     """Qini coefficient + curve. treatment/outcome are 0/1; higher score = more expected uplift."""
     t = np.asarray(treatment, dtype=float)
     y = np.asarray(outcome, dtype=float)
@@ -320,8 +325,8 @@ def qini(treatment: Sequence, outcome: Sequence, uplift_score: Sequence) -> Dict
 # assemblers
 # ─────────────────────────────────────────────────────────────────────────────
 def evaluate_binary(
-    y_true: Sequence,
-    y_score: Sequence,
+    y_true: ArrayLike,
+    y_score: ArrayLike,
     *,
     threshold: float = 0.5,
     bootstrap: bool = True,
@@ -349,7 +354,7 @@ def evaluate_binary(
 
 
 def temporal_backtest(
-    y_true: Sequence, y_score: Sequence, buckets: Sequence[str], *, threshold: float = 0.5
+    y_true: ArrayLike, y_score: ArrayLike, buckets: Sequence[str], *, threshold: float = 0.5
 ) -> List[Dict[str, Any]]:
     """Per-bucket (vintage) metric summary — the label-based backtest over cohorts."""
     y = np.asarray(y_true, dtype=float)
@@ -373,7 +378,7 @@ def temporal_backtest(
 
 
 def slice_metrics(
-    y_true: Sequence, y_score: Sequence, segments: Sequence[str]
+    y_true: ArrayLike, y_score: ArrayLike, segments: Sequence[str]
 ) -> List[Dict[str, Any]]:
     """Per-segment discrimination (fairness/robustness slice view)."""
     return temporal_backtest(y_true, y_score, segments)  # same shape, keyed by segment value

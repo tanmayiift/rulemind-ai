@@ -16,14 +16,21 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+import app.rate_limit as rate_limit  # noqa: E402
 import app.runtime as runtime  # noqa: E402
 
 
 class RateLimitFailClosedTests(unittest.TestCase):
     def setUp(self):
-        # Ensure the no-Redis fallback path (test env has no REDIS_URL / reachable Redis).
+        # FORCE the no-Redis fallback path rather than assuming the environment lacks Redis.
+        # These tests are about what happens when Redis is unreachable, so leaving that to
+        # ambient state meant they failed for a developer who simply had Redis running --
+        # and passed in CI for a reason unrelated to the code under test.
         self._saved = os.environ.get("RATE_LIMIT_FAIL_OPEN")
+        self._saved_redis = os.environ.pop("REDIS_URL", None)
         os.environ.pop("RATE_LIMIT_FAIL_OPEN", None)
+        runtime.reset_redis_client_for_tests()
+        rate_limit.reset_local_state()
         self.key = "test:" + uuid.uuid4().hex
 
     def tearDown(self):
@@ -31,6 +38,10 @@ class RateLimitFailClosedTests(unittest.TestCase):
             os.environ.pop("RATE_LIMIT_FAIL_OPEN", None)
         else:
             os.environ["RATE_LIMIT_FAIL_OPEN"] = self._saved
+        if self._saved_redis is not None:
+            os.environ["REDIS_URL"] = self._saved_redis
+        # Clear the latch so a Redis-backed test running later is not poisoned by this one.
+        runtime.reset_redis_client_for_tests()
 
     def test_fallback_still_enforces_limit(self):
         limit = 3

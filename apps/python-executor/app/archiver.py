@@ -72,14 +72,16 @@ class ClickHouseArchiver(DecisionArchiver):
     name = "clickhouse"
 
     def __init__(self, env: Optional[Dict[str, str]] = None) -> None:
-        env = env or os.environ
-        self._table = env.get("CLICKHOUSE_TABLE", "rulemind_decisions")
+        # A separate name, not a rebind: reassigning the Optional parameter keeps its
+        # declared type, so every .get() below is an error on the None arm.
+        settings = env if env is not None else os.environ
+        self._table = settings.get("CLICKHOUSE_TABLE", "rulemind_decisions")
         self._settings = {
-            "host": env.get("CLICKHOUSE_HOST", "localhost"),
-            "port": int(env.get("CLICKHOUSE_PORT", "8123")),
-            "username": env.get("CLICKHOUSE_USER", "default"),
-            "password": env.get("CLICKHOUSE_PASSWORD", ""),
-            "database": env.get("CLICKHOUSE_DATABASE", "default"),
+            "host": settings.get("CLICKHOUSE_HOST", "localhost"),
+            "port": int(settings.get("CLICKHOUSE_PORT", "8123")),
+            "username": settings.get("CLICKHOUSE_USER", "default"),
+            "password": settings.get("CLICKHOUSE_PASSWORD", ""),
+            "database": settings.get("CLICKHOUSE_DATABASE", "default"),
         }
         self._client = None
 
@@ -120,12 +122,14 @@ class S3Archiver(DecisionArchiver):
     name = "s3"
 
     def __init__(self, env: Optional[Dict[str, str]] = None) -> None:
-        env = env or os.environ
-        self._bucket = env.get("DECISION_ARCHIVE_S3_BUCKET", "")
-        self._prefix = env.get("DECISION_ARCHIVE_S3_PREFIX", "rulemind/decisions").strip("/")
-        self._format = env.get("DECISION_ARCHIVE_S3_FORMAT", "jsonl").lower()
-        self._endpoint = env.get("DECISION_ARCHIVE_S3_ENDPOINT") or None  # S3-compatible (MinIO/GCS)
-        self._region = env.get("AWS_REGION") or env.get("DECISION_ARCHIVE_S3_REGION")
+        # A separate name, not a rebind: reassigning the Optional parameter keeps its
+        # declared type, so every .get() below is an error on the None arm.
+        settings = env if env is not None else os.environ
+        self._bucket = settings.get("DECISION_ARCHIVE_S3_BUCKET", "")
+        self._prefix = settings.get("DECISION_ARCHIVE_S3_PREFIX", "rulemind/decisions").strip("/")
+        self._format = settings.get("DECISION_ARCHIVE_S3_FORMAT", "jsonl").lower()
+        self._endpoint = settings.get("DECISION_ARCHIVE_S3_ENDPOINT") or None  # S3-compatible (MinIO/GCS)
+        self._region = settings.get("AWS_REGION") or settings.get("DECISION_ARCHIVE_S3_REGION")
         self._client = None
 
     def _connect(self):
@@ -173,14 +177,20 @@ _SINKS = {
 
 def get_archiver(env: Optional[Dict[str, str]] = None) -> DecisionArchiver:
     """Build the configured archiver from DECISION_ARCHIVE_SINK (default 'none')."""
-    env = env or os.environ
-    sink = (env.get("DECISION_ARCHIVE_SINK", "none") or "none").strip().lower()
+    # A separate name, not a rebind: reassigning the Optional parameter keeps its
+    # declared type, so every .get() below is an error on the None arm.
+    settings = env if env is not None else os.environ
+    sink = (settings.get("DECISION_ARCHIVE_SINK", "none") or "none").strip().lower()
     factory = _SINKS.get(sink, NullArchiver)
     if factory in (ClickHouseArchiver, S3Archiver):
-        return factory(env)
+        # The `in` check narrows at runtime but not for mypy: `factory` is the union of all
+        # sink classes, and NullArchiver.__init__ takes no arguments.
+        return factory(env)  # type: ignore[call-arg]
     return factory()
 
 
 def archiving_enabled(env: Optional[Dict[str, str]] = None) -> bool:
-    env = env or os.environ
-    return (env.get("DECISION_ARCHIVE_SINK", "none") or "none").strip().lower() not in ("", "none")
+    # A separate name, not a rebind: reassigning the Optional parameter keeps its
+    # declared type, so every .get() below is an error on the None arm.
+    settings = env if env is not None else os.environ
+    return (settings.get("DECISION_ARCHIVE_SINK", "none") or "none").strip().lower() not in ("", "none")
