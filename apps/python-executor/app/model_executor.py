@@ -8,11 +8,98 @@ Supports scikit-learn compatible models (predict / predict_proba).
 from __future__ import annotations
 
 import base64
+import os
+import threading
 import time
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures.process import BrokenProcessPool
+from typing import Any, Callable, Dict, List, Optional
 
 
 MAX_MODEL_SIZE_MB = 50
+
+# Wall-clock cap for a single model deserialize+predict in the isolated worker.
+MODEL_TIMEOUT_MS = int(os.getenv("MODEL_TIMEOUT_MS", "5000"))
+# Address-space cap for a model worker. Much higher than the variable sandbox's because numpy +
+# scikit-learn reserve large virtual regions just to import; too low a cap makes every prediction
+# fail with MemoryError. Still a hard ceiling on a runaway model.
+_MODEL_MEMORY_MB = int(os.getenv("MODEL_MEMORY_MB", "512"))
+
+# A DEDICATED process pool for models, separate from the variable sandbox: models need far more
+# memory and run a different (heavier, rarer) workload, so sharing one pool would either starve
+# models of memory or over-provision every variable worker.
+_model_pool: Optional[ProcessPoolExecutor] = None
+_model_pool_lock = threading.Lock()
+_MODEL_POOL_SIZE = int(os.getenv("MODEL_POOL_SIZE", "2"))
+
+
+def _model_worker_init() -> None:
+    # Reuse the sandbox's env scrub so an uploaded pickle executing in this worker cannot read
+    # the master encryption key or DB credentials from the inherited environment.
+    from . import sandbox
+
+    sandbox._scrub_worker_env()
+    try:
+        import resource  # type: ignore
+
+        bytes_limit = _MODEL_MEMORY_MB * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
+    except (ImportError, ValueError, OSError):
+        pass
+
+
+def _get_model_pool() -> ProcessPoolExecutor:
+    global _model_pool
+    with _model_pool_lock:
+        if _model_pool is None or getattr(_model_pool, "_broken", False):
+            import multiprocessing
+
+            mp_context = multiprocessing.get_context("spawn")
+            _model_pool = ProcessPoolExecutor(
+                max_workers=_MODEL_POOL_SIZE, mp_context=mp_context, initializer=_model_worker_init)
+        return _model_pool
+
+
+def _recycle_model_pool(pool: ProcessPoolExecutor) -> None:
+    global _model_pool
+    with _model_pool_lock:
+        if _model_pool is not pool:
+            return
+        for process in list(getattr(pool, "_processes", {}).values()):
+            try:
+                process.terminate()
+            except Exception:  # pragma: no cover
+                pass
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:  # pragma: no cover
+            pass
+        _model_pool = None
+
+
+def _run_isolated(func_name: str, *args: Any) -> Dict[str, Any]:
+    """Run execute_model/validate_model in the model pool.
+
+    This is the actual fix for the pickle RCE. pickle.loads runs the payload's __reduce__ on
+    DESERIALIZATION -- before any predict() -- so unpickling an untrusted blob is arbitrary code
+    execution. Doing it here, in a spawned worker with the secrets scrubbed from its environment,
+    a memory cap, and a kill-on-timeout, means a malicious pickle executes in a disposable
+    process instead of in the API process that holds every tenant's credentials. Upload is also
+    gated behind MANAGE_ACCESS (rbac), so it takes an admin to get a blob this far at all.
+    """
+    pool = _get_model_pool()
+    target = _ISOLATED_TARGETS[func_name]
+    try:
+        future: Any = pool.submit(target, *args)
+        return future.result(timeout=MODEL_TIMEOUT_MS / 1000.0)
+    except FuturesTimeoutError:
+        _recycle_model_pool(pool)
+        return {"prediction": None, "valid": False, "error": "Model execution timed out.", "latency_ms": float(MODEL_TIMEOUT_MS)}
+    except BrokenProcessPool as exc:
+        _recycle_model_pool(pool)
+        return {"prediction": None, "valid": False, "error": "Model sandbox unavailable: {0}".format(exc), "latency_ms": 0.0}
+
+
 
 
 # Errors the CALLER caused (bad or absent feature values) are tagged so the router
@@ -75,7 +162,7 @@ def prepare_features(
     return {"values": [row], "features": ordered, "imputed_features": sorted(missing)}
 
 
-def execute_model(
+def _execute_model_worker(
     model_blob: bytes,
     input_data: Dict[str, Any],
     features: Optional[List[str]] = None,
@@ -188,8 +275,8 @@ def execute_model(
         }
 
 
-def validate_model(model_blob: bytes) -> Dict[str, Any]:
-    """Validate that a model blob is a valid pickle with predict method."""
+def _validate_model_worker(model_blob: bytes) -> Dict[str, Any]:
+    """Validate a model blob. RUNS IN A POOL WORKER -- it calls pickle.loads."""
     try:
         import pickle  # noqa: S403
         model = pickle.loads(model_blob)  # noqa: S301
@@ -217,6 +304,48 @@ def validate_model(model_blob: bytes) -> Dict[str, Any]:
 
 def model_to_base64(model_blob: bytes) -> str:
     return base64.b64encode(model_blob).decode("ascii")
+
+
+def _too_large(model_blob: bytes) -> Optional[Dict[str, Any]]:
+    size_mb = len(model_blob) / (1024 * 1024)
+    if size_mb > MAX_MODEL_SIZE_MB:
+        return {"error": "Model size ({0:.1f}MB) exceeds limit ({1}MB)".format(size_mb, MAX_MODEL_SIZE_MB)}
+    return None
+
+
+def execute_model(
+    model_blob: bytes,
+    input_data: Dict[str, Any],
+    features: Optional[List[str]] = None,
+    allow_missing: bool = False,
+) -> Dict[str, Any]:
+    """Run a stored model in an ISOLATED worker (see _run_isolated). Public entry point."""
+    oversize = _too_large(model_blob)
+    if oversize:
+        return {"prediction": None, "error": oversize["error"], "latency_ms": 0.0}
+    return _run_isolated("execute", model_blob, input_data, features, allow_missing)
+
+
+def validate_model(model_blob: bytes) -> Dict[str, Any]:
+    """Validate an uploaded model in an ISOLATED worker. Public entry point.
+
+    The size guard is enforced HERE, before the blob is unpickled anywhere -- it used to live
+    only in execute_model, so validate_model (the upload path) would deserialize an arbitrarily
+    large blob and could be used to OOM the process at upload time.
+    """
+    oversize = _too_large(model_blob)
+    if oversize:
+        return {"valid": False, "model_type": None, "has_predict": False,
+                "has_predict_proba": False, "error": oversize["error"]}
+    return _run_isolated("validate", model_blob)
+
+
+# Name -> worker function, resolved by _run_isolated. Both are module-level so ProcessPoolExecutor
+# can pickle the reference across to the spawned worker.
+_ISOLATED_TARGETS: Dict[str, "Callable[..., Dict[str, Any]]"] = {
+    "execute": _execute_model_worker,
+    "validate": _validate_model_worker,
+}
 
 
 def base64_to_model(b64_string: str) -> bytes:

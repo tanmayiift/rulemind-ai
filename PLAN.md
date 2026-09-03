@@ -53,10 +53,12 @@ adversarial sweep of the full route and deserialization surface.
 
 ## T2 · Untrusted authors have RCE
 
-- [ ] **2.1** `pickle.loads` on an uploaded blob **in the API process** — the one holding
-      `RULEMIND_CONFIG_KEY` and every tenant's DB credentials. Gated at AUTHOR, so `policy_maker`
-      has it. Also no size guard on `validate_model`. Deserialize in a pool worker, add the guard,
-      gate `/api/v1/models` writes behind `MANAGE_ACCESS`.
+- [x] **2.1** `pickle.loads` on an uploaded blob ran **in the API process**. pickle executes
+      `__reduce__` on deserialization (before any `predict`), so it was RCE, reachable at AUTHOR
+      (i.e. `policy_maker`). Now: deserialization runs in a dedicated, memory-capped, kill-on-
+      timeout worker pool with the master key + DB creds scrubbed from its environment; the size
+      guard is enforced at upload (`validate_model`), before anything is unpickled; and
+      `/api/v1/models` management is gated behind `MANAGE_ACCESS` (predict/test stay `DECIDE`).
 - [x] **2.2** Sandbox pool wedging + silent degradation to unsandboxed exec. Recycle-on-timeout
       (terminate the wedged worker instead of leaking the slot), rebuild-on-`BrokenProcessPool`,
       `SANDBOX_FALLBACK_MODE` default flipped to **fail** (inline is now opt-in), and the memory
@@ -146,7 +148,7 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **969 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **978 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 + WebSocket authz |

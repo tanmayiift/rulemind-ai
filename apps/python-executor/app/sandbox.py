@@ -125,8 +125,27 @@ _POOL_SIZE = int(os.getenv("SANDBOX_POOL_SIZE", "4"))
 _POOL_MEMORY_MB = int(os.getenv("SANDBOX_MEMORY_MB", str(MAX_MEMORY_MB)))
 
 
+# Environment variables an isolated worker must never be able to read. Sandbox workers run
+# untrusted author code (variables) and untrusted uploaded pickles (models), and a spawned
+# worker inherits the parent's whole environment -- including the master encryption key and the
+# database credentials. Scrubbing them in the child means that even code executing inside a
+# worker cannot exfiltrate them; the worker legitimately needs none of these.
+_WORKER_SCRUBBED_ENV = (
+    "RULEMIND_CONFIG_KEY", "RULEMIND_ADMIN_JWT_SECRET", "RULEMIND_ADMIN_PASSWORD",
+    "RULEMIND_DEV_API_KEY", "DATABASE_URL", "REDIS_URL",
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+    "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN",
+)
+
+
+def _scrub_worker_env() -> None:
+    for name in _WORKER_SCRUBBED_ENV:
+        os.environ.pop(name, None)
+
+
 def _worker_init(memory_mb: int) -> None:
-    """Runs once in each freshly spawned worker. Applies the memory cap for the worker's life."""
+    """Runs once in each freshly spawned worker: drop inherited secrets, then cap memory."""
+    _scrub_worker_env()
     try:
         import resource  # type: ignore
 

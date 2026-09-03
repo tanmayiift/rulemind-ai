@@ -78,7 +78,6 @@ _AUTHOR_PREFIXES = (
     "/api/v1/policies",
     "/api/v1/decision-tables",
     "/api/v1/experiments",
-    "/api/v1/models",
     "/api/v1/schedules",
     "/api/v1/webhooks",
     "/api/v1/bundles",
@@ -102,6 +101,13 @@ def required_capability(method: str, path: str) -> str:
     # `/policies/{id}/promote` is a deploy action even though it sits under /policies.
     if path.startswith("/api/v1/policies") and path.endswith("/promote"):
         return DEPLOY
+    # Model MANAGEMENT (upload/update/delete) unpickles an author-supplied blob, which is code
+    # execution (T2.1) -- restrict it to MANAGE_ACCESS so a policy_maker cannot reach it. Running
+    # a STORED, admin-vetted model (predict/test) is an evaluation, so it stays at DECIDE.
+    if path.startswith("/api/v1/models"):
+        if path.endswith("/predict") or path.endswith("/test"):
+            return DECIDE
+        return MANAGE_ACCESS
     for prefix, capability in _WRITE_PREFIX_CAPABILITY:
         if path.startswith(prefix):
             return capability
