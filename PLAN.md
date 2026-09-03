@@ -71,10 +71,13 @@ adversarial sweep of the full route and deserialization surface.
       path and not the dangerous one. Needs an allowlist with post-DNS-resolution IP checks (the
       substring blocklist misses `127.1`, `2130706433`, IPv6-mapped, rebinding, redirects), plus
       clamps on `timeoutMs`/`retries` (today one action can be `600000ms x 10`).
-- [ ] **2.4** Delete the unguarded `eval` in `logic.py`. Unreachable today only because
-      `_scorecard_to_dict` happens to drop `formula`. One column or one endpoint makes it RCE.
-- [ ] **2.5** AST validator caches on MD5 — chosen-prefix collisions skip validation entirely.
-      SHA-256, and bound all three global unbounded cross-tenant caches.
+- [x] **2.4** Deleted the unguarded `eval` in `logic.py` (scorecard/metric formulas). Replaced
+      with `safe_formula`, a whitelisting AST evaluator — no `eval`, no `__builtins__`, no
+      attribute access — so the `().__class__.__mro__[1].__subclasses__()` walk has nothing to
+      stand on. Plus CPU/memory-bomb bounds on `**` and string `*`.
+- [x] **2.5** Sandbox validator + the three sibling caches keyed on MD5 → SHA-256 (a
+      chosen-prefix collision could seed a benign entry and skip validation on a colliding
+      malicious body). All four caches were global and unbounded across tenants; now bounded.
 
 ## T3 · Multi-tenant isolation gaps
 
@@ -144,7 +147,7 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **938 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **962 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 + WebSocket authz |

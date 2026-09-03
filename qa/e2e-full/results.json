@@ -1,354 +1,236 @@
 {
   "summary": {
-    "pass": 30,
-    "warn": 1
+    "pass": 21
   },
   "results": [
     {
-      "id": "1.1",
-      "name": "Unauthenticated request is rejected",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 1.87924993224442
-    },
-    {
-      "id": "1.2",
-      "name": "Seeded dev API key is accepted",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 190.6689170282334
-    },
-    {
-      "id": "1.3",
-      "name": "Malformed/unknown API key rejected",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 1.0411250405013561
-    },
-    {
-      "id": "1.3b",
-      "name": "Empty API key rejected",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 0.6633340381085873
-    },
-    {
-      "id": "1.4",
-      "name": "API key CRUD + role scoping",
-      "status": "pass",
-      "detail": "",
-      "data": {
-        "keys": [
-          "id",
-          "kid",
-          "masked_key",
-          "plaintext",
-          "environment",
-          "label",
-          "role",
-          "created_at"
-        ]
-      },
-      "ms": 394.28316708654165
-    },
-    {
-      "id": "1.9",
-      "name": "Rate limiting present (headers or 429 under burst)",
-      "status": "pass",
-      "detail": "",
-      "data": {
-        "429s": 0,
-        "rl_headers": {
-          "ratelimit-limit": "1000",
-          "ratelimit-remaining": "919",
-          "ratelimit-reset": "5"
-        }
-      },
-      "ms": 143.20120797492564
-    },
-    {
-      "id": "2.1",
-      "name": "Connectors list + schema present",
-      "status": "pass",
-      "detail": "",
-      "data": {
-        "count": 9,
-        "ids": [
-          "bureau",
-          "bank",
-          "gst",
-          "device",
-          "kyc",
-          "custom",
-          "travel",
-          "loan",
-          "sme"
-        ]
-      },
-      "ms": 2.6105830911546946
-    },
-    {
-      "id": "2.2",
-      "name": "Config import validate \u2014 well-formed payload",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 6.059625186026096
-    },
-    {
-      "id": "2.3",
-      "name": "Config import validate \u2014 malformed entity flagged, not 500",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 3.1819590367376804
-    },
-    {
       "id": "3.1",
-      "name": "Variable draft executes in sandbox",
+      "name": "CONTROL \u2014 benign variable executes and returns correct value",
       "status": "pass",
       "detail": "",
       "data": {
-        "result": {
-          "value": 42,
-          "error": null,
-          "latency_ms": 0.146,
-          "passed": true,
-          "tested_at": "2026-09-03T13:17:39Z"
-        }
+        "value": 42,
+        "error": null
       },
-      "ms": 53.54574997909367
+      "ms": 243.5477499384433
     },
     {
       "id": "3.2.1",
       "name": "Sandbox blocks: import os",
       "status": "pass",
       "detail": "",
-      "data": null,
-      "ms": 2.0090839825570583
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: os"
+      },
+      "ms": 5.680541042238474
     },
     {
       "id": "3.2.2",
-      "name": "Sandbox blocks: __import__",
+      "name": "Sandbox blocks: __import__ builtin",
       "status": "pass",
       "detail": "",
-      "data": null,
-      "ms": 1.5159579925239086
+      "data": {
+        "value": "None",
+        "error": "Blocked symbol detected: __import__"
+      },
+      "ms": 3.0137498397380114
     },
     {
       "id": "3.2.3",
-      "name": "Sandbox blocks: open file",
+      "name": "Sandbox blocks: open() file read",
       "status": "pass",
       "detail": "",
-      "data": null,
-      "ms": 1.584082841873169
+      "data": {
+        "value": "None",
+        "error": "Blocked call detected: open"
+      },
+      "ms": 2.6340000331401825
     },
     {
       "id": "3.2.4",
-      "name": "Sandbox blocks: builtins via subclass",
+      "name": "Sandbox blocks: subclass walk to Popen",
       "status": "pass",
       "detail": "",
-      "data": null,
-      "ms": 1.3307500630617142
+      "data": {
+        "value": "None",
+        "error": "Access to dunder attribute not allowed: __name__"
+      },
+      "ms": 2.919916994869709
     },
     {
       "id": "3.2.5",
-      "name": "Sandbox blocks: eval",
+      "name": "Sandbox blocks: eval()",
       "status": "pass",
       "detail": "",
-      "data": null,
-      "ms": 1.1423749383538961
+      "data": {
+        "value": "None",
+        "error": "Blocked call detected: eval"
+      },
+      "ms": 2.5255419313907623
     },
     {
       "id": "3.2.6",
-      "name": "Sandbox blocks: exec",
+      "name": "Sandbox blocks: exec()",
       "status": "pass",
       "detail": "",
-      "data": null,
-      "ms": 1.1306668166071177
+      "data": {
+        "value": "None",
+        "error": "Blocked call detected: exec"
+      },
+      "ms": 3.5184589214622974
     },
     {
       "id": "3.2.7",
-      "name": "Sandbox blocks: globals",
+      "name": "Sandbox blocks: globals() access",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Blocked symbol detected: globals"
+      },
+      "ms": 2.9499579686671495
+    },
+    {
+      "id": "3.2.8",
+      "name": "Sandbox blocks: func __globals__",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Access to dunder attribute not allowed: __globals__"
+      },
+      "ms": 2.607458969578147
+    },
+    {
+      "id": "3.2.9",
+      "name": "Sandbox blocks: class __mro__ escape",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Access to dunder attribute not allowed: __mro__"
+      },
+      "ms": 2.482625190168619
+    },
+    {
+      "id": "3.2.10",
+      "name": "Sandbox blocks: str.format leak",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Method not allowed: format (use an f-string or %-formatting)"
+      },
+      "ms": 2.8016669675707817
+    },
+    {
+      "id": "3.2.11",
+      "name": "Sandbox blocks: import via importlib",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: importlib"
+      },
+      "ms": 2.6720839086920023
+    },
+    {
+      "id": "3.2.12",
+      "name": "Sandbox blocks: read env",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: os"
+      },
+      "ms": 2.4991671089082956
+    },
+    {
+      "id": "3.2.13",
+      "name": "Sandbox blocks: socket egress",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: socket"
+      },
+      "ms": 2.5049999821931124
+    },
+    {
+      "id": "3.2.14",
+      "name": "Sandbox blocks: subprocess",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Import not allowed: subprocess"
+      },
+      "ms": 2.5915000587701797
+    },
+    {
+      "id": "3.2.15",
+      "name": "Sandbox blocks: write file",
+      "status": "pass",
+      "detail": "",
+      "data": {
+        "value": "None",
+        "error": "Blocked call detected: open"
+      },
+      "ms": 2.5021671317517757
+    },
+    {
+      "id": "3.2.16",
+      "name": "Secret not readable from sandbox even if import slips",
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 1.0816249996423721
+      "ms": 2.429625019431114
     },
     {
       "id": "3.3",
-      "name": "Sandbox enforces timeout on infinite loop",
+      "name": "Infinite loop is terminated by timeout",
       "status": "pass",
       "detail": "",
       "data": {
-        "elapsed_ms": 1,
-        "status": 422,
-        "body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"source_id\"],\"msg\":\"Field required\",\"input\":{\"code\":\"while True: pass\\nresult = 1\",\"payload\":{}}}]}"
+        "elapsed_ms": 2004,
+        "error": "Variable execution timed out.",
+        "http": 200
       },
-      "ms": 1.1771670542657375
+      "ms": 2003.8710408844054
     },
     {
-      "id": "3.4",
-      "name": "Rule test endpoint returns per-condition detail",
+      "id": "3.3b",
+      "name": "Memory bomb does not take down the API",
       "status": "pass",
       "detail": "",
       "data": {
-        "keys": [
-          "rule",
-          "expression",
-          "variable_results",
-          "values",
-          "result"
-        ]
+        "elapsed_ms": 99,
+        "http": 200,
+        "error": "None"
       },
-      "ms": 40.171208092942834
+      "ms": 102.78366692364216
     },
     {
-      "id": "3.10",
-      "name": "Excel function library exposed",
+      "id": "3.3c",
+      "name": "Deep recursion does not crash the worker",
       "status": "pass",
       "detail": "",
       "data": {
-        "count": 232
+        "error": "maximum recursion depth exceeded"
       },
-      "ms": 1.73904187977314
+      "ms": 6.605750182643533
     },
     {
-      "id": "4.1",
-      "name": "/decide returns an outcome",
+      "id": "3.3d",
+      "name": "ReDoS guard on catastrophic regex",
       "status": "pass",
       "detail": "",
       "data": {
-        "outcome": "approve",
-        "score": 710,
-        "latency_ms": 73.433
+        "elapsed_ms": 2006,
+        "error": "Variable execution timed out."
       },
-      "ms": 80.97974979318678
-    },
-    {
-      "id": "4.1b",
-      "name": "/decide on unknown policy \u2192 404, not 500",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 1.9699169788509607
-    },
-    {
-      "id": "4.4",
-      "name": "/decide tolerates empty / null / junk payload",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 127.18708300963044
-    },
-    {
-      "id": "4.7",
-      "name": "Determinism: identical payload \u21d2 identical outcome",
-      "status": "pass",
-      "detail": "",
-      "data": {
-        "outcomes": [
-          "approve",
-          "approve",
-          "approve",
-          "approve",
-          "approve",
-          "approve"
-        ],
-        "scores": [
-          710,
-          710,
-          710,
-          710,
-          710,
-          710
-        ]
-      },
-      "ms": 166.30566702224314
-    },
-    {
-      "id": "4.9",
-      "name": "Batch decide",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 25.370124960318208
-    },
-    {
-      "id": "5.1",
-      "name": "Decision trace covers every policy step",
-      "status": "pass",
-      "detail": "",
-      "data": {
-        "policy_steps": 9,
-        "traced": 9,
-        "missing": []
-      },
-      "ms": 28.932707849889994
-    },
-    {
-      "id": "5.2",
-      "name": "Trace exposes per-condition variable, operator, threshold, value",
-      "status": "pass",
-      "detail": "",
-      "data": {
-        "conditions": 5,
-        "sample": {
-          "variable_id": "loan_bureau_score",
-          "variable_name": "Loan Bureau Score",
-          "source_id": "loan",
-          "operator": ">=",
-          "threshold": 700,
-          "value": 756,
-          "passed": true,
-          "group": "AND"
-        }
-      },
-      "ms": 26.012124959379435
-    },
-    {
-      "id": "5.3",
-      "name": "Decision is persisted and retrievable by id",
-      "status": "pass",
-      "detail": "",
-      "data": null,
-      "ms": 28.007749933749437
-    },
-    {
-      "id": "6.1",
-      "name": "Decision history queryable (case-wise)",
-      "status": "pass",
-      "detail": "",
-      "data": {
-        "returned": 3,
-        "matching_marker": 3
-      },
-      "ms": 2088.8355001807213
-    },
-    {
-      "id": "6.2",
-      "name": "Audit log records mutations (who/what/when)",
-      "status": "pass",
-      "detail": "",
-      "data": {
-        "create_status": 200,
-        "body": "{\"id\":\"e2e_audit_d45ac6\",\"name\":\"E2E Audit Probe\",\"nodes\":[{\"id\":\"c1\",\"type\":\"condition\",\"variable\":\"age\",\"operator\":\">=\",\"value\":\"18\",\"label\":\"Condition\"}],\"tree\":{\"type\":\"group\",\"id\":\"g\",\"logic\":\"AN"
-      },
-      "ms": 1024.5667500421405
-    },
-    {
-      "id": "6.6",
-      "name": "PII redaction configurable + applied",
-      "status": "warn",
-      "detail": "raw card-like value echoed back in audit payload (no default redaction)",
-      "data": {
-        "decide": 200
-      },
-      "ms": 1577.9976670164615
+      "ms": 2006.4933330286294
     }
   ]
 }

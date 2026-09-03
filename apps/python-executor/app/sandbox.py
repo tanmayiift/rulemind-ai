@@ -60,15 +60,54 @@ try:
 except ImportError:
     pass  # Graceful fallback if excel_functions not available
 
+class _BoundedCache(Dict[str, Any]):
+    """A dict that evicts the oldest entry once it exceeds a capacity.
+
+    The four code caches below were plain module-level dicts: global, unbounded, and shared
+    across tenants. Every distinct variable body a tenant ever submits added a permanent entry,
+    so a tenant authoring in a loop -- or simply a busy multi-tenant deployment over weeks --
+    was a slow memory leak with no ceiling. Bounding them is the containment; insertion order is
+    a good-enough approximation of LRU for a validation cache and needs no per-get bookkeeping.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        super().__init__()
+        self._capacity = capacity
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key not in self and len(self) >= self._capacity:
+            # dicts preserve insertion order, so the first key is the oldest.
+            oldest = next(iter(self))
+            del self[oldest]
+        super().__setitem__(key, value)
+
+
+# Bound chosen so a large tenant's whole variable catalog fits (the demo tenant has ~55), with
+# generous headroom, while still being a hard ceiling. Override for pathological catalogs.
+_CODE_CACHE_CAPACITY = int(os.getenv("SANDBOX_CODE_CACHE_SIZE", "2048"))
+
 # Cache for validated+compiled code to avoid re-parsing on every call
-_validated_code_cache: Dict[str, bool] = {}
-_compiled_code_cache: Dict[str, Any] = {}
-_param_count_cache: Dict[str, int] = {}
+_validated_code_cache: Dict[str, bool] = _BoundedCache(_CODE_CACHE_CAPACITY)
+_compiled_code_cache: Dict[str, Any] = _BoundedCache(_CODE_CACHE_CAPACITY)
+_param_count_cache: Dict[str, int] = _BoundedCache(_CODE_CACHE_CAPACITY)
 # Cache of the *resolved callable* per source hash. A variable is a pure function
 # of (payload, variables); after the first exec we keep the function object and
 # reuse it on every subsequent call — no re-parse, no re-exec, no re-resolve.
 # This is the single biggest per-request win on the inline path.
-_function_cache: Dict[str, Any] = {}
+_function_cache: Dict[str, Any] = _BoundedCache(_CODE_CACHE_CAPACITY)
+
+
+def _source_key(source: str) -> str:
+    """Content-address a code body for the caches.
+
+    SHA-256, not MD5. The cache stored "this exact source already passed validation" under the
+    hash, and validate_source returns EARLY on a hit -- so with a hash an attacker can collide,
+    the attack is: submit a benign body, let it populate the cache, then submit a MALICIOUS body
+    that hashes to the same key and validation is skipped entirely. Chosen-prefix MD5 collisions
+    are cheap and public; SHA-256 has no such construction. usedforsecurity is set so a
+    FIPS-restricted build does not refuse the digest.
+    """
+    return hashlib.sha256(source.encode()).hexdigest()
 
 # Pre-warmed process pool (lazy-initialized)
 _pool: Optional[ProcessPoolExecutor] = None
@@ -96,7 +135,7 @@ def variable(func=None, **metadata):
 
 
 def validate_source(source: str) -> None:
-    code_hash = hashlib.md5(source.encode()).hexdigest()
+    code_hash = _source_key(source)
     if code_hash in _validated_code_cache:
         return
 
@@ -190,7 +229,7 @@ def _execute_inline(code: str, payload: Dict[str, Any], variables_map: Dict[str,
     """
     started = time.perf_counter()
     try:
-        code_hash = hashlib.md5(code.encode()).hexdigest()
+        code_hash = _source_key(code)
         cached = _function_cache.get(code_hash)
         if cached is not None:
             function, parameter_count = cached

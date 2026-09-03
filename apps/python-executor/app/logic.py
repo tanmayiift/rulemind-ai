@@ -501,20 +501,39 @@ def evaluate_rule_definition(rule: Dict[str, Any], variable_values: Dict[str, An
     return evaluate_rule_nodes(rule.get("nodes", []), variable_values, variable_lookup)
 
 
+# A handful of plain builtins that formulas legitimately use as functions. Excel functions cover
+# most of it (ABS, MIN, MAX, ...), but formulas in the wild also call the lowercase Python names,
+# so both are offered -- as an explicit table, never as a live __builtins__ namespace.
+_FORMULA_BUILTINS: Dict[str, Any] = {
+    "abs": abs, "min": min, "max": max, "round": round,
+    "int": int, "float": float, "str": str, "bool": bool, "len": len, "sum": sum,
+}
+
+
 def _evaluate_formula(formula: str, context: Dict[str, Any]) -> Any:
-    """Evaluate an Excel-style formula string in a sandboxed context."""
+    """Evaluate an Excel-style formula string over a fixed, allowlisted grammar.
+
+    This used to be `eval(formula, {"__builtins__": safe_ns}, safe_ns)`. A builtins dict is not a
+    sandbox: `().__class__.__mro__[1].__subclasses__()` walks from a literal to every class in the
+    interpreter and on to os/subprocess, and authors here are untrusted. It replaces eval with a
+    whitelisting AST evaluator (safe_formula) that has no eval, no __builtins__, and no attribute
+    access at all -- so the escape has nothing to stand on. The public contract is unchanged: a
+    bad formula still returns {"error": ...} rather than raising into the scorecard path.
+    """
+    from .excel_functions import EXCEL_FUNCTIONS
+    from .safe_formula import FormulaError, evaluate_formula
+
+    functions: Dict[str, Any] = dict(EXCEL_FUNCTIONS)
+    functions.update(_FORMULA_BUILTINS)
+    # Constants that formulas reference as bare names -- also exposed via the context, never via a
+    # __builtins__ mapping the formula could reach through.
+    scope = dict(context)
+    scope.setdefault("True", True)
+    scope.setdefault("False", False)
+    scope.setdefault("None", None)
     try:
-        from .excel_functions import EXCEL_FUNCTIONS
-        safe_ns: Dict[str, Any] = dict(EXCEL_FUNCTIONS)
-        safe_ns.update(context)
-        safe_ns["__builtins__"] = {
-            "abs": abs, "min": min, "max": max, "round": round,
-            "int": int, "float": float, "str": str, "bool": bool,
-            "len": len, "sum": sum, "True": True, "False": False, "None": None,
-        }
-        safe_ns["__builtins__"].update(EXCEL_FUNCTIONS)
-        return eval(formula, {"__builtins__": safe_ns}, safe_ns)  # noqa: S307
-    except Exception as exc:
+        return evaluate_formula(formula, scope, functions)
+    except FormulaError as exc:
         return {"error": str(exc)}
 
 
