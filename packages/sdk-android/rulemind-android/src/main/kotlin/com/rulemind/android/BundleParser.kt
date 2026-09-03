@@ -12,6 +12,8 @@ import com.rulemind.core.models.RuleTreeNode
 import com.rulemind.core.models.ScoreFactor
 import com.rulemind.core.models.ScoreRange
 import com.rulemind.core.models.Scorecard
+import com.rulemind.core.models.ScorecardMetric
+import com.rulemind.core.models.WoeRange
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -101,20 +103,71 @@ internal object BundleParser {
             name = item.optString("name"),
             baseScore = item.optInt("baseScore", item.optInt("base_score", 300)),
             maxScore = item.optInt("maxScore", item.optInt("max_score", 900)),
+            scoringMethod = item.optString("scoringMethod", item.optString("scoring_method", "points")).ifBlank { "points" },
+            intercept = item.optDouble("intercept", 0.0).orElse(0.0),
+            pdo = item.optDouble("pdo", 20.0).orElse(20.0),
+            targetScore = item.optDouble("targetScore", item.optDouble("target_score", 600.0)).orElse(600.0),
+            targetOdds = item.optDouble("targetOdds", item.optDouble("target_odds", 50.0)).orElse(50.0),
+            formula = item.optString("formula").ifBlank { null },
+            metrics = jsonObjects(item.optJSONArray("metrics")).map { metric ->
+                ScorecardMetric(
+                    name = metric.optString("name", "unnamed").ifBlank { "unnamed" },
+                    formula = metric.optString("formula", "0").ifBlank { "0" },
+                    unit = metric.optString("unit", ""),
+                    category = metric.optString("category", "financial").ifBlank { "financial" },
+                )
+            },
             bins = jsonObjects(item.optJSONArray("bins")).map { factor ->
                 ScoreFactor(
-                    variableId = factor.optString("variableId", factor.optString("variable_id")),
+                    variableId = factor.optStringOrNull("variableId") ?: factor.optStringOrNull("variable_id"),
+                    weight = factor.optDouble("weight", 1.0).orElse(1.0),
+                    coefficient = factor.optDouble("coefficient", 0.0).orElse(0.0),
                     ranges = jsonObjects(factor.optJSONArray("ranges")).map { range ->
+                        val lower = range.bound("min")
+                        val upper = range.bound("max")
                         ScoreRange(
-                            min = range.optDouble("min").takeUnless { it.isNaN() },
-                            max = range.optDouble("max").takeUnless { it.isNaN() },
+                            min = lower.value,
+                            max = upper.value,
                             points = range.optInt("points"),
+                            matchable = lower.matchable && upper.matchable,
+                        )
+                    },
+                    woeValues = jsonObjects(factor.optJSONArray("woeValues").takeIf { it != null } ?: factor.optJSONArray("woe_values")).map { woe ->
+                        val lower = woe.bound("min")
+                        val upper = woe.bound("max")
+                        WoeRange(
+                            min = lower.value,
+                            max = upper.value,
+                            woe = woe.optDouble("woe", 0.0).orElse(0.0),
+                            iv = woe.optDouble("iv", 0.0).orElse(0.0),
+                            eventRate = woe.optDouble("eventRate", woe.optDouble("event_rate")).takeUnless { it.isNaN() },
+                            nonEventRate = woe.optDouble("nonEventRate", woe.optDouble("non_event_rate")).takeUnless { it.isNaN() },
+                            matchable = lower.matchable && upper.matchable,
                         )
                     },
                 )
             },
         )
     }
+
+    private fun JSONObject.optStringOrNull(key: String): String? =
+        if (has(key) && !isNull(key)) optString(key).ifBlank { null } else null
+
+    private class Bound(val value: Double?, val matchable: Boolean)
+
+    /**
+     * A bin bound, carrying the distinction the Python core makes. `float(candidate.get("min", 0))`
+     * reads an ABSENT key as 0.0, but raises on an explicit null or a non-numeric value — and the
+     * `except (TypeError, ValueError): continue` around it means such a candidate can never match.
+     */
+    private fun JSONObject.bound(key: String): Bound {
+        if (!has(key)) return Bound(null, true)
+        if (isNull(key)) return Bound(null, false)
+        val raw = optDouble(key)
+        return if (raw.isNaN()) Bound(null, false) else Bound(raw, true)
+    }
+
+    private fun Double.orElse(fallback: Double): Double = if (isNaN()) fallback else this
 
     private fun JSONArray?.toPolicies(): List<Policy> = jsonObjects(this).map { item ->
         Policy(

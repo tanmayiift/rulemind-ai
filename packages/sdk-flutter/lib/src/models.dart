@@ -125,33 +125,149 @@ class CompiledRule {
   final String? expression;
 }
 
-class ScoreRange {
-  ScoreRange({this.min, this.max, required this.points});
+/// A bin bound as the Python core reads it.
+///
+/// `float(candidate.get("min", 0))` treats an ABSENT key as **0.0**, not an open bound — but
+/// raises on an explicit null or a non-numeric value, and the `except (TypeError, ValueError):
+/// continue` around it means such a candidate can never match. [matchable] carries that second
+/// case, which a plain nullable double cannot express.
+class ScoreBound {
+  const ScoreBound(this.value, this.matchable);
 
-  factory ScoreRange.fromJson(Map<String, dynamic> json) => ScoreRange(
-        min: (json["min"] as num?)?.toDouble(),
-        max: (json["max"] as num?)?.toDouble(),
-        points: (json["points"] as num?)?.toInt() ?? 0,
-      );
+  factory ScoreBound.fromJson(Map<String, dynamic> json, String key) {
+    if (!json.containsKey(key)) return const ScoreBound(null, true);
+    final raw = json[key];
+    if (raw is num) return ScoreBound(raw.toDouble(), true);
+    if (raw is String) {
+      final parsed = double.tryParse(raw.trim());
+      return parsed == null ? const ScoreBound(null, false) : ScoreBound(parsed, true);
+    }
+    return const ScoreBound(null, false);
+  }
+
+  final double? value;
+  final bool matchable;
+
+  double get bound => value ?? 0.0;
+}
+
+class ScoreRange {
+  ScoreRange({this.min, this.max, required this.points, this.matchable = true});
+
+  factory ScoreRange.fromJson(Map<String, dynamic> json) {
+    final lower = ScoreBound.fromJson(json, "min");
+    final upper = ScoreBound.fromJson(json, "max");
+    return ScoreRange(
+      min: lower.value,
+      max: upper.value,
+      points: _asInt(json["points"]) ?? 0,
+      matchable: lower.matchable && upper.matchable,
+    );
+  }
 
   final double? min;
   final double? max;
   final int points;
+  final bool matchable;
+
+  double get lowerBound => min ?? 0.0;
+  double get upperBound => max ?? 0.0;
+}
+
+/// A weight-of-evidence bin: the same bound semantics as [ScoreRange], carrying woe/iv not points.
+class WoeRange {
+  WoeRange({
+    this.min,
+    this.max,
+    this.woe = 0.0,
+    this.iv = 0.0,
+    this.eventRate,
+    this.nonEventRate,
+    this.matchable = true,
+  });
+
+  factory WoeRange.fromJson(Map<String, dynamic> json) {
+    final lower = ScoreBound.fromJson(json, "min");
+    final upper = ScoreBound.fromJson(json, "max");
+    return WoeRange(
+      min: lower.value,
+      max: upper.value,
+      woe: _asDouble(json["woe"]) ?? 0.0,
+      iv: _asDouble(json["iv"]) ?? 0.0,
+      eventRate: _asDouble(json["eventRate"] ?? json["event_rate"]),
+      nonEventRate: _asDouble(json["nonEventRate"] ?? json["non_event_rate"]),
+      matchable: lower.matchable && upper.matchable,
+    );
+  }
+
+  final double? min;
+  final double? max;
+  final double woe;
+  final double iv;
+  final double? eventRate;
+  final double? nonEventRate;
+  final bool matchable;
+
+  double get lowerBound => min ?? 0.0;
+  double get upperBound => max ?? 0.0;
+}
+
+/// A derived metric computed from the scored result by a formula (see `safe_formula.dart`).
+class ScorecardMetric {
+  ScorecardMetric({
+    this.name = "unnamed",
+    this.formula = "0",
+    this.unit = "",
+    this.category = "financial",
+  });
+
+  factory ScorecardMetric.fromJson(Map<String, dynamic> json) => ScorecardMetric(
+        name: json["name"] as String? ?? "unnamed",
+        formula: json["formula"] as String? ?? "0",
+        unit: json["unit"] as String? ?? "",
+        category: json["category"] as String? ?? "financial",
+      );
+
+  final String name;
+  final String formula;
+  final String unit;
+  final String category;
 }
 
 class ScoreFactor {
-  ScoreFactor({required this.variableId, required this.ranges});
+  ScoreFactor({
+    required this.variableId,
+    required this.ranges,
+    this.weight = 1.0,
+    this.coefficient = 0.0,
+    this.woeValues = const <WoeRange>[],
+  });
 
   factory ScoreFactor.fromJson(Map<String, dynamic> json) => ScoreFactor(
-        variableId: (json["variableId"] ?? json["variable_id"]) as String,
+        // Null when the bin omits `variable_id`: the Python core then looks up the key `None`,
+        // finds nothing, and scores the factor against a value of 0.
+        variableId: (json["variableId"] ?? json["variable_id"]) as String?,
+        weight: _asDouble(json["weight"]) ?? 1.0,
+        coefficient: _asDouble(json["coefficient"]) ?? 0.0,
         ranges: (json["ranges"] as List<dynamic>? ?? const <dynamic>[])
             .whereType<Map<String, dynamic>>()
             .map(ScoreRange.fromJson)
             .toList(),
+        woeValues: ((json["woeValues"] ?? json["woe_values"]) as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .map(WoeRange.fromJson)
+            .toList(),
       );
 
-  final String variableId;
+  final String? variableId;
   final List<ScoreRange> ranges;
+
+  /// Multiplies this factor's points before they are summed (points / weighted methods).
+  final double weight;
+
+  /// The logistic-regression coefficient this factor's WoE is multiplied by.
+  final double coefficient;
+  final List<WoeRange> woeValues;
 }
 
 class Scorecard {
@@ -161,13 +277,32 @@ class Scorecard {
     required this.bins,
     this.baseScore = 300,
     this.maxScore = 900,
+    this.scoringMethod = "points",
+    this.intercept = 0.0,
+    this.pdo = 20.0,
+    this.targetScore = 600.0,
+    this.targetOdds = 50.0,
+    this.formula,
+    this.metrics = const <ScorecardMetric>[],
   });
 
   factory Scorecard.fromJson(Map<String, dynamic> json) => Scorecard(
-        id: json["id"] as String,
-        name: json["name"] as String,
-        baseScore: ((json["baseScore"] ?? json["base_score"]) as num?)?.toInt() ?? 300,
-        maxScore: ((json["maxScore"] ?? json["max_score"]) as num?)?.toInt() ?? 900,
+        // A scorecard travelling as a bare definition (a conformance fixture, an inline authoring
+        // payload) carries no id/name; the scoring maths never reads them.
+        id: json["id"] as String? ?? "",
+        name: json["name"] as String? ?? "",
+        baseScore: _asInt(json["baseScore"] ?? json["base_score"]) ?? 300,
+        maxScore: _asInt(json["maxScore"] ?? json["max_score"]) ?? 900,
+        scoringMethod: (json["scoringMethod"] ?? json["scoring_method"]) as String? ?? "points",
+        intercept: _asDouble(json["intercept"]) ?? 0.0,
+        pdo: _asDouble(json["pdo"]) ?? 20.0,
+        targetScore: _asDouble(json["targetScore"] ?? json["target_score"]) ?? 600.0,
+        targetOdds: _asDouble(json["targetOdds"] ?? json["target_odds"]) ?? 50.0,
+        formula: json["formula"] as String?,
+        metrics: (json["metrics"] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .map(ScorecardMetric.fromJson)
+            .toList(),
         bins: (json["bins"] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>().map(ScoreFactor.fromJson).toList(),
       );
 
@@ -176,6 +311,31 @@ class Scorecard {
   final int baseScore;
   final int maxScore;
   final List<ScoreFactor> bins;
+
+  /// "points" (default), "woe" or "formula". Anything else falls through to points, as in Python.
+  final String scoringMethod;
+
+  // ── WoE (points-to-double-the-odds) calibration ──
+  final double intercept;
+  final double pdo;
+  final double targetScore;
+  final double targetOdds;
+
+  /// Custom scoring expression for `scoringMethod == "formula"`.
+  final String? formula;
+  final List<ScorecardMetric> metrics;
+}
+
+int? _asInt(dynamic value) {
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value.trim());
+  return null;
+}
+
+double? _asDouble(dynamic value) {
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value.trim());
+  return null;
 }
 
 class PolicyStep {

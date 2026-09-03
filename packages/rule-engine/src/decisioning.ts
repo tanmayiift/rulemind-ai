@@ -11,18 +11,21 @@ import type {
 } from "@rulemind/shared";
 import { evaluateRule } from "./evaluator";
 import { EXCEL_FUNCTIONS } from "./excel-functions";
+import { evaluateFormulaSafely } from "./safe-formula";
 
 /**
  * Evaluate a simple Excel-style formula string with given context variables.
  */
 function evaluateFormula(formula: string, context: Record<string, unknown>): unknown {
+  // Was `new Function(...)` — real JavaScript eval on an author-supplied string. Verified
+  // exploitable: a scorecard formula of
+  //   ((globalThis.__PWNED__ = 'arbitrary JS ran'), 1)
+  // executed. This engine runs in the dashboard, so that is arbitrary JS in the browser of
+  // anyone who opens or tests that scorecard — stored XSS in a product whose policy authors are
+  // explicitly untrusted. Same hazard removed from the Python engine in app/safe_formula.py;
+  // Kotlin and Dart have their own bounded evaluators. This is the TypeScript arm.
   try {
-    const fnNames = Object.keys(EXCEL_FUNCTIONS);
-    const fnValues = Object.values(EXCEL_FUNCTIONS);
-    const ctxNames = Object.keys(context);
-    const ctxValues = Object.values(context);
-    const fn = new Function(...fnNames, ...ctxNames, `return (${formula});`);
-    return fn(...fnValues, ...ctxValues);
+    return evaluateFormulaSafely(formula, context, EXCEL_FUNCTIONS as never);
   } catch {
     return 0;
   }

@@ -210,7 +210,7 @@ describe("Cross-platform parity — Scorecard evaluation", () => {
     const def: ScorecardDefinition = {
       ...baseDefinition,
       metrics: [
-        { name: "discount_pct", formula: "score > 70 ? 0.15 : 0.05" },
+        { name: "discount_pct", formula: "0.15 if score > 70 else 0.05" },
         { name: "loan_amount", formula: "score * 1000" }
       ]
     };
@@ -221,11 +221,28 @@ describe("Cross-platform parity — Scorecard evaluation", () => {
     expect(result.metrics!.loan_amount).toBe(80000);
   });
 
+  it("a JavaScript ternary is rejected, because the formula language is Python", () => {
+    // This assertion changed, and the change is the point. These metrics used to be written
+    // `score > 70 ? 0.15 : 0.05`, which the TS engine evaluated with `new Function` -- real JS.
+    // Python's evaluator rejects it as a SyntaxError and falls back to base_score. So the SAME
+    // stored formula returned 0.15 in the dashboard and a fallback from the API: a silent,
+    // per-engine divergence that this file, despite its name, could not see because it only
+    // ever compared TS against hand-written expectations and never against Python.
+    //
+    // Both engines now reject it, and both accept Python's conditional form.
+    const def: ScorecardDefinition = {
+      ...baseDefinition,
+      metrics: [{ name: "js_ternary", formula: "score > 70 ? 0.15 : 0.05" }]
+    };
+    const result = evaluateScorecard(def, { credit_score: 750, income: 60000 });
+    expect(result.metrics!.js_ternary).toBe(0);
+  });
+
   it("metrics with low score", () => {
     const def: ScorecardDefinition = {
       ...baseDefinition,
       metrics: [
-        { name: "discount_pct", formula: "score > 70 ? 0.15 : 0.05" }
+        { name: "discount_pct", formula: "0.15 if score > 70 else 0.05" }
       ]
     };
 
