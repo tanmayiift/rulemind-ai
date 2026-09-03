@@ -25,8 +25,18 @@ class RuleMindEnterpriseTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.database_path = os.path.join(self.tempdir.name, "rulemind-test.db")
         app_main.storage = Storage(path=self.database_path)
+        # These tests call route handlers as plain Python functions, so the tenant middleware
+        # never runs and the tenant contextvar is unset. active_tenant_id() now fails closed
+        # rather than silently serving the FIRST tenant (T3.4), so set the context the middleware
+        # would have set. Production requests get this from the middleware.
+        from app.context import set_current_tenant_id
+
+        self._tenant_token = set_current_tenant_id(app_main.storage.default_tenant_id)
 
     def tearDown(self) -> None:
+        from app.context import reset_current_tenant_id
+
+        reset_current_tenant_id(self._tenant_token)
         self.tempdir.cleanup()
 
     def test_v2_rule_tree_evaluates_and_returns_group_results(self) -> None:

@@ -91,11 +91,20 @@ adversarial sweep of the full route and deserialization surface.
 - [ ] **3.2** The isolation matrix's discovery regex is its blind spot — `/ws/v1`, `/scim/v2`,
       `/api/admin/v1` and nested action routes are invisible to it, so the anti-rot tripwire never
       fires for them.
-- [ ] **3.3** RBAC's unknown-write default is fail-open (`AUTHOR`), so every new mutating prefix is
-      auto-granted to `policy_maker`. `/scim/v2` is unmapped **today**.
-- [ ] **3.4** `active_tenant_id` fails open to the default tenant. Plus 15 storage writers let a
-      body-supplied `tenant_id` outrank the auth context — not exploitable today, but one
-      `extra="allow"` from a cross-tenant write primitive.
+- [x] **3.3** RBAC's unknown-write default flipped from `AUTHOR` to `MANAGE_ACCESS` (fail
+      closed). Every previously-unmapped prefix is now classified explicitly, and the identity
+      prefixes (`/scim/v2`, `/api/admin/v1`, `/api/v1/auth`, `/api/mobile/v1/auth`) require
+      `MANAGE_ACCESS` — SCIM provisioning, *including deactivating the owner*, had been reachable
+      at AUTHOR. An anti-rot test fails if any new mutating route lands on the default.
+- [x] **3.4** `active_tenant_id` now raises instead of silently serving the FIRST tenant; the
+      fallback survives only under `AUTH_MODE=none`, which is single-tenant by definition. The 15
+      storage writers now resolve *explicit → auth context → payload*, so a body field can no
+      longer outrank auth.
+      **This change immediately found a live multi-tenant bug**: the unauthenticated webhook
+      receiver used the tenant-scoped `get_webhook()`, which with no auth context resolves to the
+      first tenant — so **webhooks were broken for every tenant but the first**, surfacing as a
+      bare 404. Added `get_webhook_for_trigger()` (by UUID, signature still verified) and pointed
+      the receiver and its error path at the webhook's own tenant.
 - [ ] **3.5** SAML signature-wrapping bypass: falls back to an Assertion from the **unverified**
       document. No `NotOnOrAfter`/`AudienceRestriction`/`Recipient`/`Destination` validation, no
       replay tracking, and entity expansion enabled pre-auth.
@@ -150,7 +159,7 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **988 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **1006 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 + WebSocket authz |

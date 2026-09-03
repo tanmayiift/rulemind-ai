@@ -235,8 +235,19 @@ class Storage:
         finally:
             session.close()
 
-    def _tenant_id(self, tenant_id: Optional[str] = None) -> str:
-        resolved = tenant_id or get_current_tenant_id() or self.default_tenant_id
+    def _tenant_id(self, tenant_id: Optional[str] = None, payload_tenant: Optional[str] = None) -> str:
+        """Resolve the tenant to operate on, in strict precedence order.
+
+        `payload_tenant` comes LAST, after the authenticated context. Fifteen writers used to
+        resolve `tenant_id or payload.get("tenant_id")`, which put a request-body field AHEAD of
+        the auth context whenever the caller relied on the context (i.e. passed no tenant_id) --
+        the precedence was backwards. Not exploitable today because no Pydantic model declares a
+        tenant_id field, so the key never survives request parsing; but it is one `extra="allow"`
+        or one new field away from a cross-tenant write primitive, and the ordering should not be
+        the thing standing between those. Internal callers that carry the tenant inside the
+        payload (batch import, WAL replay) still work -- they simply no longer outrank auth.
+        """
+        resolved = tenant_id or get_current_tenant_id() or payload_tenant or self.default_tenant_id
         if not resolved:
             raise ValueError("Tenant context is required.")
         return resolved
@@ -892,7 +903,7 @@ class Storage:
             return self._connector_to_dict(model, include_secrets=include_secrets) if model else None
 
     def create_connector(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         with self.connect() as session:
             session.add(
@@ -982,7 +993,7 @@ class Storage:
             return self._variable_to_dict(row) if row else None
 
     def create_variable(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         snapshot = copy.deepcopy(payload)
         with self.connect() as session:
@@ -1083,7 +1094,7 @@ class Storage:
             return self._rule_to_dict(row) if row else None
 
     def create_rule(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         with self.connect() as session:
             session.add(
@@ -1184,7 +1195,7 @@ class Storage:
             return self._scorecard_to_dict(row) if row else None
 
     def create_scorecard(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         with self.connect() as session:
             session.add(
@@ -1283,7 +1294,7 @@ class Storage:
             return self._policy_to_dict(row) if row else None
 
     def create_policy(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         with self.connect() as session:
             session.add(
@@ -1370,7 +1381,7 @@ class Storage:
         (the subject moved to user_id) but a device genuinely replaying a client_id through this
         path must still fail loudly rather than silently.
         """
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         preview = copy.deepcopy(payload.get("payload", {}))
         payload_hash = payload.get("payload_hash") or hashlib.sha256(json_dumps(preview).encode("utf-8")).hexdigest()
         with self.connect() as session:
@@ -1869,7 +1880,7 @@ class Storage:
         return bool((settings.get("engine_config", {}) or {}).get("require_dual_control", False))
 
     def add_error_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = ErrorEvent(
                 tenant_id=resolved,
@@ -2085,7 +2096,7 @@ class Storage:
         retry instead of a silently forked chain. Serializing every audit write behind a lock
         would be the alternative and would make audit logging a throughput ceiling.
         """
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         attempts = 0
         while True:
             attempts += 1
@@ -3042,7 +3053,7 @@ class Storage:
             }
 
     def create_or_update_experiment(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         public_id = payload.get("id")
         with self.connect() as session:
             model = self._query_by_public_id(session, Experiment, public_id, resolved) if public_id else None
@@ -3111,7 +3122,7 @@ class Storage:
             return True
 
     def save_bundle(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             current = session.scalars(select(Bundle).where(Bundle.tenant_id == resolved, Bundle.superseded.is_(False))).all()
             for row in current:
@@ -3184,7 +3195,7 @@ class Storage:
             ]
 
     def create_workflow_execution(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = WorkflowExecution(
                 id=payload.get("id") or uuid4_str(),
@@ -3242,7 +3253,7 @@ class Storage:
         }
 
     def create_review_task(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = ReviewTask(
                 id=payload.get("id") or uuid4_str(),
@@ -3340,7 +3351,7 @@ class Storage:
         }
 
     def create_webhook(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = Webhook(
                 id=payload.get("id") or uuid4_str(),
@@ -3378,6 +3389,24 @@ class Storage:
                 return None
             return self._webhook_to_dict(model, include_secret=include_secret)
 
+    def get_webhook_for_trigger(self, webhook_id: str, include_secret: bool = False) -> Optional[Dict[str, Any]]:
+        """Look a webhook up by id ALONE, for the unauthenticated receiver.
+
+        The receiver at POST /api/v1/webhooks/{id} is called by a third party that holds no API
+        key -- the HMAC signature is the authentication. So there is no auth context, and
+        get_webhook() (which is tenant-scoped and falls back to the FIRST tenant) returned None
+        for every tenant but the first: webhooks were simply broken for tenant #2 onward, and the
+        symptom was a 404 "Webhook not found" with nothing to indicate why.
+
+        Safe to be tenant-agnostic because the id is a UUID4 -- unguessable, and the signature is
+        still verified afterwards. The returned row carries its own tenant_id, which is what the
+        caller must use for everything downstream; that is the authoritative source here, not any
+        ambient context.
+        """
+        with self.connect() as session:
+            model = session.get(Webhook, webhook_id)
+            return self._webhook_to_dict(model, include_secret=include_secret) if model else None
+
     def get_webhook_by_path(self, endpoint_path: str, include_secret: bool = False) -> Optional[Dict[str, Any]]:
         with self.connect() as session:
             model = session.scalar(select(Webhook).where(Webhook.endpoint_path == endpoint_path, Webhook.is_active.is_(True)))
@@ -3404,7 +3433,7 @@ class Storage:
         }
 
     def create_schedule(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = CronSchedule(
                 id=payload.get("id") or uuid4_str(),
@@ -3469,7 +3498,7 @@ class Storage:
         }
 
     def add_action_log(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = ActionLog(
                 tenant_id=resolved,

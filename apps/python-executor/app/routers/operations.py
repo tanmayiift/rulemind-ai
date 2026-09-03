@@ -14,7 +14,6 @@ from ..main import (
     ReviewDecisionRequest,
     ScheduleUpsertRequest,
     WebhookUpsertRequest,
-    active_tenant_id,
 )
 from ..reviews import submit_review_decision
 from ..scheduler import execute_cron_policy
@@ -109,18 +108,27 @@ async def webhook_trigger(webhook_id: str, request: Request) -> Dict[str, Any]:
     except WebhookAuthenticationError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
     except PermissionError as error:
-        main.storage.add_error_event(
-            {
-                "tenant_id": active_tenant_id(),
-                "scope": "webhook",
-                "entity_type": "workflow_execution",
-                "entity_id": webhook_id,
-                "stage": "execute",
-                "message": str(error),
-                "details": {"trigger": "webhook"},
-            },
-            tenant_id=active_tenant_id(),
-        )
+        # The tenant comes from the WEBHOOK RECORD, not from active_tenant_id(). This receiver is
+        # unauthenticated by design (a third party posts to it with an HMAC signature), so there
+        # is no auth context -- active_tenant_id() was silently resolving to the FIRST tenant,
+        # which means on a multi-tenant deployment a failure for tenant B was filed as tenant A's
+        # error event. trigger_webhook itself already reads webhook["tenant_id"] everywhere; only
+        # this error path did not.
+        webhook = main.storage.get_webhook_for_trigger(webhook_id)
+        tenant_id = (webhook or {}).get("tenant_id")
+        if tenant_id:
+            main.storage.add_error_event(
+                {
+                    "tenant_id": tenant_id,
+                    "scope": "webhook",
+                    "entity_type": "workflow_execution",
+                    "entity_id": webhook_id,
+                    "stage": "execute",
+                    "message": str(error),
+                    "details": {"trigger": "webhook"},
+                },
+                tenant_id=tenant_id,
+            )
         raise HTTPException(status_code=500, detail="Webhook execution failed.") from error
 
 

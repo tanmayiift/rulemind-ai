@@ -1070,11 +1070,31 @@ def maybe_compile_bundle(tenant_id: str, background_tasks: Optional[BackgroundTa
 
 
 def active_tenant_id(request: Optional[Request] = None) -> str:
+    """Resolve the tenant for the current request.
+
+    The last resort used to be `storage.default_tenant_id` unconditionally, which is a
+    cross-tenant fail-open: any code path that reaches here without a tenant context -- a route
+    outside the middleware's prefix guard, a background task, a WebSocket -- silently read AND
+    WROTE the FIRST tenant's data. On a multi-tenant deployment that is one tenant's data served
+    to whoever asked.
+
+    The fallback is kept for exactly one case: auth deliberately disabled. With AUTH_MODE=none the
+    middleware returns before establishing any tenant, and the deployment is single-tenant by
+    definition -- the default tenant IS the answer there, and removing it would break every
+    auth-disabled dev and self-hosted setup. Any other unresolved tenant is a bug, and raising
+    turns a silent cross-tenant read into a 500 that gets fixed.
+    """
     if request is not None and getattr(request.state, "tenant_id", None):
         return str(request.state.tenant_id)
     if get_current_tenant_id():
         return str(get_current_tenant_id())
-    return str(storage.default_tenant_id or "")
+    if os.getenv("AUTH_MODE") == "none":
+        return str(storage.default_tenant_id or "")
+    raise HTTPException(
+        status_code=500,
+        detail="No tenant context for this request. This is a server-side bug: the route is "
+               "outside the tenant middleware, or is running detached from a request.",
+    )
 
 
 def active_role(request: Optional[Request] = None) -> str:

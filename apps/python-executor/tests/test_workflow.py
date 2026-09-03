@@ -111,9 +111,19 @@ class RuleMindWorkflowTests(unittest.TestCase):
             egress.socket, "getaddrinfo",
             return_value=[(2, 1, 6, "", ("93.184.216.34", 443))])
         self._egress_patch.start()
+        # These tests call route handlers as plain Python functions, so the tenant middleware
+        # never runs and the tenant contextvar is unset. active_tenant_id() now fails closed
+        # rather than silently serving the FIRST tenant (T3.4), so set the context the middleware
+        # would have set. Production requests get this from the middleware.
+        from app.context import set_current_tenant_id
+
+        self._tenant_token = set_current_tenant_id(app_main.storage.default_tenant_id)
 
     def tearDown(self) -> None:
         self._egress_patch.stop()
+        from app.context import reset_current_tenant_id
+
+        reset_current_tenant_id(self._tenant_token)
         self.client.close()
         self.tempdir.cleanup()
         _FakeAsyncClient.calls = []
