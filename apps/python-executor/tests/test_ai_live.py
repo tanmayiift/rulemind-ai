@@ -142,7 +142,18 @@ class LiveGenerationTest(_Base):
         super().setUp()
         if not LIVE_KEY:
             self.skipTest("RULEMIND_AI_LIVE_KEY is not set")
-        app_main.storage.set_ai_credentials(LIVE_PROVIDER, LIVE_KEY, tenant_id=self.tenant)
+        # set_ai_config is the real API -- it encrypts the key at rest and is what
+        # PUT /api/v1/ai/config calls. get_ai_credentials then decrypts it for the outbound
+        # call. (An earlier draft invented a set_ai_credentials() that does not exist, so
+        # every live test errored in setUp before reaching a provider.)
+        app_main.storage.set_ai_config({
+            "enabled": True,
+            "default_provider": LIVE_PROVIDER,
+            LIVE_PROVIDER: {"key": LIVE_KEY},
+        }, tenant_id=self.tenant)
+        creds = app_main.storage.get_ai_credentials(LIVE_PROVIDER, tenant_id=self.tenant)
+        self.assertIsNotNone(creds, "the key did not round-trip through set_ai_config")
+        self.assertEqual(creds["api_key"], LIVE_KEY)
 
     def test_generated_rule_is_structurally_valid(self):
         res = self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
@@ -159,9 +170,14 @@ class LiveGenerationTest(_Base):
     def test_a_generated_rule_can_actually_be_saved(self):
         """The assertion that makes this suite worth its cost. Everything short of POSTing the
         draft back proves only that the model produced JSON."""
-        draft = self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
-                                 json={"prompt": "reject applicants whose bureau score is below 600"}).json()
+        res = self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
+                               json={"prompt": "reject applicants whose bureau score is below 600"})
+        # Assert the generation succeeded before reaching into its body, so an upstream 502
+        # reports as "the provider rejected the call" rather than a bare KeyError.
+        self.assertEqual(res.status_code, 200, res.text[:400])
+        draft = res.json()
         rule = draft.get("rule") or draft
+        self.assertIn("nodes", rule, f"no nodes to save in {str(draft)[:300]}")
         saved = self.client.post("/api/v1/rules", headers=self.headers, json={
             "name": "ai-generated-live-test",
             "nodes": rule["nodes"],
@@ -186,10 +202,19 @@ class LiveGenerationTest(_Base):
         self.assertGreater(after.get("input_tokens", 0), before.get("input_tokens", 0))
 
     def test_the_live_model_list_supersedes_the_curated_fallback(self):
+        """Asserts `live: true`, not merely that the list is non-empty.
+
+        list_models falls back to CURATED_MODELS on any auth or network error (ai.py:253),
+        so a non-empty list proves nothing -- this test passed against a deliberately invalid
+        key until that was noticed. `live` is the only field that distinguishes a real fetch
+        from the fallback, which is the whole claim #123 asks about.
+        """
         res = self.client.get("/api/v1/ai/models", headers=self.headers)
         self.assertEqual(res.status_code, 200, res.text[:300])
-        models = res.json().get("models") or res.json()
-        self.assertTrue(models, "a configured provider must return its live catalogue")
+        body = res.json()
+        self.assertTrue(body.get("live"),
+                        f"fell back to the curated list rather than fetching: {body.get('error')}")
+        self.assertTrue(body.get("models"))
 
 
 if __name__ == "__main__":
