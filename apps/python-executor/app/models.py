@@ -381,6 +381,36 @@ class IdempotencyRecord(Base):
     )
 
 
+class SamlAssertionSeen(Base):
+    """One consumed SAML assertion id, so it cannot be replayed (T3.5).
+
+    SAML has no built-in replay defence: an assertion is a signed bearer token, and the signature
+    stays valid for as long as the IdP's certificate does. Without this table, an attacker who
+    captured one POST to the ACS endpoint -- from a proxy log, a shared browser, an intercepted
+    redirect -- could replay it indefinitely and log in as that user forever.
+
+    Keyed per tenant, matching IdempotencyRecord's reasoning: two IdPs can legitimately mint the
+    same assertion ID, and a global key would let one workspace probe another's.
+
+    `not_on_or_after` is stored so consumed rows can be pruned once the assertion could no longer
+    be accepted anyway -- the table would otherwise grow forever.
+    """
+
+    __tablename__ = "saml_assertions_seen"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    assertion_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    not_on_or_after: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        # The claim: two concurrent POSTs of the same assertion race to INSERT, exactly one wins.
+        # Without this a replay is only "usually" caught.
+        UniqueConstraint("tenant_id", "assertion_id", name="uq_saml_assertion_tenant_id"),
+    )
+
+
 class ErrorEvent(Base):
     __tablename__ = "error_events"
 

@@ -63,6 +63,7 @@ from .models import (
     ReportDefinition,
     ReviewTask,
     Rule,
+    SamlAssertionSeen,
     SchedulerLease,
     Scorecard,
     SdkEvent,
@@ -1878,6 +1879,40 @@ class Storage:
         production. Stored under engine_config.require_dual_control; off by default."""
         settings = self.get_settings(tenant_id=tenant_id)
         return bool((settings.get("engine_config", {}) or {}).get("require_dual_control", False))
+
+    def claim_saml_assertion(self, assertion_id: str, not_on_or_after: Optional[datetime] = None,
+                             tenant_id: Optional[str] = None) -> bool:
+        """Record a SAML assertion id as consumed. Returns False if it was already used.
+
+        The UNIQUE(tenant_id, assertion_id) constraint is what makes this a claim rather than a
+        check-then-write: two concurrent POSTs of the same captured assertion race to INSERT and
+        exactly one wins, so a replay cannot slip through the window between reading and writing.
+        """
+        resolved = self._tenant_id(tenant_id)
+        try:
+            with self.connect() as session:
+                session.add(SamlAssertionSeen(
+                    tenant_id=resolved, assertion_id=assertion_id,
+                    not_on_or_after=not_on_or_after, created_at=datetime.utcnow()))
+            return True
+        except IntegrityError:
+            return False
+
+    def prune_saml_assertions(self, tenant_id: Optional[str] = None) -> int:
+        """Drop consumed assertions whose validity window has passed -- they can no longer be
+        accepted on their own merits, so keeping them serves nothing and the table would grow
+        without bound."""
+        resolved = self._tenant_id(tenant_id)
+        now = datetime.utcnow()
+        with self.connect() as session:
+            rows = session.scalars(
+                select(SamlAssertionSeen).where(
+                    SamlAssertionSeen.tenant_id == resolved,
+                    SamlAssertionSeen.not_on_or_after.is_not(None),
+                    SamlAssertionSeen.not_on_or_after < now)).all()
+            for row in rows:
+                session.delete(row)
+            return len(rows)
 
     def add_error_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))

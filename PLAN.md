@@ -112,9 +112,12 @@ adversarial sweep of the full route and deserialization surface.
       first tenant — so **webhooks were broken for every tenant but the first**, surfacing as a
       bare 404. Added `get_webhook_for_trigger()` (by UUID, signature still verified) and pointed
       the receiver and its error path at the webhook's own tenant.
-- [ ] **3.5** SAML signature-wrapping bypass: falls back to an Assertion from the **unverified**
-      document. No `NotOnOrAfter`/`AudienceRestriction`/`Recipient`/`Destination` validation, no
-      replay tracking, and entity expansion enabled pre-auth.
+- [x] **3.5** SAML hardening. Removed the fallback to the **unverified** document (XSW); the
+      identity now comes from the signed element only. Added `Conditions` validation
+      (`NotBefore`/`NotOnOrAfter` with 2-min skew, `AudienceRestriction`,
+      `SubjectConfirmationData` `Recipient`, Response `Destination`), single-use replay tracking
+      via a new `saml_assertions_seen` table with `UNIQUE(tenant_id, assertion_id)`, and an XML
+      parser with entity resolution disabled (it parses attacker XML pre-auth).
 - [ ] **3.6** Unauthenticated, unthrottled tenant + API-key minting (`/onboarding/signup` returns
       before the rate-limit check). Also `/api/admin/v1` sits outside all middleware.
 
@@ -166,7 +169,7 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **1030 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **1051 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 (WebSocket authz covered by 14 Python tests) |

@@ -109,20 +109,62 @@ class SsoUnitTests(unittest.TestCase):
             sso.verify_oidc_id_token(id_token, {"keys": [jwk]}, issuer="https://idp", client_id="client-1")
 
 
-def _signed_saml_response(cert_pem, key_pem, email, name="Jane Doe"):
+SP_ENTITY_ID = "https://app.rulemind.test/sp"
+ACS_URL = "https://app.rulemind.test/acs"
+
+
+def _saml_config(cert_pem, **overrides):
+    """The config the verifier needs. sp_entity_id and acs_url are not optional any more: the
+    verifier now checks AudienceRestriction and Recipient/Destination against them (T3.5)."""
+    config = {"idp_cert": cert_pem, "sp_entity_id": SP_ENTITY_ID, "acs_url": ACS_URL}
+    config.update(overrides)
+    return config
+
+
+def _saml_window(minutes_ago=1, minutes_ahead=10):
+    now = dt.datetime.now(dt.timezone.utc)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return ((now - dt.timedelta(minutes=minutes_ago)).strftime(fmt),
+            (now + dt.timedelta(minutes=minutes_ahead)).strftime(fmt))
+
+
+def _saml_response_xml(email, name="Jane Doe", assertion_id="_assert1", audience=SP_ENTITY_ID,
+                       recipient=ACS_URL, destination=ACS_URL, conditions=True,
+                       minutes_ago=1, minutes_ahead=10, extra_assertion=""):
+    """Build a realistic SAML Response. Every knob here exists because the verifier checks it."""
+    not_before, not_on_or_after = _saml_window(minutes_ago, minutes_ahead)
     ns = 'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"'
-    xml = (
-        f'<samlp:Response {ns} ID="_resp1" Version="2.0" IssueInstant="2026-01-01T00:00:00Z">'
+    conditions_xml = ""
+    if conditions:
+        audience_xml = (f'<saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience>'
+                        f'</saml:AudienceRestriction>') if audience else ""
+        conditions_xml = (f'<saml:Conditions NotBefore="{not_before}" '
+                          f'NotOnOrAfter="{not_on_or_after}">{audience_xml}</saml:Conditions>')
+    recipient_attr = f' Recipient="{recipient}"' if recipient else ""
+    destination_attr = f' Destination="{destination}"' if destination else ""
+    return (
+        f'<samlp:Response {ns} ID="_resp1" Version="2.0" IssueInstant="{not_before}"{destination_attr}>'
         f'<saml:Issuer>https://idp.example.com</saml:Issuer>'
-        f'<saml:Assertion ID="_assert1" Version="2.0" IssueInstant="2026-01-01T00:00:00Z">'
+        f'{extra_assertion}'
+        f'<saml:Assertion ID="{assertion_id}" Version="2.0" IssueInstant="{not_before}">'
         f'<saml:Issuer>https://idp.example.com</saml:Issuer>'
-        f'<saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{email}</saml:NameID></saml:Subject>'
+        f'<saml:Subject>'
+        f'<saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{email}</saml:NameID>'
+        f'<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">'
+        f'<saml:SubjectConfirmationData{recipient_attr} NotOnOrAfter="{not_on_or_after}"/>'
+        f'</saml:SubjectConfirmation>'
+        f'</saml:Subject>'
+        f'{conditions_xml}'
         f'<saml:AttributeStatement>'
         f'<saml:Attribute Name="email"><saml:AttributeValue>{email}</saml:AttributeValue></saml:Attribute>'
         f'<saml:Attribute Name="name"><saml:AttributeValue>{name}</saml:AttributeValue></saml:Attribute>'
         f'</saml:AttributeStatement>'
         f'</saml:Assertion></samlp:Response>'
     )
+
+
+def _signed_saml_response(cert_pem, key_pem, email, name="Jane Doe", **kwargs):
+    xml = _saml_response_xml(email, name=name, **kwargs)
     root = etree.fromstring(xml.encode())
     signed = XMLSigner().sign(root, key=key_pem.encode(), cert=cert_pem.encode())
     return base64.b64encode(etree.tostring(signed)).decode()
@@ -133,7 +175,7 @@ class SamlUnitTests(unittest.TestCase):
         key, pem = _rsa_keypair()
         cert = _self_signed_cert(key)
         resp = _signed_saml_response(cert, pem, "jane@acme.com")
-        identity = sso.parse_and_verify_saml_response({"idp_cert": cert}, resp)
+        identity = sso.parse_and_verify_saml_response(_saml_config(cert), resp)
         self.assertEqual(identity["email"], "jane@acme.com")
         self.assertEqual(identity["name"], "Jane Doe")
 
@@ -144,7 +186,7 @@ class SamlUnitTests(unittest.TestCase):
         other_key, _ = _rsa_keypair()
         other_cert = _self_signed_cert(other_key)  # different signer
         with self.assertRaises(sso.SsoError):
-            sso.parse_and_verify_saml_response({"idp_cert": other_cert}, resp)
+            sso.parse_and_verify_saml_response(_saml_config(other_cert), resp)
 
     def test_saml_tampered_payload_rejected(self):
         key, pem = _rsa_keypair()
@@ -152,7 +194,7 @@ class SamlUnitTests(unittest.TestCase):
         resp = _signed_saml_response(cert, pem, "jane@acme.com")
         raw = base64.b64decode(resp).replace(b"jane@acme.com", b"attacker@acme.com")
         with self.assertRaises(sso.SsoError):
-            sso.parse_and_verify_saml_response({"idp_cert": cert}, base64.b64encode(raw).decode())
+            sso.parse_and_verify_saml_response(_saml_config(cert), base64.b64encode(raw).decode())
 
 
 class SsoApiTests(unittest.TestCase):
@@ -244,10 +286,14 @@ class SsoApiTests(unittest.TestCase):
         key, pem = _rsa_keypair()
         cert = _self_signed_cert(key)
         self.client.put("/api/v1/access/sso", headers=self.admin, json={
-            "provider": "saml", "enabled": True, "sp_entity_id": "rulemind", "sso_url": "https://idp/sso",
-            "acs_url": "https://app/acs", "idp_cert": cert, "default_role": "policy_maker", "jit_provisioning": True,
+            "provider": "saml", "enabled": True, "sp_entity_id": SP_ENTITY_ID,
+            "sso_url": "https://idp/sso",
+            # These two must match what the IdP puts in the assertion: the verifier now checks
+            # AudienceRestriction against sp_entity_id, and Recipient/Destination against acs_url.
+            "acs_url": ACS_URL, "idp_cert": cert, "default_role": "policy_maker",
+            "jit_provisioning": True,
         })
-        state = sso.issue_state(self.tenant_id, "saml", "n", "https://app/acs")
+        state = sso.issue_state(self.tenant_id, "saml", "n", ACS_URL)
         resp = _signed_saml_response(cert, pem, "sam@acme.com", name="Sam Ople")
         r = self.client.post("/api/v1/auth/sso/saml/acs", json={"saml_response": resp, "relay_state": state})
         self.assertEqual(r.status_code, 200, r.text)

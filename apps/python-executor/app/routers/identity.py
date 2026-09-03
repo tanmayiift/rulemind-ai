@@ -401,7 +401,10 @@ async def sso_saml_acs(http_request: Request) -> Dict[str, Any]:
         cfg = main.storage.get_sso_config_internal(tenant_id=tenant_id)
         if not cfg.get("enabled") or cfg.get("provider") != "saml":
             raise HTTPException(status_code=404, detail="SAML is not enabled for this workspace.")
-        identity = sso.parse_and_verify_saml_response(cfg, str(saml_response))
+        # storage + tenant_id enable single-use enforcement. Without them a captured
+        # assertion replays for its whole validity window (T3.5).
+        identity = sso.parse_and_verify_saml_response(
+            cfg, str(saml_response), storage=main.storage, tenant_id=tenant_id)
     except sso.SsoError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return _sso_finish_login(tenant_id, identity, "saml", cfg)
