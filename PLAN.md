@@ -84,10 +84,13 @@ adversarial sweep of the full route and deserialization surface.
 
 ## T3 · Multi-tenant isolation gaps
 
-- [ ] **3.1** Unauthenticated WebSocket with no tenant scoping — `accept()` with zero auth and a
-      hub keyed by `doc_id` alone. Tenant A reads tenant B's policy drafts. The middleware can't
-      save it for two independent reasons (`BaseHTTPMiddleware` skips non-HTTP scopes; `/ws/v1`
-      isn't in the prefix guard).
+- [x] **3.1** Unauthenticated WebSocket with no tenant scoping. New `app/ws_auth.py`
+      authenticates **before** `accept()` (api-key header/param, bearer, and the dashboard's
+      `rm_session` httpOnly cookie — which browsers do send on a same-origin WS handshake, so the
+      web client needed no change). The hub is now keyed by `(tenant_id, doc_id)`; doc ids are
+      caller-supplied policy ids, so cross-tenant collisions were routine. `edit`/`restore` now
+      require the AUTHOR capability, so a viewer can watch but not write. Every REST sibling
+      (`state`/`history`/`as-of`/`seed`) is authenticated and tenant-scoped too.
 - [ ] **3.2** The isolation matrix's discovery regex is its blind spot — `/ws/v1`, `/scim/v2`,
       `/api/admin/v1` and nested action routes are invisible to it, so the anti-rot tripwire never
       fires for them.
@@ -159,10 +162,10 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **1006 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **1020 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
-| Playwright | 53 | — | 53 + WebSocket authz |
+| Playwright | 53 | — | 53 (WebSocket authz covered by 14 Python tests) |
 | Isolation matrix | CRUD only | — | every mutating route |
 | `helm install` clean cluster | crashloops | — | boots, probes pass, serves UI, survives upgrade |
 | Load test vs a budget | never run | — | worst-case decision time bounded + documented |
