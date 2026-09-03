@@ -87,5 +87,36 @@ class LargePolicyConformanceTests(unittest.TestCase):
         self.assertEqual(ops, {"==", "!=", ">", ">=", "<", "<=", "between", "in", "not_in", "regex", "exists", "!exists"})
 
 
+    def test_per_condition_trace_matches_and_is_self_consistent(self):
+        """The fixture now records a per-condition trace (one '1'/'0' per condition in evaluation
+        order) alongside the passed COUNT, because a count is a weaker contract: two engines can
+        agree on '492 true' while disagreeing about WHICH 492. An engine that returns only an
+        outcome (the Rust core did) can now join the same contract.
+
+        Two properties the on-device arms must reproduce exactly:
+          * the bit is the RAW condition result — a condition inside a `not` node records what the
+            CONDITION returned, not the negated value;
+          * evaluation does NOT short-circuit, so every condition appears on every case.
+        """
+        for key, rule_key, order_key in (
+            ("cases", "rule", "conditionOrder"),
+            ("thresholdCases", "thresholdRule", "thresholdConditionOrder"),
+        ):
+            order = SPEC[order_key]
+            tree = SPEC[rule_key]["tree"]
+            for i, case in enumerate(SPEC[key]):
+                conditions = evaluate_rule_tree(tree, case["variables"])["conditions"]
+                trace = "".join("1" if c["passed"] else "0" for c in conditions)
+                self.assertEqual(trace, case["conditionTrace"], f"{key} {i} trace")
+                # no short-circuiting: one bit per condition, always
+                self.assertEqual(len(trace), len(order), f"{key} {i} trace length")
+                # the trace and the legacy count can never disagree
+                self.assertEqual(trace.count("1"), case["trueConditions"], f"{key} {i} trace/count")
+                self.assertEqual([c["variable_id"] for c in conditions], order, f"{key} {i} order")
+        self.assertEqual(SPEC["meta"]["traceLength"], SPEC["meta"]["conditions"])
+        self.assertEqual(SPEC["meta"]["thresholdTraceLength"], SPEC["meta"]["thresholdConditions"])
+        # the NOT-wrapped leaves are really in the trace as raw results
+        self.assertIn("not_3", json.dumps(SPEC["rule"]["tree"])[:200000])
+
 if __name__ == "__main__":
     unittest.main()

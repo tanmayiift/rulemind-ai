@@ -64,17 +64,51 @@ jobs:
           fi
           CHANGED=$(git diff --name-only "$BASE" "$HEAD")
           echo "$CHANGED" | sed 's/^/  changed: /'
-          # Narrowed deliberately. With the emulator steps split out, the mobile
-          # jobs are dart analyze + flutter test + gradle JVM tests -- none of
-          # which touch the backend, so apps/python-executor/ and qa/mobile_e2e/
-          # no longer belong here. .github/workflows/ is dropped too: a workflow
-          # edit should be validated by workflow_dispatch, not by a paid fan-out.
-          if echo "$CHANGED" | grep -qE '^(packages/sdk-android/|packages/sdk-flutter/|packages/flutter-ui/|demo-app/)'; then
+          # The mobile jobs run the Kotlin and Dart halves of the five-engine
+          # semantics contract (LargePolicyConformanceTest.kt,
+          # large_policy_conformance_test.dart). So the filter has to cover two
+          # different things:
+          #
+          #   1. The SDK sources themselves -- packages/sdk-android/,
+          #      packages/sdk-flutter/, packages/flutter-ui/, demo-app/. These
+          #      were already here.
+          #   2. The inputs those conformance tests are checked AGAINST. That is
+          #      the point the previous version of this filter missed: it
+          #      excluded apps/python-executor/ wholesale on the grounds that
+          #      "the mobile jobs are dart analyze + flutter test + gradle JVM
+          #      tests -- none of which touch the backend". True of the runtime,
+          #      false of the contract. app/logic.py is the declared source of
+          #      truth for operator semantics across all five engines, and
+          #      packages/shared/*.spec.json are the shared conformance corpora
+          #      the Kotlin and Dart tests load. Editing either is *precisely*
+          #      the change that makes the two engines drift, and it ran neither
+          #      arm. The three backend files are listed individually rather
+          #      than as apps/python-executor/**, so an unrelated router or
+          #      migration still does not boot a mobile job.
+          #
+          # qa/mobile_e2e/ and .github/workflows/ stay out: the first is the
+          # emulator harness (dispatch-only), and a workflow edit should be
+          # validated by workflow_dispatch, not by a paid fan-out.
+          #
+          # Two named patterns rather than one alternation, because the two
+          # halves match differently and should be readable as such: the first
+          # is directory prefixes (anything under them counts), the second is
+          # three exact files, anchored with `$` so it cannot widen into a
+          # prefix match on app/logic.py.bak or a same-named file in a
+          # subdirectory. Keeping the anchor at the end of its own pattern also
+          # sidesteps POSIX leaving a non-terminal `$` undefined -- GNU and BSD
+          # both happen to anchor it, but a gate should not lean on that.
+          # Both are exercised by tests; see the "Verify the mobile path filter"
+          # step below, which reads these two variables straight out of this
+          # file so the assertions cannot drift from the pattern they check.
+          MOBILE_PREFIXES='^(packages/sdk-android/|packages/sdk-flutter/|packages/flutter-ui/|demo-app/|packages/shared/)'
+          MOBILE_FILES='^apps/python-executor/app/(logic|decision_tables|safe_formula)\.py$'
+          if echo "$CHANGED" | grep -qE "$MOBILE_PREFIXES" || echo "$CHANGED" | grep -qE "$MOBILE_FILES"; then
             echo "mobile=true" >> "$GITHUB_OUTPUT"
             echo "-> mobile jobs WILL run"
           else
             echo "mobile=false" >> "$GITHUB_OUTPUT"
-            echo "-> mobile jobs skipped (no mobile/backend/workflow files touched)"
+            echo "-> mobile jobs skipped (no mobile SDK, shared spec or engine-semantics files touched)"
           fi
           # Playwright drives the web app against the backend, so either one
           # changing is a reason to run it. It is the most expensive job here
@@ -86,6 +120,119 @@ jobs:
             echo "web=false" >> "$GITHUB_OUTPUT"
             echo "-> Playwright skipped (no web/backend files touched)"
           fi
+
+  # Two guards that already existed in the repo and were wired to nothing.
+  # Deliberately has no `needs:` and no path filter: it is checkout + setup-python
+  # + two stdlib scripts, well under a minute, so making it conditional would cost
+  # more in reasoning than it saves in runner time. It is also the only job here
+  # that can fail for a reason a reviewer can act on in seconds.
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # docs/parity/check_parity.py has existed since the parity matrix was
+      # written and ran in no workflow, so the invariant it exists to hold --
+      # every ABSENT/PARTIAL row keeps an owning phase and a named E2E flow, and
+      # every row cites evidence -- was enforced by nothing but good intentions.
+      # A gap that loses its owner is exactly the kind of rot the matrix was
+      # meant to prevent. stdlib only, one JSON file, no install step.
+      - name: Check the parity matrix has not rotted
+        run: python docs/parity/check_parity.py
+
+      # The mobile filter in `changes` decides whether the Kotlin and Dart arms
+      # of the five-engine semantics contract run at all, and it is a regex
+      # inside a shell script -- the least reviewable kind of gate there is, with
+      # the nastiest failure mode: a wrong pattern does not error, it silently
+      # reports mobile=false and the jobs are skipped as if nothing was affected.
+      # That is precisely how apps/python-executor/app/logic.py -- the declared
+      # source of truth for operator semantics in all five engines -- and
+      # packages/shared/*.spec.json -- the corpora the Kotlin and Dart
+      # conformance tests load -- came to be exempt from the two jobs that check
+      # them.
+      #
+      # These assertions parse MOBILE_PREFIXES and MOBILE_FILES out of this file
+      # and run them through the same `grep -qE` the job uses, so they cannot
+      # drift from the pattern they are checking. Both directions are asserted:
+      # the paths that MUST trigger the mobile jobs, and the neighbouring paths
+      # that must NOT (a filter that matches everything is as useless as one
+      # that matches nothing).
+      - name: Verify the mobile path filter
+        run: |
+          python - <<'PY'
+          import pathlib, re, shlex, subprocess, sys
+
+          src = pathlib.Path(".github/workflows/sdk-verify.yml").read_text()
+          prefixes = re.search(r"MOBILE_PREFIXES='([^']+)'", src).group(1)
+          files = re.search(r"MOBILE_FILES='([^']+)'", src).group(1)
+          print(f"MOBILE_PREFIXES = {prefixes}")
+          print(f"MOBILE_FILES    = {files}\n")
+
+          MUST_MATCH = [
+              # The engine-semantics contract. These are the whole point.
+              "apps/python-executor/app/logic.py",
+              "apps/python-executor/app/decision_tables.py",
+              "apps/python-executor/app/safe_formula.py",
+              "packages/shared/operators.spec.json",
+              "packages/shared/large-policy.spec.json",
+              "packages/shared/decision-tables.spec.json",
+              # The SDK sources the mobile jobs build and test.
+              "packages/sdk-android/rulemind-core/src/test/kotlin/com/rulemind/core/LargePolicyConformanceTest.kt",
+              "packages/sdk-flutter/test/large_policy_conformance_test.dart",
+              "packages/flutter-ui/lib/theme.dart",
+              "demo-app/lib/main.dart",
+          ]
+          MUST_NOT_MATCH = [
+              # Backend files with no bearing on cross-engine semantics. The
+              # three names above are listed individually so these stay cheap.
+              "apps/python-executor/app/storage.py",
+              "apps/python-executor/app/main.py",
+              "apps/python-executor/app/middleware.py",
+              "apps/python-executor/app/routers/rules.py",
+              "apps/python-executor/alembic/versions/0001_init.py",
+              "apps/python-executor/tests/test_operators.py",
+              # Near-misses that a prefix match would wrongly catch.
+              "apps/python-executor/app/logic.py.bak",
+              "apps/python-executor/app/nested/logic.py",
+              # Everything else.
+              "apps/web/app/page.tsx",
+              "packages/rule-engine/src/evaluator.ts",
+              "packages/sdk-js/src/index.ts",
+              "docs/parity/parity.json",
+              "README.md",
+              ".github/workflows/sdk-verify.yml",
+              "qa/mobile_e2e/start_fastapi.sh",
+          ]
+
+          def triggers(path: str) -> bool:
+              """Exactly the condition the `changes` job evaluates."""
+              q, qp, qf = shlex.quote(path), shlex.quote(prefixes), shlex.quote(files)
+              cmd = f"echo {q} | grep -qE {qp} || echo {q} | grep -qE {qf}"
+              return subprocess.run(["bash", "-c", cmd]).returncode == 0
+
+          failures = []
+          for path in MUST_MATCH:
+              ok = triggers(path)
+              print(f"  {'ok  ' if ok else 'FAIL'} should trigger mobile: {path}")
+              if not ok:
+                  failures.append(f"{path} must trigger the mobile jobs but does not")
+          for path in MUST_NOT_MATCH:
+              ok = not triggers(path)
+              print(f"  {'ok  ' if ok else 'FAIL'} should NOT trigger mobile: {path}")
+              if not ok:
+                  failures.append(f"{path} must not trigger the mobile jobs but does")
+
+          if failures:
+              print("\nmobile path filter is wrong:")
+              for f in failures:
+                  print(f"  - {f}")
+              sys.exit(1)
+          print(f"\nmobile path filter OK - {len(MUST_MATCH)} trigger, {len(MUST_NOT_MATCH)} do not")
+          PY
 
   rust:
     runs-on: ubuntu-latest
@@ -278,17 +425,30 @@ jobs:
       - name: Install Playwright browser
         run: pnpm exec playwright install --with-deps chromium
 
-      # 48 tests that ran in no workflow. playwright.config.ts starts both
-      # servers itself (uvicorn on 8100, next dev on 3100) and health-gates on
-      # them, so nothing needs starting here.
+      # playwright.config.ts starts both servers itself (uvicorn on 8100, next
+      # dev on 3100) and health-gates on them, so nothing needs starting here.
       #
-      # Caveat recorded rather than hidden: the config sets AUTH_MODE=none on
-      # BOTH servers, and middleware.py:93 early-returns on that -- bypassing
-      # the API-key check, RBAC and CSRF. So these 48 tests exercise a
-      # permanently unauthenticated app and cannot see an authz regression.
-      # Fixing that will break many of them and is tracked separately; it is
-      # not a reason to leave the suite unrun in the meantime.
-      - name: Run Playwright suite
+      # Two projects, one invocation: `chromium` is the 48 functional tests,
+      # `authz` is the 10-test security lane (e2e/authz*.spec.ts). Deliberately
+      # NOT split into two steps -- the config sets reuseExistingServer:false, so
+      # a second invocation would pay for a second `next dev` boot to buy a
+      # separate check mark. Playwright already prefixes every result with its
+      # project name, so a failure reads as [authz] or [chromium] either way.
+      #
+      # The caveat that used to live here is resolved. The config previously set
+      # AUTH_MODE=none on both servers, and middleware.py early-returns on that
+      # -- bypassing the API-key check, RBAC, CSRF and tenant resolution -- so
+      # all 48 tests ran against an app with no authorization and structurally
+      # could not fail on an authz regression (#139). AUTH_MODE is now unset
+      # (which leaves auth ON; unset is not the same as "none"), and the authz
+      # lane exists to exercise what that turns back on: authentication, role
+      # capability, the tenant boundary and the collab WebSocket handshake.
+      #
+      # That lane was checked against a deliberately broken build rather than
+      # only a green one: re-run with AUTH_MODE=none, 8 of its 10 tests fail.
+      # The 2 that still pass are correct to -- /health is exempt by design, and
+      # /api/admin/v1 needs an admin JWT that AUTH_MODE does not grant.
+      - name: Run Playwright suite (functional + authz lanes)
         env:
           PYTHON_BIN: python
         run: pnpm test:e2e

@@ -10,7 +10,8 @@ the backend, because the same policy must evaluate identically in all five engin
 parity tests enforce it.
 
 Four features carry that multiplier: **P07** (matrix), **P12** (feature factory), **P15**
-(journey entity), **P17** (Excel functions, already done). Everything else is backend-only.
+(journey entity), **P17** (Excel functions — *not* done, see below). Everything else is
+backend-only.
 
 Tag this on the way in. Discovering it during estimation is how a two-week item becomes a
 quarter.
@@ -21,13 +22,14 @@ quarter.
 
 | feature | what already exists | what is missing |
 |---|---|---|
-| Connector test (P01) | `test_connection` for AI providers at `app/ai.py:336` | the same endpoint for connectors |
-| Sub-workflow alias (P08) | resolution + depth guard + cycle detection at `app/executor.py:462,690-702` | an alias → id lookup |
+| Connector test (P01) | `test_connection` for AI providers at `app/ai.py:366`, **and** a connector route at `app/routers/authoring.py:96` | that route to actually connect — it returns `passed:true` without a request |
+| Sub-workflow alias (P08) | resolution + depth guard + cycle detection at `app/executor.py:549-550,777-792` | an alias → id lookup |
 | Nested-key validation (P06) | flat validation in `app/model_executor.py`; dotted paths in `app/jsonpath.py` | composing the two |
 | Retention in months (P16) | `audit_retention_days` + archive-then-purge scheduler | a unit change and UI |
-| Timeouts / 504 (P21) | timeouts at sandbox, HTTP action and AI layers | `routers/evaluations.py` has none; no 504 contract |
+| ~~Timeouts / 504 (P21)~~ **DONE** | budget + 504 at `app/executor.py:159` and `app/main.py:105-121`, tested at `tests/test_evaluation_budget.py:71` | only `app/fast_decide.py` (opt-in) and `app/routers/evaluations.py` remain outside the budget |
 | Per-resource limits (P18) | Redis token bucket with tenant → plan → global resolution | a resource dimension on the key |
-| `decision_table` palette (P22) | the executor dispatches it | the UI never lists it — a bug |
+| ~~`decision_table` palette (P22)~~ **DONE** | palette at `apps/web/app/workflow-builder/page.tsx:34` matches all 13 dispatched types | nothing — guarded by `apps/web/test/workflow-builder-palette.test.ts` |
+| Excel CUMIPMT/DAYS360 (P17) | both implemented in Python at `app/excel_functions.py:800,1306` | a TypeScript twin and any test at all — this one carries the 5× multiplier |
 
 ### Tier 2 — new entities on existing rails (1–4 weeks)
 

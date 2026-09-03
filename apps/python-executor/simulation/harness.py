@@ -228,10 +228,37 @@ def _threshold_payload(num_conditions: int, num_true: int, num_variables: int = 
     return payload
 
 
+TRACE_ENCODING = (
+    "conditionTrace is one character per condition in EVALUATION order — '1' if that condition "
+    "evaluated true, '0' if false — so len(conditionTrace) == meta.conditions and "
+    "trueConditions == conditionTrace.count('1'). Evaluation order is the depth-first, "
+    "children-in-declaration-order walk of the tree, listed variable-by-variable in "
+    "conditionOrder / thresholdConditionOrder so an engine can check its walk order before "
+    "comparing bits. TWO THINGS TO GET RIGHT: (1) the bit is the RAW condition result — a "
+    "condition inside a `not` node records what the CONDITION returned, not the negated value; "
+    "the NOT is applied at the node above it. (2) The Python core does NOT short-circuit: every "
+    "child of an AND/OR group is evaluated before all()/any() is applied, so every condition "
+    "appears in the trace on every case. An engine that short-circuits produces a shorter trace "
+    "AND a different passed count. A compact bitstring is used rather than a full per-condition "
+    "object because the fixture already carries 135 x 750 variables; the full object form would "
+    "multiply the file size several times over for no extra contract."
+)
+
+
+def _condition_trace(evaluation: Dict[str, Any]) -> str:
+    """The compact per-condition trace for one evaluation (see TRACE_ENCODING)."""
+    return "".join("1" if c["passed"] else "0" for c in evaluation["conditions"])
+
+
+def _condition_order(evaluation: Dict[str, Any]) -> List[str]:
+    """The variable id behind each trace position, in evaluation order."""
+    return [c["variable_id"] for c in evaluation["conditions"]]
+
+
 def build_threshold_cases(rule: Dict[str, Any], num_conditions: int = 500) -> List[Dict[str, Any]]:
-    """Boundary + negative cases for the threshold rule. Each records the ORACLE outcome and passed
-    count (computed live from app/logic.py) plus the intended `targetTrue`, so the conformance arms
-    assert both the exact count AND that sub-threshold cases fail (reject)."""
+    """Boundary + negative cases for the threshold rule. Each records the ORACLE outcome, passed
+    count and per-condition trace (computed live from app/logic.py) plus the intended `targetTrue`,
+    so the conformance arms assert both the exact count AND that sub-threshold cases fail (reject)."""
     from app.logic import evaluate_rule_tree
 
     targets = [
@@ -251,6 +278,7 @@ def build_threshold_cases(rule: Dict[str, Any], num_conditions: int = 500) -> Li
             "variables": payload,
             "expectedOutcome": ev["outcome"],
             "trueConditions": sum(1 for c in ev["conditions"] if c["passed"]),
+            "conditionTrace": _condition_trace(ev),
         })
     return cases
 
@@ -328,29 +356,53 @@ def _approve_payload(rng: random.Random, num_variables: int = 750) -> Dict[str, 
 
 def build_large_policy_spec(seed: int = 7) -> Dict[str, Any]:
     """The committed cross-engine large-policy fixture: the big v2 rule + payload cases
-    with their Python-oracle outcome and passed-condition count. The on-device Kotlin &
-    Dart engines must reproduce both for every case."""
+    with their Python-oracle outcome, passed-condition count and per-condition trace. The
+    on-device Kotlin & Dart engines must reproduce all three for every case.
+
+    The trace was added so an engine that returns only an outcome string (the Rust core did)
+    can join the same contract: `conditionTrace` is the per-condition truth in evaluation order,
+    which is strictly stronger than the passed COUNT — two engines can agree on "492 true" while
+    disagreeing about WHICH 492. `expectedOutcome` and `trueConditions` are unchanged, so existing
+    consumers keep working; see TRACE_ENCODING for the exact contract.
+    """
     from app.logic import evaluate_rule_tree
 
     rule = build_large_rule(num_conditions=600)
     payloads = generate_large_cases(num_dense=80, num_missing=40, seed=seed)
     payloads += [_approve_payload(random.Random(seed + 92)) for _ in range(15)]
     cases: List[Dict[str, Any]] = []
+    condition_order: List[str] = []
     for payload in payloads:
         ev = evaluate_rule_tree(rule["tree"], payload)
+        if not condition_order:
+            condition_order = _condition_order(ev)
         cases.append({
             "variables": payload,
             "expectedOutcome": ev["outcome"],
             "trueConditions": sum(1 for c in ev["conditions"] if c["passed"]),
+            "conditionTrace": _condition_trace(ev),
         })
     threshold_rule = build_threshold_rule(num_conditions=500)
     threshold_cases = build_threshold_cases(threshold_rule, num_conditions=500)
+    threshold_order = _condition_order(
+        evaluate_rule_tree(threshold_rule["tree"], threshold_cases[0]["variables"])
+    )
     return {
-        "_comment": "Cross-engine large-policy conformance. Python core (app/logic.py) is the source of truth; the Kotlin (sdk-android) and Dart (sdk-flutter) on-device engines must resolve the SAME outcome AND the same number of passed conditions per case. The thresholdRule is a flat AND of 500 conditions (onFail=reject) so sub-threshold cases (e.g. 499/500 true) MUST reject — the negative/boundary coverage. Regenerate with: python -m simulation.gen_large_policy_spec",
-        "meta": {"conditions": 600, "cases": len(cases), "thresholdConditions": 500, "thresholdCases": len(threshold_cases)},
+        "_comment": "Cross-engine large-policy conformance. Python core (app/logic.py) is the source of truth; the Kotlin (sdk-android) and Dart (sdk-flutter) on-device engines must resolve the SAME outcome, the same number of passed conditions, AND the same per-condition trace for every case. The thresholdRule is a flat AND of 500 conditions (onFail=reject) so sub-threshold cases (e.g. 499/500 true) MUST reject — the negative/boundary coverage. conditionTrace/conditionOrder were added so an outcome-only engine (the Rust core) can join the same contract; expectedOutcome and trueConditions are unchanged and remain the baseline assertion. Regenerate with: python -m simulation.gen_large_policy_spec",
+        "meta": {
+            "conditions": 600,
+            "cases": len(cases),
+            "thresholdConditions": 500,
+            "thresholdCases": len(threshold_cases),
+            "traceEncoding": TRACE_ENCODING,
+            "traceLength": len(condition_order),
+            "thresholdTraceLength": len(threshold_order),
+        },
         "rule": rule,
+        "conditionOrder": condition_order,
         "cases": cases,
         "thresholdRule": threshold_rule,
+        "thresholdConditionOrder": threshold_order,
         "thresholdCases": threshold_cases,
     }
 

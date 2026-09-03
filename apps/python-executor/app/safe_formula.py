@@ -99,13 +99,29 @@ class _Evaluator:
             or (isinstance(right, str) and isinstance(left, int) and left > _MAX_STRING_MULTIPLY)
         ):
             raise FormulaError("string repetition too large")
-        return op(left, right)
+        try:
+            return op(left, right)
+        except FormulaError:
+            raise
+        except Exception as exc:
+            # An operator can fail on perfectly well-formed input -- 1/0, 1%0, "a"-1. Only
+            # _visit_Call wrapped its failures, so those escaped as a raw ZeroDivisionError or
+            # TypeError straight out of evaluate_scorecard, breaking the contract stated in
+            # logic._evaluate_formula ("a bad formula still returns {"error": ...} rather than
+            # raising into the scorecard path"). An author's arithmetic typo must not 500 a
+            # decision.
+            raise FormulaError("{0} failed: {1}".format(type(node.op).__name__.lower(), exc)) from exc
 
     def _visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         op = _UNARY_OPS.get(type(node.op))
         if op is None:
             raise FormulaError("disallowed unary operator")
-        return op(self.visit(node.operand))
+        try:
+            return op(self.visit(node.operand))
+        except FormulaError:
+            raise
+        except Exception as exc:  # e.g. -"abc"
+            raise FormulaError("unary operator failed: {0}".format(exc)) from exc
 
     def _visit_BoolOp(self, node: ast.BoolOp) -> Any:
         values = [self.visit(v) for v in node.values]

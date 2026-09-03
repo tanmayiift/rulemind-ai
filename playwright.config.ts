@@ -40,9 +40,34 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "retain-on-failure"
   },
+  // Two lanes over one server pair. Splitting the SERVERS is not possible here -- `webServer` is
+  // global to the config, not per-project -- but it is also not needed any more: AUTH_MODE is
+  // unset below rather than "none", so authorization is live for every test in both lanes.
+  //
+  // The split is about signal and cost, not configuration. The functional suite is 48 browser
+  // tests that navigate, render and assert on the dashboard; the security lane is a handful of
+  // mostly-`request` probes that finish in seconds. Keeping them separately addressable means
+  // `--project=chromium` is still the fast inner loop, `--project=authz` is a security check you
+  // can run on its own, and a failure reports which kind of thing broke instead of appearing as
+  // "one of 53 tests". Anything matching /authz/ lands in the security lane.
   projects: [
     {
+      // The pre-existing functional suite, unchanged.
       name: "chromium",
+      testIgnore: /authz/,
+      use: { ...devices["Desktop Chrome"] }
+    },
+    {
+      // e2e/authz.spec.ts (authentication + role capability) and
+      // e2e/authz-boundaries.spec.ts (tenant boundary + the collab WebSocket).
+      //
+      // These are the only tests in the repo that can fail on an authorization regression, and
+      // they are structured so they cannot pass by accident: every negative assertion is paired
+      // with a positive control proving the thing IS reachable by whoever should reach it. A
+      // suite of refusals against a dead server is green, which is how the original 48 ran for
+      // months against an app with AUTH_MODE=none and told nobody.
+      name: "authz",
+      testMatch: /authz/,
       use: { ...devices["Desktop Chrome"] }
     }
   ],

@@ -27,6 +27,16 @@ def main() -> None:
     print(f"  conditions={spec['meta']['conditions']} cases={spec['meta']['cases']} outcomes={outcomes}")
     print(f"  trueConditions {min(trues)}-{max(trues)}; cases>=500 true: {sum(1 for t in trues if t >= 500)}")
 
+    # The trace must be internally consistent with the count it supplements, on every case,
+    # or a consumer that trusts one and not the other silently disagrees with itself.
+    traced = spec["cases"] + spec["thresholdCases"]
+    for case in traced:
+        assert len(case["conditionTrace"]) == len(spec["conditionOrder"]) or \
+            len(case["conditionTrace"]) == len(spec["thresholdConditionOrder"]), "trace length"
+        assert case["conditionTrace"].count("1") == case["trueConditions"], "trace/count disagree"
+    print(f"  conditionTrace: {len(traced)} cases, {spec['meta']['traceLength']}/"
+          f"{spec['meta']['thresholdTraceLength']} bits, all consistent with trueConditions")
+
 
 if __name__ == "__main__":
     main()

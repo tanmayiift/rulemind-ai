@@ -361,7 +361,11 @@ def temporal_backtest(
     s = np.asarray(y_score, dtype=float)
     b = np.asarray([str(x) for x in buckets], dtype=object)
     out: List[Dict[str, Any]] = []
-    for key in sorted(set(b.tolist())):
+    # Materialise as a typed list first. np.ndarray.tolist() is typed as returning Any, so
+    # sorted(set(...)) cannot resolve its comparison type-var and mypy rejects it -- the array
+    # is dtype=object holding str, which the annotation states explicitly.
+    bucket_keys: List[str] = [str(x) for x in b.tolist()]
+    for key in sorted(set(bucket_keys)):
         m = b == key
         auc = roc_auc(y[m], s[m])
         out.append(

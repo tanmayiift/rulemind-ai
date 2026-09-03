@@ -338,10 +338,12 @@ name = "rulemind-decide-service"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "http-body-util",
  "rulemind_core_rs",
  "serde",
  "serde_json",
  "tokio",
+ "tower",
 ]
 
 [[package]]

@@ -20,7 +20,13 @@ import { expect, test } from "@playwright/test";
 const API = "http://127.0.0.1:8100";
 const BAD_KEY = "rm_live_notarealkey00000000000000000";
 
-test.describe.configure({ mode: "serial" });
+// `test.describe.configure({ mode: "serial" })` was removed here (2026-09-04). The config already
+// sets `fullyParallel: false` and `workers: 1`, so these were never running concurrently — serial
+// mode was contributing only its skip-the-rest-on-first-failure semantics, and every test below
+// mints its own key, so there is no ordering dependency it was protecting. Measured against
+// AUTH_MODE=none: with serial mode the suite reported 1 failure here and skipped the other 4, so a
+// single broken boundary concealed the state of the rest. A security lane should report every
+// boundary it can see, not stop at the first one.
 
 test("a request with no API key is rejected", async ({ request }) => {
   const res = await request.get(`${API}/api/v1/rules`, { headers: { "x-api-key": "" } });

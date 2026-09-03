@@ -6,7 +6,7 @@ Who asks for each gap, what it unblocks, and — importantly — where the right
 
 RuleMind is a **decisioning engine**: connectors → variables → rules → scorecards → policies,
 promoted `dev → uat → prod` with audit trails. The changelog describes a broader **platform**.
-Of 22 features, 3 are present, 8 partial, 10 absent, 1 cut.
+Of 22 features, 2 are present, 9 partial, 10 absent, 1 cut (re-audited 2026-09-04).
 
 That is a scope difference, not a quality one, and the roadmap should be argued on customer
 value rather than on closing a gap count.
@@ -54,8 +54,11 @@ Each rides substrate that already exists, so it is days rather than weeks:
 - **Sub-workflow by alias** — resolution exists, keyed on id; add a lookup.
 - **Nested-key validation** — flat validation and dotted-path resolution both exist, unjoined.
 - **Retention in months** — the mechanics are there, only the unit is wrong.
-- **`decision_table` in the builder palette** — the executor already runs it; the UI just
-  never offered it. This is a **bug, not a feature**: a supported capability is unreachable.
+- **~~`decision_table` in the builder palette~~ — DONE (2026-09).** The executor ran it and the
+  UI never offered it: a supported capability, unreachable. It is now at
+  `apps/web/app/workflow-builder/page.tsx:34`, and `apps/web/test/workflow-builder-palette.test.ts`
+  parses both the palette and the executor so the two cannot silently diverge again. Kept here
+  because it is the cleanest example of the category — a **bug wearing a feature's clothes**.
 
 ## MVP cut vs full
 

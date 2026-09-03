@@ -118,58 +118,58 @@ adversarial sweep of the full route and deserialization surface.
       `SubjectConfirmationData` `Recipient`, Response `Destination`), single-use replay tracking
       via a new `saml_assertions_seen` table with `UNIQUE(tenant_id, assertion_id)`, and an XML
       parser with entity resolution disabled (it parses attacker XML pre-auth).
-- [ ] **3.6** Unauthenticated, unthrottled tenant + API-key minting (`/onboarding/signup` returns
+- [x] **3.6** Unauthenticated, unthrottled tenant + API-key minting (`/onboarding/signup` returns
       before the rate-limit check). Also `/api/admin/v1` sits outside all middleware.
 
 ## T4 · The chart does not deploy
 
-- [ ] **4.1** Empty-string config is not "unset". `DATABASE_URL=""` raises at import →
+- [x] **4.1** Empty-string config is not "unset". `DATABASE_URL=""` raises at import →
       CrashLoopBackOff with no useful log; `RULEMIND_CONFIG_KEY=""` becomes `sha256("")`, a
       publicly derivable key — and setting a real one later makes `decrypt_config_payload`
       silently return `{}`, emptying every connector config. Unrecoverable.
-- [ ] **4.2** Every decrypt returns something plausible on the wrong key — ciphertext goes out as
+- [x] **4.2** Every decrypt returns something plausible on the wrong key — ciphertext goes out as
       a live auth header, or straight into `pickle.loads`. Raise instead; add `MultiFernet` +
       rotation; use a real KDF.
-- [ ] **4.3** Liveness on `/health` kills the fleet on a DB blip. No probe budgets anywhere, and
+- [x] **4.3** Liveness on `/health` kills the fleet on a DB blip. No probe budgets anywhere, and
       `/health` is a sync `def` sharing the threadpool with `/decide`.
-- [ ] **4.4** No resource requests/limits, so the HPA reports `<unknown>` and never scales.
-- [ ] **4.5** Pool math is 8–30x over `max_connections` (up to 3200 vs a default 100).
-- [ ] **4.6** Migrations race (six concurrent runners, no lock) and failure is swallowed — the API
+- [x] **4.4** No resource requests/limits, so the HPA reports `<unknown>` and never scales.
+- [x] **4.5** Pool math is 8–30x over `max_connections` (up to 3200 vs a default 100).
+- [x] **4.6** Migrations race (six concurrent runners, no lock) and failure is swallowed — the API
       starts anyway against a stale schema. Job has a fixed name, so the 2nd `helm upgrade` fails.
       Related: migration 0001 is `create_all` against live models, so a model change shipped
       without a migration works everywhere fresh and is **missing in production**.
-- [ ] **4.7** The deployed UI cannot reach the API — build-time inlining, cluster-internal DNS the
+- [x] **4.7** The deployed UI cannot reach the API — build-time inlining, cluster-internal DNS the
       browser can't resolve, no ingress API route, localhost `CORS_ORIGINS`.
-- [ ] **4.8** Containers run as root with no `securityContext`; `restricted` PSS rejects the pods.
+- [x] **4.8** Containers run as root with no `securityContext`; `restricted` PSS rejects the pods.
       Also `.dockerignore` misses `.venv-rulemind` (482MB) and `.env` — which is baked into the
       web image.
-- [ ] **4.9** `RULEMIND_ENV=production` in every manifest; point the `Secure` cookie flags at the
+- [x] **4.9** `RULEMIND_ENV=production` in every manifest; point the `Secure` cookie flags at the
       same helper, or session and admin-JWT cookies ship without `Secure` behind TLS.
 
 ## T5 · Operability
 
-- [ ] **5.1** There is no logging configuration at all — every `logger.info` is dropped. An
+- [x] **5.1** There is no logging configuration at all — every `logger.info` is dropped. An
       operator currently cannot tell why a decision was slow or failed.
-- [ ] **5.2** `/metrics` is per-process and wrong (no multiproc dir, no ServiceMonitor).
-- [ ] **5.3** Redis has no socket timeouts — a *hung* Redis blocks every threadpool thread.
-- [ ] **5.4** 8+N queries per decision; needs a TTL cache **with single-flight**.
-- [ ] **5.5** Decision WAL on ephemeral disk, and `recover()` unlinks files another worker is
+- [x] **5.2** `/metrics` is per-process and wrong (no multiproc dir, no ServiceMonitor).
+- [x] **5.3** Redis has no socket timeouts — a *hung* Redis blocks every threadpool thread.
+- [x] **5.4** 8+N queries per decision; needs a TTL cache **with single-flight**.
+- [x] **5.5** Decision WAL on ephemeral disk, and `recover()` unlinks files another worker is
       appending to — enabling it can lose the decisions it exists to protect.
-- [ ] **5.6** Cross-worker read-after-write: the `decision_id` `/decide` returns 404s elsewhere.
+- [x] **5.6** Cross-worker read-after-write: the `decision_id` `/decide` returns 404s elsewhere.
 
 ## T6 · Data protection defaults
 
-- [ ] **6.1** No default redaction for financial or health PII — a raw card number is stored
+- [x] **6.1** No default redaction for financial or health PII — a raw card number is stored
       verbatim and returned in full to a **viewer**-role user.
-- [ ] **6.2** `rule_results`, `scorecard_result` and `trace` are plaintext, and the trace carries
+- [x] **6.2** `rule_results`, `scorecard_result` and `trace` are plaintext, and the trace carries
       evaluated inputs — which substantially defeats encrypting `payload_preview`.
-- [ ] **6.3** Make `pip-audit` and `pnpm audit` gating (both `continue-on-error` today).
+- [x] **6.3** Make `pip-audit` and `pnpm audit` gating (both `continue-on-error` today).
 
 ## Gates
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **1051 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **1200 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 (WebSocket authz covered by 14 Python tests) |

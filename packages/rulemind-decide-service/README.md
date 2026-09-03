@@ -52,7 +52,13 @@ curl -s localhost:8090/decide -H 'content-type: application/json' \
 ```
 
 `POST /decide` accepts `{"payload": {...}}` (computes variables) or `{"variables": {...}}`
-(pre-computed). `GET /healthz` / `GET /readyz` for probes.
+(pre-computed). Add `"trace": true` to get the per-rule `conditions[]` / `groupResults[]` trace
+alongside the outcome — the same shape the Python and on-device engines return.
+`GET /healthz` / `GET /readyz` for probes.
+
+A rule tree nested past the engine's `MAX_RULE_TREE_DEPTH` (200) is answered with
+**`422` + `{"error": "..."}`**. Rule trees are author-supplied, and unbounded recursion in Rust
+aborts the *process*; one bad tree must cost one request, not the server.
 
 ## Config
 
@@ -64,7 +70,14 @@ curl -s localhost:8090/decide -H 'content-type: application/json' \
 ## Test / build
 
 ```bash
-cargo test  --manifest-path packages/rulemind-core-rs/Cargo.toml --no-default-features   # conformance + throughput
+cargo test                                                                               # this service (HTTP boundary)
+cargo test  --manifest-path ../rulemind-core-rs/Cargo.toml --no-default-features         # engine conformance + throughput
 cargo build --release                                                                    # this crate
-docker build -f packages/rulemind-decide-service/Dockerfile -t rulemind-decide .          # container
+docker build -f packages/rulemind-decide-service/Dockerfile -t rulemind-decide .         # container
 ```
+
+This crate's own tests drive the real `axum` `Router` in-process (`tower::ServiceExt::oneshot`):
+status codes and JSON bodies through the same extractor and handler production traffic hits.
+They include the shared 90-case `packages/shared/operators.spec.json` contract replayed **over
+HTTP** — each case as a one-condition policy and a `POST /decide` — so a decision that is right
+in the library but wrong at the boundary still fails.

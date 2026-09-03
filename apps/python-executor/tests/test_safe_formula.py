@@ -130,6 +130,29 @@ class RealFormulasStillWorkTest(unittest.TestCase):
         self.assertEqual(result["scoring_method"], "formula")
         self.assertIsInstance(result["score"], int)
 
+    def test_an_arithmetic_error_returns_an_error_not_a_crash(self):
+        """logic._evaluate_formula documents that a bad formula returns {"error": ...} rather
+        than raising into the scorecard path. Only _visit_Call honoured that -- _visit_BinOp
+        called the operator unguarded, so an author writing `1 / 0` in a scorecard formula
+        raised a raw ZeroDivisionError out of evaluate_scorecard and 500'd the decision.
+        An author's arithmetic typo must not take down a request."""
+        for formula in ("1 / 0", "1 % 0", "1 // 0"):
+            with self.subTest(formula=formula):
+                with self.assertRaises(FormulaError):
+                    evaluate_formula(formula, {}, EXCEL_FUNCTIONS)
+
+    def test_a_unary_operator_error_is_also_wrapped(self):
+        with self.assertRaises(FormulaError):
+            evaluate_formula("-x", {"x": "abc"}, EXCEL_FUNCTIONS)
+
+    def test_the_scorecard_path_falls_back_instead_of_crashing(self):
+        """End to end: the contract is about evaluate_scorecard, not just the evaluator."""
+        from app.logic import evaluate_scorecard
+
+        scorecard = {"base_score": 300, "max_score": 900, "scoring_method": "formula",
+                     "formula": "1 / 0", "factors": []}
+        self.assertEqual(evaluate_scorecard(scorecard, {}, {})["score"], 300)
+
 
 if __name__ == "__main__":
     unittest.main()
