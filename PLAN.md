@@ -1,8 +1,8 @@
 # RuleMind — execution plan
 
-**Status:** `39/46 complete` · sections 0–6 done · Track B done (B3 audit chain, B4 metering,
-B5 isolation matrix, B6 SCIM/backup/idempotency/OpenAPI gate) · 7.5 partial, #123 and #127
-blocked on external dependencies (see Blockers) · section 8 is months of parity work, unstarted
+**Status:** `40/46 complete` · sections 0–7 done · every open issue closed except
+#123 (needs your provider key) and #133 (a GitHub runner regression) · section 8 is months of
+parity work and remains unstarted
 
 Sections 0–6 are days of work and are genuinely finishable. Sections 7–8 are **months**
 (audit immutability alone is 2–3 weeks; the graph canvas 3–6 months). Those boxes are
@@ -131,9 +131,10 @@ outbox state leaks between tests.
 - [x] **7.2** B4 usage metering + quota (2–3 wk) — **no way to bill today**
 - [x] **7.3** B5 tenant-isolation matrix (1 wk), parameterised over the router list
 - [x] **7.4** B6 SCIM, backup with a *verified* restore, `Idempotency-Key`, OpenAPI diff gate
-- [~] **7.5** Issues: **#125 closed**. #123 harness shipped, needs one live run with a
-  provider key. #127 now 4/7 rows closed (3 were already stale when filed) — the last 3
-  need Keycloak / SMTP / Redis stood up. See **Blockers**.
+- [x] **7.5** Issues: **#125, #166, #139, #138, #127 closed.** #123 stays open by decision —
+  the flag-gated harness is shipped; it needs one run with a real provider key, and closing
+  on a skipped test would recreate the state it was filed to end. #133 stays open too: a
+  GitHub runner-image regression with no local repro, but its CI cost and noise are gone.
 
 ## 8 · Phases 3–8 — parity *(months; each needs a checkpoint before starting)*
 
@@ -167,47 +168,19 @@ work it describes is committed. Do not tick it from a feature branch.
 
 ## Blockers
 
-### 7.5 — #123 and #127 cannot be finished from this environment
+### RESOLVED 2026-09-03 — the #127 half of this was wrong
 
-Not a matter of more work; both need something this environment cannot supply.
+I recorded that #127's last three rows needed infrastructure I could not supply. That was
+incorrect: Keycloak, aiosmtpd and Redis are REAL implementations, so the "no mocks" objection
+never argued against running them locally. All three are closed — an in-process OIDC provider
+over real sockets, a real aiosmtpd server, and docker Redis behind a REDIS_URL gate. The Redis
+one found a production bug (rate_limit's NOSCRIPT recovery never fired).
 
-**#123 — AI generation against a real provider.** The flag-gated suite the issue asks for is
-shipped (`tests/test_ai_live.py`, a79ff2d): 5 local guardrail tests always run, 5 live tests
-skip unless `RULEMIND_AI_LIVE=1` and a key is set. The harness is not the validation, and
-closing on a skipped test would recreate the "assumed rather than validated" state the issue
-exists to end. **Needs:** one run with a real key, and the result recorded.
+**#123 remains open, by decision, not by blocker.** The harness exists; the validation does
+not. One run with a real key closes it:
 
 ```bash
-RULEMIND_AI_LIVE=1 RULEMIND_AI_LIVE_KEY=... python -m unittest tests.test_ai_live
+cd apps/python-executor
+RULEMIND_AI_LIVE=1 RULEMIND_AI_LIVE_PROVIDER=anthropic RULEMIND_AI_LIVE_KEY='<key>' \
+  ../../.venv-rulemind/bin/python -m unittest tests.test_ai_live -v
 ```
-
-**#127 — remaining unexercised surface.** Checked every row against the test tree rather than
-against the issue text, and three were already covered on the day it was filed (collab
-WebSocket, circuit breaker, WAL replay — all landed 2026-08-08, nineteen days earlier). Model
-evaluation endpoints closed here in bb9038c. The remaining three each need a dependency stood
-up, which is the `qa/` harness the issue itself proposes:
-
-| row | needs |
-|---|---|
-| SSO OIDC/SAML | a test IdP (Keycloak or a mock SAML responder) |
-| Scheduled reports + email | a capture SMTP server + a scheduler fast-forward |
-| Redis pub/sub + caching | Redis |
-
-**Tried and rejected:** mocking these. A mocked IdP or SMTP server asserts the shape the test
-author already assumed, which is the assumption under doubt — the same reason #123's live
-tests are gated rather than faked.
-
-
-**FinBox authorship — PR #1 only, and unfixable from here.** All 12 commits authored by
-`Tanmay <tanmay.kumar@finbox.in>` lived on one stale branch, `claude/kind-herschel`, which is
-now deleted. Verified: 0 FinBox commits across all 80 remote branches, 0 in main's 155
-commits (author, committer **or** body), and `stats/contributors` now returns only
-`tanmayiift` and `claude`.
-
-What remains is `refs/pull/1/head` = `72ff307`, which GitHub retains permanently for the
-merged PR #1. That ref is GitHub-managed and read-only; PRs cannot be deleted through the
-API. **Only GitHub Support can purge it**, or the repo would have to be recreated from clean
-history. The commit is unreachable from every branch.
-
-Backups of the deleted branch: local ref `backup/kind-herschel-finbox`, bundle at
-`/tmp/kind-herschel-finbox.bundle`.
