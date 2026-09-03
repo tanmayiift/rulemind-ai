@@ -38,3 +38,94 @@ jobs:
         run: docker build -t rulemind-web:${{ github.sha }} -f apps/web/Dockerfile .
       - if: github.event_name == 'workflow_dispatch'
         run: docker build -t rulemind-python-executor:${{ github.sha }} -f apps/python-executor/Dockerfile .
+
+  # ---------------------------------------------------------------------------
+  # Schema drift gate.
+  #
+  # Migration 0001 (20260326_0001_initial_schema.py) is `Base.metadata.create_all()`
+  # against the LIVE models, not a pinned DDL snapshot. That means a fresh database
+  # always ends up matching whatever the models say right now — so a model change
+  # shipped WITHOUT a migration works perfectly in CI, in every developer's sandbox
+  # and in every new environment, and is simply missing from the one database that
+  # was created before the change: production.
+  #
+  # Because of that, the obvious `alembic upgrade head && alembic check` on an empty
+  # database is worthless here — it passes unconditionally. The check has to be run
+  # against a schema built the way production's was, i.e. from the code as it exists
+  # on the BASE branch:
+  #
+  #   1. build the schema from the base ref  (0001 create_all = base models)
+  #   2. `alembic upgrade head` with the PR's code  (applies migrations the PR adds)
+  #   3. `alembic check`  (PR models vs that schema)
+  #
+  # A PR that adds a migration matching its model change: step 2 applies it, step 3
+  # is clean. A PR that changes models and adds no migration: step 2 is a no-op and
+  # step 3 fails with "New upgrade operations detected".
+  #
+  # The proper structural fix is to replace 0001 with a pinned initial schema so a
+  # plain `alembic check` becomes meaningful; that is a change to
+  # apps/python-executor/alembic/ and is not made here.
+  # ---------------------------------------------------------------------------
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rulemind_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rulemind_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needed to resolve the base ref the schema is reconstructed from.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/python-executor/requirements.txt
+      - run: pip install -r apps/python-executor/requirements.txt
+
+      - name: Resolve base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            git fetch --no-tags origin main
+            echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the schema from the base ref
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/base && mkdir -p /tmp/base
+          # `git archive` instead of checkout: the working tree stays on the PR code.
+          git archive "${{ steps.base.outputs.sha }}" apps/python-executor | tar -x -C /tmp/base
+          cd /tmp/base/apps/python-executor
+          python -m alembic -c alembic.ini upgrade head
+
+      - name: Apply this PR's migrations
+        working-directory: apps/python-executor
+        run: python -m alembic -c alembic.ini upgrade head
+
+      - name: alembic check (models vs migrations)
+        working-directory: apps/python-executor
+        run: |
+          set -euo pipefail
+          if ! python -m alembic -c alembic.ini check; then
+            echo "::error::Models changed without a matching Alembic migration."
+            echo "Generate one with:  cd apps/python-executor && alembic revision --autogenerate -m '<description>'"
+            echo "Do NOT rely on migration 0001's create_all — it only covers databases created after your change."
+            exit 1
+          fi

@@ -41,6 +41,15 @@ DEPENDENCY_ENDPOINTS = {"/ready", "/health/ready", "/readyz"}
 # seed + bcrypt, on top of importing the ML stack) is well outside the default assumptions.
 REQUIRED_PROBE_FIELDS = ("initialDelaySeconds", "periodSeconds", "failureThreshold")
 
+# The ONLY env names where a rendered "" is a deliberate value rather than the set-but-blank
+# hazard. Kept as a short, named allowlist rather than a blanket exemption, because the blanket
+# version would re-open exactly the DATABASE_URL hole this check exists to catch.
+#
+# NEXT_PUBLIC_API_BASE_URL: "" means same-origin. The browser then requests /api/v1/... against
+# whatever host served the page, which is the correct answer behind an ingress and the only one
+# that works, since a cluster-internal Service name is not resolvable from a browser.
+BLANK_IS_MEANINGFUL = frozenset({"NEXT_PUBLIC_API_BASE_URL"})
+
 
 class Violation(Exception):
     pass
@@ -191,10 +200,17 @@ def check_probes(docs, problems):
                     problems.append(
                         "{0}: livenessProbe points at {1}, which checks dependencies -- a DB blip "
                         "would restart every pod at once".format(where, path))
+            # A startupProbe suspends liveness and readiness until it succeeds, so
+            # initialDelaySeconds on those two is redundant once one exists -- and the idiomatic
+            # pattern is to omit it rather than state a second, conflicting delay. Requiring it
+            # unconditionally was wrong: it flagged a correctly-configured chart.
+            has_startup = bool(container.get("startupProbe"))
             for label, probe in (("livenessProbe", liveness), ("readinessProbe", readiness)):
                 if not probe:
                     continue
                 for field in REQUIRED_PROBE_FIELDS:
+                    if field == "initialDelaySeconds" and has_startup:
+                        continue
                     if field not in probe:
                         problems.append("{0}: {1} has no {2}".format(where, label, field))
 
@@ -242,6 +258,8 @@ def check_no_blank_env(docs, problems):
             where = "{0}/{1}:{2}".format(kind, name, container.get("name", "?"))
             for entry in container.get("env") or []:
                 if "value" in entry and entry.get("value") == "":
+                    if entry.get("name") in BLANK_IS_MEANINGFUL:
+                        continue
                     problems.append(
                         "{0}: env {1} renders as an empty string -- set-but-blank, which defeats "
                         "every `os.getenv(name, default)` in the app".format(where, entry.get("name")))
@@ -249,8 +267,13 @@ def check_no_blank_env(docs, problems):
         if doc.get("kind") not in ("ConfigMap", "Secret"):
             continue
         name = (doc.get("metadata") or {}).get("name")
-        for key, value in (doc.get("data") or {}).items():
-            if value == "":
+        # stringData as well as data: a Secret written with stringData (which is how this chart
+        # renders, since the values are plaintext at template time) would otherwise skip the
+        # check entirely -- and RULEMIND_CONFIG_KEY and DATABASE_URL both live there.
+        entries = dict(doc.get("data") or {})
+        entries.update(doc.get("stringData") or {})
+        for key, value in entries.items():
+            if value == "" and key not in BLANK_IS_MEANINGFUL:
                 problems.append("{0} {1}: key {2} is an empty string".format(
                     doc.get("kind"), name, key))
 

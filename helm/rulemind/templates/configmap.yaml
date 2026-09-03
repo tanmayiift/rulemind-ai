@@ -3,5 +3,31 @@ kind: ConfigMap
 metadata:
   name: rulemind-config
 data:
-  DATABASE_URL: {{ .Values.env.databaseUrl | quote }}
+  # DATABASE_URL moved OUT of here and into the Secret. It carries the Postgres
+  # password, and a ConfigMap is world-readable to anything with get on the
+  # namespace and is dumped verbatim by `kubectl describe`/`helm get values`.
+  # k8s/rulemind.yaml already had it as a Secret; the two now agree.
+  # Rendered ONLY when set. A blank `REDIS_URL: ""` is a set-but-blank env var, not an unset
+  # one -- and app/runtime.py does `os.getenv("REDIS_URL")` then `if not url: unavailable`.
+  # So a blank value silently drops rate limiting to the per-worker in-process fallback: the
+  # configured limit is then multiplied by the worker count and shared across no pods at all,
+  # which is the opposite of what an operator setting a limit intends. Omitting the key is the
+  # honest way to say "not configured".
+  {{- if .Values.env.redisUrl }}
   REDIS_URL: {{ .Values.env.redisUrl | quote }}
+  {{- end }}
+
+  # See values.yaml `env.rulemindEnv`: without this, app/security_config.py logs a
+  # warning and SKIPS the default-secret check, so a cluster running on the
+  # committed dev keys starts up perfectly happily.
+  RULEMIND_ENV: {{ .Values.env.rulemindEnv | quote }}
+
+  # Was never rendered at all, so the API fell back to the localhost default in
+  # app/main.py and rejected every browser request from the real ingress host.
+  CORS_ORIGINS: {{ include "rulemind.corsOrigins" . | quote }}
+
+  # Connection budget — see the arithmetic block in values.yaml before changing.
+  DB_POOL_SIZE: {{ .Values.db.poolSize | quote }}
+  DB_MAX_OVERFLOW: {{ .Values.db.maxOverflow | quote }}
+  DB_POOL_RECYCLE: {{ .Values.db.poolRecycle | quote }}
+  DB_POOL_TIMEOUT: {{ .Values.db.poolTimeout | quote }}

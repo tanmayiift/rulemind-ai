@@ -1,3 +1,11 @@
+# Plain-manifest deployment of the RuleMind API. The Helm chart under helm/rulemind
+# is the fuller artifact (web, worker, ingress, HPA, PDB, migration hook); this file
+# is the minimal API-only equivalent and is kept consistent with it.
+#
+# Apply order matters: the migration Job must complete before the Deployment rolls,
+# because apps/python-executor/entrypoint.sh no longer runs `alembic upgrade head`.
+#   kubectl apply -f k8s/rulemind.yaml
+#   kubectl wait --for=condition=complete job/rulemind-migrate --timeout=10m
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -5,8 +13,24 @@ metadata:
 data:
   DATABASE_ADAPTER: postgres
   REDIS_URL: redis://rulemind-redis:6379
+
+  # Was set in no deployment artifact at all, so app/security_config.py logged a
+  # warning and SKIPPED its default-secret check — a cluster on the committed dev
+  # keys started up fine. This makes the check fail closed.
+  RULEMIND_ENV: production
+
   AUTH_MODE: apikey
-  CORS_ORIGINS: http://rulemind-web
+
+  # Was "http://rulemind-web": a cluster-internal Service name, which is not an
+  # Origin any browser ever sends. CORS is matched against the origin in the user's
+  # address bar, so this must be the public URL the dashboard is served from.
+  CORS_ORIGINS: https://rulemind.example.com
+
+  # Connection budget. app/db.py defaults to 20 + 20 PER uvicorn worker process,
+  # and the image runs 2 workers, so the defaults would be 80 connections from
+  # these 2 replicas alone. See the arithmetic in helm/rulemind/values.yaml.
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "5"
 ---
 apiVersion: v1
 kind: Secret
@@ -16,6 +40,56 @@ type: Opaque
 stringData:
   DATABASE_URL: ""      # REQUIRED: postgresql://user:pass@host:5432/dbname
   PYTHON_EXECUTOR_SECRET: ""  # REQUIRED: set a strong secret
+  # RULEMIND_ENV=production above means the API refuses to start if these are unset
+  # or left at the committed development defaults.
+  RULEMIND_CONFIG_KEY: ""     # REQUIRED: Fernet key protecting config-at-rest
+  RULEMIND_ADMIN_JWT_SECRET: ""  # REQUIRED: admin session JWT signing secret
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rulemind-migrate
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: rulemind-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/rulemind/rulemind-api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          args: ["python3", "-m", "alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: rulemind-config
+            - secretRef:
+                name: rulemind-secrets
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -31,9 +105,38 @@ spec:
       labels:
         app: rulemind-api
     spec:
+      # There was no securityContext anywhere in this file, and the image had no
+      # USER directive, so these pods ran as root — rejected outright by a cluster
+      # enforcing the `restricted` Pod Security Standard, and indefensible for a
+      # service that executes untrusted customer Python. uid 10001 matches the
+      # `useradd -r -u 10001 rulemind` in apps/python-executor/Dockerfile.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
-          image: your-registry/rulemind-api:latest
+          # Was the literal placeholder `your-registry/rulemind-api:latest`, which
+          # cannot pull. Point this at wherever CI publishes the image built from
+          # apps/python-executor/Dockerfile, and pin a digest or tag — not :latest —
+          # for anything you intend to roll back.
+          image: ghcr.io/rulemind/rulemind-api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            # See helm/rulemind/values.yaml securityContext for why this is not
+            # true yet: app/worker.py writes /tmp, app/decision_wal.py writes
+            # /app/data, and the ML stack caches under $HOME.
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           ports:
             - containerPort: 8080
           envFrom:
@@ -41,14 +144,55 @@ spec:
                 name: rulemind-config
             - secretRef:
                 name: rulemind-secrets
+          # Boot imports the ML stack, runs create_all, takes the advisory lock,
+          # seeds and bcrypts — the startupProbe holds liveness off for up to
+          # 30 x 5s = 150s so a slow cold start is not read as a hang.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          # Liveness is the STATIC endpoint. It must not touch Postgres or Redis:
+          # pointing it at the dependency check turned a 30s database failover into
+          # a simultaneous restart of every API pod.
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          # Readiness keeps the dependency check — drop out of the Service, do not
+          # get killed. (/ready and /health/ready are the same handler.)
           readinessProbe:
             httpGet:
-              path: /health/ready
+              path: /ready
               port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Without requests, the CPU-utilization HPA below has no denominator: it
+          # reports <unknown> for the metric and never scales.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -71,6 +215,9 @@ spec:
     kind: Deployment
     name: rulemind-api
   minReplicas: 2
+  # 6 pods x 2 uvicorn workers x (DB_POOL_SIZE 5 + DB_MAX_OVERFLOW 5) = 120
+  # connections at full scale. Re-derive against your Postgres max_connections
+  # before raising this.
   maxReplicas: 6
   metrics:
     - type: Resource

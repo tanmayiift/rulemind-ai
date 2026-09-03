@@ -1,18 +1,63 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: rulemind-migrate
+  # Generated name, NOT the fixed "rulemind-migrate". A Job's spec.template is
+  # immutable, so re-applying a same-named Job with any changed field (a new image
+  # tag — i.e. every release) made the second `helm upgrade` fail with
+  # "field is immutable". With a per-revision name plus before-hook-creation
+  # cleanup, each upgrade gets its own Job.
+  # (Revision, not `now`, so `helm template` output stays reproducible and
+  # `helm diff upgrade` does not show a spurious change on every invocation.)
+  name: rulemind-migrate-{{ .Release.Revision }}
+  labels:
+    app: rulemind-migrate
+  annotations:
+    # This was a plain manifest, so Helm applied it alongside the Deployments with
+    # no ordering at all: the API rolled out at the same time the migration ran.
+    # As a pre-install/pre-upgrade hook it now runs to completion BEFORE any pod
+    # of the new release starts, and it is the single place migrations happen —
+    # apps/python-executor/entrypoint.sh no longer runs alembic (it swallowed
+    # failures with an if/else that defeated `set -e`, then booted the API against
+    # a stale schema, and every replica raced every other replica doing it).
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
+  # Bounded: a migration that cannot succeed should fail the release, not retry
+  # against the database forever.
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.ttlSecondsAfterFinished }}
   template:
+    metadata:
+      labels:
+        app: rulemind-migrate
     spec:
-      restartPolicy: OnFailure
+      restartPolicy: Never
+      {{- include "rulemind.podSecurityContext" . | nindent 6 }}
       containers:
         - name: migrate
           image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"
           imagePullPolicy: {{ .Values.image.api.pullPolicy }}
-          command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+          {{- include "rulemind.containerSecurityContext" . | nindent 10 }}
+          # `args`, not `command`: k8s `command` replaces the image ENTRYPOINT, and
+          # keeping the entrypoint in the chain means this Job runs through exactly
+          # the same wrapper the API does.
+          args: ["python3", "-m", "alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
           envFrom:
             - configMapRef:
                 name: rulemind-config
             - secretRef:
                 name: rulemind-secrets
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
