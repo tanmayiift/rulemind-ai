@@ -66,13 +66,16 @@ def analytics_sdk(request: Request) -> Dict[str, Any]:
 # ── Audit trail ────────────────────────────────────────────────────────────
 @router.get("/api/v1/audit/decisions")
 def audit_decisions(limit: int = 200, offset: int = 0, client_id: Optional[str] = None,
-                    policy_id: Optional[str] = None, outcome: Optional[str] = None) -> List[Dict[str, Any]]:
+                    policy_id: Optional[str] = None, outcome: Optional[str] = None,
+                    user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     # Paginated — the decisions table is unbounded in production; an unpaged fetch
     # of tens of thousands of full-context rows would time out and exhaust memory.
     # client_id/policy_id/outcome filter in SQL so "show me this customer's history"
     # is one query rather than a full-table page-and-scan by the caller.
+    # user_id is the SUBJECT filter -- "this customer's history". client_id stays the device
+    # idempotency key, which is what an SDK-sync caller looks a decision up by.
     return main.storage.list_decisions(limit=limit, offset=offset, client_id=client_id,
-                                       policy_id=policy_id, outcome=outcome)
+                                       policy_id=policy_id, outcome=outcome, user_id=user_id)
 
 
 @router.get("/api/v1/audit/decisions/count")

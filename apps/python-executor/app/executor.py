@@ -166,6 +166,12 @@ class ExecutionContext:
     # all, leaving no way to deep-link the case it had just created.
     decision_id: Optional[str] = None
     variables: Dict[str, Any] = field(default_factory=dict)
+    # {variable_id: message} for variables that FAILED to compute. Their entry in `variables`
+    # is None, which is indistinguishable from a legitimately-null value -- and a None fed to a
+    # gate silently flips the decision (logic.py returns False for every comparison against
+    # None, so "reject if fraud_score >= 90" simply does not reject). Keeping the errors
+    # separate is what lets the decision fail closed instead of guessing.
+    variable_errors: Dict[str, str] = field(default_factory=dict)
     rule_results: List[Dict[str, Any]] = field(default_factory=list)
     scorecard_results: Dict[str, Any] = field(default_factory=dict)
     decision_table_results: Dict[str, Any] = field(default_factory=dict)
@@ -383,8 +389,17 @@ class PolicyExecutor:
             source_payload = payloads.get(variable["source_id"], {})
             execution = execute_variable(variable["code"], source_payload, values, timeout_ms=timeout_ms, memory_mb=memory_mb)
             values[variable["id"]] = execution.get("value")
+            # The error used to be discarded here. A sandbox timeout returns
+            # {"value": None, "error": "..."} rather than raising, so the variable became a
+            # silent None -- and under load the sandbox queue manufactures those from perfectly
+            # healthy code. The fast path already recorded them (fast_decide.py:216-219, with a
+            # comment saying a None fed to a gate can flip a decision); this is the DEFAULT
+            # path, and it did not.
+            if execution.get("error"):
+                ctx.variable_errors[variable["id"]] = str(execution.get("error"))
         ctx.variables = values
         ctx.payload = payloads
+        self._record_variable_errors(ctx)
 
     async def _run_steps(
         self,
@@ -803,6 +818,7 @@ class PolicyExecutor:
 
         if ctx.status == "running":
             ctx.status = "completed"
+        self._fail_closed_on_variable_errors(ctx)
         ctx.completed_at = datetime.utcnow()
         ctx.total_latency_ms = int((ctx.completed_at - ctx.started_at).total_seconds() * 1000)
         # Simulation is a pure what-if: no decision log, no execution row.
@@ -849,6 +865,79 @@ class PolicyExecutor:
         else:
             self.storage.create_workflow_execution(payload, tenant_id=ctx.tenant_id)
 
+    def _fail_closed_on_variable_errors(self, ctx: ExecutionContext) -> None:
+        """Send a decision to review when an input it needed could not be computed.
+
+        WHY THIS IS NOT OPTIONAL. A failed variable is None, and logic.py returns False for
+        every comparison against None. So the direction a decision fails is decided by how the
+        author happened to phrase the rule:
+
+            "reject if fraud_score >= 90"   -> condition False -> NOT rejected   (fails OPEN)
+            "approve if bureau_score >= 700" -> condition False -> not approved  (fails closed)
+
+        Every "flag the bad ones" rule -- the entire fraud and risk category -- fails open. And
+        scorecards are worse: a null factor contributes 0 points, so the score inflates toward
+        approve. Under load, a saturated sandbox pool turns healthy variables into nulls, which
+        means peak traffic is exactly when this silently approves the most.
+
+        Deliberately conservative: ANY failed variable sends the decision to review, without
+        trying to prove which gates read it. Dependency analysis would be more precise and is
+        the wrong trade here -- being wrong in the precise direction means approving a fraud
+        case. `engine_config.fail_open_on_variable_error` exists for an operator who has
+        measured their own exposure and disagrees; it defaults to off.
+        """
+        if not ctx.variable_errors:
+            return
+        settings = self._catalog_for(ctx.tenant_id)["settings"].get("engine_config", {}) or {}
+        if settings.get("fail_open_on_variable_error"):
+            return
+        if ctx.outcome == "review":
+            return
+        # A reject is NOT "conservative enough" to leave alone. It is an adverse action, and an
+        # adverse action has to carry a reason -- so leaving it would mean issuing a customer a
+        # denial whose stated reason is an input that never computed. Both directions are wrong
+        # when the inputs are unknown; review is the only honest destination.
+        original = ctx.outcome
+        ctx.outcome = "review"
+        ctx.step_trace.append({
+            "type": "variable_error_guard",
+            "status": "failed_closed",
+            "outcome": "review",
+            "original_outcome": original,
+            "failed_variables": sorted(ctx.variable_errors),
+            "detail": "Sent to review: {0} variable(s) could not be computed, and a null input "
+                      "silently changes gate outcomes.".format(len(ctx.variable_errors)),
+        })
+
+    def _record_variable_errors(self, ctx: ExecutionContext) -> None:
+        """Make a failed variable observable.
+
+        Mirrors _record_gate_error's contract: a decision that was affected by a failure must be
+        alertable rather than silent. Best-effort -- recording must never break the decision.
+
+        Note what this does NOT do: it does not substitute a value. The decision still has a
+        None where a number should be, and `_variables_failed_closed` is what stops that None
+        reaching a gate.
+        """
+        if not ctx.variable_errors:
+            return
+        for variable_id, message in ctx.variable_errors.items():
+            try:
+                self.storage.add_error_event(
+                    {
+                        "tenant_id": ctx.tenant_id,
+                        "scope": "decision",
+                        "stage": "variable_error",
+                        "entity_type": "variable",
+                        "entity_id": variable_id,
+                        "message": "Variable failed to compute (value is null): {0}".format(message),
+                        "details": {"policy_id": ctx.policy_id, "execution_id": ctx.execution_id},
+                    },
+                    tenant_id=ctx.tenant_id,
+                )
+            except Exception:  # noqa: BLE001 - observability must not break the decision
+                pass
+
     def _record_gate_error(self, ctx: ExecutionContext, step: Dict[str, Any], message: str) -> None:
         """Record an observable error when a decision gate (rule/scorecard/table) fails to
         evaluate — so a fail-closed decision is alertable, not silent. Best-effort: recording the
@@ -884,7 +973,11 @@ class PolicyExecutor:
         record = {
             "tenant_id": ctx.tenant_id,
             "id": decision_id,
-            "client_id": ctx.user_id or payload_client_id,
+            # NOT ctx.user_id. client_id is the DEVICE idempotency key under
+            # UNIQUE(tenant_id, client_id); a userId repeats per customer, so writing it here
+            # silently dropped every re-decision. The subject goes in user_id.
+            "client_id": payload_client_id,
+            "user_id": ctx.user_id,
             "policy_id": ctx.policy_id,
             "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
             "computed_variables": copy.deepcopy(ctx.variables),

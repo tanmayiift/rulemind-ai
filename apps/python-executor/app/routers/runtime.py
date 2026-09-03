@@ -181,6 +181,10 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         "outcome": outcome["result"]["outcome"],
         "score": outcome["result"].get("scorecard_result", {}).get("score") if outcome["result"].get("scorecard_result") else None,
         "variables": outcome["values"],
+        # A variable that failed to compute is None in "variables" above, and None is also a
+        # perfectly legitimate value -- so without this map an integrator cannot tell a real
+        # null from a bureau call that timed out. Empty on a healthy decision.
+        "variable_errors": outcome.get("variable_errors") or {},
         "rule_results": [item for item in outcome["result"]["trace"] if item.get("step", {}).get("type") == "rule"],
         "scorecard_result": outcome["result"].get("scorecard_result"),
         "trace": outcome["result"]["trace"],

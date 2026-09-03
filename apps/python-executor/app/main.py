@@ -840,10 +840,14 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
             "source_icon": connectors.get(variable_lookup.get(variable_id, {}).get("source_id", ""), {}).get("icon"),
             "source_active": connectors.get(variable_lookup.get(variable_id, {}).get("source_id", ""), {}).get("is_active", False),
             "value": value,
-            "error": None,
+            # These three were hardcoded, so the API reported every variable as having
+            # succeeded even when it had timed out and its value was a silent null. A caller
+            # inspecting the response could not tell a real null from a failure -- the response
+            # actively asserted there wasn't one.
+            "error": ctx.variable_errors.get(variable_id),
             "latency_ms": 0,
             "variable_name": variable_lookup.get(variable_id, {}).get("name", variable_id),
-            "passed": True,
+            "passed": variable_id not in ctx.variable_errors,
         }
         for variable_id, value in ctx.variables.items()
     ]
@@ -868,6 +872,9 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
         "policy": updated or policy,
         "variable_results": variable_results,
         "values": ctx.variables,
+        # Kept separate from "values" because a failed variable's value is None, and None is a
+        # legitimate value -- the two are indistinguishable without this map.
+        "variable_errors": dict(ctx.variable_errors),
         "result": outcome,
         "latency_ms": latency_ms,
     }

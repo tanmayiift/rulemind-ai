@@ -139,7 +139,12 @@ def run(r: Runner):
         c.ok(resp.status_code == 200, f"{resp.status_code}")
         if resp.status_code == 200:
             fns = resp.json()
-            n = len(fns) if isinstance(fns, list) else len(fns.get("functions", []))
+            # `all_functions`, not `functions` -- the endpoint returns
+            # {total_functions, categories, all_functions} (main.py:1632). This case read a key
+            # that never existed, so it reported "no excel functions returned" against a
+            # perfectly healthy 230-function library.
+            n = len(fns) if isinstance(fns, list) else (
+                fns.get("total_functions") or len(fns.get("all_functions", [])))
             c.info({"count": n}); c.ok(n > 0, "no excel functions returned")
 
     # ================= 4. DECISIONING =================
@@ -186,7 +191,9 @@ def run(r: Runner):
         c.ok(resp.status_code == 200, f"{resp.status_code}: {resp.text[:300]}")
         if resp.status_code == 200:
             b = resp.json()
-            rows = b if isinstance(b, list) else b.get("results", b.get("decisions", []))
+            # `rows`, not `results`/`decisions` -- /decide/batch returns
+            # {targetType, targetId, rows, count, performance} (runtime.py:375).
+            rows = b if isinstance(b, list) else b.get("rows", b.get("results", b.get("decisions", [])))
             c.ok(len(rows) == 3, f"expected 3 results, got {len(rows)}")
 
     # ================= 5. VISIBILITY / EXPLAINABILITY =================
@@ -225,17 +232,17 @@ def run(r: Runner):
         for i in range(3):
             r.post("/api/v1/decide", json={"policyId": pol, "payload": {"age": 30 + i}, "userId": marker})
         time.sleep(2.0)  # async decision log
-        # client_id, not userId: /decide's `userId` is stored as client_id
-        # (executor.py:878) and the row exposes only client_id
-        # (storage.py:780-801). `userId` is not an accepted query param
-        # (insights.py:68), so FastAPI dropped it and this assertion was
-        # matching a key that never existed.
-        resp = r.get("/api/v1/audit/decisions", params={"client_id": marker, "limit": 50})
+        # user_id, the SUBJECT filter. This case previously found 1 of 3 and was written off
+        # as a test bug; it was a product bug. /decide wrote `userId` into client_id, which is
+        # under UNIQUE(tenant_id, client_id), so decisions 2 and 3 were silently discarded --
+        # the caller had a 200 and a decision_id that never existed. Subject and idempotency
+        # key are now separate columns.
+        resp = r.get("/api/v1/audit/decisions", params={"user_id": marker, "limit": 50})
         c.ok(resp.status_code == 200, f"{resp.status_code}: {resp.text[:200]}")
         if resp.status_code == 200:
             b = resp.json()
             rows = b if isinstance(b, list) else b.get("items", b.get("decisions", b.get("results", [])))
-            mine = [x for x in rows if x.get("client_id") == marker]
+            mine = [x for x in rows if x.get("user_id") == marker]
             c.info({"returned": len(rows), "matching_marker": len(mine)})
             c.ok(len(mine) >= 3, f"expected >=3 decisions for {marker}, found {len(mine)}")
 

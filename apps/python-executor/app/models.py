@@ -233,11 +233,21 @@ class Decision(Base):
     # mint the same id). The primary key is a server-generated id; dedupe of on-device decisions is
     # by (tenant_id, client_id), so an at-least-once retry never double-counts and one tenant's id can
     # never collide with another's. client_id is NULL for server/API decisions (many NULLs allowed).
+    #
+    # That last sentence was the contract and the /decide path broke it: it wrote the request's
+    # `userId` into client_id so case-wise history had something to filter on. A userId is a SUBJECT
+    # identifier, not an idempotency key -- it repeats on every re-decision of the same customer --
+    # so the second decision for any customer hit this constraint and was silently dropped (the
+    # write is async, so the caller already had a 200 and a decision_id that never existed).
+    # user_id below is the subject; client_id stays the device idempotency key.
     __table_args__ = (UniqueConstraint("tenant_id", "client_id", name="uq_decisions_tenant_client"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
     tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     client_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    # The decision SUBJECT (/decide's `userId`). Deliberately NOT unique -- "every decision for
+    # this customer" is the whole point of case-wise history.
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     policy_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     payload_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     payload_preview: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

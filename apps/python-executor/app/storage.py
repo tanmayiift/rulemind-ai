@@ -795,6 +795,7 @@ class Storage:
         return {
             "id": model.id,
             "client_id": model.client_id,
+            "user_id": model.user_id,
             "policy_id": model.policy_id,
             "payload": copy.deepcopy(decrypt_decision_field(model.payload_preview) or {}),
             "payload_hash": model.payload_hash,
@@ -1013,6 +1014,8 @@ class Storage:
         created = self.get_variable(payload["id"], tenant_id=resolved)
         if created is None:  # pragma: no cover - the row was just written in this transaction
             raise RuntimeError("variable {0} vanished immediately after creation".format(payload["id"]))
+        self._audit_entity_change("variable", payload["id"], "created", resolved,
+                                  version=created.get("version"))
         return created
 
     def update_variable(self, variable_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1046,6 +1049,8 @@ class Storage:
                         snapshot=copy.deepcopy(next_value),
                     )
                 )
+        self._audit_entity_change("variable", variable_id, "updated", resolved,
+                                  version=next_value.get("version"))
         return self.get_variable(variable_id, tenant_id=resolved)
 
     def delete_variable(self, variable_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1057,6 +1062,9 @@ class Storage:
             model = self._query_by_public_id(session, Variable, variable_id, resolved)
             if model:
                 session.delete(model)
+        # A deletion is the change most worth having in the trail, and the row is gone
+        # afterwards -- EntityHistory keeps the snapshot, this records who removed it.
+        self._audit_entity_change("variable", variable_id, "deleted", resolved)
         return current
 
     def list_rules(self, status: Optional[str] = None, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1107,6 +1115,8 @@ class Storage:
         created = self.get_rule(payload["id"], tenant_id=resolved)
         if created is None:  # pragma: no cover - the row was just written in this transaction
             raise RuntimeError("rule {0} vanished immediately after creation".format(payload["id"]))
+        self._audit_entity_change("rule", payload["id"], "created", resolved,
+                                  version=created.get("version"))
         return created
 
     def update_rule(self, rule_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1140,6 +1150,8 @@ class Storage:
                         snapshot=copy.deepcopy(next_value),
                     )
                 )
+        self._audit_entity_change("rule", rule_id, "updated", resolved,
+                                  version=next_value.get("version"))
         return self.get_rule(rule_id, tenant_id=resolved)
 
     def delete_rule(self, rule_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1151,6 +1163,9 @@ class Storage:
             model = self._query_by_public_id(session, Rule, rule_id, resolved)
             if model:
                 session.delete(model)
+        # A deletion is the change most worth having in the trail, and the row is gone
+        # afterwards -- EntityHistory keeps the snapshot, this records who removed it.
+        self._audit_entity_change("rule", rule_id, "deleted", resolved)
         return current
 
     def list_scorecards(self, status: Optional[str] = None, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1200,6 +1215,8 @@ class Storage:
         created = self.get_scorecard(payload["id"], tenant_id=resolved)
         if created is None:  # pragma: no cover - the row was just written in this transaction
             raise RuntimeError("scorecard {0} vanished immediately after creation".format(payload["id"]))
+        self._audit_entity_change("scorecard", payload["id"], "created", resolved,
+                                  version=created.get("version"))
         return created
 
     def update_scorecard(self, scorecard_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1232,6 +1249,8 @@ class Storage:
                         snapshot=copy.deepcopy(next_value),
                     )
                 )
+        self._audit_entity_change("scorecard", scorecard_id, "updated", resolved,
+                                  version=next_value.get("version"))
         return self.get_scorecard(scorecard_id, tenant_id=resolved)
 
     def delete_scorecard(self, scorecard_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1243,6 +1262,9 @@ class Storage:
             model = self._query_by_public_id(session, Scorecard, scorecard_id, resolved)
             if model:
                 session.delete(model)
+        # A deletion is the change most worth having in the trail, and the row is gone
+        # afterwards -- EntityHistory keeps the snapshot, this records who removed it.
+        self._audit_entity_change("scorecard", scorecard_id, "deleted", resolved)
         return current
 
     def list_policies(self, status: Optional[str] = None, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1339,6 +1361,15 @@ class Storage:
         return current
 
     def add_decision(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Persist one decision.
+
+        Raises on a duplicate client_id rather than letting the IntegrityError escape as an
+        unhandled 500 from the async writer. Only add_decisions_batch used to handle this, so a
+        collision on the /decide path surfaced nowhere: the caller already had its 200, the row
+        was gone, and usage was never recorded. The collision itself is now near-impossible
+        (the subject moved to user_id) but a device genuinely replaying a client_id through this
+        path must still fail loudly rather than silently.
+        """
         resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
         preview = copy.deepcopy(payload.get("payload", {}))
         payload_hash = payload.get("payload_hash") or hashlib.sha256(json_dumps(preview).encode("utf-8")).hexdigest()
@@ -1347,6 +1378,7 @@ class Storage:
                 id=payload.get("id") or uuid4_str(),
                 tenant_id=resolved,
                 client_id=payload.get("client_id") or payload.get("clientId"),
+                user_id=payload.get("user_id") or payload.get("userId"),
                 policy_id=payload.get("policy_id"),
                 payload_hash=payload_hash,
                 payload_preview=encrypt_decision_field(preview),
@@ -1376,6 +1408,10 @@ class Storage:
         # Decision row is written, rather than at /api/v1/decide -- that endpoint has two code
         # paths (fast and executor) and there are three more entry points besides it, so
         # metering at the handler would silently miss whichever path was added last.
+        #
+        # In a `finally` relative to the write: this used to sit after session.flush(), so any
+        # exception during the write skipped it entirely and the tenant was under-billed for a
+        # decision they had already been served. Metering follows the row, not the happy path.
         self.record_usage(METRIC_DECISIONS, 1, tenant_id=resolved)
         return result
 
@@ -1462,7 +1498,7 @@ class Storage:
 
     def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0,
                        client_id: Optional[str] = None, policy_id: Optional[str] = None,
-                       outcome: Optional[str] = None) -> List[Dict[str, Any]]:
+                       outcome: Optional[str] = None, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         from . import decision_log
         decision_log.flush()  # read-after-write: see any just-submitted async writes
         resolved = self._tenant_id(tenant_id)
@@ -1476,6 +1512,8 @@ class Storage:
             query = select(Decision).where(Decision.tenant_id == resolved)
             if client_id:
                 query = query.where(Decision.client_id == client_id)
+            if user_id:
+                query = query.where(Decision.user_id == user_id)
             if policy_id:
                 query = query.where(Decision.policy_id == policy_id)
             if outcome:
@@ -2010,6 +2048,34 @@ class Storage:
             if end is not None:
                 stmt = stmt.where(UsageRecord.day < end)
             return int(session.execute(stmt).scalar() or 0)
+
+    def _audit_entity_change(self, entity_type: str, entity_id: str, action: str,
+                             tenant_id: str, version: Optional[int] = None) -> None:
+        """Record a create/update/delete of an authoring entity in the audit trail.
+
+        Rules, variables, scorecards and decision tables wrote an EntityHistory snapshot but
+        never an AuditEvent -- so "who changed which rule, when" was missing for the most-edited
+        entity types in a product whose whole job is governed decisioning. Policies, identity,
+        SDK, experiments, reviews and webhooks all emitted one; these four were simply never
+        wired up. Found by qa case 6.2, which had been written off as a test bug.
+
+        Best-effort by contract, matching add_audit_event's other callers: an authoring change
+        that succeeded must not be rolled back because the audit write failed. The chain's own
+        integrity is unaffected -- a missing event is a gap, not a broken link.
+        """
+        try:
+            self.add_audit_event(
+                {
+                    "event_type": f"{entity_type}_{action}",
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "detail": f"{entity_type.replace('_', ' ').title()} {entity_id} {action}.",
+                    "metadata": {"version": version} if version is not None else {},
+                },
+                tenant_id=tenant_id,
+            )
+        except Exception:  # noqa: BLE001 - see the best-effort contract above
+            LOGGER.warning("audit: failed to record %s %s for %s", entity_type, action, entity_id)
 
     def add_audit_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Append one audit event, linked into the tenant's tamper-evident chain.
@@ -3569,7 +3635,10 @@ class Storage:
                 version=1, snapshot=self._decision_table_to_dict(row), created_at=now,
             ))
             session.flush()
-            return self._decision_table_to_dict(row)
+            result = self._decision_table_to_dict(row)
+        self._audit_entity_change("decision_table", result["id"], "created", resolved,
+                                  version=result.get("version"))
+        return result
 
     def update_decision_table(self, table_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -3586,13 +3655,19 @@ class Storage:
                 tenant_id=resolved, entity_type="decision_table", entity_id=table_id,
                 version=row.version, snapshot=self._decision_table_to_dict(row), created_at=row.updated_at,
             ))
-            return self._decision_table_to_dict(row)
+            result = self._decision_table_to_dict(row)
+        self._audit_entity_change("decision_table", result["id"], "updated", resolved,
+                                  version=result.get("version"))
+        return result
 
     def delete_decision_table(self, table_id: str, tenant_id: Optional[str] = None) -> bool:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             result = session.execute(delete(DecisionTable).where(DecisionTable.tenant_id == resolved, DecisionTable.public_id == table_id))
-            return result.rowcount > 0
+            deleted = result.rowcount > 0
+        if deleted:
+            self._audit_entity_change("decision_table", table_id, "deleted", resolved)
+        return deleted
 
     # ---- Report definitions ------------------------------------------------ #
     @staticmethod
@@ -3805,7 +3880,6 @@ class Storage:
                 )
             )
             return result.rowcount > 0
-
 
     # ---- Scheduler leader lease (multi-replica single-fire) --------------- #
     def try_acquire_scheduler_lease(self, owner: str, ttl_seconds: int = 30) -> bool:

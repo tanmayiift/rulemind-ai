@@ -261,11 +261,17 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
         "outcome": result["outcome"] if result["outcome"] != "pending" else policy.get("defaultOutcome", "review"),
         "score": result.get("score"),
         "variables": values,
+        "variable_errors": dict(variable_errors),
         "rule_results": result.get("rule_results", []),
         "scorecard_result": result.get("scorecard_result"),
         "trace": result.get("trace", []),
         "latency_ms": latency_ms,
     }
+    # Recording the error above is observability; it does not make the decision correct. This
+    # path was still RETURNING the fail-open outcome, so enabling FAST_DECIDE silently undid the
+    # slow path's guard. The two paths must agree on semantics or the flag is a correctness
+    # switch rather than a performance one.
+    _fail_closed_on_variable_errors(storage, tenant_id, decision, variable_errors)
     if log:
         _log_decision(storage, tenant_id, decision, resolved_payload, values, user_id)
         # Dark launch: if a shadow candidate is registered for this policy, evaluate it on the same
@@ -279,6 +285,39 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
     return decision
 
 
+def _fail_closed_on_variable_errors(
+    storage: Any, tenant_id: str, decision: Dict[str, Any], variable_errors: Dict[str, str]
+) -> None:
+    """Fast-path twin of PolicyExecutor._fail_closed_on_variable_errors.
+
+    Kept as a separate function rather than shared with the executor because the fast path has
+    no ExecutionContext -- but the RULE it applies is identical, and the parity tests assert the
+    two paths return the same outcome for the same failure. See the executor's docstring for why
+    a failed variable cannot be allowed to inherit the rule author's phrasing.
+    """
+    if not variable_errors:
+        return
+    try:
+        settings = storage.get_settings(tenant_id=tenant_id) or {}
+        if (settings.get("engine_config") or {}).get("fail_open_on_variable_error"):
+            return
+    except Exception:  # pragma: no cover - a settings read must not decide the decision
+        pass
+    if decision["outcome"] == "review":
+        return
+    original = decision["outcome"]
+    decision["outcome"] = "review"
+    decision["trace"] = list(decision.get("trace") or []) + [{
+        "type": "variable_error_guard",
+        "status": "failed_closed",
+        "outcome": "review",
+        "original_outcome": original,
+        "failed_variables": sorted(variable_errors),
+        "detail": "Sent to review: {0} variable(s) could not be computed, and a null input "
+                  "silently changes gate outcomes.".format(len(variable_errors)),
+    }]
+
+
 def _log_decision(storage: Any, tenant_id: str, decision: Dict[str, Any], payload: Dict[str, Any], values: Dict[str, Any], user_id: Optional[str] = None) -> None:
     record = {
         "id": str(uuid.uuid4()),
@@ -287,7 +326,11 @@ def _log_decision(storage: Any, tenant_id: str, decision: Dict[str, Any], payloa
         # Match the slow path exactly: carry the case id, and honour the tenant's
         # configured PII redaction keys. Passing no extra_keys here meant enabling
         # FAST_DECIDE silently dropped tenant-configured redaction.
-        "client_id": user_id or (payload.get("client_id") or payload.get("clientId") if isinstance(payload, dict) else None),
+        # NOT user_id. client_id is the device idempotency key under
+        # UNIQUE(tenant_id, client_id); writing the subject here made a customer's second
+        # decision collide with their first and never persist. Same bug the executor had.
+        "client_id": (payload.get("client_id") or payload.get("clientId")) if isinstance(payload, dict) else None,
+        "user_id": user_id,
         "payload": redact_payload(payload, extra_keys=storage.tenant_pii_redact_keys(tenant_id)),
         "computed_variables": values,
         "rule_results": decision["rule_results"],
