@@ -121,7 +121,7 @@ def sdk_analytics(storage: Storage, tenant_id: str) -> Dict[str, Any]:
     if cached is not None:
         return cached
     events = storage.list_sdk_events(tenant_id=tenant_id)
-    version_counts = Counter()
+    version_counts: "Counter[str]" = Counter()
     sync_latencies: List[float] = []
     sync_success = 0
     sync_total = 0

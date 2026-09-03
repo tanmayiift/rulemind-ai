@@ -68,7 +68,9 @@ def send_text_email(
     message.set_content(body)
     factory = _SMTP_FACTORY or _default_smtp
     try:
-        client = factory(email_config)
+        # is_configured() above proves email_config is not None; a bool-returning helper
+        # cannot carry that narrowing.
+        client = factory(email_config)  # type: ignore[arg-type]
         try:
             client.send_message(message)
         finally:
@@ -103,7 +105,9 @@ def send_report_email(
     message = build_message(email_config, recipients, subject, body, csv_content, csv_filename)  # type: ignore[arg-type]
     factory = _SMTP_FACTORY or _default_smtp
     try:
-        client = factory(email_config)
+        # is_configured() above proves email_config is not None; a bool-returning helper
+        # cannot carry that narrowing.
+        client = factory(email_config)  # type: ignore[arg-type]
         try:
             client.send_message(message)
         finally:

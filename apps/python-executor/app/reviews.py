@@ -55,4 +55,4 @@ def submit_review_decision(storage: Storage, task_id: str, response: Dict[str, A
         },
         tenant_id=task["tenant_id"],
     )
-    return {"task": updated, "execution": result.to_dict()}  # type: ignore[union-attr]
+    return {"task": updated, "execution": result.to_dict()}  # type: ignore[attr-defined]

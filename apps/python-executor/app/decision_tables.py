@@ -174,6 +174,8 @@ def evaluate_decision_table(
 def _cell_region(cell: Optional[Dict[str, Any]], field_type: Optional[str]) -> Tuple:
     if _is_wildcard(cell):
         return ("all",)
+    # _is_wildcard returns True for None (:35), so reaching here proves the cell exists.
+    cell = cell or {}
     operator = str(cell.get("operator", "=="))
     value = cell.get("value")
     value2 = cell.get("value2")
@@ -304,7 +306,7 @@ def analyze_decision_table(table: Dict[str, Any]) -> Dict[str, Any]:
                                     "description": f'Row {ri + 1}, "{col}": "between" needs an upper bound (value2)'})
             if ft in {"number", "integer", "float"} and operator not in {"in", "not_in", "exists", "!exists"}:
                 try:
-                    float(value)
+                    float(value)  # type: ignore[arg-type]
                 except (TypeError, ValueError):
                     diagnostics.append({"type": "invalid", "severity": "error", "rows": [row.get("id")],
                                         "description": f'Row {ri + 1}, "{col}": "{value}" is not a number'})

@@ -143,7 +143,8 @@ def verify_oidc_id_token(id_token: str, jwks: Dict[str, Any], *, issuer: str, cl
     try:
         public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
         claims = jwt.decode(
-            id_token, public_key, algorithms=["RS256"],
+            # jwt.decode wants the PUBLIC key; jwk_to_public_key returns the union type.
+            id_token, public_key, algorithms=["RS256"],  # type: ignore[arg-type]
             audience=client_id, issuer=issuer, leeway=leeway,
         )
     except jwt.PyJWTError as exc:
@@ -235,12 +236,14 @@ def parse_and_verify_saml_response(config: Dict[str, Any], saml_response_b64: st
         # require_x509=False: trust the pinned cert we were configured with, not one
         # embedded in the document. This is what actually authenticates the assertion.
         verified = XMLVerifier().verify(root, x509_cert=cert_pem, require_x509=False)
-        signed = verified.signed_xml
+        signed = verified.signed_xml  # type: ignore[union-attr]
     except Exception as exc:
         raise SsoError("SAML signature verification failed: {0}".format(exc))
 
     # The signed element is the Assertion (or the Response wrapping it).
-    assertion = signed if signed.tag.endswith("}Assertion") else signed.find(".//saml:Assertion", _SAML_NS)
+    # signxml types verify() as VerifyResult | list[VerifyResult]; a SAML Response carries
+    # exactly one signed assertion, so the single-result form is what comes back here.
+    assertion = signed if signed.tag.endswith("}Assertion") else signed.find(".//saml:Assertion", _SAML_NS)  # type: ignore[union-attr]
     if assertion is None:
         assertion = root.find(".//saml:Assertion", _SAML_NS)
     if assertion is None:

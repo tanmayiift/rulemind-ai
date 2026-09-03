@@ -35,9 +35,9 @@ class _Acc:
         self.mx: Optional[float] = None
 
     def _num(self, variables: Dict[str, Any]) -> Optional[float]:
-        raw = (variables or {}).get(self.spec.get("field"))
+        raw = (variables or {}).get(str(self.spec.get("field") or ""))
         try:
-            return float(raw)
+            return float(raw)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return None
 
@@ -50,7 +50,7 @@ class _Acc:
         elif t == "count":
             self.hits += 1
         elif t == "count_where":
-            v = (variables or {}).get(self.spec.get("field"))
+            v = (variables or {}).get(str(self.spec.get("field") or ""))
             if _compare(v, self.spec.get("op", "=="), self.spec.get("value"), self.spec.get("value2")):
                 self.hits += 1
         elif t in ("avg", "sum", "min", "max"):
@@ -127,9 +127,9 @@ def simulate_kpis(
         except Exception:
             replayed_outcome = "error"
         for acc in baseline:
-            acc.observe(original, variables)
+            acc.observe(original, variables)  # type: ignore[arg-type]
         for acc in candidate:
-            acc.observe(replayed_outcome, variables)
+            acc.observe(replayed_outcome, variables)  # type: ignore[arg-type]
 
     results = []
     for spec, b_acc, c_acc in zip(kpis, baseline, candidate):

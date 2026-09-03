@@ -1581,7 +1581,9 @@ def OCT2HEX(octal: str, places: int = 0) -> str:
 def CONVERT(number: Numeric, from_unit: str, to_unit: str) -> float:
     """Unit conversion (common units)."""
     n = _num(number)
-    _conversions: Dict[Tuple[str, str], float] = {
+    # Optional: the temperature pairs carry None because they need an offset formula
+    # rather than a multiplicative factor, and are handled separately below.
+    _conversions: Dict[Tuple[str, str], Optional[float]] = {
         ("m", "ft"): 3.28084, ("ft", "m"): 0.3048,
         ("m", "in"): 39.3701, ("in", "m"): 0.0254,
         ("m", "cm"): 100, ("cm", "m"): 0.01,
@@ -1591,6 +1593,8 @@ def CONVERT(number: Numeric, from_unit: str, to_unit: str) -> float:
         ("kg", "lbm"): 2.20462, ("lbm", "kg"): 0.453592,
         ("kg", "g"): 1000, ("g", "kg"): 0.001,
         ("kg", "oz"): 35.274, ("oz", "kg"): 0.0283495,
+        # Temperature pairs need an offset, not a factor, so they carry None and are handled
+        # separately below -- the table is genuinely Dict[Tuple[str, str], Optional[float]].
         ("C", "F"): None, ("F", "C"): None, ("C", "K"): None, ("K", "C"): None,
         ("l", "gal"): 0.264172, ("gal", "l"): 3.78541,
         ("l", "ml"): 1000, ("ml", "l"): 0.001,

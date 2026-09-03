@@ -208,7 +208,7 @@ def test_variable_draft(request: VariableDraftTestRequest) -> Dict[str, Any]:
         }
     }
     if result["result"]["error"]:
-        record_error("variables", "draft_test", result["result"]["error"], "variable", None, {"source_id": request.source_id})
+        record_error("variables", "draft_test", str(result["result"]["error"]), "variable", None, {"source_id": request.source_id})
     return result
 
 

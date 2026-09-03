@@ -352,9 +352,9 @@ def sso_start(tenant_id: Optional[str] = None) -> Dict[str, Any]:
     nonce = secrets.token_urlsafe(16)
     try:
         if provider == "oidc":
-            state = sso.issue_state(resolved_tenant, provider, nonce, cfg.get("redirect_uri", ""))
+            state = sso.issue_state(resolved_tenant or "", provider, nonce, cfg.get("redirect_uri", ""))
             return {"provider": "oidc", "redirect_url": sso.oidc_authorize_url(cfg, state, nonce)}
-        state = sso.issue_state(resolved_tenant, provider, nonce, cfg.get("acs_url", ""))
+        state = sso.issue_state(resolved_tenant or "", provider, nonce, cfg.get("acs_url", ""))
         return {"provider": "saml", "redirect_url": sso.saml_authn_request_url(cfg, state)}
     except sso.SsoError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

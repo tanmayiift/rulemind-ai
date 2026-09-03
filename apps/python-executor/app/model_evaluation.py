@@ -280,7 +280,7 @@ def mean_average_precision(Y_true: Sequence[Sequence], Y_score: Sequence[Sequenc
     Ys = np.asarray(Y_score, dtype=float)
     aps = [pr_auc(Yt[:, j], Ys[:, j]) for j in range(len(labels))]
     aps = [a for a in aps if a is not None]
-    return float(np.mean(aps)) if aps else None
+    return float(np.mean(aps)) if aps else None  # type: ignore[arg-type]
 
 
 def precision_at_k(Y_true: Sequence[Sequence], Y_score: Sequence[Sequence], k: int = 1) -> Optional[Number]:
@@ -461,7 +461,7 @@ def run_evaluation(rows: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[s
         segments: Dict[str, Any] = {}
         seg_col = config.get("segment_col")
         if seg_col:
-            segments = {"by": seg_col, "slices": slice_metrics(y, s, [r.get(seg_col) for r in rows])}
+            segments = {"by": seg_col, "slices": slice_metrics(y, s, [str(r.get(seg_col) or "") for r in rows])}
 
         temporal: Dict[str, Any] = {}
         date_col = config.get("date_col")
@@ -525,6 +525,6 @@ def score_rows_with_model(model_blob: bytes, rows: List[Dict[str, Any]], feature
         elif prob is not None and not isinstance(prob, (list, tuple)):
             score = float(prob)
         else:
-            score = float(result.get("prediction"))  # fall back to raw prediction
+            score = float(result.get("prediction"))  # type: ignore[arg-type]  # raw-prediction fallback
         scored.append({"score": score, "label": float(r[label_col])})
     return scored

@@ -131,7 +131,8 @@ def rate_limit_allow(key: str, limit: int, window_seconds: int = 60) -> tuple[bo
             if count == 1:
                 client.expire(bucket_key, window_seconds + 1)
             if count > limit:
-                ttl = int(client.ttl(bucket_key))
+                # redis-py types one class for sync and async; this module is the sync client.
+                ttl = int(client.ttl(bucket_key))  # type: ignore[arg-type]
                 return False, max(1, ttl if ttl > 0 else window_seconds)
             return True, 0
         except RedisError:

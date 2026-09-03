@@ -115,7 +115,7 @@ def generate_report(definition: Dict[str, Any], decisions: List[Dict[str, Any]],
             value = _resolve_path(decision, col.get("path", col.get("key", "")))
             if col.get("path") == "created_at" or col.get("key") == "created_at":
                 value = _format_timestamp(value, tz_name)
-            row[col.get("key", col.get("path"))] = value
+            row[str(col.get("key") or col.get("path") or "")] = value
         rows.append(row)
 
     return {
@@ -134,7 +134,7 @@ def to_csv(columns: List[Dict[str, Any]], rows: List[Dict[str, Any]]) -> str:
     writer = csv.writer(buffer)
     writer.writerow([c.get("label", c.get("key")) for c in columns])
     for row in rows:
-        writer.writerow(["" if row.get(k) is None else row.get(k) for k in keys])
+        writer.writerow(["" if row.get(k) is None else row.get(k) for k in keys])  # type: ignore[arg-type]
     return buffer.getvalue()
 
 

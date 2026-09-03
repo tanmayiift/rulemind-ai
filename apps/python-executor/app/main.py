@@ -1169,7 +1169,9 @@ def build_sdk_response(
         experiment = {"id": ctx.experiment_id, "variant": ctx.experiment_variant}
     return {
         "outcome": ctx.outcome,
-        "score": next(iter(scorecard_results.values()), {}).get("score") if scorecard_results else None,
+        # The {} default narrows to dict[Never, Never] for mypy, making .get("score") look
+        # impossible; the guard means it is never actually reached.
+        "score": next(iter(scorecard_results.values()), {}).get("score") if scorecard_results else None,  # type: ignore[call-overload]
         "variables": copy.deepcopy(ctx.variables),
         "ruleResults": rule_results,
         "experiment": experiment,
