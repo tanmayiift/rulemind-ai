@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,7 +20,7 @@ from .compiler import (
 )
 from .context import get_current_api_key_id, get_current_role, get_current_tenant_id
 from .experience_studio import build_experience_manifest
-from .executor import ExecutionContext, PolicyExecutor
+from .executor import EvaluationBudgetExceeded, ExecutionContext, PolicyExecutor
 from .logic import (
     flatten_tree_to_nodes,
     generate_rule_expression_definition,
@@ -92,6 +93,26 @@ app.add_middleware(
 # request.state.tenant_id is set (keys are scoped per tenant).
 app.add_middleware(IdempotencyMiddleware, storage=current_storage)
 app.add_middleware(TenantContextMiddleware, storage=current_storage)
+
+
+@app.exception_handler(EvaluationBudgetExceeded)
+def _evaluation_budget_handler(request: Request, exc: EvaluationBudgetExceeded) -> JSONResponse:
+    """504, not 500 -- the request is retryable and nothing is wrong with it.
+
+    Registered app-wide rather than per-route because every entry point that evaluates a policy
+    (/decide, /decide/batch, the console execute, simulations) funnels through the same
+    executor, and a budget that only one of them honoured would be worse than none.
+    """
+    return JSONResponse(
+        status_code=504,
+        content={
+            "detail": str(exc),
+            "error": "evaluation_budget_exceeded",
+            "budget_ms": exc.budget_ms,
+            "elapsed_ms": exc.elapsed_ms,
+            "stage": exc.stage,
+        },
+    )
 
 # Optional OpenTelemetry tracing (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set).
 try:
@@ -861,13 +882,21 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
         "status": ctx.status,
         "execution_id": ctx.execution_id,
     }
-    last_test_result = {
-        "passed": outcome["outcome"] in {"approve", "review", "reject"},
-        "outcome": outcome["outcome"],
-        "latency_ms": latency_ms,
-        "tested_at": now_iso(),
-    }
-    updated = storage.update_policy(policy["id"], {"last_test_result": last_test_result}, bump_version=False)
+    # `last_test_result` is a CONSOLE artifact -- it renders the "last tested" badge in the
+    # authoring UI. It used to be written on every call, including production /decide, which
+    # meant every decision UPDATEd the policy row. Postgres serializes those on the row lock,
+    # so concurrency on a single hot policy -- the normal shape of this workload -- collapsed
+    # to roughly one decision at a time. The console tests one policy by hand; contention there
+    # is not a thing, so the write stays on that path and leaves the hot path alone.
+    updated = None
+    if source == "test_console":
+        last_test_result = {
+            "passed": outcome["outcome"] in {"approve", "review", "reject"},
+            "outcome": outcome["outcome"],
+            "latency_ms": latency_ms,
+            "tested_at": now_iso(),
+        }
+        updated = storage.update_policy(policy["id"], {"last_test_result": last_test_result}, bump_version=False)
     return {
         "policy": updated or policy,
         "variable_results": variable_results,

@@ -155,6 +155,24 @@ def evaluate_condition(condition: str, context: Dict[str, Any]) -> bool:
     return bool(visit(tree))
 
 
+class EvaluationBudgetExceeded(Exception):
+    """A decision ran past its wall-clock budget and was abandoned.
+
+    Raised rather than returned because a partial evaluation is not a decision -- some
+    variables computed, some did not, and the ones that did not are None, which is exactly the
+    input that silently flips gates (see _fail_closed_on_variable_errors). Surfacing this as a
+    504 lets the caller retry; inventing an outcome from half-computed inputs would not.
+    """
+
+    def __init__(self, budget_ms: int, elapsed_ms: int, stage: str) -> None:
+        self.budget_ms = budget_ms
+        self.elapsed_ms = elapsed_ms
+        self.stage = stage
+        super().__init__(
+            "Evaluation budget of {0}ms exceeded after {1}ms during {2}.".format(
+                budget_ms, elapsed_ms, stage))
+
+
 @dataclass
 class ExecutionContext:
     payload: Dict[str, Any]
@@ -196,6 +214,10 @@ class ExecutionContext:
     started_at: datetime = field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
     total_latency_ms: int = 0
+    # Wall-clock budget for the whole evaluation. 0 disables it. `deadline` is a
+    # time.perf_counter() value, not a timestamp -- it must not move if the wall clock does.
+    budget_ms: int = 0
+    deadline: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -386,8 +408,15 @@ class PolicyExecutor:
         for variable in catalog["variables"]:
             if needed_ids is not None and variable["id"] not in needed_ids:
                 continue
+            # Two-part enforcement. The check abandons the run between variables; the clamp
+            # stops the NEXT variable from overshooting the budget on its own -- without it a
+            # 2000ms variable started with 5ms of budget left would still run the full 2000ms,
+            # and with 55 variables that error compounds.
+            self._check_budget(ctx, "variable computation")
+            remaining = self._budget_remaining_ms(ctx)
+            effective_timeout = timeout_ms if remaining is None else max(1, min(timeout_ms, remaining))
             source_payload = payloads.get(variable["source_id"], {})
-            execution = execute_variable(variable["code"], source_payload, values, timeout_ms=timeout_ms, memory_mb=memory_mb)
+            execution = execute_variable(variable["code"], source_payload, values, timeout_ms=effective_timeout, memory_mb=memory_mb)
             values[variable["id"]] = execution.get("value")
             # The error used to be discarded here. A sandbox timeout returns
             # {"value": None, "error": "..."} rather than raising, so the variable became a
@@ -417,6 +446,10 @@ class PolicyExecutor:
         is a later phase) and stops on an aborting failure."""
         for index in range(start_index, len(steps)):
             step = steps[index]
+            # Variables are not the only slow thing: an action step makes an outbound HTTP call
+            # with its own timeoutMs and retries, so a policy can blow the budget without
+            # computing a single variable.
+            self._check_budget(ctx, "step {0}".format(step.get("id") or index))
             if depth == 0:
                 ctx.current_step_index = index
             config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
@@ -432,6 +465,12 @@ class PolicyExecutor:
                 if ctx.status == "paused":
                     ctx.step_trace.append({"step": step, "result": result, "error": error, "duration_ms": _ms_since(started)})
                     return
+            except EvaluationBudgetExceeded:
+                # Must escape this handler. A sub-workflow step recurses into _run_steps, so a
+                # budget exception raised in a NESTED policy would otherwise be caught here and
+                # downgraded into an ordinary step error -- the run would keep going, past the
+                # deadline, and the budget would silently apply only to the top level.
+                raise
             except Exception as exc:  # a step raised — do not silently drop it
                 error = str(exc)
                 # Accuracy is paramount: a decision GATE that errors must not be silently
@@ -782,6 +821,11 @@ class PolicyExecutor:
             )
             start_step = 0
 
+        # Start the clock before ANY work, including the catalog reads below -- a decision that
+        # spends its whole budget on a slow DB is just as timed out as one that spends it in the
+        # sandbox, and the caller cannot tell the difference anyway.
+        self._start_budget(ctx)
+
         assignment = resolve_experiment_assignment(self.storage, tenant_id, policy["id"], ctx.user_id or (ctx.payload.get("user_id") if isinstance(ctx.payload, dict) else None))
         if assignment:
             ctx.experiment_id = assignment["experiment"]["id"]
@@ -864,6 +908,44 @@ class PolicyExecutor:
             self.storage.update_workflow_execution(ctx.execution_id, payload, tenant_id=ctx.tenant_id)
         else:
             self.storage.create_workflow_execution(payload, tenant_id=ctx.tenant_id)
+
+    # Default budget. A healthy decision is single-digit milliseconds, so 10s is ~1000x
+    # headroom -- this is a SAFETY bound, not an SLO. Before it existed there was no bound at
+    # all: the demo tenant alone has 55 variables at a 2000ms per-variable timeout, so one
+    # request could legitimately hold a threadpool slot for 110 seconds. Tune it down to your
+    # actual SLO; set evaluation_budget_ms = 0 to disable.
+    DEFAULT_BUDGET_MS = 10000
+
+    def _start_budget(self, ctx: ExecutionContext) -> None:
+        limits = self._catalog_for(ctx.tenant_id)["settings"].get("engine_config", {}) or {}
+        try:
+            budget = int(limits.get("evaluation_budget_ms", self.DEFAULT_BUDGET_MS))
+        except (TypeError, ValueError):
+            budget = self.DEFAULT_BUDGET_MS
+        ctx.budget_ms = max(0, budget)
+        ctx.deadline = (time.perf_counter() + ctx.budget_ms / 1000.0) if ctx.budget_ms else None
+
+    def _budget_remaining_ms(self, ctx: ExecutionContext) -> Optional[int]:
+        """Milliseconds left, or None when no budget is set."""
+        if ctx.deadline is None:
+            return None
+        return int((ctx.deadline - time.perf_counter()) * 1000)
+
+    def _check_budget(self, ctx: ExecutionContext, stage: str) -> None:
+        """Cooperative deadline check.
+
+        Deliberately NOT asyncio.wait_for. /decide is a sync `def` served from Starlette's
+        threadpool, so cancelling the await would return 504 to the caller while the underlying
+        work carried on holding its thread -- the timeout would make the overload worse rather
+        than shed it. Checking between units of work, and shrinking each variable's own timeout
+        to whatever budget is left, bounds the real wall clock instead of just the wait.
+        """
+        remaining = self._budget_remaining_ms(ctx)
+        if remaining is not None and remaining <= 0:
+            # remaining is <= 0 here, so this is budget + overshoot -- how far past the deadline
+            # the last unit of work actually ran, which is the number an operator needs when
+            # deciding whether the budget is too tight or a single step is misbehaving.
+            raise EvaluationBudgetExceeded(ctx.budget_ms, ctx.budget_ms - remaining, stage)
 
     def _fail_closed_on_variable_errors(self, ctx: ExecutionContext) -> None:
         """Send a decision to review when an input it needed could not be computed.

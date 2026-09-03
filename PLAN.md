@@ -35,14 +35,15 @@ adversarial sweep of the full route and deserialization surface.
 - [x] **1.2** A timed-out variable became `None`, and `None` flips catch-shaped risk gates toward
       approve. Errors now propagate, `/decide` returns a `variable_errors` map, and any failed
       variable fails closed to `review` on **both** paths (parity-tested).
-- [ ] **1.3** Enforceable evaluation budget + 504. No evaluation timeout exists anywhere.
-      `_compute_variables` runs variables serially and synchronously, so `asyncio.wait_for` can't
-      interrupt it — must offload to `asyncio.to_thread`, check a deadline between variables, and
-      shrink each variable's `timeout_ms` as the budget drains. Executor-level, not middleware:
-      `/decide` is a sync `def` in a threadpool, so cancelling the await returns 504 while the
-      work keeps running and keeps its slot. Budget lives in `engine_config` — no migration.
-- [ ] **1.4** `/decide` UPDATEs the policy row every request (`last_test_result`). Postgres
-      serializes on the row lock, so concurrency on one hot policy collapses to ~1. Delete it.
+- [x] **1.3** Enforceable evaluation budget + 504. Nothing bounded a decision: the only limit
+      was per-variable, applied in a serial loop, so the real bound was `timeout_ms x
+      variable_count` — 110s for the demo tenant's 55 variables, holding a threadpool thread.
+      Enforced cooperatively (deadline check between variables *and* between steps, plus a clamp
+      of each variable's `timeout_ms` to the remaining budget) rather than with
+      `asyncio.wait_for`, which would return 504 while the work kept its thread. Default 10s in
+      `engine_config.evaluation_budget_ms`; 0 disables.
+- [x] **1.4** `/decide` UPDATEd the policy row every request (`last_test_result`, a console
+      badge). Scoped to the console path.
 - [x] **1.5** Rule/variable/scorecard/decision-table CRUD emitted no `AuditEvent`.
 - [x] **1.6** Two qa tests read fields the endpoints never return (3.10, 4.9).
 
