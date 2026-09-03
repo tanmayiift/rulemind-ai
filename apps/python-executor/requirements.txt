@@ -60,4 +60,7 @@ websockets==13.1
 # Dev tooling. `lint` and `typecheck` were both `py_compile app/*.py`,
 # which does not match app/routers/ or app/core/.
 ruff==0.16.5
+# Real SMTP server for tests/test_mailer_live_smtp.py -- lets mailer._default_smtp
+# actually execute instead of being replaced by a fake transport.
+aiosmtpd==1.4.6
 mypy==1.14.1

@@ -38,14 +38,16 @@ class SsoError(Exception):
 
 
 # ── injectable network helpers (overridden in tests) ─────────────────────
-def _http_get_json(url: str, timeout: float = 8.0) -> Dict[str, Any]:  # pragma: no cover - network
+def _http_get_json(url: str, timeout: float = 8.0) -> Dict[str, Any]:
+    # Covered by tests/test_sso_live_oidc.py against a real in-process OIDC provider.
     with httpx.Client(timeout=timeout) as client:
         resp = client.get(url)
         resp.raise_for_status()
         return resp.json()
 
 
-def _http_post_form(url: str, data: Dict[str, str], timeout: float = 8.0) -> Dict[str, Any]:  # pragma: no cover - network
+def _http_post_form(url: str, data: Dict[str, str], timeout: float = 8.0) -> Dict[str, Any]:
+    # Covered by tests/test_sso_live_oidc.py against a real in-process OIDC provider.
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(url, data=data, headers={"Accept": "application/json"})
         resp.raise_for_status()

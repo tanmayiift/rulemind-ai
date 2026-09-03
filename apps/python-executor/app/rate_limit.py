@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-from redis.exceptions import RedisError
+from redis.exceptions import NoScriptError, RedisError
 
 from .runtime import redis_client
 
@@ -265,10 +265,18 @@ def _consume(key: str, rate: float, burst: int, cost: float):
                 _LUA_SHA = client.script_load(_LUA_TOKEN_BUCKET)
             try:
                 res = client.evalsha(_LUA_SHA, 1, redis_key, rate, burst, now, cost)
-            except RedisError as exc:
-                # NOSCRIPT: the server was flushed or failed over — reload once.
-                if "NOSCRIPT" not in str(exc).upper():
-                    raise
+            except NoScriptError:
+                # The server was flushed or failed over -- reload the script once.
+                #
+                # This used to match on `"NOSCRIPT" in str(exc).upper()`, which NEVER
+                # matched: redis-py raises NoScriptError with the message "No matching
+                # script. Please use EVAL." -- the word NOSCRIPT appears nowhere in it. So
+                # the guard re-raised, the outer handler dropped the SHA, and every
+                # rate-limit check silently fell back to the per-process local bucket,
+                # losing the cross-replica atomicity this Lua script exists for, with no
+                # error surfaced anywhere. Matching the exception TYPE cannot drift with
+                # the server's wording. Found by tests/test_redis_integration.py, which is
+                # the first thing in this repo to run against a real Redis.
                 _LUA_SHA = client.script_load(_LUA_TOKEN_BUCKET)
                 res = client.evalsha(_LUA_SHA, 1, redis_key, rate, burst, now, cost)
             return int(res[0]), float(res[1]), float(res[2])

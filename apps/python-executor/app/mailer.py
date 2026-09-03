@@ -15,7 +15,9 @@ from typing import Any, Callable, Dict, List, Optional
 _SMTP_FACTORY: Optional[Callable[[Dict[str, Any]], Any]] = None
 
 
-def _default_smtp(config: Dict[str, Any]):  # pragma: no cover - real network
+def _default_smtp(config: Dict[str, Any]):
+    # Covered by tests/test_mailer_live_smtp.py against a real aiosmtpd server. The
+    # STARTTLS/SSL branches below are still uncovered -- that is stated rather than faked.
     host = config["host"]
     port = int(config.get("port", 587))
     if config.get("use_ssl"):

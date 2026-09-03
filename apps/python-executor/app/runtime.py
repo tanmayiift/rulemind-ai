@@ -38,6 +38,27 @@ def is_local_dev() -> bool:
     return os.getenv("NODE_ENV", "development") == "development" or os.getenv("PYTEST_CURRENT_TEST") is not None
 
 
+def reset_redis_client_for_tests() -> None:
+    """Drop the memoized client and the unavailable latch.
+
+    Named for tests so nothing calls it from a request path. It exists because
+    `_REDIS_UNAVAILABLE` latches True permanently the first time redis_client() runs without
+    REDIS_URL set -- and several suites deliberately unset REDIS_URL to exercise the
+    no-Redis fallback. In one `unittest discover` process, whichever ran first decided the
+    answer for every test after it, so a Redis-backed test could silently take the fallback
+    path and pass for the wrong reason. There was no way to undo that latch.
+    """
+    global _REDIS_CLIENT, _REDIS_UNAVAILABLE
+    try:
+        if _REDIS_CLIENT is not None:
+            _REDIS_CLIENT.close()
+    except Exception:  # noqa: BLE001 - teardown must not fail a test
+        pass
+    _REDIS_CLIENT = None
+    _REDIS_UNAVAILABLE = False
+    _MEMORY_CACHE.clear()
+
+
 def redis_client() -> Optional[Redis]:
     global _REDIS_CLIENT, _REDIS_UNAVAILABLE
     if _REDIS_UNAVAILABLE:
