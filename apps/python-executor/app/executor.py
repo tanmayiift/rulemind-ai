@@ -18,6 +18,7 @@ from .jsonpath import evaluate_math_expr, resolve_jsonpath
 from .logic import evaluate_rule_definition, evaluate_scorecard, json_dumps, redact_payload
 from .sandbox import execute_variable
 from .storage import Storage, mask_secret_values
+from .egress import EgressBlocked, build_pinned_request, clamp_retries, clamp_timeout_ms
 from .templates import resolve_template
 
 
@@ -1040,6 +1041,28 @@ class PolicyExecutor:
         except Exception:  # pragma: no cover - observability must not break the decision
             pass
 
+    def _record_action_error(self, ctx: ExecutionContext, step: Dict[str, Any], url: str, method: str, message: str) -> None:
+        """Record an observable error when an action is refused or fails. Best-effort.
+
+        For an SSRF block this is the alert that an author tried to reach an internal target --
+        the request never left the process, but the attempt is exactly what a security team wants
+        to see."""
+        try:
+            self.storage.add_error_event(
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "scope": "decision",
+                    "stage": "action_error",
+                    "entity_type": "action",
+                    "entity_id": step.get("id"),
+                    "message": message,
+                    "details": {"policy_id": ctx.policy_id, "execution_id": ctx.execution_id, "method": method},
+                },
+                tenant_id=ctx.tenant_id,
+            )
+        except Exception:  # pragma: no cover - observability must not break the decision
+            pass
+
     def _log_decision(self, ctx: ExecutionContext, source: str, sdk_version: Optional[str], experiment_variant: Optional[str]) -> None:
         # client_id is the CASE identifier — what "show me this customer's decision
         # history" filters on. storage.add_decision() reads it off this record, but
@@ -1174,8 +1197,10 @@ class PolicyExecutor:
         method = str(config.get("method", "POST")).upper()
         headers = resolve_template(config.get("headers", {}), view, resolved_secrets)
         body = resolve_template(config.get("bodyTemplate", {}), view, resolved_secrets)
-        timeout = int(config.get("timeoutMs", 5000)) / 1000
-        retries = int(config.get("retries", 0))
+        # Clamp author-supplied tunables: unclamped, one action could be timeoutMs=600000 x
+        # retries=10 -- a 100-minute request pinning a worker (and defeating the T1.3 budget).
+        timeout = clamp_timeout_ms(config.get("timeoutMs", 5000)) / 1000
+        retries = clamp_retries(config.get("retries", 0))
         last_error = None
 
         if url.startswith("rulemind://simulate/"):
@@ -1215,18 +1240,44 @@ class PolicyExecutor:
                     ctx.outcome = _merge_outcome(ctx.outcome, "review")
                 return short
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        # SSRF guard on the REAL, secret-injecting path (the console guard never covered this).
+        # Resolve + range-check the host, then pin the connection to the vetted IP so a DNS
+        # rebind can't swing it to an internal address between check and connect.
+        try:
+            pinned = build_pinned_request(url)
+        except EgressBlocked as blocked:
+            last_error = "blocked_by_egress_policy: {0}".format(blocked)
+            self._record_action_error(ctx, step, url, method, last_error)
+            if breaker is not None:
+                breaker.record_failure()
+            failure_result = {"success": False, "error": last_error, "attempts": 0, "blocked": True}
+            ctx.action_results.append(failure_result)
+            on_failure = config.get("onFailure", "continue")
+            if on_failure == "abort":
+                raise ActionFailedError(last_error) from blocked
+            if on_failure == "review_gate":
+                ctx.outcome = _merge_outcome(ctx.outcome, "review")
+            return failure_result
+
+        request_headers = dict(headers or {})
+        request_headers["Host"] = pinned.host_header
+        request_extensions = {"sni_hostname": pinned.sni_hostname}
+        connect_url = pinned.url
+
+        # follow_redirects stays False: chasing a 3xx re-opens SSRF (redirect to metadata) and
+        # would bypass the pinning we just did. A redirect surfaces as a non-2xx result instead.
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             for attempt in range(retries + 1):
                 attempt_started = time.perf_counter()
                 try:
                     if method == "GET":
-                        response = await client.get(url, headers=headers)
+                        response = await client.get(connect_url, headers=request_headers, extensions=request_extensions)
                     elif method == "PUT":
-                        response = await client.put(url, json=body, headers=headers)
+                        response = await client.put(connect_url, json=body, headers=request_headers, extensions=request_extensions)
                     elif method == "PATCH":
-                        response = await client.patch(url, json=body, headers=headers)
+                        response = await client.patch(connect_url, json=body, headers=request_headers, extensions=request_extensions)
                     else:
-                        response = await client.post(url, json=body, headers=headers)
+                        response = await client.post(connect_url, json=body, headers=request_headers, extensions=request_extensions)
                     result = {
                         "status": response.status_code,
                         "success": 200 <= response.status_code < 300,

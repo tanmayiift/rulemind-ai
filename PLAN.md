@@ -66,12 +66,14 @@ adversarial sweep of the full route and deserialization surface.
       tenant B) into a pool-wide worker initializer. All four code caches now bounded (from 2.5).
       Proven by a real wedge-and-recover test; removing the recycle makes it hang, which is the
       original bug.
-- [ ] **2.3** SSRF + secret exfiltration on the real connector path. `_fire_action_request`
-      resolves `{{secrets.*}}` into URLs/headers/bodies with no host check; the guard exists only
-      on `/actions/test`, which deliberately does *not* inject secrets — it protects the harmless
-      path and not the dangerous one. Needs an allowlist with post-DNS-resolution IP checks (the
-      substring blocklist misses `127.1`, `2130706433`, IPv6-mapped, rebinding, redirects), plus
-      clamps on `timeoutMs`/`retries` (today one action can be `600000ms x 10`).
+- [x] **2.3** SSRF + secret exfiltration on the real connector path. New `app/egress.py`:
+      scheme check, host **resolution** with private/loopback/link-local/reserved range checks
+      (catches `127.1`, `2130706433`, IPv6-mapped, and a public name with a private A record),
+      the vetted IP **pinned** for the connection so a DNS rebind can't swing it, redirects no
+      longer followed, and an optional deny-by-default allowlist
+      (`RULEMIND_ACTION_ALLOWED_HOSTS`). Applied to both the secret-injecting executor path and
+      the console; the old substring blocklist is deleted. `timeoutMs`/`retries` clamped.
+      A block is recorded as an alertable `action_error` event.
 - [x] **2.4** Deleted the unguarded `eval` in `logic.py` (scorecard/metric formulas). Replaced
       with `safe_formula`, a whitelisting AST evaluator — no `eval`, no `__builtins__`, no
       attribute access — so the `().__class__.__mro__[1].__subclasses__()` walk has nothing to
@@ -148,7 +150,7 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **978 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **988 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 + WebSocket authz |

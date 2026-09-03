@@ -197,22 +197,6 @@ class ActionTestRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
 
 
-_BLOCKED_HOST_MARKERS = ("localhost", "127.", "0.0.0.0", "169.254.", "::1", "metadata.google", "metadata.")
-
-
-def _action_host_blocked(url: str) -> bool:
-    """Light SSRF guard for the interactive console: block loopback / link-local /
-    cloud-metadata targets. Saved workflow actions are authored deliberately; this
-    ad-hoc endpoint should not be a pivot to internal services."""
-    try:
-        from urllib.parse import urlparse
-
-        host = (urlparse(url).hostname or "").lower()
-    except Exception:
-        return True
-    return any(host == marker.rstrip(".") or host.startswith(marker) for marker in _BLOCKED_HOST_MARKERS)
-
-
 @router.post("/api/v1/test/action")
 def test_action(request: ActionTestRequest) -> Dict[str, Any]:
     """Postman-style console: resolve an `action` step's templates against a sample
@@ -241,24 +225,35 @@ def test_action(request: ActionTestRequest) -> Dict[str, Any]:
 
     if not isinstance(url, str) or not url:
         raise HTTPException(status_code=422, detail="Action url is required.")
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise HTTPException(status_code=422, detail="Only http(s) URLs are supported.")
-    if _action_host_blocked(url):
-        raise HTTPException(status_code=422, detail="That host is blocked in the console (loopback / link-local / metadata).")
+
+    # Same SSRF guard as the real action path (executor), not the old substring blocklist: resolve
+    # + range-check the host and pin the vetted IP. follow_redirects stays False so a 302 to an
+    # internal target can't bypass the check.
+    from ..egress import EgressBlocked, build_pinned_request
+
+    try:
+        pinned = build_pinned_request(url)
+    except EgressBlocked as blocked:
+        raise HTTPException(status_code=422, detail="Blocked by egress policy: {0}".format(blocked)) from blocked
+
+    request_headers = dict(headers or {})
+    request_headers["Host"] = pinned.host_header
+    extensions = {"sni_hostname": pinned.sni_hostname}
+    connect_url = pinned.url
 
     started = time.perf_counter()
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             if method == "GET":
-                resp = client.get(url, headers=headers)
+                resp = client.get(connect_url, headers=request_headers, extensions=extensions)
             elif method == "PUT":
-                resp = client.put(url, json=body, headers=headers)
+                resp = client.put(connect_url, json=body, headers=request_headers, extensions=extensions)
             elif method == "PATCH":
-                resp = client.patch(url, json=body, headers=headers)
+                resp = client.patch(connect_url, json=body, headers=request_headers, extensions=extensions)
             elif method == "DELETE":
-                resp = client.request("DELETE", url, headers=headers)
+                resp = client.request("DELETE", connect_url, headers=request_headers, extensions=extensions)
             else:
-                resp = client.post(url, json=body, headers=headers)
+                resp = client.post(connect_url, json=body, headers=request_headers, extensions=extensions)
         latency = (time.perf_counter() - started) * 1000
         return {
             "ok": True,

