@@ -453,7 +453,7 @@ packages:
       path: "../packages/sdk-flutter"
       relative: true
     source: path
-    version: "4.1.0-beta.1"
+    version: "4.2.0-beta.1"
   rulemind_ui:
     dependency: "direct main"
     description:
