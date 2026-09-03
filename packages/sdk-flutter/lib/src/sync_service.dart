@@ -10,6 +10,20 @@ BundleManager? _globalBundleManager;
 EventLogger? _globalEventLogger;
 DecisionSyncer? _globalDecisionSyncer;
 
+/// Clear the module-level references the workmanager dispatcher reads.
+///
+/// Assigned in the SyncService constructor and never cleared, so after a
+/// RuleMind.resetForTest() the background dispatcher still held the torn-down managers from
+/// the previous test.
+/// Not @visibleForTesting: RuleMind.resetForTest calls it from lib/rulemind.dart, and the
+/// analyzer rightly flags a visible-for-testing member used outside its own library. This
+/// file is under src/ and nothing re-exports it, so it is already package-internal.
+void resetSyncGlobals() {
+  _globalBundleManager = null;
+  _globalEventLogger = null;
+  _globalDecisionSyncer = null;
+}
+
 @pragma('vm:entry-point')
 void ruleMindWorkmanagerDispatcher() {
   Workmanager().executeTask((task, inputData) async {

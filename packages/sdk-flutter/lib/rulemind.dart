@@ -55,8 +55,21 @@ class RuleMind {
     _hiveReady = true;
   }
 
-  static Future<void> initialize(RuleMindConfig config) async {
+  /// Initialize the SDK.
+  ///
+  /// [httpClient] and [outbox] exist so this class can be driven from a test without a
+  /// device: `_httpClient` was private with no seam, which is why the offline->online round
+  /// trip had to be proven from the server side instead (#138). Both are optional and
+  /// default to the previous behaviour, so no existing caller changes.
+  static Future<void> initialize(
+    RuleMindConfig config, {
+    http.Client? httpClient,
+    DecisionOutbox? outbox,
+  }) async {
     _config = config;
+    if (httpClient != null) {
+      _httpClient = httpClient;
+    }
     await _ensureHive(config);
     _bundleManager = BundleManager(config: config, httpClient: _httpClient);
     _eventLogger = EventLogger(config: config, httpClient: _httpClient);
@@ -64,10 +77,14 @@ class RuleMind {
     // Durable on-device decision outbox (SQLite). Decisions made offline are queued here
     // and drained to the backend in batches by the background sync; on a device without a
     // SQLite binding (tests/desktop) fall back to an in-memory queue.
-    try {
-      _decisionOutbox = await SqfliteDecisionOutbox.open();
-    } catch (_) {
-      _decisionOutbox = InMemoryDecisionOutbox();
+    if (outbox != null) {
+      _decisionOutbox = outbox;
+    } else {
+      try {
+        _decisionOutbox = await SqfliteDecisionOutbox.open();
+      } catch (_) {
+        _decisionOutbox = InMemoryDecisionOutbox();
+      }
     }
     _decisionSyncer = DecisionSyncer(outbox: _decisionOutbox!, uploader: _uploadDecisions);
     SyncService(bundleManager: _bundleManager!, eventLogger: _eventLogger!, decisionSyncer: _decisionSyncer);
@@ -356,12 +373,25 @@ class RuleMind {
   @visibleForTesting
   static Future<void> resetForTest() async {
     try { await Hive.close(); } catch (_) {}
+    // These three were missed, which made this method the source of the leak rather than the
+    // cure for it: pendingDecisionCount/syncPendingDecisions/evaluate all read
+    // _decisionOutbox and _decisionSyncer, so one test's queue stayed visible to the next.
+    try { await _decisionOutbox?.close(); } catch (_) {}
+    _decisionOutbox = null;
+    _decisionSyncer = null;
+    // _hiveReady staying true made _ensureHive a no-op after the first init, so a
+    // re-initialized SDK inherited the previous test's Hive path despite the close() above.
+    _hiveReady = false;
+    // The workmanager dispatcher holds its own references to these.
+    resetSyncGlobals();
     _config = null;
     _bundleManager = null;
     _eventLogger = null;
     _engine = RuleMindEngine();
     _decisionCache = null;
     _executionStore = null;
+    // Closed, not just replaced -- the old one leaked a socket on every reset.
+    try { _httpClient.close(); } catch (_) {}
     _httpClient = http.Client();
   }
 
