@@ -1,9 +1,17 @@
 name: ci
 
 on:
-  push:
-    branches: ["main", "codex/**"]
+  # No push trigger. A PR already ran this, so re-running it on the merge commit
+  # bought a duplicate of a result we had -- and this workflow builds two docker
+  # images, which is most of its cost.
   pull_request:
+  workflow_dispatch:
+
+# This workflow had no concurrency group, so every push to a PR branch ran a
+# full duplicate alongside the one it superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-test:
@@ -23,5 +31,10 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
-      - run: docker build -t rulemind-web:${{ github.sha }} -f apps/web/Dockerfile .
-      - run: docker build -t rulemind-python-executor:${{ github.sha }} -f apps/python-executor/Dockerfile .
+      # Packaging smoke test, not a correctness gate -- and the bulk of this
+      # job's minutes. Dispatch the workflow when you actually want to know the
+      # images still build; lint/test/build gate every PR regardless.
+      - if: github.event_name == 'workflow_dispatch'
+        run: docker build -t rulemind-web:${{ github.sha }} -f apps/web/Dockerfile .
+      - if: github.event_name == 'workflow_dispatch'
+        run: docker build -t rulemind-python-executor:${{ github.sha }} -f apps/python-executor/Dockerfile .

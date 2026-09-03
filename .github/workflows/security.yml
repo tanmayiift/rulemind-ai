@@ -6,6 +6,12 @@ name: security
 on:
   push:
     branches: ["main"]
+    # CodeQL cannot find anything in a markdown diff, and this repo pushes a lot
+    # of plan/doc commits.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "design/**"
   pull_request:
   schedule:
     # CodeQL finds new patterns as its queries update, so a weekly run catches

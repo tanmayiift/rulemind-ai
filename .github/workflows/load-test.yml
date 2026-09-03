@@ -12,8 +12,6 @@ name: load-test
 #
 # So it runs nightly and on demand, and reports rather than blocks.
 on:
-  schedule:
-    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:

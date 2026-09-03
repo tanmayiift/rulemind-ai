@@ -3,8 +3,6 @@ name: backup-verify
 # The point of running this on a schedule is that the SCRIPT stays exercised. A backup
 # procedure first used during an incident is a procedure nobody knows is broken.
 on:
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
   pull_request:
     paths:

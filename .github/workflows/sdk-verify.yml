@@ -4,6 +4,11 @@ on:
   push:
     branches: ["main", "codex/**"]
   pull_request:
+  # The emulator jobs run ONLY from here. They are the most expensive thing in
+  # this repo (two ~15-25 min boots) and they have been failing for an external
+  # reason since a runner-image rollout (#133), so paying for them on every push
+  # bought nothing. Dispatch this workflow to get the full mobile signal.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,6 +25,7 @@ jobs:
     outputs:
       mobile: ${{ steps.filter.outputs.mobile }}
       web: ${{ steps.filter.outputs.web }}
+      emulator: ${{ steps.filter.outputs.emulator }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,17 +34,42 @@ jobs:
       - name: Detect mobile-affecting changes
         id: filter
         run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
+          # The emulator jobs are dispatch-only, never automatic. See the
+          # workflow_dispatch comment at the top and #133.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "emulator=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "emulator=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mobile=true" >> "$GITHUB_OUTPUT"
             echo "web=true" >> "$GITHUB_OUTPUT"
-            echo "not a PR - running everything"
+            echo "manual dispatch - running everything"
             exit 0
           fi
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # A push previously fanned out to EVERYTHING, so a docs-only commit
+            # booted two emulators. Diff against the pushed range instead.
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+            # All-zeroes means a new branch or a force-push with no usable base.
+            case "$BASE" in
+              0000000000000000000000000000000000000000|"") BASE=$(git rev-parse "$HEAD~1" 2>/dev/null || echo "$HEAD") ;;
+            esac
+          else
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          fi
           CHANGED=$(git diff --name-only "$BASE" "$HEAD")
           echo "$CHANGED" | sed 's/^/  changed: /'
-          if echo "$CHANGED" | grep -qE '^(packages/sdk-android/|packages/sdk-flutter/|demo-app/|qa/mobile_e2e/|apps/python-executor/|\.github/workflows/)'; then
+          # Narrowed deliberately. With the emulator steps split out, the mobile
+          # jobs are dart analyze + flutter test + gradle JVM tests -- none of
+          # which touch the backend, so apps/python-executor/ and qa/mobile_e2e/
+          # no longer belong here. .github/workflows/ is dropped too: a workflow
+          # edit should be validated by workflow_dispatch, not by a paid fan-out.
+          if echo "$CHANGED" | grep -qE '^(packages/sdk-android/|packages/sdk-flutter/|packages/flutter-ui/|demo-app/)'; then
             echo "mobile=true" >> "$GITHUB_OUTPUT"
             echo "-> mobile jobs WILL run"
           else
@@ -48,7 +79,7 @@ jobs:
           # Playwright drives the web app against the backend, so either one
           # changing is a reason to run it. It is the most expensive job here
           # (~8 min), so a mobile-only or docs-only PR should not pay for it.
-          if echo "$CHANGED" | grep -qE '^(apps/web/|apps/python-executor/|e2e/|playwright\.config\.ts|\.github/workflows/)'; then
+          if echo "$CHANGED" | grep -qE '^(apps/web/|apps/python-executor/|e2e/|playwright\.config\.ts|package\.json|pnpm-lock\.yaml)'; then
             echo "web=true" >> "$GITHUB_OUTPUT"
             echo "-> Playwright WILL run"
           else
@@ -310,46 +341,6 @@ jobs:
         working-directory: packages/sdk-android
         run: ./gradlew --no-daemon --stacktrace :rulemind-core:test :sample-app:test :sample-app:assembleDebug :sample-app:assembleAndroidTest
 
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Start FastAPI backend
-        run: |
-          bash qa/mobile_e2e/start_fastapi.sh
-          bash qa/mobile_e2e/wait_for_health.sh
-
-      - name: Run Android emulator E2E
-        # KNOWN BROKEN BY GITHUB, NOT BY THIS REPO -- see issue #133.
-        # The emulator booted on runner image ubuntu-24.04 20260816.277.1
-        # and stopped booting on 20260823.283.1: "Timeout waiting for
-        # emulator to boot". main went green -> red with no emulator config
-        # change. The documented KVM udev rule was already present, headless
-        # emulator options did not help, and ubuntu-22.04 is not usable
-        # because android-actions/setup-android@v3 fails on it.
-        #
-        # continue-on-error so an external outage does not block every merge.
-        # Every other check in this workflow still blocks -- dart analyze,
-        # unit tests, the responsive matrix and pub publish readiness all gate
-        # normally. REMOVE THIS once the runner image is fixed.
-        continue-on-error: true
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 30
-          target: google_apis
-          arch: x86_64
-          profile: pixel_6
-          disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
-          emulator-boot-timeout: 900
-          script: cd packages/sdk-android && ./gradlew --no-daemon --stacktrace :sample-app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.backendUrl=http://10.0.2.2:8080 -Pandroid.testInstrumentationRunnerArguments.adminEmail=admin@rulemind.local -Pandroid.testInstrumentationRunnerArguments.adminPassword=rulemind-admin
-
-      - name: Stop FastAPI backend
-        if: always()
-        run: bash qa/mobile_e2e/stop_fastapi.sh
-
       - name: Build signed sample release APK
         if: ${{ env.ANDROID_SAMPLE_KEYSTORE_BASE64 != '' && env.ANDROID_SAMPLE_KEYSTORE_PASSWORD != '' && env.ANDROID_SAMPLE_KEY_ALIAS != '' && env.ANDROID_SAMPLE_KEY_PASSWORD != '' }}
         working-directory: packages/sdk-android
@@ -462,46 +453,6 @@ jobs:
           dart analyze --no-fatal-warnings
           flutter test
 
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Start FastAPI backend
-        run: |
-          bash qa/mobile_e2e/start_fastapi.sh
-          bash qa/mobile_e2e/wait_for_health.sh
-
-      - name: Run Flutter emulator E2E
-        # KNOWN BROKEN BY GITHUB, NOT BY THIS REPO -- see issue #133.
-        # The emulator booted on runner image ubuntu-24.04 20260816.277.1
-        # and stopped booting on 20260823.283.1: "Timeout waiting for
-        # emulator to boot". main went green -> red with no emulator config
-        # change. The documented KVM udev rule was already present, headless
-        # emulator options did not help, and ubuntu-22.04 is not usable
-        # because android-actions/setup-android@v3 fails on it.
-        #
-        # continue-on-error so an external outage does not block every merge.
-        # Every other check in this workflow still blocks -- dart analyze,
-        # unit tests, the responsive matrix and pub publish readiness all gate
-        # normally. REMOVE THIS once the runner image is fixed.
-        continue-on-error: true
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 30
-          target: google_apis
-          arch: x86_64
-          profile: pixel_6
-          disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
-          emulator-boot-timeout: 900
-          script: cd packages/sdk-flutter/example && mv test _test_ci_disabled && flutter test integration_test/studio_app_test.dart -d emulator-5554 --dart-define=RM_E2E_BASE_URL=http://10.0.2.2:8080 --dart-define=RM_E2E_ADMIN_EMAIL=admin@rulemind.local --dart-define=RM_E2E_ADMIN_PASSWORD=rulemind-admin ; mv _test_ci_disabled test
-
-      - name: Stop FastAPI backend
-        if: always()
-        run: bash qa/mobile_e2e/stop_fastapi.sh
-
       - name: Verify pub publish readiness
         working-directory: packages/sdk-flutter
         run: |
@@ -525,3 +476,147 @@ jobs:
             qa/results/mobile-e2e-backend.log
             packages/sdk-flutter/example/build/**/reports/**
             packages/sdk-flutter/example/build/**/*.json
+
+  # ── Emulator jobs — workflow_dispatch ONLY ──────────────────────────────────
+  # Split out of `android` and `flutter` so a push stops paying for two emulator
+  # boots (~15-25 min each, and failing since the runner-image rollout in #133).
+  # The coverage is not deleted, only made opt-in: dispatch this workflow to run
+  # it. Everything else in those jobs -- dart analyze, ~230 widget tests, gradle
+  # JVM tests, pub publish readiness -- still gates every relevant push.
+  android-emulator:
+    needs: changes
+    if: needs.changes.outputs.emulator == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/python-executor/requirements.txt
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Build instrumentation APKs
+        working-directory: packages/sdk-android
+        run: ./gradlew --no-daemon --stacktrace :sample-app:assembleDebug :sample-app:assembleAndroidTest
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start FastAPI backend
+        run: |
+          bash qa/mobile_e2e/start_fastapi.sh
+          bash qa/mobile_e2e/wait_for_health.sh
+
+      - name: Run Android emulator E2E
+        # KNOWN BROKEN BY GITHUB, NOT BY THIS REPO -- see issue #133.
+        # The emulator booted on runner image ubuntu-24.04 20260816.277.1
+        # and stopped booting on 20260823.283.1: "Timeout waiting for
+        # emulator to boot". main went green -> red with no emulator config
+        # change. The documented KVM udev rule was already present, headless
+        # emulator options did not help, and ubuntu-22.04 is not usable
+        # because android-actions/setup-android@v3 fails on it.
+        #
+        # No continue-on-error: this job only runs on workflow_dispatch, so a
+        # red result is the signal you asked for rather than merge friction.
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-boot-timeout: 900
+          script: cd packages/sdk-android && ./gradlew --no-daemon --stacktrace :sample-app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.backendUrl=http://10.0.2.2:8080 -Pandroid.testInstrumentationRunnerArguments.adminEmail=admin@rulemind.local -Pandroid.testInstrumentationRunnerArguments.adminPassword=rulemind-admin
+
+      - name: Stop FastAPI backend
+        if: always()
+        run: bash qa/mobile_e2e/stop_fastapi.sh
+
+  flutter-emulator:
+    needs: changes
+    if: needs.changes.outputs.emulator == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/python-executor/requirements.txt
+
+      - name: Install Flutter package dependencies
+        working-directory: packages/sdk-flutter
+        run: flutter pub get
+
+      - name: Install example dependencies
+        working-directory: packages/sdk-flutter/example
+        run: flutter pub get
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start FastAPI backend
+        run: |
+          bash qa/mobile_e2e/start_fastapi.sh
+          bash qa/mobile_e2e/wait_for_health.sh
+
+      - name: Run Flutter emulator E2E
+        # KNOWN BROKEN BY GITHUB, NOT BY THIS REPO -- see issue #133.
+        # The emulator booted on runner image ubuntu-24.04 20260816.277.1
+        # and stopped booting on 20260823.283.1: "Timeout waiting for
+        # emulator to boot". main went green -> red with no emulator config
+        # change. The documented KVM udev rule was already present, headless
+        # emulator options did not help, and ubuntu-22.04 is not usable
+        # because android-actions/setup-android@v3 fails on it.
+        #
+        # No continue-on-error: this job only runs on workflow_dispatch, so a
+        # red result is the signal you asked for rather than merge friction.
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-boot-timeout: 900
+          script: cd packages/sdk-flutter/example && mv test _test_ci_disabled && flutter test integration_test/studio_app_test.dart -d emulator-5554 --dart-define=RM_E2E_BASE_URL=http://10.0.2.2:8080 --dart-define=RM_E2E_ADMIN_EMAIL=admin@rulemind.local --dart-define=RM_E2E_ADMIN_PASSWORD=rulemind-admin ; mv _test_ci_disabled test
+
+      - name: Stop FastAPI backend
+        if: always()
+        run: bash qa/mobile_e2e/stop_fastapi.sh
+
