@@ -57,14 +57,13 @@ adversarial sweep of the full route and deserialization surface.
       `RULEMIND_CONFIG_KEY` and every tenant's DB credentials. Gated at AUTHOR, so `policy_maker`
       has it. Also no size guard on `validate_model`. Deserialize in a pool worker, add the guard,
       gate `/api/v1/models` writes behind `MANAGE_ACCESS`.
-- [ ] **2.2** Sandbox pool wedges, then silently degrades to unsandboxed in-process exec.
-      `future.result(timeout=)` never cancels the worker, four `while True` pin the pool for the
-      process lifetime, a broken pool is never rebuilt, and `SANDBOX_FALLBACK_MODE` defaults to
-      `inline` — customer Python then runs in the API process with no timeout, no RLIMIT, no
-      process boundary. `RLIMIT_AS` is set inside a *reused* worker under `except: pass`, so
-      tenant A's cap silently applies to tenant B.
-      **2.2 + 1.2 together meant that under peak load the failure mode was "approve everything and
-      log nothing unusual."** That combination, not the latency, is why this was a no.
+- [x] **2.2** Sandbox pool wedging + silent degradation to unsandboxed exec. Recycle-on-timeout
+      (terminate the wedged worker instead of leaking the slot), rebuild-on-`BrokenProcessPool`,
+      `SANDBOX_FALLBACK_MODE` default flipped to **fail** (inline is now opt-in), and the memory
+      cap moved from a per-call `setrlimit` in a reused worker (which leaked tenant A's cap onto
+      tenant B) into a pool-wide worker initializer. All four code caches now bounded (from 2.5).
+      Proven by a real wedge-and-recover test; removing the recycle makes it hang, which is the
+      original bug.
 - [ ] **2.3** SSRF + secret exfiltration on the real connector path. `_fire_action_request`
       resolves `{{secrets.*}}` into URLs/headers/bodies with no host check; the guard exists only
       on `/actions/test`, which deliberately does *not* inject secrets — it protects the harmless
@@ -147,7 +146,7 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **962 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **969 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 + WebSocket authz |

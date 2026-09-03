@@ -103,13 +103,35 @@ class RuleMindSdkRuntimeTests(unittest.TestCase):
         )
         return policy["id"]
 
-    def test_execute_variable_falls_back_inline_when_pool_startup_fails(self) -> None:
+    def test_execute_variable_fails_closed_when_pool_startup_fails(self) -> None:
+        """The security default (T2.2). When the pool is unavailable the sandbox must NOT silently
+        run untrusted code in the API process -- it returns a null-with-error, which the executor
+        then fails closed to review (T1.2). The old default was the opposite."""
+        import os
+
         code = "def run(payload, context):\n    return payload.get('bureau', {}).get('score', 0)\n"
+        os.environ.pop("SANDBOX_FALLBACK_MODE", None)
         with patch("app.sandbox._get_pool", side_effect=PermissionError("pool blocked")):
             result = sandbox.execute_variable(code, {"bureau": {"score": 720}})
-        self.assertEqual(result["value"], 720)
-        self.assertEqual(result["sandbox_fallback"], "inline")
-        self.assertIn("pool blocked", result["sandbox_error"])
+        self.assertIsNone(result["value"], "code ran despite the sandbox being unavailable")
+        self.assertNotIn("sandbox_fallback", result)
+        self.assertIn("unavailable", result["error"])
+        self.assertIn("pool blocked", result["error"])
+
+    def test_execute_variable_inline_fallback_is_opt_in(self) -> None:
+        """The escape hatch still works for anyone who has explicitly accepted the trade."""
+        import os
+
+        code = "def run(payload, context):\n    return payload.get('bureau', {}).get('score', 0)\n"
+        os.environ["SANDBOX_FALLBACK_MODE"] = "inline"
+        try:
+            with patch("app.sandbox._get_pool", side_effect=PermissionError("pool blocked")):
+                result = sandbox.execute_variable(code, {"bureau": {"score": 720}})
+            self.assertEqual(result["value"], 720)
+            self.assertEqual(result["sandbox_fallback"], "inline")
+            self.assertIn("pool blocked", result["sandbox_error"])
+        finally:
+            os.environ.pop("SANDBOX_FALLBACK_MODE", None)
 
     def test_webhook_runtime_permission_errors_return_server_failures(self) -> None:
         webhook = self.client.post(

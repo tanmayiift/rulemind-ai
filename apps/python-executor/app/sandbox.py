@@ -5,7 +5,9 @@ import json
 import multiprocessing
 import os
 import time
+import threading
 from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Dict, Optional
 
 
@@ -109,17 +111,79 @@ def _source_key(source: str) -> str:
     """
     return hashlib.sha256(source.encode()).hexdigest()
 
-# Pre-warmed process pool (lazy-initialized)
+# Pre-warmed process pool (lazy-initialized). Guarded by a lock because the pool is a module
+# global shared by every Starlette threadpool thread, and recycling it (below) races with both
+# concurrent submits and concurrent recycles.
 _pool: Optional[ProcessPoolExecutor] = None
+_pool_lock = threading.Lock()
 _POOL_SIZE = int(os.getenv("SANDBOX_POOL_SIZE", "4"))
+# Pool-wide address-space cap, applied once per worker at spawn (see _worker_init). It is
+# pool-wide and not per-tenant ON PURPOSE: workers are reused across tenants, and RLIMIT_AS can
+# only be lowered, so a per-call setrlimit in a reused worker meant the FIRST caller's cap stuck
+# for every later caller in that worker -- tenant A's 64MB silently applied to tenant B. A
+# uniform cap set at spawn is the only correct model for a shared pool.
+_POOL_MEMORY_MB = int(os.getenv("SANDBOX_MEMORY_MB", str(MAX_MEMORY_MB)))
+
+
+def _worker_init(memory_mb: int) -> None:
+    """Runs once in each freshly spawned worker. Applies the memory cap for the worker's life."""
+    try:
+        import resource  # type: ignore
+
+        bytes_limit = int(memory_mb) * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
+    except (ImportError, ValueError, OSError):
+        # RLIMIT_AS is unsettable on some platforms (darwin refuses it outright). The PROCESS
+        # boundary -- a separate spawned interpreter that can be killed -- still holds; only the
+        # in-process memory ceiling is absent, and it is absent uniformly rather than leaking one
+        # tenant's cap onto another.
+        pass
+
+
+def _new_pool() -> ProcessPoolExecutor:
+    mp_context = multiprocessing.get_context("spawn")
+    return ProcessPoolExecutor(
+        max_workers=_POOL_SIZE, mp_context=mp_context,
+        initializer=_worker_init, initargs=(_POOL_MEMORY_MB,))
 
 
 def _get_pool() -> ProcessPoolExecutor:
     global _pool
-    if _pool is None:
-        mp_context = multiprocessing.get_context("spawn")
-        _pool = ProcessPoolExecutor(max_workers=_POOL_SIZE, mp_context=mp_context)
-    return _pool
+    with _pool_lock:
+        # A pool that broke (a worker died mid-task, e.g. OOM-killed or terminated by recycle)
+        # stays broken for the process lifetime and raises BrokenProcessPool on every submit --
+        # the original code cached it and never rebuilt, so one crash disabled the sandbox until
+        # a redeploy. Rebuild it here instead.
+        if _pool is None or getattr(_pool, "_broken", False):
+            _pool = _new_pool()
+        return _pool
+
+
+def _recycle_pool(pool: ProcessPoolExecutor) -> None:
+    """Terminate a pool's workers and drop it so the next call builds a fresh one.
+
+    This is the fix for the wedging bug. future.result(timeout=) times out the WAIT, not the
+    task -- the worker keeps running the timed-out code. For `while True: pass` that slot is gone
+    permanently, and _POOL_SIZE of them kill the pool for good. Since a ProcessPoolExecutor gives
+    no way to cancel a running task or target one worker, the whole pool is recycled: the wedged
+    worker is guaranteed dead, and concurrent in-flight decisions fail closed to review (T1.2)
+    rather than fail open. Timeouts must therefore stay rare -- keep the per-variable timeout and
+    the evaluation budget (T1.3) above legitimate compute time, or this becomes a churn loop.
+    """
+    global _pool
+    with _pool_lock:
+        if _pool is not pool:
+            return  # another thread already recycled; don't kill the fresh pool
+        for process in list(getattr(pool, "_processes", {}).values()):
+            try:
+                process.terminate()
+            except Exception:  # pragma: no cover - best-effort kill
+                pass
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:  # pragma: no cover
+            pass
+        _pool = None
 
 
 def variable(func=None, **metadata):
@@ -189,17 +253,15 @@ def resolve_callable(namespace: Dict[str, Any]):
 
 
 def _execute_in_process(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any], timeout_ms: int, memory_mb: int) -> Dict[str, Any]:
-    """Execute variable code in a pool worker process with sandboxing."""
+    """Execute variable code in a pool worker process with sandboxing.
+
+    The memory cap is NOT set here anymore. It used to call setrlimit(RLIMIT_AS) per invocation
+    inside a reused worker, which both (a) silently no-op'd after the first call, since RLIMIT_AS
+    cannot be raised again, and (b) leaked one tenant's cap onto the next tenant's call in the
+    same worker. It now lives in _worker_init, applied once at spawn (see _POOL_MEMORY_MB).
+    """
     started = time.perf_counter()
     try:
-        try:
-            import resource  # type: ignore
-
-            bytes_limit = int(memory_mb) * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
-        except Exception:
-            pass
-
         validate_source(code)
         namespace = {
             "__builtins__": dict(SAFE_BUILTINS, __import__=restricted_import),
@@ -278,14 +340,34 @@ def execute_variable(code: str, payload: Dict[str, Any], variables_map: Optional
         future = pool.submit(_execute_in_process, code, payload, context, timeout_ms, memory_mb)
         return future.result(timeout=timeout_seconds)
     except FuturesTimeoutError:
+        # The worker is still running the timed-out task. Recycle the pool so that wedged worker
+        # is killed rather than pinning a slot forever (see _recycle_pool).
+        _recycle_pool(pool)
         return {"value": None, "error": "Variable execution timed out.", "latency_ms": float(timeout_ms), "variable_name": None}
+    except BrokenProcessPool as exc:
+        # A worker died (OOM kill, a segfaulting C extension, a prior recycle). Drop the broken
+        # pool so the NEXT call rebuilds, then fall back per policy for THIS one.
+        _recycle_pool(pool)
+        return _fallback_or_fail(exc, code, payload, context)
     except Exception as exc:
-        if os.getenv("SANDBOX_FALLBACK_MODE", "inline") == "inline":
-            fallback = _execute_inline(code, payload, context)
-            fallback["sandbox_fallback"] = "inline"
-            fallback["sandbox_error"] = str(exc)
-            return fallback
-        return {"value": None, "error": "Sandbox execution unavailable: {0}".format(exc), "latency_ms": 0.0, "variable_name": None}
+        return _fallback_or_fail(exc, code, payload, context)
+
+
+def _fallback_or_fail(exc: Exception, code: str, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """Decide what to do when the sandboxed path is unavailable.
+
+    Default is FAIL, not inline. The old default silently ran untrusted customer Python in the
+    API process -- no timeout, no RLIMIT, no process boundary -- exactly when the sandbox was
+    already unhealthy. Combined with the null-flips-gates bug (T1.2), a wedged pool under peak
+    load meant "run everything unsandboxed and approve what errors." SANDBOX_FALLBACK_MODE=inline
+    reinstates the old behaviour for anyone who has accepted that trade explicitly.
+    """
+    if os.getenv("SANDBOX_FALLBACK_MODE", "fail") == "inline":
+        fallback = _execute_inline(code, payload, context)
+        fallback["sandbox_fallback"] = "inline"
+        fallback["sandbox_error"] = str(exc)
+        return fallback
+    return {"value": None, "error": "Sandbox execution unavailable: {0}".format(exc), "latency_ms": 0.0, "variable_name": None}
 
 
 # Legacy API preserved for backward compatibility
