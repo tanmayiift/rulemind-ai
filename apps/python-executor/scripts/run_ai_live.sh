@@ -10,6 +10,10 @@
 #   ./run_ai_live.sh sk-ant-...
 #   RULEMIND_AI_LIVE_KEY=sk-ant-... ./run_ai_live.sh
 #   RULEMIND_AI_LIVE_PROVIDER=openai ./run_ai_live.sh sk-...
+#
+# For an identity-linked Anthropic key, also set the workspace it acts in --
+# Anthropic rejects the request otherwise (Console -> Settings -> Workspaces):
+#   ANTHROPIC_WORKSPACE_ID=wrkspc_... ./run_ai_live.sh sk-ant-...
 set -euo pipefail
 
 # Resolve paths from this script's own location, so it runs from any directory.
@@ -33,4 +37,5 @@ cd "$APP_ROOT"
 RULEMIND_AI_LIVE=1 \
 RULEMIND_AI_LIVE_PROVIDER="${RULEMIND_AI_LIVE_PROVIDER:-anthropic}" \
 RULEMIND_AI_LIVE_KEY="$KEY" \
+ANTHROPIC_WORKSPACE_ID="${ANTHROPIC_WORKSPACE_ID:-}" \
   "$PY" -m unittest tests.test_ai_live -v

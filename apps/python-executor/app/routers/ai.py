@@ -137,7 +137,10 @@ async def list_ai_models(provider: str = Query(default="anthropic")) -> Dict[str
 
     creds = main.storage.get_ai_credentials(provider)
     api_key = creds.get("api_key") if creds else None
-    return await list_models(provider, api_key)
+    # Identity-linked Anthropic keys reject a request that does not name a workspace,
+    # which is what made `live` false and silently fell back to the curated list.
+    workspace_id = creds.get("workspace_id") if creds else None
+    return await list_models(provider, api_key, workspace_id=workspace_id)
 
 
 @router.post("/api/v1/ai/test")
@@ -147,7 +150,8 @@ async def ai_test(request: AITestRequest) -> Dict[str, Any]:
     creds = main.storage.get_ai_credentials(request.provider)
     if not creds:
         raise HTTPException(status_code=422, detail="No API key configured for that provider.")
-    return await test_connection(creds["provider"], creds["api_key"], creds.get("model"))
+    return await test_connection(creds["provider"], creds["api_key"], creds.get("model"),
+                                 workspace_id=creds.get("workspace_id"))
 
 
 # ── AI generation (NL → draft; always validated + test-gated before promotion) ──
@@ -169,7 +173,7 @@ async def ai_generate_rule(request: AIGenerateRuleRequest) -> Dict[str, Any]:
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        draft = await generate_rule(creds["provider"], creds["api_key"], request.prompt, variables, model=creds.get("model"))
+        draft = await generate_rule(creds["provider"], creds["api_key"], request.prompt, variables, model=creds.get("model"), workspace_id=creds.get("workspace_id"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -202,7 +206,7 @@ async def ai_generate_policy(request: AIGeneratePolicyRequest) -> Dict[str, Any]
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        draft = await generate_policy(creds["provider"], creds["api_key"], request.prompt, connectors, rules, scorecards, model=creds.get("model"))
+        draft = await generate_policy(creds["provider"], creds["api_key"], request.prompt, connectors, rules, scorecards, model=creds.get("model"), workspace_id=creds.get("workspace_id"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     valid, validation_error = True, None
@@ -226,7 +230,7 @@ async def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        result = await explain_decision(creds["provider"], creds["api_key"], decision, model=creds.get("model"))
+        result = await explain_decision(creds["provider"], creds["api_key"], decision, model=creds.get("model"), workspace_id=creds.get("workspace_id"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     return {"decision_id": request.decision_id, "outcome": decision.get("outcome"), **result}
@@ -251,7 +255,7 @@ async def ai_generate_predictor(request: AIPredictorRequest) -> Dict[str, Any]:
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        draft = await generate_predictor(creds["provider"], creds["api_key"], request.definition, variables, model=creds.get("model"))
+        draft = await generate_predictor(creds["provider"], creds["api_key"], request.definition, variables, model=creds.get("model"), workspace_id=creds.get("workspace_id"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -283,7 +287,7 @@ async def ai_analyze_experiment(request: AIExperimentAnalysisRequest, http_reque
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        analysis = await analyze_experiment(creds["provider"], creds["api_key"], experiment, results, model=creds.get("model"))
+        analysis = await analyze_experiment(creds["provider"], creds["api_key"], experiment, results, model=creds.get("model"), workspace_id=creds.get("workspace_id"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     return {"experiment_id": request.experiment_id, "provider": creds["provider"], "results": results, **analysis}
@@ -317,7 +321,7 @@ async def ai_analyze_rejections(request: AIRejectionAnalysisRequest) -> Dict[str
     if not creds:
         raise HTTPException(status_code=422, detail="No AI provider configured — add a key in AI settings.")
     try:
-        analysis = await analyze_rejections(creds["provider"], creds["api_key"], policy_name, drivers, model=creds.get("model"))
+        analysis = await analyze_rejections(creds["provider"], creds["api_key"], policy_name, drivers, model=creds.get("model"), workspace_id=creds.get("workspace_id"))
     except AIError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     return {"policy_id": request.policy_id, "policy_name": policy_name, "provider": creds["provider"], "drivers": drivers, **analysis}

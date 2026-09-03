@@ -2214,6 +2214,14 @@ class Storage:
                 slot = cfg["providers"].setdefault(name, {})
                 if "model" in ppatch:
                     slot["model"] = ppatch["model"]
+                # Not a secret -- it is an identifier, so it is stored in the clear alongside
+                # the encrypted key. Required by Anthropic's identity-linked keys.
+                if "workspace_id" in ppatch:
+                    wid = (ppatch.get("workspace_id") or "").strip()
+                    if wid:
+                        slot["workspace_id"] = wid
+                    else:
+                        slot.pop("workspace_id", None)
                 key = ppatch.get("key")
                 if key == "__CLEAR__":
                     slot.pop("key_encrypted", None)
@@ -2233,7 +2241,8 @@ class Storage:
         enc = slot.get("key_encrypted")
         if not enc:
             return None
-        return {"provider": prov, "api_key": decrypt_secret_text(enc), "model": slot.get("model") or None}
+        return {"provider": prov, "api_key": decrypt_secret_text(enc), "model": slot.get("model") or None,
+                "workspace_id": slot.get("workspace_id") or None}
 
     def replace_all(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> None:
         resolved = self._tenant_id(tenant_id)

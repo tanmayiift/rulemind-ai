@@ -68,7 +68,7 @@ class AIUsageApiTests(unittest.TestCase):
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
 
-        async def fake(api_key, model, system, user, max_tokens, temperature):
+        async def fake(api_key, model, system, user, max_tokens, temperature, **kwargs):
             return _RULE_JSON, {"input_tokens": 1000, "output_tokens": 500}
         self._orig = dict(ai._PROVIDERS)
         ai._PROVIDERS["anthropic"] = fake
