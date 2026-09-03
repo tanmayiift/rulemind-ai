@@ -21,8 +21,12 @@ local.properties
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
-*.lock
-!pnpm-lock.yaml
+# Lockfiles: COMMIT them for applications, ignore them for published libraries
+# (dart.dev's guidance, and the same split applies to Cargo). The previous blanket `*.lock`
+# also swallowed both Cargo.lock files, so nothing in this repo pinned a Rust dependency
+# graph -- and pnpm-lock.yaml was the only tracked lockfile of any kind.
+packages/sdk-flutter/pubspec.lock
+packages/flutter-ui/pubspec.lock
 
 # Test artifacts
 test-results/

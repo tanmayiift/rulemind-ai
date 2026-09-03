@@ -28,8 +28,12 @@ e2e/    Playwright     test/   Vitest (TS)     qa/   automated QA suite
 infra/ k8s/ helm/ observability/   deployment + Grafana/Prometheus/Tempo
 ```
 
-⚠️ **`README.md`'s architecture block is stale.** It lists `apps/api/` (legacy Fastify),
-`apps/worker/` and `packages/schemas/` — none exist. It also omits the two Rust packages.
+`README.md`'s `## Architecture` tree is accurate and includes both Rust packages. This note
+previously claimed it was stale and listed `apps/api/` — that was wrong; neither `apps/api/`
+nor `apps/worker/` appears anywhere in the README. The genuinely stale block was the SECOND,
+duplicate `## Project Structure` table, which named a nonexistent `packages/schemas/` and
+carried stale test counts; corrected 2026-09-03.
+
 `docker-compose.yml` is correct: its `api` and `worker` services both build from
 `apps/python-executor/Dockerfile`, with `worker` running `python3 -m app.worker`.
 

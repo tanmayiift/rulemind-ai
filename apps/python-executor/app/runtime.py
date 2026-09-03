@@ -35,7 +35,14 @@ _MEMORY_LIMITER = InMemoryRateLimiter()
 
 
 def is_local_dev() -> bool:
-    return os.getenv("NODE_ENV", "development") == "development" or os.getenv("PYTEST_CURRENT_TEST") is not None
+    """Delegates to security_config so the two cannot drift.
+
+    This was a byte-identical copy of security_config._is_local_dev, which meant fixing the
+    NODE_ENV fail-open gap in one place would silently leave the other behind.
+    """
+    from .security_config import _is_local_dev
+
+    return _is_local_dev(os.environ)
 
 
 def reset_redis_client_for_tests() -> None:

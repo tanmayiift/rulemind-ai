@@ -756,9 +756,14 @@ cd packages/sdk-android && ./gradlew :sample-app:connectedDebugAndroidTest
 | `packages/sdk-python/` | Python SDK |
 | `packages/sdk-android/` | Android SDK + sample app |
 | `packages/sdk-flutter/` | Flutter SDK + sample app |
-| `packages/schemas/` | Shared JSON schemas for rule definitions |
-| `e2e/` | Playwright E2E tests (48 tests across 2 spec files) |
-| `test/` | TypeScript unit tests (34 tests across 8 files) |
+| `packages/flutter-ui/` | Shared Flutter layout primitives + responsive test harness |
+| `packages/rulemind-core-rs/` | Rust core engine with Python bindings (pyo3) |
+| `packages/rulemind-decide-service/` | Standalone Rust `/decide` service (own Dockerfile) |
+| `demo-app/` | Flutter showcase app (on-device vs server parity) |
+| `e2e/` | Playwright E2E tests (53 tests across 3 spec files) |
+| `test/` | TypeScript unit tests (157 tests across 9 files) |
+| `qa/e2e-full/` | API journey + sandbox-escape suites, responsive sweep |
+| `infra/`, `k8s/`, `helm/`, `observability/` | Deployment + Grafana/Prometheus/Tempo |
 | `docker-compose.yml` | Production deployment with Postgres + Redis |
 | `.env.example` | Environment variable template |
 

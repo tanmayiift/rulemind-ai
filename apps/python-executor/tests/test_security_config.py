@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+from app import security_config  # noqa: E402
 from app.security_config import (  # noqa: E402
     InsecureProductionConfigError,
     default_secret_violations,
@@ -74,6 +76,47 @@ class SecurityConfigTests(unittest.TestCase):
         env["RULEMIND_SKIP_SECRET_CHECK"] = "1"
         verify_production_secrets(env)  # skipped -> no raise
 
+
+
+class LocalDevGateTest(unittest.TestCase):
+    """The gate that decides whether the fail-closed secret check runs at all.
+
+    A deployment that never sets NODE_ENV used to skip the whole check silently and boot with
+    the built-in development secrets. That path still exists (removing it breaks zero-config
+    local dev, which is this module's stated goal) but it now warns, and RULEMIND_ENV gives a
+    deployment an explicit way to say production.
+    """
+
+    def test_rulemind_env_production_is_not_local_dev(self):
+        self.assertFalse(security_config._is_local_dev({"RULEMIND_ENV": "production"}))
+        self.assertFalse(security_config._is_local_dev({"RULEMIND_ENV": "staging"}))
+
+    def test_rulemind_env_beats_node_env(self):
+        """A deploy setting RULEMIND_ENV=production must be believed even if some base image
+        left NODE_ENV=development lying around."""
+        self.assertFalse(security_config._is_local_dev(
+            {"RULEMIND_ENV": "production", "NODE_ENV": "development"}))
+
+    def test_unset_environment_still_local_but_warns(self):
+        # Patches the module logger rather than using assertLogs: assertLogs depends on
+        # global logging configuration, so this passed alone and failed inside the full
+        # suite once another module had touched the root logger. The claim under test is
+        # "the unset path warns", and that is exactly what this asserts.
+        with mock.patch.object(security_config.LOGGER, "warning") as warned:
+            self.assertTrue(security_config._is_local_dev({}))
+        warned.assert_called_once()
+        self.assertIn("RULEMIND_ENV=production", warned.call_args[0][0])
+
+    def test_an_explicit_environment_does_not_warn(self):
+        """The warning must be specific to the silent-skip path, or it becomes noise that
+        operators filter out -- which would defeat the point of adding it."""
+        for env in ({"NODE_ENV": "development"}, {"RULEMIND_ENV": "production"}):
+            with mock.patch.object(security_config.LOGGER, "warning") as warned:
+                security_config._is_local_dev(env)
+            warned.assert_not_called()
+
+    def test_node_env_production_is_not_local_dev(self):
+        self.assertFalse(security_config._is_local_dev({"NODE_ENV": "production"}))
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,7 @@
   "name": "@rulemind/web",
   "private": true,
   "type": "module",
-  "version": "0.1.0",
+  "version": "4.0.0",
   "scripts": {
     "build": "next build",
     "dev": "next dev -p 3000",
