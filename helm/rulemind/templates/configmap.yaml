@@ -22,6 +22,16 @@ data:
   # committed dev keys starts up perfectly happily.
   RULEMIND_ENV: {{ .Values.env.rulemindEnv | quote }}
 
+  # Without this the pre-auth signup/admin/login budgets key on the ingress's IP rather than
+  # the caller's, collapsing every client into one shared bucket. See values.yaml.
+  RULEMIND_TRUSTED_PROXY_HOPS: {{ .Values.env.trustedProxyHops | quote }}
+
+  # Prometheus multiprocess mmap dir. The API runs multiple uvicorn workers, so without this a
+  # scrape reports whichever worker answered it -- counters appear to move backwards and rate()
+  # is meaningless. Must be an emptyDir: per-pod, shared by that pod's workers, and gone on
+  # restart. entrypoint.sh wipes it once in the master before the fork.
+  PROMETHEUS_MULTIPROC_DIR: /tmp/prom-multiproc
+
   # Was never rendered at all, so the API fell back to the localhost default in
   # app/main.py and rejected every browser request from the real ingress host.
   CORS_ORIGINS: {{ include "rulemind.corsOrigins" . | quote }}

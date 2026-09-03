@@ -15,6 +15,15 @@ spec:
       app: rulemind-api
   template:
     metadata:
+      annotations:
+        # This chart ships no ServiceMonitor and the cluster may not run the Prometheus
+        # Operator, so these annotations are the portable way to actually get scraped --
+        # today nothing scrapes this service at all. /metrics is aggregated across uvicorn
+        # workers via PROMETHEUS_MULTIPROC_DIR (see configmap.yaml); without that a scrape
+        # returns whichever worker answered it and rate() is meaningless.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
       labels:
         app: rulemind-api
     spec:

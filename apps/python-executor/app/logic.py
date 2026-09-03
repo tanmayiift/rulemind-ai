@@ -14,10 +14,23 @@ import yaml
 MAX_RULE_TREE_DEPTH = 200
 
 
+# Field names whose VALUE is PII and is replaced with "***" before a decision payload is
+# stored or served back. Matched on the NORMALISED key (lowercased, punctuation removed), so
+# one canonical spelling here covers card_number / cardNumber / "Card Number" / CARD-NUMBER.
+#
+# This set used to hold only the ten identity fields at the top. Everything below "Financial"
+# was absent, which meant a raw card number posted as `card_number` was written verbatim into
+# `payload_preview` and handed back in full to any viewer-role user. That is the failure this
+# set exists to prevent, so the financial / government-id / health families are defaults now
+# rather than something each operator has to remember to configure.
 REDACTED_KEYS = {
+    # Identity
     "name",
     "email",
+    "email_address",
     "phone",
+    "phone_number",
+    "mobile_number",
     "telephoneNumber",
     "idNumber",
     "pan",
@@ -25,6 +38,86 @@ REDACTED_KEYS = {
     "address",
     "line1",
     "line2",
+    # Financial
+    "card_number",
+    "cvv",
+    "cvc",
+    "account_number",
+    "bank_account",
+    "routing_number",
+    "sort_code",
+    "iban",
+    "swift_code",
+    "upi_id",
+    # Government / tax identifiers
+    "ssn",
+    "sin",
+    "nino",
+    "tax_id",
+    "passport",
+    "passport_number",
+    "national_id",
+    "drivers_license",
+    "driving_licence",
+    "voter_id",
+    # Health
+    "mrn",
+    "medical_record_number",
+    "health_id",
+    "insurance_id",
+    "patient_id",
+    # Date of birth (age, the derived feature, is deliberately NOT redacted)
+    "dob",
+    "date_of_birth",
+    "birth_date",
+}
+
+# Keys that are also redacted when they appear as the TRAILING tokens of a longer name, so
+# `customer_email`, `applicantCardNumber` and `primary_account_number` are covered without
+# every caller enumerating their own prefixes.
+#
+# Deliberately a SUBSET of REDACTED_KEYS. Generic words stay out: `name` here would redact
+# `policy_name` / `rule_name` / `product_name`, and `line1`/`line2` would catch address-shaped
+# but non-PII fields. The token walk is anchored at the end and matches whole tokens, so
+# `account_id` does not match `account_number` and `japan` does not match `pan`.
+REDACTED_KEY_TOKENS = {
+    "email",
+    "emailaddress",
+    "phone",
+    "phonenumber",
+    "mobilenumber",
+    "telephonenumber",
+    "address",
+    "pan",
+    "aadhaar",
+    "idnumber",
+    "cardnumber",
+    "cvv",
+    "cvc",
+    "accountnumber",
+    "bankaccount",
+    "routingnumber",
+    "sortcode",
+    "iban",
+    "swiftcode",
+    "upiid",
+    "ssn",
+    "nino",
+    "taxid",
+    "passport",
+    "passportnumber",
+    "nationalid",
+    "driverslicense",
+    "drivinglicence",
+    "voterid",
+    "mrn",
+    "medicalrecordnumber",
+    "healthid",
+    "insuranceid",
+    "patientid",
+    "dob",
+    "dateofbirth",
+    "birthdate",
 }
 
 
@@ -804,36 +897,211 @@ def adverse_reason_codes(rule_results: Any, limit: int = 3) -> List[Dict[str, An
     return codes
 
 
+REDACTION_PLACEHOLDER = "***"
+
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_TOKEN_SPLIT = re.compile(r"[^A-Za-z0-9]+")
+
+# Longest qualified key is three tokens ("medical record number"), so the trailing-token walk
+# never needs to look further back than that.
+_MAX_KEY_TOKENS = 3
+
+_SSN_RE = re.compile(r"^(\d{3})[- ](\d{2})[- ](\d{4})$")
+_IBAN_RE = re.compile(r"^[A-Za-z]{2}\d{2}[A-Za-z0-9]{11,30}$")
+_DIGIT_RUN_RE = re.compile(r"^\d+$")
+
+# Value scanning modes, least to most aggressive. "strict" is the default: every detector it
+# runs carries its own checksum or a fixed separator layout, so a false positive needs a
+# coincidence rather than a plausible input.
+VALUE_SCAN_MODES = ("off", "strict", "aggressive")
+
+
+def normalize_redact_key(key: Any) -> str:
+    """`Card Number` / `cardNumber` / `CARD_NUMBER` all collapse to `cardnumber`."""
+    return _NON_ALNUM.sub("", str(key).lower())
+
+
+def _key_tokens(key: Any) -> List[str]:
+    spaced = _CAMEL_BOUNDARY.sub(" ", str(key))
+    return [part.lower() for part in _TOKEN_SPLIT.split(spaced) if part]
+
+
+def _value_scan_mode() -> str:
+    """RULEMIND_PII_VALUE_SCAN — off | strict | aggressive (default strict).
+
+    Configurable because a value-shape false positive destroys data the customer needs and
+    cannot be recovered from the decision log. An operator who cannot tolerate that risk at
+    all sets `off`; one who would rather over-redact sets `aggressive`.
+    """
+    raw = (os.getenv("RULEMIND_PII_VALUE_SCAN", "") or "").strip().lower()
+    return raw if raw in VALUE_SCAN_MODES else "strict"
+
+
+def _key_match_mode() -> str:
+    """RULEMIND_PII_KEY_MATCH — qualified | exact (default qualified).
+
+    `exact` restores the original behaviour where only a whole-key match redacts, for a
+    deployment that finds the trailing-token walk too broad for its field names.
+    """
+    raw = (os.getenv("RULEMIND_PII_KEY_MATCH", "") or "").strip().lower()
+    return raw if raw in ("qualified", "exact") else "qualified"
+
+
+def _luhn_ok(digits: str) -> bool:
+    total = 0
+    parity = len(digits) % 2
+    for index, char in enumerate(digits):
+        digit = ord(char) - 48
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def _has_card_issuer_prefix(digits: str) -> bool:
+    """Issuer identification numbers actually in circulation.
+
+    Requiring one on top of Luhn is what keeps timestamps out: a 13-digit millisecond epoch
+    and a 19-digit nanosecond epoch both begin "17", which is not an IIN, so neither can be
+    mistaken for a card no matter how its check digit lands.
+    """
+    two = digits[:2]
+    return (
+        digits[0] == "4"                                   # Visa
+        or two in {"51", "52", "53", "54", "55"}           # Mastercard
+        or "22" <= two <= "27"                             # Mastercard 2-series
+        or two in {"34", "37"}                             # Amex
+        or two in {"30", "36", "38", "39"}                 # Diners
+        or two == "35"                                     # JCB
+        or two == "65" or digits[:4] == "6011" or "644" <= digits[:3] <= "649"  # Discover
+    )
+
+
+def looks_like_card_number(text: str, *, require_issuer: bool = True) -> bool:
+    digits = text.replace(" ", "").replace("-", "")
+    if not (13 <= len(digits) <= 19) or not _DIGIT_RUN_RE.match(digits):
+        return False
+    if require_issuer and not _has_card_issuer_prefix(digits):
+        return False
+    return _luhn_ok(digits)
+
+
+def looks_like_ssn(text: str) -> bool:
+    """Only the separated `123-45-6789` layout, and only in the issuable ranges.
+
+    A bare nine-digit run is deliberately NOT treated as an SSN: it is equally an account
+    number, an order id or a customer reference, and silently blanking those would be a worse
+    bug than the one this function exists to fix.
+    """
+    match = _SSN_RE.match(text.strip())
+    if not match:
+        return False
+    area, group, serial = match.groups()
+    return area not in ("000", "666") and not area.startswith("9") and group != "00" and serial != "0000"
+
+
+def looks_like_iban(text: str) -> bool:
+    candidate = text.replace(" ", "").strip()
+    if not _IBAN_RE.match(candidate):
+        return False
+    rotated = candidate[4:] + candidate[:4]
+    numeric = "".join(str(ord(c) - 55) if c.isalpha() else c for c in rotated.upper())
+    try:
+        return int(numeric) % 97 == 1
+    except ValueError:  # pragma: no cover - regex already constrains the alphabet
+        return False
+
+
+def value_is_sensitive(value: Any, mode: str) -> bool:
+    """Whether a VALUE looks like PII regardless of the key it arrived under.
+
+    Key-name matching alone cannot see a card number posted as `ref` or `token`, which is how
+    it reaches the decision log in practice — the caller's field names are the caller's, not
+    ours.
+    """
+    if mode == "off":
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        # Digit-only numerics are scanned only on request: a long integer is far more often a
+        # timestamp or an id than a card, and there is no issuer prefix to disambiguate once
+        # the caller has dropped the separators.
+        if mode != "aggressive":
+            return False
+        text = str(abs(value))
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        return False
+
+    # Long free text is prose or a document, not an identifier; skipping it also keeps this
+    # off the decision hot path for the fields that dominate payload size.
+    if not (9 <= len(text) <= 42):
+        return False
+    if looks_like_card_number(text, require_issuer=(mode != "aggressive")):
+        return True
+    if looks_like_ssn(text):
+        return True
+    return looks_like_iban(text)
+
+
 def _redact_keys() -> set:
     """The PII field names redacted from the stored decision payload. The built-in set covers
-    common identity fields; operators extend it (any domain: patient_id, ssn, card_no, …) via
-    RULEMIND_PII_REDACT_KEYS (comma-separated), case-insensitive."""
+    common identity, financial, government-id and health fields; operators extend it (any
+    domain: patient_id, ssn, card_no, …) via RULEMIND_PII_REDACT_KEYS (comma-separated),
+    case- and punctuation-insensitive."""
     extra = {
-        item.strip().lower()
+        normalize_redact_key(item)
         for item in (os.getenv("RULEMIND_PII_REDACT_KEYS", "") or "").split(",")
         if item.strip()
     }
-    return {key.lower() for key in REDACTED_KEYS} | extra
+    return {normalize_redact_key(key) for key in REDACTED_KEYS} | (extra - {""})
 
 
 def redact_payload(value: Any, extra_keys: Optional[Iterable[str]] = None) -> Any:
     keys = _redact_keys()
+    # An operator who names a field explicitly means it, so their keys get the same
+    # trailing-token treatment as the built-ins (`account_no` also covers `customer_account_no`).
+    tokens = {normalize_redact_key(key) for key in REDACTED_KEY_TOKENS}
     if extra_keys:
-        keys = keys | {str(k).strip().lower() for k in extra_keys if str(k).strip()}
-    return _redact_with(value, keys)
+        custom = {normalize_redact_key(k) for k in extra_keys if str(k).strip()} - {""}
+        keys = keys | custom
+        tokens = tokens | custom
+    if _key_match_mode() == "exact":
+        tokens = set()
+    return _redact_with(value, keys, tokens, _value_scan_mode())
 
 
-def _redact_with(value: Any, keys: set) -> Any:
+def _key_is_redacted(key: Any, keys: set, tokens: set) -> bool:
+    if normalize_redact_key(key) in keys:
+        return True
+    if not tokens:
+        return False
+    parts = _key_tokens(key)
+    for window in range(1, min(_MAX_KEY_TOKENS, len(parts)) + 1):
+        if "".join(parts[-window:]) in tokens:
+            return True
+    return False
+
+
+def _redact_with(value: Any, keys: set, tokens: Optional[set] = None, scan_mode: str = "off") -> Any:
+    tokens = tokens or set()
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
-            if str(key).lower() in keys:
-                redacted[key] = "***"
+            if _key_is_redacted(key, keys, tokens):
+                redacted[key] = REDACTION_PLACEHOLDER
             else:
-                redacted[key] = _redact_with(item, keys)
+                redacted[key] = _redact_with(item, keys, tokens, scan_mode)
         return redacted
     if isinstance(value, list):
-        return [_redact_with(item, keys) for item in value]
+        return [_redact_with(item, keys, tokens, scan_mode) for item in value]
+    if value_is_sensitive(value, scan_mode):
+        return REDACTION_PLACEHOLDER
     return value
 
 

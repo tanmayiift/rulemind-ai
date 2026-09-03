@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 import jwt
 
+from . import env
 from .auth import utcnow
 
 STATE_ISSUER = "rulemind-sso"
@@ -60,9 +61,11 @@ _POST_FORM: Callable[[str, Dict[str, str]], Dict[str, Any]] = _http_post_form
 
 # ── state token (stateless CSRF/nonce carrier) ───────────────────────────
 def _state_secret() -> str:
-    import os
-
-    return os.getenv("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
+    # env.env_str, not os.getenv: auth.create_admin_jwt/decode_admin_jwt read the SAME variable
+    # through env.env_str, so a set-but-EMPTY RULEMIND_ADMIN_JWT_SECRET made the two disagree —
+    # auth signed with the dev fallback while this signed the SSO state token with "", a key
+    # anyone can guess. A forgeable state token is a forgeable OIDC/SAML login nonce.
+    return env.env_str("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
 
 
 def issue_state(tenant_id: str, provider: str, nonce: str, redirect_uri: str, ttl_minutes: int = 10) -> str:

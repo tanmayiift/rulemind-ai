@@ -35,7 +35,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from redis.exceptions import NoScriptError, RedisError
 
-from .runtime import redis_client
+from .runtime import mark_redis_unavailable, redis_client
+from .sandbox import _BoundedCache
 
 # Built-in per-plan requests/minute, used only when nothing is configured.
 DEFAULT_PLAN_RPM: Dict[str, int] = {
@@ -191,10 +192,21 @@ _LUA_SHA: Optional[str] = None
 class _LocalTokenBucket:
     """Per-process fallback used when Redis is unavailable. Same algorithm, so
     behaviour is consistent; the effective global ceiling becomes limit x replicas,
-    which is bounded and far safer than removing limits during a Redis blip."""
+    which is bounded and far safer than removing limits during a Redis blip.
 
-    def __init__(self) -> None:
-        self._buckets: Dict[str, Tuple[float, float]] = {}
+    **Bounded.** `_buckets` was a plain dict: one entry per bucket key, kept forever.
+    Bucket keys are tenant ids by default, but `check(key=...)` accepts an arbitrary
+    key, and this dict fills precisely during a Redis outage — the scenario it exists
+    to survive. Now it is a `_BoundedCache` (the same one sandbox.py uses for its code
+    caches), so the fallback has a hard memory ceiling.
+
+    Eviction cost is correct-by-construction here: an evicted bucket is recreated full,
+    which is the same state an idle bucket refills to. Insertion-order eviction therefore
+    at worst forgives one burst for the least-recently-*created* key, never over-limits.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self._buckets: Dict[str, Tuple[float, float]] = _BoundedCache(capacity)
 
     def consume(self, key: str, rate: float, burst: int, cost: float = 1.0) -> Tuple[bool, float, float]:
         now = time.monotonic()
@@ -212,7 +224,10 @@ class _LocalTokenBucket:
         self._buckets.clear()
 
 
-_LOCAL = _LocalTokenBucket()
+# One entry is two floats; 50k keys is a few MB. Large enough that a real tenant
+# population never evicts, small enough to be a ceiling rather than a leak.
+_LOCAL_BUCKET_CAPACITY = _env_int("RATE_LIMIT_LOCAL_BUCKETS", 50000) or 50000
+_LOCAL = _LocalTokenBucket(_LOCAL_BUCKET_CAPACITY)
 
 
 def reset_local_state() -> None:
@@ -284,8 +299,17 @@ def _consume(key: str, rate: float, burst: int, cost: float):
                 _LUA_SHA = client.script_load(_LUA_TOKEN_BUCKET)  # type: ignore[assignment]
                 res = client.evalsha(_LUA_SHA, 1, redis_key, rate, burst, now, cost)  # type: ignore[arg-type]
             return int(res[0]), float(res[1]), float(res[2])  # type: ignore[index]
-        except RedisError:
+        except (RedisError, OSError):
+            # RedisError now includes redis.exceptions.TimeoutError, which only ever fires
+            # because runtime.redis_client() sets socket_timeout. Before that, a HUNG Redis
+            # (failover, blackholed route — not a refused connection) never raised at all:
+            # this call blocked in recv() forever on a Starlette threadpool thread, and the
+            # pool was consumed one rate-limit check at a time until the API stopped
+            # answering. OSError is belt-and-braces for a socket error redis-py does not wrap.
             _LUA_SHA = None
+            # Latch the outage so the NEXT request skips Redis entirely instead of paying the
+            # timeout again. The timeout bounds one request; the latch bounds the incident.
+            mark_redis_unavailable()
             if _fail_open():
                 return None, 0.0, 0.0
             return _LOCAL.consume(key, rate, burst, cost)

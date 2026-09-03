@@ -272,11 +272,17 @@ def run(r: Runner):
         resp = r.get("/api/v1/settings")
         c.ok(resp.status_code == 200, f"{resp.status_code}")
         marker = "4111111111111111"
+        # Sent twice: once under an obviously-sensitive key, once under an innocuous one. The
+        # second is the case key-name matching alone cannot catch, and it is how a card number
+        # actually reaches the decision log -- the caller picks the field names, not us.
         b = r.post("/api/v1/decide", json={"policyId": pol,
-                                           "payload": {"age": 30, "card_number": marker},
+                                           "payload": {"age": 30, "card_number": marker,
+                                                       "external_ref": marker},
                                            "userId": "e2e-pii"})
         c.info({"decide": b.status_code})
         time.sleep(1.5)
         hits = r.get("/api/v1/audit/decisions", params={"limit": 20})
         if hits.status_code == 200 and marker in hits.text:
-            c.warn("raw card-like value echoed back in audit payload (no default redaction)")
+            # Was a warn(). It is a fail: the value is stored verbatim in payload_preview and
+            # returned in full to any viewer-role user, so downgrading it hid a live PII leak.
+            c.fail("raw card-like value echoed back in audit payload (default redaction not applied)")

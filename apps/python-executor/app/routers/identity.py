@@ -4,6 +4,7 @@ app/main.py. Stable helpers/models imported by value from app.main; direct stora
 main.storage live."""
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,13 @@ from ..main import (
     SsoConfigRequest,
     active_role,
     active_tenant_id,
+)
+from ..middleware import (
+    clear_login_failures,
+    client_ip,
+    login_guard_status,
+    login_max_attempts,
+    record_login_failure,
 )
 from ..session_cookie import clear_session_cookies, session_token_from_request, set_session_cookies
 
@@ -202,15 +210,61 @@ def access_deactivate_member(member_id: str) -> Dict[str, Any]:
 
 
 # ── Human login (password + email OTP) ─────────────────────────────────────
+LOGIN_SCOPE_MEMBER = "member"
+
+LOGIN_LOGGER = logging.getLogger("rulemind.auth")
+
+
+def _audit_login_failure(identity: str, email: str, http_request: Request,
+                         member: Optional[Dict[str, Any]], guard: Any) -> None:
+    """Log every failure, and write an audit event once a run looks like an attack.
+
+    Emitted only above the threshold so ordinary fat-fingering does not flood the tamper-
+    evident chain, and only when the member (and therefore the tenant) is known — an audit
+    event for an unknown email would have to be attributed to some tenant, and guessing one
+    would put attacker-controlled text into an unrelated workspace's chain.
+    """
+    source_ip = client_ip(http_request)
+    LOGIN_LOGGER.warning("failed member login: email=%s ip=%s failures=%s locked=%s",
+                         email, source_ip, guard.failures, guard.locked)
+    if not guard.should_alert or not member:
+        return
+    _audit_member("login_failed_repeatedly", member["tenant_id"], member["id"],
+                  "{0} consecutive failed sign-in attempts for '{1}'{2}".format(
+                      guard.failures, email, " — account locked" if guard.locked else ""),
+                  {"source_ip": source_ip, "failures": guard.failures, "locked": guard.locked,
+                   "max_attempts": login_max_attempts(), "identity": identity})
+
+
+
 @router.post("/api/v1/auth/login")
-def member_login(request: LoginRequest, response: Response) -> Dict[str, Any]:
+def member_login(request: LoginRequest, response: Response, http_request: Request) -> Dict[str, Any]:
     """Password login for a workspace member. Sets an httpOnly session cookie (browser) + a CSRF
-    cookie, and also returns the token in the body for machine/mobile callers."""
+    cookie, and also returns the token in the body for machine/mobile callers.
+
+    Exempted from the middleware's tenant check at UNAUTH_AUTH_PREFIXES, which also put it
+    ahead of the per-tenant rate limiter — so until the pre-auth throttle was added this
+    accepted unlimited password guesses. It now counts failures per account as well, the same
+    shape storage.verify_member_otp already used for OTP codes.
+    """
+    identity = "{0}|{1}".format((request.tenant_id or "").strip().lower(), (request.email or "").strip().lower())
+    guard = login_guard_status(LOGIN_SCOPE_MEMBER, identity)
+    if guard.locked:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed sign-in attempts. Try again in {0}s.".format(max(1, guard.retry_after)),
+            headers={"Retry-After": str(max(1, guard.retry_after))},
+        )
     member = main.storage.get_member_by_email(request.email, tenant_id=request.tenant_id)
     if not member or not member.get("is_active"):
+        _audit_login_failure(identity, request.email, http_request, member,
+                             record_login_failure(LOGIN_SCOPE_MEMBER, identity))
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     if not main.storage.verify_member_password(member["id"], request.password):
+        _audit_login_failure(identity, request.email, http_request, member,
+                             record_login_failure(LOGIN_SCOPE_MEMBER, identity))
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    clear_login_failures(LOGIN_SCOPE_MEMBER, identity)
     session = main.storage.create_member_session(member["tenant_id"], member["id"])
     _audit_member("member_login", member["tenant_id"], member["id"],
                   "Password login by '{0}'".format(member["email"]), {"method": "password"})

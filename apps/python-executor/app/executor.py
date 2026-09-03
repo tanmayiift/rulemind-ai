@@ -265,6 +265,17 @@ class ActionFailedError(RuntimeError):
 _MAX_WORKFLOW_DEPTH = 10
 
 
+# Decision sources whose catalog may come from the process-wide, epoch-stamped cache.
+#
+# Everything else — the test console, simulations, backtests, anything an author drives —
+# reads straight from the DB. Not because the cache is unsafe, but because its TTL backstop
+# exists for the writes that DON'T bump the epoch (connector CRUD, `dev` variable edits), and
+# those are exactly the edits an author makes and then immediately tests. "Edit a variable,
+# hit Test, see the old value for a few seconds" is a correctness bug, whatever the latency
+# win. Production traffic replays the same catalog thousands of times and is where the win is.
+_SHARED_CATALOG_SOURCES = frozenset({"api", "sdk_server", "sdk_edge", "sdk_edge_resume", "callback"})
+
+
 class PolicyExecutor:
     def __init__(self, storage: Storage):
         self.storage = storage
@@ -275,19 +286,31 @@ class PolicyExecutor:
         # (list_variables was previously queried on every rule/scorecard step, and
         # secrets were re-fetched + decrypted on every step via _context_view).
         self._catalog: Dict[str, Dict[str, Any]] = {}
+        # Secrets are memoized separately, not written back into `_catalog`: the catalog entry
+        # may be the process-wide shared one, and mutating a shared dict from a request thread
+        # is a data race waiting to happen.
+        self._secrets: Dict[str, Dict[str, Any]] = {}
+        # Set by execute(); decides whether this run may use the shared cross-request cache.
+        self._source: str = "api"
 
     def _catalog_for(self, tenant_id: str) -> Dict[str, Any]:
         cat = self._catalog.get(tenant_id)
         if cat is None:
-            variables = self.storage.list_variables(tenant_id=tenant_id)
-            cat = {
-                "connectors": {item["id"]: item for item in self.storage.list_connectors(tenant_id=tenant_id)},
-                "variables": variables,
-                "variable_lookup": {item["id"]: item for item in variables},
-                "settings": self.storage.get_settings(tenant_id=tenant_id),
-            }
+            cat = self._load_catalog(tenant_id)
             self._catalog[tenant_id] = cat
         return cat
+
+    def _load_catalog(self, tenant_id: str) -> Dict[str, Any]:
+        """4 DB reads, paid per request because the executor that memoizes them is itself
+        constructed per request (main.workflow_executor). For production traffic that work is
+        identical on every call, so it is served from the shared epoch-stamped cache in
+        fast_decide — the mechanism the fast path already uses, which `invalidate()` clears
+        on publish and which carries a TTL backstop for edits that don't bump the epoch."""
+        from . import fast_decide
+
+        if self._source in _SHARED_CATALOG_SOURCES:
+            return fast_decide.tenant_catalog(self.storage, tenant_id)
+        return fast_decide._build_tenant_catalog(self.storage, tenant_id)
 
     def _context_view(self, ctx: ExecutionContext) -> Dict[str, Any]:
         scorecards = {
@@ -313,18 +336,28 @@ class PolicyExecutor:
         }
 
     def _tenant_secrets(self, tenant_id: str) -> Dict[str, Any]:
-        cat = self._catalog_for(tenant_id)
-        if "secrets" in cat:
-            return cat["secrets"]
-        secrets: Dict[str, Any] = {}
-        for connector in cat["connectors"].values():
-            raw = self.storage.get_connector(connector["id"], include_secrets=True, tenant_id=tenant_id) or {}
-            config = raw.get("config", {})
-            for key, value in config.items():
-                if any(marker in key.lower() for marker in ("token", "secret", "password", "api_key", "apikey")):
-                    secrets[key] = value
-        cat["secrets"] = secrets
-        return secrets
+        """Decrypted connector secrets for template resolution.
+
+        The per-connector `get_connector(include_secrets=True)` loop that used to live inline
+        here was the "+N" in this path's 8+N queries: one DB read and one Fernet decrypt per
+        connector, on every request, because the executor holding the memo was itself
+        per-request. Production sources now share it across requests via the epoch cache.
+
+        Still lazy: nothing reads secrets unless an action / transform / review-gate step runs,
+        so a pure-rule policy pays nothing. And the result is memoized HERE rather than written
+        back into the catalog dict, because that dict may be the shared one.
+        """
+        cached = self._secrets.get(tenant_id)
+        if cached is None:
+            from . import fast_decide
+
+            connectors = self._catalog_for(tenant_id)["connectors"]
+            if self._source in _SHARED_CATALOG_SOURCES:
+                cached = fast_decide.tenant_secrets(self.storage, tenant_id, connectors)
+            else:
+                cached = fast_decide._build_tenant_secrets(self.storage, tenant_id, connectors)
+            self._secrets[tenant_id] = cached
+        return cached
 
     def _payloads_by_source(self, ctx: ExecutionContext) -> Dict[str, Dict[str, Any]]:
         connectors = self._catalog_for(ctx.tenant_id)["connectors"]
@@ -807,6 +840,11 @@ class PolicyExecutor:
         # terminal "review" instead of pausing + creating a task. Lets a batch of
         # thousands of what-if cases run concurrently without DB write contention.
         self._simulate = simulate
+        # Recorded before any catalog read: it decides whether this run may serve its tenant
+        # catalog from the shared cross-request cache (production sources) or must read the
+        # DB (authoring/simulation). A simulate=True run never shares, whatever its source —
+        # backtests are author-driven and must see the edit being tested.
+        self._source = "simulation" if simulate else source
         if resume_from:
             ctx = resume_from
             ctx.status = "running"

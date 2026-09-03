@@ -19,20 +19,29 @@ The remaining loss window is a hard, uncatchable kill (SIGKILL / OOM) between a 
 being returned and its async write landing — covered by the durable-outbox follow-up, or
 today by ASYNC_DECISION_LOG=0 (synchronous writes have no window).
 
-To keep reads correct in a single process, any code that reads decisions calls ``flush()``
-first, which waits for the in-flight writes this process submitted. Across multiple workers,
-read-after-write was never guaranteed anyway — the DB is the shared source of truth.
+Read-after-write:
+
+  - **Same process.** Any code that reads decisions calls ``flush()`` first, which waits for
+    the in-flight writes this process submitted.
+  - **Across workers.** ``flush()`` cannot help: ``_pending`` is per-process, so the worker
+    handling the follow-up GET has nothing to wait on and returns immediately. The API hands
+    back a ``decision_id`` that then 404s roughly 3 times in 4 under ``--workers 4``. Point
+    reads use ``await_row()`` instead, which flushes locally and then re-polls for a short
+    bounded window — the cost lands only on the miss path.
 """
 from __future__ import annotations
 
 import atexit
+import time
 
 from . import env
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, Optional, Set
 
-from prometheus_client import REGISTRY, Counter
+from prometheus_client import Counter
+
+from .metrics_registry import get_or_create
 
 _pool: Optional[ThreadPoolExecutor] = None
 _pending: Set[Future] = set()
@@ -44,13 +53,20 @@ _atexit_registered = False
 def _failure_counter() -> Counter:
     """Reload-safe Counter: the durability tests importlib.reload() this module, which would re-run a
     bare Counter() and raise 'Duplicated timeseries' on the global registry. Reuse the already-
-    registered collector on reload instead of redefining it."""
-    name = "rulemind_decision_log_write_failures"
-    existing = getattr(REGISTRY, "_names_to_collectors", {}).get(name) or \
-        getattr(REGISTRY, "_names_to_collectors", {}).get(name + "_total")
-    if existing is not None:
-        return existing
-    return Counter(name, "Decision-log writes that failed (decision computed but not persisted)", ["source"])
+    registered collector on reload instead of redefining it.
+
+    The private-registry poke this used to do inline now lives in `metrics_registry.get_or_create`,
+    which additionally falls back on the duplicate-registration ValueError. That matters under the
+    multiprocess registry: `_names_to_collectors` is not a stable contract, and a miss there used to
+    mean a hard 'Duplicated timeseries' crash on reload rather than a reused collector. A Counter
+    aggregates correctly across workers with no extra configuration (unlike a Gauge, which needs an
+    explicit multiprocess_mode)."""
+    return get_or_create(
+        Counter,
+        "rulemind_decision_log_write_failures",
+        "Decision-log writes that failed (decision computed but not persisted)",
+        ("source",),
+    )
 
 
 # A decision-log write that fails on the async path used to be swallowed silently — the decision was
@@ -175,8 +191,17 @@ def _discard(future: Future) -> None:
 
 
 def flush(timeout: float = 10.0) -> None:
-    """Block until the decision-log writes submitted by this process finish, so a
-    subsequent read sees them. Cheap no-op when nothing is pending or in sync mode."""
+    """Block until the decision-log writes **this process** submitted finish.
+
+    That is the whole guarantee, and the previous wording ("so a subsequent read sees them")
+    promised more than it delivers. `_pending` holds futures created in *this* process. Under
+    `--workers 4` the POST /decide that created a decision and the GET that reads it back are
+    routinely handled by different workers, and the reader's `_pending` is empty — so flush()
+    returns instantly and the read 404s on a decision the API just returned an id for.
+
+    Cheap no-op when nothing is pending or in sync mode. Use `await_row` for a read that must
+    tolerate the cross-worker case.
+    """
     with _lock:
         pending = list(_pending)
     for future in pending:
@@ -184,6 +209,42 @@ def flush(timeout: float = 10.0) -> None:
             future.result(timeout=timeout)
         except Exception:  # a failed write must not break the reader
             pass
+
+
+def read_after_write_seconds() -> float:
+    """How long a read may wait for a row another worker is still writing.
+
+    Small on purpose. It only ever elapses in full for a decision id that does not exist,
+    which turns a fast 404 into a slow one; the window just needs to cover an in-flight
+    async insert (single-digit milliseconds in practice)."""
+    return max(0.0, env.env_int("DECISION_READ_AFTER_WRITE_MS", 500) / 1000.0)
+
+
+def await_row(fetch: Callable[[], Optional[Any]], timeout_seconds: Optional[float] = None) -> Optional[Any]:
+    """Read a row that a *possibly different worker* may still be writing.
+
+    A true cross-worker barrier is not cheap: it would need every worker's in-flight write
+    ids in shared state, consulted on every read, which costs more than the async write saves.
+    The reader instead tolerates the gap — flush what this process owes, then re-poll for a
+    bounded window. The cost falls entirely on the miss path: a row that is already committed
+    returns on the first fetch with no sleep at all.
+
+    Returns whatever `fetch` last returned (None if it never appeared), so the caller's
+    existing 404 handling is unchanged.
+    """
+    flush()
+    row = fetch()
+    if row is not None:
+        return row
+    deadline = time.monotonic() + (read_after_write_seconds() if timeout_seconds is None else timeout_seconds)
+    delay = 0.005
+    while time.monotonic() < deadline:
+        time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+        row = fetch()
+        if row is not None:
+            return row
+        delay = min(delay * 2, 0.05)  # back off: a slow DB should not be polled hot
+    return row
 
 
 def shutdown(timeout: float = 15.0) -> None:

@@ -20,4 +20,13 @@
 set -e
 
 echo "[entrypoint] starting: $*"
+# Prometheus multiprocess mmap directory. Wiped ONCE here, in the master, before uvicorn forks.
+# Doing it per worker would have each worker destroy its siblings' counters on startup; not
+# doing it at all leaves files from dead pids, so a scrape sums the previous boot's counters
+# into this one and every rate() spikes on restart.
+if [ -n "${PROMETHEUS_MULTIPROC_DIR:-}" ]; then
+  rm -rf "$PROMETHEUS_MULTIPROC_DIR"
+  mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
+fi
+
 exec "$@"

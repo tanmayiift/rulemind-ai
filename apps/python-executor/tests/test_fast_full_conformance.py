@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,10 +24,21 @@ os.environ.pop("AUTH_MODE", None)
 import app.main as app_main  # noqa: E402
 from app.executor import PolicyExecutor  # noqa: E402
 from app.fast_decide import fast_decide, fast_path_eligible, is_fast_servable  # noqa: E402
+from app.storage import Storage  # noqa: E402
 
 
 class FastFullConformanceTests(unittest.TestCase):
     def setUp(self):
+        # A TEMP database, seeded fresh. This module used to read `app_main.storage`, i.e. the
+        # developer's own .runtime/rulemind_v4.db, which made the result depend on whatever was
+        # in it -- and it only ever passed because decrypt_config_payload swallowed failures and
+        # returned {} for every connector config. Once decryption started failing loudly (T4.2)
+        # the dependency surfaced: the dev database is encrypted under rulemind-dev-master-key
+        # while this module sets rulemind-test-key, so every connector config was silently empty
+        # for as long as this test has existed.
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        app_main.storage = Storage(path=os.path.join(self.tempdir.name, "conformance.db"))
         self.storage = app_main.storage
         self.tenant_id = self.storage.default_tenant_id
         # Build a rules-only (fast-servable) policy from seeded loan rules + an outcome step.

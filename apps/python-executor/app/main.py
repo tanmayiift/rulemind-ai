@@ -1,6 +1,5 @@
 import copy
 import asyncio
-import os
 import time
 import uuid
 from datetime import datetime
@@ -9,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import decode_admin_jwt
@@ -19,6 +18,7 @@ from .compiler import (
     compile_bundle,
 )
 from .context import get_current_api_key_id, get_current_role, get_current_tenant_id
+from .env import env_bool, env_int, env_str
 from .experience_studio import build_experience_manifest
 from .executor import EvaluationBudgetExceeded, ExecutionContext, PolicyExecutor
 from .logic import (
@@ -31,7 +31,7 @@ from .logic import (
     nodes_to_tree,
     slugify,
 )
-from .middleware import IdempotencyMiddleware, TenantContextMiddleware
+from .middleware import IdempotencyMiddleware, RequestIdMiddleware, TenantContextMiddleware
 from .runtime import is_local_dev, redis_client
 from .security_config import verify_production_secrets
 from .sandbox import execute_variable
@@ -40,7 +40,10 @@ from .storage import Storage
 
 
 def parse_origins() -> List[str]:
-    raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+    # env_str, not os.getenv: the Helm chart renders `CORS_ORIGINS: ""` when no origins are
+    # configured, and os.getenv returns that empty string instead of the default — which
+    # produced ZERO allowed origins and a CORS rejection on every browser request.
+    raw = env_str("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     if "*" in origins:
         return ["*"]
@@ -93,6 +96,10 @@ app.add_middleware(
 # request.state.tenant_id is set (keys are scoped per tenant).
 app.add_middleware(IdempotencyMiddleware, storage=current_storage)
 app.add_middleware(TenantContextMiddleware, storage=current_storage)
+# Registered LAST so it is OUTERMOST (Starlette wraps in reverse order of registration). It has
+# to wrap the tenant middleware rather than sit inside it, or the 401/403/429 responses that
+# middleware returns early would carry no correlation id -- the exact responses worth tracing.
+app.add_middleware(RequestIdMiddleware)
 
 
 @app.exception_handler(EvaluationBudgetExceeded)
@@ -130,7 +137,10 @@ EVENTS_INGESTED_TOTAL = Counter("rulemind_events_ingested_total", "RuleMind SDK 
 DECISIONS_INGESTED_TOTAL = Counter("rulemind_sdk_decisions_ingested_total", "On-device decisions ingested", ["result"])
 
 # Max decisions accepted per /sdk/v1/decisions batch (config so limits move without code).
-SDK_DECISIONS_BATCH_MAX = int(os.getenv("SDK_DECISIONS_BATCH_MAX", "1000"))
+# env_int, not int(os.getenv(...)): this runs at MODULE IMPORT, so a set-but-blank value —
+# what a Helm chart renders for an unset override — raised ValueError before a single handler
+# was registered and killed the process at startup.
+SDK_DECISIONS_BATCH_MAX = env_int("SDK_DECISIONS_BATCH_MAX", 1000)
 
 
 ALLOWED_NODE_TYPES = {"condition", "and", "or", "approve", "review", "reject"}
@@ -575,10 +585,22 @@ def payload_map(payload: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return normalized
 
 
+def _as_int(value: Any, default: int) -> int:
+    """A stored engine-config override, or `default` when it is absent or unparseable."""
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def engine_limits() -> Dict[str, int]:
+    # The env fallbacks go through env_int so a blank PYTHON_SANDBOX_TIMEOUT / _MEMORY falls
+    # back to the documented default instead of raising ValueError out of every decision.
     settings = storage.get_settings().get("engine_config", {})
-    timeout_ms = int(settings.get("timeout_ms", os.getenv("PYTHON_SANDBOX_TIMEOUT", "2000")))
-    memory_mb = int(settings.get("memory_mb", os.getenv("PYTHON_SANDBOX_MEMORY", "128")))
+    timeout_ms = _as_int(settings.get("timeout_ms"), env_int("PYTHON_SANDBOX_TIMEOUT", 2000))
+    memory_mb = _as_int(settings.get("memory_mb"), env_int("PYTHON_SANDBOX_MEMORY", 128))
     return {"timeout_ms": timeout_ms, "memory_mb": memory_mb}
 
 
@@ -1088,7 +1110,7 @@ def active_tenant_id(request: Optional[Request] = None) -> str:
         return str(request.state.tenant_id)
     if get_current_tenant_id():
         return str(get_current_tenant_id())
-    if os.getenv("AUTH_MODE") == "none":
+    if env_str("AUTH_MODE") == "none":
         return str(storage.default_tenant_id or "")
     raise HTTPException(
         status_code=500,
@@ -1113,7 +1135,7 @@ def active_actor(request: Optional[Request] = None) -> str:
 
 
 def public_api_base_url(request: Optional[Request] = None) -> str:
-    configured = os.getenv("RULEMIND_PUBLIC_API_BASE_URL")
+    configured = env_str("RULEMIND_PUBLIC_API_BASE_URL")
     if configured:
         return configured.rstrip("/")
     if request is not None:
@@ -1363,7 +1385,7 @@ async def startup() -> None:
                     "decision WAL recovery: replayed %s orphaned decision(s) %s", result["replayed"], result)
     except Exception:  # pragma: no cover - recovery must never block startup
         pass
-    if not (is_local_dev() or os.getenv("RULEMIND_RUN_API_SCHEDULER") == "1"):
+    if not (is_local_dev() or env_bool("RULEMIND_RUN_API_SCHEDULER")):
         return
     try:
         init_scheduler(storage)
@@ -1407,7 +1429,7 @@ def _dependency_status() -> Dict[str, Any]:
     except Exception:
         db_status = "error"
 
-    if not (os.getenv("REDIS_URL") or "").strip():
+    if not env_str("REDIS_URL"):
         redis_status = "not_configured"
     else:
         try:
@@ -1428,14 +1450,25 @@ def _dependency_status() -> Dict[str, Any]:
 
 @app.get("/health")
 @app.get("/api/v1/health")
-def health(response: Response) -> Dict[str, Any]:
-    """Liveness. Returns 503 when a hard dependency is down so an orchestrator's
-    HTTP check can actually fail — it inspects the status code, not the body."""
-    state = _dependency_status()
-    healthy = state.pop("healthy")
-    if not healthy:
-        response.status_code = 503
-    return state
+async def health() -> Dict[str, Any]:
+    """Liveness. Deliberately static: no database, no Redis, no I/O of any kind.
+
+    This used to call _dependency_status() and answer 503 whenever Postgres was unreachable,
+    and the Helm chart points its LIVENESS probe here. The two together mean a 30-second DB
+    failover — a survivable event — fails liveness on every replica at once and kubelet
+    restarts the entire API fleet, turning a brief dependency blip into a full outage with a
+    cold-start thundering herd on the database that just came back.
+
+    It was also a sync `def`, so FastAPI ran it on the same bounded threadpool as /decide: a
+    saturated sandbox pool could time the probe out and trigger the same mass restart with
+    every dependency perfectly healthy. `async def` keeps it on the event loop, where nothing
+    a request handler does can starve it.
+
+    Liveness answers one question — is this process still able to serve? — and only a restart
+    fixes a "no". Whether the dependencies are reachable is READINESS, and it stays on /ready,
+    where a "no" takes the pod out of the load-balancer rotation and puts it back by itself.
+    """
+    return {"status": "ok", "version": "4.0.0", "check": "liveness"}
 
 
 # /health/ready is the path k8s/rulemind.yaml probes; without it the probe 404s
@@ -1443,8 +1476,13 @@ def health(response: Response) -> Dict[str, Any]:
 @app.get("/ready")
 @app.get("/health/ready")
 def ready(response: Response) -> Dict[str, Any]:
-    """Readiness. A readinessProbe only looks at the status code, so returning 200
-    with {"ready": false} — as this used to — meant the gate never fired."""
+    """Readiness — the ONLY probe that touches the dependencies.
+
+    A readinessProbe only looks at the status code, so returning 200 with {"ready": false}
+    — as this used to — meant the gate never fired. Failing here is safe in a way failing
+    /health is not: the pod leaves the service endpoints and rejoins on its own the moment
+    the dependency recovers, with no restart and no lost warm state.
+    """
     state = _dependency_status()
     is_ready = state.pop("healthy")
     if not is_ready:
@@ -1454,7 +1492,13 @@ def ready(response: Response) -> Dict[str, Any]:
 
 @app.get("/metrics")
 def metrics() -> Response:
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    # Routed through metrics_registry so a multiprocess deployment aggregates across workers.
+    # generate_latest() on the default registry reports only the worker that happened to serve
+    # the scrape, so with N workers counters appear to move backwards and rate() is garbage.
+    from .metrics_registry import render
+
+    payload, content_type = render()
+    return Response(content=payload, media_type=content_type)
 
 
 # ── AI Copilot (BYO key, server-side, drafts only) ─────────────────────────────

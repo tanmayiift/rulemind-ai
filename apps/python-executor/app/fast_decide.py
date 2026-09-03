@@ -21,11 +21,13 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
+from . import env
 from .core import decide as core_decide
 from .logic import now_iso, redact_payload
-from .sandbox import execute_variable
+from .sandbox import _BoundedCache, execute_variable
 
 try:  # optional native accelerator
     import rulemind_core_rs  # type: ignore
@@ -38,9 +40,76 @@ except ImportError:  # pragma: no cover - Rust extension optional
 _IO_STEP_TYPES = {"action", "review_gate", "transform", "model"}
 
 _CACHE_LOCK = threading.Lock()
-# key -> (epoch_built_at, bundle). The epoch stamp lets a replica that never received the
-# in-process invalidate() call still detect a stale bundle and rebuild — see _current_epoch.
-_SERVING: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+
+# Every cache in this module is bounded. `_SERVING` is keyed by tenant+policy and
+# `_LOCAL_EPOCH`/`_EPOCH_CACHE` by tenant, so on a multi-tenant deployment they grew with the
+# number of distinct tenant/policy pairs ever served and were never trimmed — a slow leak in
+# the hot path. `_BoundedCache` (sandbox.py) is the one bounded cache in this tree; an evicted
+# entry is simply rebuilt on next use, so eviction costs latency, never correctness.
+_CACHE_CAPACITY = env.env_int("FAST_CACHE_MAX_ENTRIES", 2048)
+
+# key -> (epoch_built_at, built_at_monotonic, bundle). The epoch stamp lets a replica that
+# never received the in-process invalidate() call still detect a stale bundle and rebuild —
+# see _current_epoch. The timestamp is the TTL backstop described on _CACHE_TTL.
+_SERVING: Dict[str, Tuple[int, float, Dict[str, Any]]] = _BoundedCache(_CACHE_CAPACITY)
+
+# TTL ceiling on any epoch-stamped entry, INDEPENDENT of the epoch.
+#
+# The epoch is bumped by main.maybe_compile_bundle, which the routers call on rule/policy/
+# prod-variable writes — but NOT on connector create/update/delete, and not on a `dev`
+# variable edit. Those still change what a decision computes (a connector's sample_payload is
+# the field set feeding every variable of that source, and its config holds the secrets). With
+# epoch coherence alone, such an edit would be invisible until something else bumped the
+# epoch, which could be never. The TTL bounds that to seconds without giving up the epoch's
+# instant invalidation for the cases that do bump it.
+_CACHE_TTL = env.env_float("FAST_CACHE_TTL_SECONDS", 5.0)
+
+
+class _SingleFlight:
+    """One build per key at a time; everybody else waits and reuses the result.
+
+    Without this, a TTL/epoch cache converts an N+1 into a thundering herd: every request
+    in flight at the instant an entry expires misses, and they all run the full rebuild
+    concurrently — which on the executor catalog means N connector reads and N Fernet
+    decrypts each. The stampede lands precisely at peak load, because that is when the most
+    requests are in flight per expiry.
+
+    Self-cleaning: the per-key lock is dropped once the last waiter leaves, so this does not
+    become another unbounded dict of locks.
+    """
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._locks: Dict[str, threading.Lock] = {}
+        self._waiters: Dict[str, int] = {}
+
+    @contextmanager
+    def lock_for(self, key: str) -> Iterator[None]:
+        with self._guard:
+            entry = self._locks.get(key)
+            if entry is None:
+                entry = self._locks[key] = threading.Lock()
+            self._waiters[key] = self._waiters.get(key, 0) + 1
+        entry.acquire()
+        try:
+            yield
+        finally:
+            entry.release()
+            with self._guard:
+                remaining = self._waiters.get(key, 1) - 1
+                if remaining <= 0:
+                    self._waiters.pop(key, None)
+                    self._locks.pop(key, None)
+                else:
+                    self._waiters[key] = remaining
+
+    def in_flight(self) -> int:
+        """Number of keys currently being built — test/observability hook."""
+        with self._guard:
+            return len(self._locks)
+
+
+_FLIGHT = _SingleFlight()
 
 # --- Cross-replica cache coherence -------------------------------------------------
 # The in-memory serving cache is per-process. In a multi-replica deployment (many workers
@@ -54,8 +123,14 @@ _SERVING: Dict[str, Tuple[int, Dict[str, Any]]] = {}
 # never unbounded. Single-process/dev is unaffected (local counter + local clear).
 _EPOCH_KEY = "rulemind:fastcache:epoch:{0}"
 _EPOCH_TTL = float(os.getenv("FAST_CACHE_EPOCH_TTL", "1.0"))
-_LOCAL_EPOCH: Dict[str, int] = {}
-_EPOCH_CACHE: Dict[str, Tuple[float, int]] = {}  # tenant_id -> (fetched_at_monotonic, epoch)
+_LOCAL_EPOCH: Dict[str, int] = _BoundedCache(_CACHE_CAPACITY)
+# tenant_id -> (fetched_at_monotonic, epoch)
+_EPOCH_CACHE: Dict[str, Tuple[float, int]] = _BoundedCache(_CACHE_CAPACITY)
+
+# The tenant catalog the SLOW path (PolicyExecutor) needs: connectors, variables, settings
+# and decrypted connector secrets. Same store shape and same epoch/TTL rules as _SERVING —
+# deliberately the same mechanism rather than a third caching layer.
+_CATALOG: Dict[str, Tuple[int, float, Dict[str, Any]]] = _BoundedCache(_CACHE_CAPACITY)
 
 
 def _redis():  # pragma: no cover - trivial indirection, exercised via integration
@@ -122,11 +197,14 @@ def invalidate(tenant_id: Optional[str] = None) -> None:
     with _CACHE_LOCK:
         if tenant_id is None:
             _SERVING.clear()
+            _CATALOG.clear()
             _EPOCH_CACHE.clear()
             _LOCAL_EPOCH.clear()
             return
-        for key in [k for k in _SERVING if k.startswith(f"{tenant_id}:")]:
-            _SERVING.pop(key, None)
+        prefix = f"{tenant_id}:"
+        for store in (_SERVING, _CATALOG):
+            for key in [k for k in store if k.startswith(prefix)]:
+                store.pop(key, None)
         _LOCAL_EPOCH[tenant_id] = _LOCAL_EPOCH.get(tenant_id, 0) + 1
         # Force this process to re-read the epoch next time (don't serve from its TTL cache).
         _EPOCH_CACHE.pop(tenant_id, None)
@@ -136,6 +214,85 @@ def invalidate(tenant_id: Optional[str] = None) -> None:
             client.incr(_EPOCH_KEY.format(tenant_id))
         except Exception:  # pragma: no cover - best-effort; local clear already happened
             pass
+
+
+def _epoch_cached(store: Dict[str, Tuple[int, float, Any]], key: str, tenant_id: str,
+                  build: Callable[[], Any]) -> Any:
+    """Cross-request cache: epoch-coherent, TTL-bounded, single-flighted.
+
+    Read fast without any lock; on a miss take the per-key flight lock and re-check, so a
+    burst of concurrent misses on one key produces exactly one build.
+    """
+    epoch = _current_epoch(tenant_id)
+    now = time.monotonic()
+    cached = store.get(key)
+    if cached is not None and cached[0] == epoch and (now - cached[1]) < _CACHE_TTL:
+        return cached[2]
+    with _FLIGHT.lock_for(key):
+        # Re-check: whoever held the lock before us has just published a fresh entry, and
+        # rebuilding it again is exactly the stampede this lock exists to prevent.
+        cached = store.get(key)
+        now = time.monotonic()
+        if cached is not None and cached[0] == epoch and (now - cached[1]) < _CACHE_TTL:
+            return cached[2]
+        built = build()
+        with _CACHE_LOCK:
+            store[key] = (epoch, time.monotonic(), built)
+        return built
+
+
+def _build_tenant_catalog(storage: Any, tenant_id: str) -> Dict[str, Any]:
+    """The connectors / variables / settings a PolicyExecutor needs for a tenant. 4 DB reads.
+
+    Secrets are deliberately NOT built here: only action / transform / review-gate steps read
+    them, so folding them in would charge every pure-rule decision — and every case in a
+    backtest — for N connector reads it never uses. They get their own cache entry below.
+    """
+    variables = storage.list_variables(tenant_id=tenant_id)
+    return {
+        "connectors": {item["id"]: item for item in storage.list_connectors(tenant_id=tenant_id)},
+        "variables": variables,
+        "variable_lookup": {item["id"]: item for item in variables},
+        "settings": storage.get_settings(tenant_id=tenant_id),
+    }
+
+
+def _build_tenant_secrets(storage: Any, tenant_id: str, connectors: Dict[str, Any]) -> Dict[str, Any]:
+    """Decrypted connector secrets: one DB read plus one Fernet decrypt per connector.
+
+    This loop is the "+N" in the executor's 8+N queries per decision — it ran on every request
+    that touched an action/transform step, because the executor memoizing it was itself
+    per-request."""
+    secrets: Dict[str, Any] = {}
+    for connector_id in connectors:
+        raw = storage.get_connector(connector_id, include_secrets=True, tenant_id=tenant_id) or {}
+        for key, value in (raw.get("config", {}) or {}).items():
+            if any(marker in key.lower() for marker in ("token", "secret", "password", "api_key", "apikey")):
+                secrets[key] = value
+    return secrets
+
+
+def tenant_catalog(storage: Any, tenant_id: str) -> Dict[str, Any]:
+    """Shared, cross-request tenant catalog for the SLOW path (PolicyExecutor).
+
+    A PolicyExecutor is constructed fresh per request (main.workflow_executor), so its
+    per-instance memo never survived one. Every /decide therefore re-read variables,
+    connectors and settings from the DB.
+
+    **Treat the returned dict as read-only.** It is shared across requests and threads; the
+    executor's old `cat["secrets"] = ...` write-back is gone precisely because a shared entry
+    must not be mutated in place.
+    """
+    result: Dict[str, Any] = _epoch_cached(_CATALOG, f"{tenant_id}:catalog", tenant_id,
+                                           lambda: _build_tenant_catalog(storage, tenant_id))
+    return result
+
+
+def tenant_secrets(storage: Any, tenant_id: str, connectors: Dict[str, Any]) -> Dict[str, Any]:
+    """Shared, cross-request connector secrets. Read-only, same epoch/TTL rules as the catalog."""
+    result: Dict[str, Any] = _epoch_cached(_CATALOG, f"{tenant_id}:secrets", tenant_id,
+                                           lambda: _build_tenant_secrets(storage, tenant_id, connectors))
+    return result
 
 
 def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -173,16 +330,13 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
 
 
 def _serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dict[str, Any]:
+    """The cached serving bundle. Single-flighted since the epoch scheme was added: on
+    expiry, every concurrent request used to run the full 6-query rebuild (plus a Rust
+    Bundle compile) simultaneously — a stampede whose size is proportional to load."""
     key = f"{tenant_id}:{policy['id']}"
-    epoch = _current_epoch(tenant_id)
-    with _CACHE_LOCK:
-        cached = _SERVING.get(key)
-    if cached is not None and cached[0] == epoch:
-        return cached[1]
-    built = _build_serving_bundle(storage, tenant_id, policy)
-    with _CACHE_LOCK:
-        _SERVING[key] = (epoch, built)
-    return built
+    result: Dict[str, Any] = _epoch_cached(
+        _SERVING, key, tenant_id, lambda: _build_serving_bundle(storage, tenant_id, policy))
+    return result
 
 
 def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, str]]:

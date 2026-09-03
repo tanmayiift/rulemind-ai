@@ -27,7 +27,7 @@ class DataProtectionRequest(BaseModel):
 
 
 def _data_protection_view(tenant_id: str) -> Dict[str, Any]:
-    from ..logic import REDACTED_KEYS
+    from ..logic import REDACTED_KEY_TOKENS, REDACTED_KEYS, _key_match_mode, _value_scan_mode
     from ..storage import decision_encryption_enabled
 
     settings = main.storage.get_settings(tenant_id=tenant_id)
@@ -40,6 +40,13 @@ def _data_protection_view(tenant_id: str) -> Dict[str, Any]:
         "pii_redact_keys": custom,
         "builtin_redact_keys": sorted(REDACTED_KEYS),
         "env_redact_keys": env_keys,
+        # Redaction no longer depends on key names alone, and an auditor asking "what is
+        # actually stripped from our decision log?" cannot answer that from the key list by
+        # itself. Both new dimensions are deployment-level (env), so they are read-only here
+        # alongside encryption and the archive sink.
+        "qualified_redact_tokens": sorted(REDACTED_KEY_TOKENS),
+        "key_match_mode": _key_match_mode(),
+        "value_scan_mode": _value_scan_mode(),
     }
 
 

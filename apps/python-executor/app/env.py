@@ -17,7 +17,7 @@ The failures that produced this module:
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import List, Optional
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
@@ -68,3 +68,13 @@ def env_opt(name: str) -> Optional[str]:
     where blank must mean "not configured" rather than an empty configured value."""
     raw = env_str(name)
     return raw or None
+
+
+def env_list(name: str, separator: str = ",") -> List[str]:
+    """Separator-delimited values with blanks dropped.
+
+    `"a,,b,".split(",")` yields two empty strings; for a list of *secrets*
+    (RULEMIND_CONFIG_KEY_OLD) an empty entry would derive a key from the empty
+    string — publicly computable — and quietly join the decryption chain. Blank
+    entries are dropped rather than carried."""
+    return [item.strip() for item in env_str(name).split(separator) if item.strip()]

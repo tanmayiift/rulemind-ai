@@ -6,13 +6,14 @@ import logging
 import hashlib
 import hmac
 import json
-import os
 import time as _time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from sqlalchemy import case, delete, desc, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
@@ -35,6 +36,7 @@ from .auth import (
     otp_code_hash,
     session_token_hash,
 )
+from . import env
 from .context import get_current_tenant_id
 from .db import engine_for, session_factory
 from .logic import generate_rule_expression_definition, json_dumps, now_iso
@@ -84,7 +86,11 @@ SECRET_FIELD_MARKERS = ("token", "secret", "password", "api_key", "apikey", "cli
 
 # Verified API keys are cached per-Storage-instance (bcrypt is deliberately
 # ~200ms; running it per request caps the whole API at a few req/s). TTL below.
-_API_KEY_CACHE_TTL = float(os.getenv("API_KEY_CACHE_TTL", "300"))
+#
+# env.env_float, not float(os.getenv(...)): this runs at MODULE IMPORT, so a set-but-blank
+# API_KEY_CACHE_TTL made `float("")` raise ValueError before a single request handler existed —
+# the process died at import with a traceback that named neither the variable nor the fix.
+_API_KEY_CACHE_TTL = env.env_float("API_KEY_CACHE_TTL", 300.0)
 
 
 def _parse_client_datetime(value: Any) -> Optional[datetime]:
@@ -111,40 +117,180 @@ def serialize_datetime(value: Optional[datetime]) -> Optional[str]:
     return value.replace(microsecond=0).isoformat() + "Z"
 
 
+# ── config-at-rest encryption ────────────────────────────────────────────────
+#
+# Everything below shares one master secret, RULEMIND_CONFIG_KEY. Two things were wrong with
+# how it was used, and both fail in the same direction — quietly.
+#
+# 1. THE KEY WAS UNROTATABLE. `fernet_key()` derived exactly one key and every decrypt used it
+#    alone, so changing RULEMIND_CONFIG_KEY orphaned every encrypted column at once. There was
+#    no second chance: no MultiFernet, no old-key list, nothing anywhere in the repo.
+#
+# 2. EVERY DECRYPT RETURNED SOMETHING PLAUSIBLE ON THE WRONG KEY. `except: return value`
+#    handed the CIPHERTEXT back as if it were the plaintext. So a rotation did not fail — it
+#    "succeeded" and then sent the base64 of a connector token as a live Authorization header,
+#    fed ciphertext bytes to `pickle.loads`, and emptied every connector config to `{}`. The
+#    operator's signal that the key was wrong was a slow, distributed outage.
+#
+# The chain below fixes both: MultiFernet tries the primary key then every configured old key,
+# and a token that decrypts under NONE of them raises DecryptionError instead of degrading.
+# The one legacy path that IS deliberate — a row written before encryption existed — is now
+# gated on the Fernet version marker rather than on "an exception happened".
+
+# A Fernet token is urlsafe-base64 whose first byte is the version 0x80, which always encodes
+# as "gAAAAA". That marker is what separates "this column holds ciphertext" (a decrypt failure
+# here is a real error) from "this column holds a pre-encryption plaintext" (returning it is
+# correct). Before, the two were indistinguishable because both arrived as `except Exception`.
+_FERNET_PREFIX = "gAAAAA"
+_FERNET_PREFIX_BYTES = b"gAAAAA"
+
+CONFIG_KEY_VAR = "RULEMIND_CONFIG_KEY"
+CONFIG_KEY_OLD_VAR = "RULEMIND_CONFIG_KEY_OLD"
+_CONFIG_KEY_DEFAULT = "rulemind-dev-master-key"
+
+# A fixed application salt. The master secret lives only in the environment and there is
+# nowhere to persist a random per-deployment salt that every replica would agree on, so the
+# salt is a constant and the work factor carries the weight. This is still a large improvement
+# on the bare `sha256(raw)` it replaces: a single SHA-256 over an operator-chosen passphrase is
+# brute-forceable at billions of guesses/second on commodity GPUs, which matters because the
+# thing being guessed is the key to every stored secret and every decision payload.
+_KDF_SALT = b"rulemind.config-key.pbkdf2.v1"
+_KDF_ITERATIONS = 200_000
+
+# Derivation is ~100ms, and the old code derived a key on EVERY encrypt and decrypt call.
+# Memoised per distinct secret; the process already holds these values in os.environ.
+_DERIVED_KEY_CACHE: Dict[str, bytes] = {}
+_KEY_CHAIN_CACHE: Dict[Tuple[str, Tuple[str, ...]], MultiFernet] = {}
+
+
+class DecryptionError(RuntimeError):
+    """Stored ciphertext could not be decrypted with any configured key.
+
+    Deliberately loud. The alternative this replaces — returning the ciphertext, or `{}` —
+    turned a wrong RULEMIND_CONFIG_KEY into corrupt-but-plausible data flowing outward.
+    """
+
+
+def _looks_encrypted(value: str) -> bool:
+    return value.startswith(_FERNET_PREFIX)
+
+
+def _derive_key(secret: str) -> bytes:
+    """PBKDF2-HMAC-SHA256 -> a urlsafe-base64 Fernet key."""
+    cached = _DERIVED_KEY_CACHE.get(secret)
+    if cached is not None:
+        return cached
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(), length=32, salt=_KDF_SALT, iterations=_KDF_ITERATIONS
+    )
+    derived = base64.urlsafe_b64encode(kdf.derive(secret.encode("utf-8")))
+    _DERIVED_KEY_CACHE[secret] = derived
+    return derived
+
+
+def _legacy_sha256_key(secret: str) -> bytes:
+    """The pre-KDF derivation: one unsalted SHA-256 of the raw secret.
+
+    Kept ONLY as a decryption key. Switching to PBKDF2 changes the derived key, so every row
+    already in the database was encrypted under this one; dropping it would render every
+    connector config, provider key, SMTP password, SSO secret, webhook secret, model blob and
+    decision payload permanently unreadable, with no error at write time to warn anyone. It
+    stays in the chain so old rows keep decrypting, and `scripts/rotate_config_key.py`
+    re-encrypts them onto the KDF key at the operator's convenience.
+    """
+    return base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+
+
+def _config_key_secrets() -> Tuple[str, Tuple[str, ...]]:
+    """(primary, previous...) — env.env_str so a set-but-BLANK RULEMIND_CONFIG_KEY falls back to
+    the dev default rather than deriving the key from "", which is publicly computable and would
+    silently encrypt every tenant's secrets under a key printed in this comment."""
+    primary = env.env_str(CONFIG_KEY_VAR, _CONFIG_KEY_DEFAULT)
+    return primary, tuple(env.env_list(CONFIG_KEY_OLD_VAR))
+
+
+def crypto() -> MultiFernet:
+    """The key chain: encrypt() uses the FIRST key, decrypt() tries them in order.
+
+    Order is primary-KDF, primary-legacy-sha256, then each RULEMIND_CONFIG_KEY_OLD entry in
+    both derivations. That means: new writes use the primary KDF key; reads still succeed for
+    data written before the KDF change and for data written under a previous master secret.
+    """
+    primary, olds = _config_key_secrets()
+    cache_key = (primary, olds)
+    cached = _KEY_CHAIN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    raw_keys = [_derive_key(primary), _legacy_sha256_key(primary)]
+    for old in olds:
+        raw_keys.append(_derive_key(old))
+        raw_keys.append(_legacy_sha256_key(old))
+    chain = MultiFernet([Fernet(key) for key in raw_keys])
+    _KEY_CHAIN_CACHE[cache_key] = chain
+    return chain
+
+
 def fernet_key() -> bytes:
-    raw = os.getenv("RULEMIND_CONFIG_KEY", "rulemind-dev-master-key")
-    digest = hashlib.sha256(raw.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest)
+    """The PRIMARY key — what new writes are encrypted under. Reads must go through `crypto()`
+    so previous keys are tried too."""
+    primary, _ = _config_key_secrets()
+    return _derive_key(primary)
+
+
+def _decryption_error(field: str) -> DecryptionError:
+    return DecryptionError(
+        "Could not decrypt {0}: the stored value is Fernet ciphertext but none of the "
+        "configured keys open it. {1} has most likely been changed or rotated. Set the "
+        "PREVIOUS key(s) in {2} (comma-separated) so reads keep working, then run "
+        "scripts/rotate_config_key.py to re-encrypt onto the new key. Refusing to return the "
+        "ciphertext as if it were the plaintext value.".format(
+            field, CONFIG_KEY_VAR, CONFIG_KEY_OLD_VAR
+        )
+    )
 
 
 def encrypt_config_payload(value: Dict[str, Any]) -> str:
-    return Fernet(fernet_key()).encrypt(json.dumps(value).encode("utf-8")).decode("utf-8")
+    return crypto().encrypt(json.dumps(value).encode("utf-8")).decode("utf-8")
 
 
 def decrypt_config_payload(value: str) -> Dict[str, Any]:
+    """A connector's config (base URLs, auth headers, credentials).
+
+    Used to return `{}` on any failure, which is the worst possible answer: the connector kept
+    working, just with no auth and no configured endpoint, so the failure surfaced as confusing
+    downstream 401s rather than as "the key is wrong".
+    """
     if not value:
         return {}
-    try:
-        return json.loads(Fernet(fernet_key()).decrypt(value.encode("utf-8")).decode("utf-8"))
-    except Exception:
+    if not _looks_encrypted(value):
+        # Deliberate legacy path: rows written before encrypted_config was encrypted held raw
+        # JSON. Narrow — gated on the value not being ciphertext at all, not on "it threw".
         try:
-            return json.loads(value)
-        except Exception:
-            return {}
+            parsed = json.loads(value)
+        except ValueError as exc:
+            raise DecryptionError(
+                "Connector config is neither Fernet ciphertext nor legacy JSON; the column is "
+                "corrupt and cannot be interpreted."
+            ) from exc
+        return parsed if isinstance(parsed, dict) else {}
+    try:
+        return json.loads(crypto().decrypt(value.encode("utf-8")).decode("utf-8"))
+    except InvalidToken as exc:
+        raise _decryption_error("connector config") from exc
 
 
 def decision_encryption_enabled() -> bool:
     """Encrypt decision payloads at rest (default ON). Financial/KYC/health/any-PII inputs must
     not sit in the DB as plaintext. Disable only for a plaintext-required migration."""
-    return (os.getenv("DECISION_ENCRYPT_AT_REST", "1") or "1").strip() not in ("0", "false", "no")
+    return env.env_bool("DECISION_ENCRYPT_AT_REST", True)
 
 
 def encrypt_decision_field(value: Any) -> Any:
-    """Encrypt a decision JSON blob (payload/variables) for storage. Returns a Fernet token
-    string when encryption is enabled, else the value unchanged (dev/migration)."""
+    """Encrypt a decision JSON blob (payload/variables/rule results/scorecard/trace) for storage.
+    Returns a Fernet token string when encryption is enabled, else the value unchanged."""
     if value is None or not decision_encryption_enabled():
         return value
-    return Fernet(fernet_key()).encrypt(json_dumps(value).encode("utf-8")).decode("utf-8")
+    return crypto().encrypt(json_dumps(value).encode("utf-8")).decode("utf-8")
 
 
 def decrypt_decision_field(value: Any) -> Any:
@@ -152,41 +298,89 @@ def decrypt_decision_field(value: Any) -> Any:
     plaintext (a JSON object already), so old rows keep reading after encryption is turned on."""
     if not isinstance(value, str):
         return value  # legacy plaintext dict/list, or None
-    try:
-        return json.loads(Fernet(fernet_key()).decrypt(value.encode("utf-8")).decode("utf-8"))
-    except Exception:
+    if not _looks_encrypted(value):
+        # Deliberate legacy path: a pre-encryption row, or a JSON column that round-tripped the
+        # blob as a JSON *string*. Not a decrypt failure — there is no ciphertext here.
         try:
             return json.loads(value)
-        except Exception:
+        except ValueError:
             return value
+    try:
+        return json.loads(crypto().decrypt(value.encode("utf-8")).decode("utf-8"))
+    except InvalidToken as exc:
+        raise _decryption_error("decision field") from exc
 
 
 def encrypt_secret_text(value: str) -> str:
-    return Fernet(fernet_key()).encrypt(value.encode("utf-8")).decode("utf-8")
+    return crypto().encrypt(value.encode("utf-8")).decode("utf-8")
 
 
 def decrypt_secret_text(value: Optional[str]) -> Optional[str]:
+    """Decrypt one stored secret (LLM provider key, SMTP password, SSO client secret, webhook
+    signing secret).
+
+    This one returned the CIPHERTEXT on failure, and every caller passes the result straight
+    into an outbound request — so a wrong key meant a base64 blob was sent as a live
+    Authorization header / SMTP password / OIDC client_secret to a third party, and the only
+    symptom was an authentication failure at the far end.
+    """
     if not value:
         return None
-    try:
-        return Fernet(fernet_key()).decrypt(value.encode("utf-8")).decode("utf-8")
-    except Exception:
+    if not _looks_encrypted(value):
+        # Deliberate legacy path: a secret stored before encrypt_secret_text existed. Narrow —
+        # only for values that carry no Fernet version marker.
         return value
+    try:
+        return crypto().decrypt(value.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise _decryption_error("stored secret") from exc
 
 
 def encrypt_model_blob(blob: bytes) -> bytes:
     """Encrypt a hosted model's raw bytes at rest. The DB (and any dump / backup /
     replica) only ever holds ciphertext — the model's weights are unreadable without
     RULEMIND_CONFIG_KEY. Protects proprietary / black-box model IP."""
-    return Fernet(fernet_key()).encrypt(blob)
+    return crypto().encrypt(blob)
 
 
 def decrypt_model_blob(blob: bytes) -> bytes:
-    try:
-        return Fernet(fernet_key()).decrypt(blob)
-    except Exception:
-        # Tolerate a pre-encryption blob (defensive; shouldn't occur post-migration).
+    """Decrypt a hosted model's pickled bytes.
+
+    Returning the raw ciphertext on failure fed it to `pickle.loads`, which is both guaranteed
+    to fail confusingly and a deserialisation path that should never be handed attacker- or
+    corruption-shaped bytes.
+    """
+    if not blob:
         return blob
+    if not blob.startswith(_FERNET_PREFIX_BYTES):
+        # Deliberate legacy path: a model uploaded before blobs were encrypted.
+        return blob
+    try:
+        return crypto().decrypt(blob)
+    except InvalidToken as exc:
+        raise _decryption_error("hosted model blob") from exc
+
+
+def decision_payload_hash(payload: Any) -> str:
+    """A KEYED fingerprint of a decision payload.
+
+    Was a bare `sha256(canonical_json)`. Decision payloads are overwhelmingly low-entropy PII —
+    a PAN, a phone number, a date of birth, a pincode, a loan amount — so an unsalted, unkeyed
+    digest is reversible by enumeration: anyone with read access to the `decisions` table (a
+    replica, a backup, a support export) can recover the exact input by hashing candidates.
+    That defeats the point of encrypting payload_preview in the same row.
+
+    HMAC under a key derived from RULEMIND_CONFIG_KEY makes enumeration require the key, which
+    is exactly the property the encrypted columns already depend on. The subkey is separated by
+    label so this never reuses the Fernet encryption key material directly.
+
+    Note for operators: rotating RULEMIND_CONFIG_KEY changes the hash produced for NEW rows.
+    Nothing in the codebase looks a decision up by payload_hash (verified), so this is a
+    fingerprint for correlation only, not an index.
+    """
+    primary, _ = _config_key_secrets()
+    subkey = hmac.new(b"rulemind.payload-hash.v1", primary.encode("utf-8"), hashlib.sha256).digest()
+    return hmac.new(subkey, json_dumps(payload).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def mask_secret_values(value: Any) -> Any:
@@ -220,8 +414,13 @@ class Storage:
         # rationale as the API-key cache; role is read live so a role change /
         # deactivation takes effect within the TTL (and eagerly, see _invalidate_member).
         self._member_session_cache: Dict[str, Any] = {}
-        self.default_admin_email = os.getenv("RULEMIND_ADMIN_EMAIL", "admin@rulemind.local")
-        self.default_admin_password = os.getenv("RULEMIND_ADMIN_PASSWORD", "rulemind-admin")
+        # env.env_str throughout: a set-but-blank RULEMIND_ADMIN_PASSWORD would otherwise seed the
+        # platform admin with an EMPTY password (os.getenv returns "" and the default never
+        # applies) — and security_config's default-secret check passes, because "" is not the
+        # built-in default it looks for. A blank RULEMIND_ADMIN_EMAIL is just as bad in a
+        # different way: the seeded admin gets an unaddressable account nobody can log in as.
+        self.default_admin_email = env.env_str("RULEMIND_ADMIN_EMAIL", "admin@rulemind.local")
+        self.default_admin_password = env.env_str("RULEMIND_ADMIN_PASSWORD", "rulemind-admin")
         self.seed_if_empty()
 
     @contextmanager
@@ -254,7 +453,9 @@ class Storage:
         return resolved
 
     def _seed_default_tenant(self, session: Session) -> Tenant:
-        plaintext = os.getenv("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000")
+        # env.env_str: a blank RULEMIND_DEV_API_KEY would seed a tenant whose API key is the
+        # EMPTY STRING — and key_lookup_hash("") is a fixed, publicly computable digest.
+        plaintext = env.env_str("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000")
         lookup_hash = key_lookup_hash(plaintext)
         tenant = session.scalar(select(Tenant).where(Tenant.api_key_hash == lookup_hash).limit(1))
         if tenant:
@@ -268,7 +469,9 @@ class Storage:
         return tenant
 
     def _seed_default_api_key(self, session: Session, tenant: Tenant) -> None:
-        plaintext = os.getenv("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000")
+        # env.env_str: a blank RULEMIND_DEV_API_KEY would seed a tenant whose API key is the
+        # EMPTY STRING — and key_lookup_hash("") is a fixed, publicly computable digest.
+        plaintext = env.env_str("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000")
         lookup_hash = key_lookup_hash(plaintext)
         existing_for_lookup = session.scalar(select(ApiKey).where(ApiKey.lookup_hash == lookup_hash).limit(1))
         if existing_for_lookup:
@@ -328,7 +531,7 @@ class Storage:
             # is OPT-IN: a fresh clone starts clean so a new customer builds their own
             # via guided onboarding. Set RULEMIND_SEED_DEMO=1 to load the samples (the
             # test suite sets it per-file). Workspace settings always exist regardless.
-            if os.getenv("RULEMIND_SEED_DEMO", "0") != "1":
+            if not env.env_bool("RULEMIND_SEED_DEMO"):
                 self._ensure_settings(session, tenant.id)
                 return
 
@@ -812,9 +1015,14 @@ class Storage:
             "payload": copy.deepcopy(decrypt_decision_field(model.payload_preview) or {}),
             "payload_hash": model.payload_hash,
             "computed_variables": copy.deepcopy(decrypt_decision_field(model.computed_variables) or {}),
-            "rule_results": copy.deepcopy(model.rule_results or []),
-            "scorecard_result": copy.deepcopy(model.scorecard_result),
-            "trace": copy.deepcopy(model.trace or []),
+            # rule_results / scorecard_result / trace are decrypted here for the same reason the
+            # two above are: they carry the same PII. The trace records the evaluated INPUT
+            # values at every step, so leaving it in the clear (as it was) meant encrypting
+            # payload_preview protected almost nothing — the plaintext sat one column over, and
+            # redact_payload is applied only to the payload, never to the trace.
+            "rule_results": copy.deepcopy(decrypt_decision_field(model.rule_results) or []),
+            "scorecard_result": copy.deepcopy(decrypt_decision_field(model.scorecard_result)),
+            "trace": copy.deepcopy(decrypt_decision_field(model.trace) or []),
             "outcome": model.outcome,
             "latency_ms": model.latency_ms,
             "source": model.source,
@@ -1384,7 +1592,12 @@ class Storage:
         """
         resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         preview = copy.deepcopy(payload.get("payload", {}))
-        payload_hash = payload.get("payload_hash") or hashlib.sha256(json_dumps(preview).encode("utf-8")).hexdigest()
+        # Computed here, never taken from the caller. `payload.get("payload_hash") or ...` let an
+        # SDK client set the fingerprint of its own decision to any value it liked — including
+        # one collided onto another decision's. Nothing in the codebase reads a decision by
+        # payload_hash, so no caller relies on supplying it (verified across the API, the WAL
+        # replay path and all five SDKs).
+        payload_hash = decision_payload_hash(preview)
         with self.connect() as session:
             decision = Decision(
                 id=payload.get("id") or uuid4_str(),
@@ -1395,9 +1608,9 @@ class Storage:
                 payload_hash=payload_hash,
                 payload_preview=encrypt_decision_field(preview),
                 computed_variables=encrypt_decision_field(copy.deepcopy(payload.get("computed_variables", {}))),
-                rule_results=copy.deepcopy(payload.get("rule_results", [])),
-                scorecard_result=copy.deepcopy(payload.get("scorecard_result")),
-                trace=copy.deepcopy(payload.get("trace", [])),
+                rule_results=encrypt_decision_field(copy.deepcopy(payload.get("rule_results", []))),
+                scorecard_result=encrypt_decision_field(copy.deepcopy(payload.get("scorecard_result"))),
+                trace=encrypt_decision_field(copy.deepcopy(payload.get("trace", []))),
                 outcome=payload["outcome"],
                 latency_ms=int(payload.get("latency_ms", 0)),
                 source=payload.get("source", "api"),
@@ -1465,7 +1678,7 @@ class Storage:
                 if client_id is not None:
                     seen.add(client_id)
                 preview = copy.deepcopy(record.get("payload", {}))
-                payload_hash = record.get("payload_hash") or hashlib.sha256(json_dumps(preview).encode("utf-8")).hexdigest()
+                payload_hash = decision_payload_hash(preview)  # keyed; never caller-supplied
                 row = Decision(
                     id=uuid4_str(),
                     tenant_id=resolved,
@@ -1474,9 +1687,9 @@ class Storage:
                     payload_hash=payload_hash,
                     payload_preview=encrypt_decision_field(preview),
                     computed_variables=encrypt_decision_field(copy.deepcopy(record.get("computed_variables", {}))),
-                    rule_results=copy.deepcopy(record.get("rule_results", [])),
-                    scorecard_result=copy.deepcopy(record.get("scorecard_result")),
-                    trace=copy.deepcopy(record.get("trace", [])),
+                    rule_results=encrypt_decision_field(copy.deepcopy(record.get("rule_results", []))),
+                    scorecard_result=encrypt_decision_field(copy.deepcopy(record.get("scorecard_result"))),
+                    trace=encrypt_decision_field(copy.deepcopy(record.get("trace", []))),
                     outcome=record.get("outcome", "pending"),
                     latency_ms=int(record.get("latency_ms", record.get("latencyMs", 0)) or 0),
                     source=record.get("source", "on_device"),
@@ -1535,12 +1748,29 @@ class Storage:
             return [self._decision_to_dict(row) for row in rows]
 
     def get_decision(self, decision_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Point read of one decision, tolerant of a cross-worker write (T5.6).
+
+        `decision_log.flush()` alone is not enough here. It waits on THIS process's pending
+        futures, but the decision-log write is async and uvicorn runs several workers, so the
+        `decision_id` that /decide just handed back is routinely still in flight in a DIFFERENT
+        worker when the follow-up GET arrives -- and the caller gets a 404 for a decision that
+        exists. `await_row` flushes locally and then re-polls briefly, so the cost lands only on
+        the miss path and a hit is as fast as before.
+
+        Deliberately NOT applied to list_decisions/sample_policy_decisions: a bounded wait only
+        makes sense when a specific, known id is expected to be there.
+        """
         from . import decision_log
-        decision_log.flush()
+
         resolved = self._tenant_id(tenant_id)
-        with self.connect() as session:
-            row = session.scalar(select(Decision).where(Decision.tenant_id == resolved, Decision.id == decision_id))
-            return self._decision_to_dict(row) if row else None
+
+        def _fetch() -> Optional[Dict[str, Any]]:
+            with self.connect() as session:
+                row = session.scalar(
+                    select(Decision).where(Decision.tenant_id == resolved, Decision.id == decision_id))
+                return self._decision_to_dict(row) if row else None
+
+        return decision_log.await_row(_fetch)
 
     def sample_policy_decisions(self, policy_id: str, tenant_id: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
         """The most recent full decision rows for one policy (payload + computed variables included,

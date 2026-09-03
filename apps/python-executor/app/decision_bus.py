@@ -18,7 +18,7 @@ import json
 import os
 from typing import Any, AsyncIterator, Dict, Optional
 
-from .runtime import redis_client
+from .runtime import mark_redis_unavailable, redis_client, redis_timeouts
 
 _CHANNEL = "rulemind:decisions:{0}"
 
@@ -51,7 +51,12 @@ def publish_decision(tenant_id: str, decision: Dict[str, Any]) -> None:
     try:
         client.publish(channel_for(tenant_id), json.dumps(compact_frame(decision)))
     except Exception:
-        pass
+        # This runs on the decision write path. A hung Redis used to block here with no
+        # socket timeout — the fan-out that is documented as "never allowed to affect the
+        # decision write path" was in fact able to stall it indefinitely. The timeout in
+        # runtime.redis_timeouts() bounds the stall; this latch stops the next decision
+        # paying it again.
+        mark_redis_unavailable()
 
 
 def has_redis() -> bool:
@@ -76,7 +81,13 @@ async def subscribe_decisions(tenant_id: str) -> AsyncIterator[Dict[str, Any]]:
     client: Optional[Any] = None
     pubsub = None
     try:
-        client = aioredis.from_url(url, decode_responses=True)
+        # Same timeouts as the sync client. Without socket_connect_timeout an SSE
+        # subscriber against a blackholed Redis hangs in from_url()/subscribe() forever,
+        # holding the connection and its task open with no way for the client to tell.
+        # `socket_timeout` is safe alongside the 1.0s get_message() poll below: that call
+        # passes its own timeout, and a longer socket timeout only bounds a genuinely
+        # unresponsive server.
+        client = aioredis.from_url(url, decode_responses=True, **redis_timeouts())
         pubsub = client.pubsub()
         await pubsub.subscribe(channel_for(tenant_id))
         while True:

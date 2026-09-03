@@ -96,7 +96,7 @@ Every request flows through, in order:
 3. **`AUTH_MODE=none`** — early-return for local/dev and the test harness.
 4. **Credential resolution** — either `X-Api-Key` (→ `storage.get_tenant_by_api_key`) **or**
    `Authorization: Bearer <session>` (a human member session). Both resolve to **tenant + RBAC role**.
-5. **Tenant active check** + **rate limiting** (`rate_limit_allow`, plan-based: 5000 enterprise /
+5. **Tenant active check** + **rate limiting** (`rate_limit.check`, plan-based: 5000 enterprise /
    1000 standard req/window; **fail-closed in production**).
 6. Sets `request.state.tenant_id / role / actor_kind / session_id / api_key_id`.
 

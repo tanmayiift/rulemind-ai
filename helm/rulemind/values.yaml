@@ -61,6 +61,14 @@ env:
   # committed dev keys. "production" makes that check fail closed.
   rulemindEnv: production
 
+  # Number of proxy hops you control in front of the API. MUST be non-zero behind an ingress.
+  # The pre-auth abuse budgets (signup, admin surface, login) are keyed by client IP, and with
+  # 0 hops the client IP is the socket peer -- which behind an ingress is the INGRESS. Every
+  # budget then shares one bucket, so a busy cluster 429s legitimate signups while an attacker
+  # coming through the same ingress is indistinguishable from everyone else. 1 is correct for a
+  # single ingress controller; add one per additional proxy you actually operate.
+  trustedProxyHops: 1
+
   # Never rendered by the old chart, so a helm deploy silently fell back to the
   # app default in app/main.py:43 ("http://localhost:3000,http://127.0.0.1:3000")
   # and every browser call from the real host was blocked by CORS. Empty here =

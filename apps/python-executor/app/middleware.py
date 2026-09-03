@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import os
-from typing import Callable
+import hashlib
+import logging
+import time
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .context import (
+    REQUEST_ID_HEADER,
+    request_id_scope,
     reset_current_api_key_id,
     reset_current_role,
     reset_current_tenant_id,
@@ -15,8 +19,10 @@ from .context import (
     set_current_role,
     set_current_tenant_id,
 )
+from .env import env_int, env_str
 from .mtls import MtlsSettings, evaluate_client_cert
 from .rbac import is_allowed
+from .runtime import is_local_dev
 from . import idempotency, rate_limit
 from .session_cookie import (
     CSRF_PROTECTED_METHODS,
@@ -25,6 +31,8 @@ from .session_cookie import (
     csrf_valid,
 )
 
+
+LOGGER = logging.getLogger("rulemind.middleware")
 
 EXEMPT_PATHS = {
     "/health",
@@ -52,6 +60,304 @@ def _bearer_token(request: Request) -> str:
     return request.cookies.get(SESSION_COOKIE, "") or ""
 
 
+# ── Pre-auth throttling ────────────────────────────────────────────────────────
+#
+# Two paths reach a handler before any tenant exists, so the per-tenant limiter below is
+# structurally unable to see them: /api/v1/onboarding/signup returns at the EXEMPT_PATHS check
+# and the whole /api/admin/v1 surface returns one branch later, both ~76 lines before
+# rate_limit.check() runs. Signup is four unauthenticated writes that mint a LIVE API key, so
+# unthrottled it is a tenant/key faucet and a free front door to every authenticated route
+# behind that key. These limits are keyed by CLIENT IP because that is the only identity that
+# exists at this point in the request.
+# Per-IP budgets, requests/minute. 20 for signup is six times tighter than the most restrictive
+# authenticated plan (DEFAULT_PLAN_RPM["free"] == 120) while still absorbing a shared-NAT office
+# or a CI run, which a single-digit ceiling would not.
+#
+# A rate limit alone does not "fix" signup abuse and is not claimed to — it bounds and surfaces
+# it. The endpoint's own docstring asks for email verification / CAPTCHA, and a deployment that
+# provisions tenants out of band should set RULEMIND_SELF_SERVE_SIGNUP=0 rather than rely on
+# this number.
+DEFAULT_SIGNUP_RPM = 20
+DEFAULT_ADMIN_RPM = 60
+
+
+def trusted_proxy_hops() -> int:
+    """How many reverse proxies sit in front of this process (RULEMIND_TRUSTED_PROXY_HOPS).
+
+    Defaults to 0 — the socket peer — because X-Forwarded-For is caller-supplied. Trusting it
+    blindly would make every IP-keyed limit here trivially bypassable: send a random XFF per
+    request and each one gets its own fresh bucket, which is worse than having no limit,
+    because it also poisons the audit trail with attacker-chosen addresses.
+    """
+    return max(0, env_int("RULEMIND_TRUSTED_PROXY_HOPS", 0))
+
+
+def client_ip(request: Request) -> str:
+    """The client address to key pre-auth limits on.
+
+    With N trusted hops configured, the trustworthy entry is the Nth from the RIGHT: each of
+    our own proxies appends the peer it received from, so the last N entries are the ones we
+    wrote and everything to their left is attacker-controlled. A short header means the
+    request did not traverse the expected chain, so it falls back to the socket peer rather
+    than accepting whatever was supplied.
+    """
+    peer = getattr(request.client, "host", "") or "unknown"
+    hops = trusted_proxy_hops()
+    if hops <= 0:
+        return peer
+    forwarded = [part.strip() for part in (request.headers.get("x-forwarded-for") or "").split(",") if part.strip()]
+    if len(forwarded) < hops:
+        return peer
+    return forwarded[-hops]
+
+
+DEFAULT_LOGIN_RPM = 20
+
+# The credential endpoints only. Deliberately not the whole "/api/v1/auth/" prefix: /session
+# is polled by the dashboard on every navigation, and throttling it at login rates would log
+# real users out. These four are the ones that accept a guess.
+CREDENTIAL_PATHS = (
+    "/api/v1/auth/login",
+    "/api/v1/auth/otp/request",
+    "/api/v1/auth/otp/verify",
+    "/api/mobile/v1/auth/login",
+)
+
+
+def _pre_auth_limit(path: str) -> Optional[Tuple[str, int]]:
+    """(bucket prefix, requests/minute) for a path that authenticates itself, else None."""
+    if path == "/api/v1/onboarding/signup":
+        return "signup", env_int("RULEMIND_SIGNUP_RATE_LIMIT_PER_MIN", DEFAULT_SIGNUP_RPM)
+    if path in CREDENTIAL_PATHS:
+        return "login", env_int("RULEMIND_LOGIN_RATE_LIMIT_PER_MIN", DEFAULT_LOGIN_RPM)
+    if path.startswith("/api/admin/v1"):
+        return "admin", env_int("RULEMIND_ADMIN_RATE_LIMIT_PER_MIN", DEFAULT_ADMIN_RPM)
+    return None
+
+
+def check_pre_auth_rate_limit(request: Request, path: str) -> Optional[JSONResponse]:
+    """429 when an unauthenticated caller exceeds the per-IP budget for this surface.
+
+    Reuses rate_limit.check's token bucket via its `key=` argument — the same Redis-backed,
+    cross-replica limiter the authenticated path uses. The synthetic tenant carries only a
+    `config.rate_limit_rpm`, which resolve_limit() reads first, so these surfaces get their own
+    tight ceiling instead of the 1000/min a tenantless caller would otherwise inherit.
+    """
+    configured = _pre_auth_limit(path)
+    if configured is None:
+        return None
+    prefix, rpm = configured
+    if rpm <= 0:  # explicitly disabled by an operator
+        return None
+    address = client_ip(request)
+    decision = rate_limit.check(
+        {"config": {"rate_limit_rpm": rpm}},
+        key="preauth:{0}:{1}".format(prefix, address),
+    )
+    if decision.allowed:
+        return None
+    LOGGER.warning("pre-auth rate limit hit: surface=%s ip=%s limit=%s path=%s", prefix, address, rpm, path)
+    return JSONResponse(
+        status_code=429,
+        headers=decision.headers(),
+        content={
+            "error": "Rate limit exceeded",
+            "detail": "Too many requests to {0} from this address. Retry in {1}s.".format(
+                path, max(1, decision.retry_after)),
+        },
+    )
+
+
+# ── Credential-stuffing lockout ────────────────────────────────────────────────
+#
+# Before this, NONE of the three login endpoints counted failures: the platform superadmin
+# login, its mobile twin and the workspace member login each verified a bcrypt hash and
+# returned 401, forever, at whatever rate the caller could manage. Only bcrypt's cost factor
+# stood between an attacker and an offline-speed online guessing attack against the account
+# that can read and mutate every tenant.
+#
+# The shape is copied from storage.verify_member_otp(..., max_attempts=5), which already got
+# this right for OTP codes. The counter lives here rather than in storage.py because this
+# agent does not own that file; see the report for the persistent-column version that should
+# replace it. Redis-backed when configured, because a per-process counter gives an attacker
+# max_attempts x replica_count guesses per window.
+DEFAULT_LOGIN_MAX_ATTEMPTS = 5
+DEFAULT_LOGIN_LOCKOUT_SECONDS = 900
+# Audit-event threshold. Lower than max_attempts on purpose: the point is to make a campaign
+# visible while it is still being attempted, not only once it has been stopped.
+LOGIN_ALERT_AFTER = 3
+
+
+class LoginGuard:
+    """Outcome of one lockout check."""
+
+    __slots__ = ("locked", "failures", "retry_after", "newly_locked")
+
+    def __init__(self, locked: bool, failures: int, retry_after: int, newly_locked: bool = False) -> None:
+        self.locked = locked
+        self.failures = failures
+        self.retry_after = retry_after
+        self.newly_locked = newly_locked
+
+    @property
+    def should_alert(self) -> bool:
+        return self.failures >= login_alert_after()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "LoginGuard(locked={0}, failures={1}, retry_after={2})".format(
+            self.locked, self.failures, self.retry_after)
+
+
+def login_max_attempts() -> int:
+    return max(1, env_int("RULEMIND_LOGIN_MAX_ATTEMPTS", DEFAULT_LOGIN_MAX_ATTEMPTS))
+
+
+def login_lockout_seconds() -> int:
+    return max(1, env_int("RULEMIND_LOGIN_LOCKOUT_SECONDS", DEFAULT_LOGIN_LOCKOUT_SECONDS))
+
+
+def login_alert_after() -> int:
+    return max(1, env_int("RULEMIND_LOGIN_ALERT_AFTER", LOGIN_ALERT_AFTER))
+
+
+def _login_bucket(scope: str, identity: str) -> str:
+    # Hashed: an email address is PII and these keys land in Redis, in `KEYS` output and in
+    # anything that dumps the keyspace.
+    digest = hashlib.sha256("{0}\x00{1}".format(scope, (identity or "").strip().lower()).encode("utf-8"))
+    return "loginfail:{0}:{1}".format(scope, digest.hexdigest()[:32])
+
+
+class _LocalLoginAttempts:
+    """Per-process fallback for when Redis is not configured."""
+
+    def __init__(self) -> None:
+        self._entries: Dict[str, Tuple[int, float]] = {}
+
+    def read(self, key: str) -> Tuple[int, float]:
+        count, expires = self._entries.get(key, (0, 0.0))
+        if expires and expires <= time.time():
+            self._entries.pop(key, None)
+            return 0, 0.0
+        return count, expires
+
+    def bump(self, key: str, ttl: int) -> Tuple[int, float]:
+        count, expires = self.read(key)
+        if not expires:
+            expires = time.time() + ttl
+        self._entries[key] = (count + 1, expires)
+        return count + 1, expires
+
+    def clear(self, key: str) -> None:
+        self._entries.pop(key, None)
+
+    def reset(self) -> None:
+        self._entries.clear()
+
+
+_LOCAL_LOGIN_ATTEMPTS = _LocalLoginAttempts()
+
+
+def reset_login_attempts_for_tests() -> None:
+    """Drop the in-process counters. Named for tests so nothing calls it from a request path."""
+    _LOCAL_LOGIN_ATTEMPTS.reset()
+
+
+def _redis() -> Any:
+    """Resolved per call, not bound at import, so a test can swap `runtime.redis_client` and
+    exercise the documented in-process fallback deterministically."""
+    try:
+        from .runtime import redis_client
+
+        return redis_client()
+    except Exception:  # pragma: no cover - a broken cache must never break login
+        return None
+
+
+def login_guard_status(scope: str, identity: str) -> LoginGuard:
+    """Whether this identity is currently locked out — call BEFORE verifying the credential.
+
+    Checking first is the point: verifying anyway and only refusing afterwards would still
+    burn a bcrypt comparison per attempt, which is the CPU-exhaustion half of the same attack.
+    """
+    key = _login_bucket(scope, identity)
+    maximum = login_max_attempts()
+    client = _redis()
+    if client is not None:
+        try:
+            raw = client.get(key)
+            count = int(raw) if raw else 0
+            ttl = int(client.ttl(key) or 0)
+            return LoginGuard(locked=count >= maximum, failures=count, retry_after=max(1, ttl) if ttl > 0 else 1)
+        except Exception:  # noqa: BLE001 - fall through to the local counter
+            pass
+    count, expires = _LOCAL_LOGIN_ATTEMPTS.read(key)
+    remaining = int(max(0.0, expires - time.time())) if expires else 0
+    return LoginGuard(locked=count >= maximum, failures=count, retry_after=max(1, remaining))
+
+
+def record_login_failure(scope: str, identity: str) -> LoginGuard:
+    """Count one failed credential check and report the resulting state."""
+    key = _login_bucket(scope, identity)
+    maximum = login_max_attempts()
+    ttl = login_lockout_seconds()
+    count = 0
+    remaining = ttl
+    client = _redis()
+    if client is not None:
+        try:
+            count = int(client.incr(key))
+            if count == 1:
+                # Set the window once, on the first failure, and never refresh it. Extending
+                # it on every attempt would let an attacker hold a victim's account locked
+                # indefinitely just by continuing to guess.
+                client.expire(key, ttl)
+            remaining = int(client.ttl(key) or ttl)
+        except Exception:  # noqa: BLE001 - fall through to the local counter
+            count = 0
+    if not count:
+        count, expires = _LOCAL_LOGIN_ATTEMPTS.bump(key, ttl)
+        remaining = int(max(1.0, expires - time.time()))
+    return LoginGuard(
+        locked=count >= maximum,
+        failures=count,
+        retry_after=max(1, remaining),
+        newly_locked=count == maximum,
+    )
+
+
+def clear_login_failures(scope: str, identity: str) -> None:
+    """Reset the counter after a successful authentication."""
+    key = _login_bucket(scope, identity)
+    client = _redis()
+    if client is not None:
+        try:
+            client.delete(key)
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+    _LOCAL_LOGIN_ATTEMPTS.clear(key)
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Stamp every request with a correlation id, and echo it back.
+
+    Deliberately a SEPARATE, outermost middleware rather than a few lines inside
+    TenantContextMiddleware.dispatch. That method has ~10 early returns -- OPTIONS, exempt
+    paths, 401, 403, 429 -- and those error responses are exactly the ones worth correlating,
+    so wiring the id inside it would miss them precisely when it matters.
+
+    request_id_scope accepts an inbound id or generates one. It also SANITISES: an inbound
+    header containing a newline is a log-forgery vector, since the id is written into every
+    structured log line for the request.
+    """
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        with request_id_scope(request.headers.get(REQUEST_ID_HEADER)) as request_id:
+            request.state.request_id = request_id
+            response = await call_next(request)
+            response.headers[REQUEST_ID_HEADER] = request_id
+            return response
+
+
 class TenantContextMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, storage) -> None:
         super().__init__(app)
@@ -62,6 +368,14 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
+        # Runs BEFORE the two early returns below. Both of them exit dispatch() long before
+        # the per-tenant rate-limit check further down, which is why signup and the admin
+        # surface were completely unthrottled: the limiter was not bypassed, it was
+        # unreachable.
+        throttled = check_pre_auth_rate_limit(request, path)
+        if throttled is not None:
+            return throttled
+
         if path in EXEMPT_PATHS or path.startswith("/api/admin/v1/auth"):
             return await call_next(request)
 
@@ -92,7 +406,7 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(prefix) for prefix in UNAUTH_AUTH_PREFIXES):
             return await call_next(request)
 
-        if os.getenv("AUTH_MODE") == "none":
+        if env_str("AUTH_MODE") == "none":
             return await call_next(request)
 
         if request.method == "POST" and path.startswith("/api/v1/webhooks/") and not path.endswith("/test"):
@@ -183,7 +497,17 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
 
 
 def admin_cookie_secure() -> bool:
-    return os.getenv("NODE_ENV", "development") != "development"
+    """Whether the admin-JWT cookie carries `Secure`.
+
+    This was a byte-identical copy of session_cookie._secure(): `NODE_ENV != "development"`.
+    Two problems, both live once a deployment sets RULEMIND_ENV=production. It keyed off
+    NODE_ENV, which the API container has no reason to set, and it DEFAULTED to development —
+    so the admin session cookie shipped over plain HTTP with no Secure attribute on exactly
+    the deployments that needed it. Delegating to runtime.is_local_dev() (itself a delegate to
+    security_config._is_local_dev) means RULEMIND_ENV decides, and the duplicate that let the
+    two copies drift is gone.
+    """
+    return not is_local_dev()
 
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
