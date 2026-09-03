@@ -132,7 +132,7 @@ def simulate_kpis(
             acc.observe(replayed_outcome, variables)  # type: ignore[arg-type]
 
     results = []
-    for spec, b_acc, c_acc in zip(kpis, baseline, candidate):
+    for spec, b_acc, c_acc in zip(kpis, baseline, candidate, strict=False):
         b, c = b_acc.value(), c_acc.value()
         delta = round(c - b, 6) if (isinstance(b, (int, float)) and isinstance(c, (int, float))) else None
         results.append({"name": spec.get("name"), "type": spec.get("type"),

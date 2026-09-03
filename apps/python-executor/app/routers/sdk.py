@@ -134,7 +134,7 @@ def sdk_bundle(request: Request) -> Response:
         response_payload = render_bundle_response(content, request.headers.get("x-client-public-key"))
     except BundleEncryptionRequired as exc:
         # A policy choice, not a server fault — tell the caller what to send.
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     BUNDLE_SYNCS_TOTAL.labels(status="success").inc()
     return Response(content=json_dumps(response_payload), media_type="application/json")
 
@@ -165,7 +165,7 @@ def sdk_policy_block(policy_id: str, request: Request) -> Response:
         try:
             payload = render_block_response(block, client_public_key)
         except BundleEncryptionRequired as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     else:
         # Signed plaintext: the client can inspect + evaluate the block directly, and verify the
         # RSA signature over its canonical bytes. Confidentiality comes from TLS/mTLS in transit.

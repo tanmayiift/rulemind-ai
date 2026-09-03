@@ -223,7 +223,7 @@ def decide(
     scorecards = _as_map(bundle.get("scorecards"))
     decision_tables = _as_map(bundle.get("decision_tables"))
 
-    for index, step in enumerate(policy.get("steps", [])):
+    for step in policy.get("steps", []):
         step_type = step.get("type")
         ref_id = step.get("ref_id") or step.get("ref")
         if step_type == "rule":

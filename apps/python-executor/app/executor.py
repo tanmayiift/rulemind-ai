@@ -107,7 +107,7 @@ def evaluate_condition(condition: str, context: Dict[str, Any]) -> bool:
             raise ValueError("Unsupported boolean operator")
         if isinstance(node, ast.Compare):
             left = visit(node.left)
-            for operator, comparator in zip(node.ops, node.comparators):
+            for operator, comparator in zip(node.ops, node.comparators, strict=False):
                 right = visit(comparator)
                 if isinstance(operator, ast.Eq):
                     if left != right:
@@ -1035,7 +1035,7 @@ class PolicyExecutor:
                 ctx.action_results.append(short)
                 on_failure = config.get("onFailure", "continue")
                 if on_failure == "abort":
-                    raise ActionFailedError("Action skipped — circuit open for {0}".format(breaker_key))
+                    raise ActionFailedError("Action skipped — circuit open for {0}".format(breaker_key)) from open_err
                 if on_failure == "review_gate":
                     ctx.outcome = _merge_outcome(ctx.outcome, "review")
                 return short

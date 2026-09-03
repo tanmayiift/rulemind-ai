@@ -103,7 +103,7 @@ async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_
                 body.pop("temperature", None)
                 resp = await client.post(url, headers=headers, json=body)
     except Exception as e:  # network
-        raise AIError(f"Anthropic request failed: {e}")
+        raise AIError(f"Anthropic request failed: {e}") from e
     if resp.status_code != 200:
         raise AIError(f"Anthropic error {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
@@ -127,7 +127,7 @@ async def _call_openai(api_key: str, model: str, system: str, user: str, max_tok
                 body.pop("temperature", None)
                 resp = await client.post(url, headers=headers, json=body)
     except Exception as e:
-        raise AIError(f"OpenAI request failed: {e}")
+        raise AIError(f"OpenAI request failed: {e}") from e
     if resp.status_code != 200:
         raise AIError(f"OpenAI error {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
@@ -163,7 +163,7 @@ async def _call_gemini(api_key: str, model: str, system: str, user: str, max_tok
                 generation.pop("temperature", None)
                 resp = await client.post(url, headers=headers, json=body)
     except Exception as e:
-        raise AIError(f"Gemini request failed: {e}")
+        raise AIError(f"Gemini request failed: {e}") from e
     if resp.status_code != 200:
         raise AIError(f"Gemini error {resp.status_code}: {resp.text[:300]}")
     data = resp.json()

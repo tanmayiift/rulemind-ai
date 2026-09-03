@@ -243,7 +243,7 @@ def backtest_policy_endpoint(
             bundle_version=bundle_version, sample=sample, full=full,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ── What-if KPI simulation (T2.7) ──────────────────────────────────────────
@@ -269,7 +269,7 @@ def whatif_endpoint(request: Request, policy_id: str, body: WhatIfRequest) -> Di
             bundle_version=body.bundle_version, full=body.full, sample=body.sample,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── Shadow execution / dark launch (T2.6) ──────────────────────────────────
@@ -287,7 +287,7 @@ def register_shadow_endpoint(request: Request, policy_id: str, body: ShadowReque
     try:
         return shadow.register_shadow(main.storage, policy_id, body.candidate_policy_id, tenant_id=tenant_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.delete("/api/v1/policies/{policy_id}/shadow")
@@ -336,7 +336,7 @@ def rollback_endpoint(request: Request, policy_id: str, body: RollbackRequest) -
         return release.rollback_policy(
             main.storage, policy_id, body.promotion_id, actor, tenant_id=tenant_id, reason=body.reason)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ── Collaborative editing (CRDT merge) + time-travel (T4.12 backend) ────────

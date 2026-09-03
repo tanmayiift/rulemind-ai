@@ -171,7 +171,7 @@ async def ai_generate_rule(request: AIGenerateRuleRequest) -> Dict[str, Any]:
     try:
         draft = await generate_rule(creds["provider"], creds["api_key"], request.prompt, variables, model=creds.get("model"))
     except AIError as error:
-        raise HTTPException(status_code=502, detail=str(error))
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
     # Validate the generated tree as a draft (not saved).
     valid, validation_error = True, None
@@ -204,7 +204,7 @@ async def ai_generate_policy(request: AIGeneratePolicyRequest) -> Dict[str, Any]
     try:
         draft = await generate_policy(creds["provider"], creds["api_key"], request.prompt, connectors, rules, scorecards, model=creds.get("model"))
     except AIError as error:
-        raise HTTPException(status_code=502, detail=str(error))
+        raise HTTPException(status_code=502, detail=str(error)) from error
     valid, validation_error = True, None
     try:
         validate_policy_steps(draft.get("steps") or [])
@@ -228,7 +228,7 @@ async def ai_explain_decision(request: AIExplainRequest) -> Dict[str, Any]:
     try:
         result = await explain_decision(creds["provider"], creds["api_key"], decision, model=creds.get("model"))
     except AIError as error:
-        raise HTTPException(status_code=502, detail=str(error))
+        raise HTTPException(status_code=502, detail=str(error)) from error
     return {"decision_id": request.decision_id, "outcome": decision.get("outcome"), **result}
 
 
@@ -253,7 +253,7 @@ async def ai_generate_predictor(request: AIPredictorRequest) -> Dict[str, Any]:
     try:
         draft = await generate_predictor(creds["provider"], creds["api_key"], request.definition, variables, model=creds.get("model"))
     except AIError as error:
-        raise HTTPException(status_code=502, detail=str(error))
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
     # Draft-validate: every referenced variable id must exist (the model is told to use only real ids,
     # but we never trust that — an unknown id would produce a silently-broken scorecard).
@@ -285,7 +285,7 @@ async def ai_analyze_experiment(request: AIExperimentAnalysisRequest, http_reque
     try:
         analysis = await analyze_experiment(creds["provider"], creds["api_key"], experiment, results, model=creds.get("model"))
     except AIError as error:
-        raise HTTPException(status_code=502, detail=str(error))
+        raise HTTPException(status_code=502, detail=str(error)) from error
     return {"experiment_id": request.experiment_id, "provider": creds["provider"], "results": results, **analysis}
 
 
@@ -319,5 +319,5 @@ async def ai_analyze_rejections(request: AIRejectionAnalysisRequest) -> Dict[str
     try:
         analysis = await analyze_rejections(creds["provider"], creds["api_key"], policy_name, drivers, model=creds.get("model"))
     except AIError as error:
-        raise HTTPException(status_code=502, detail=str(error))
+        raise HTTPException(status_code=502, detail=str(error)) from error
     return {"policy_id": request.policy_id, "policy_name": policy_name, "provider": creds["provider"], "drivers": drivers, **analysis}

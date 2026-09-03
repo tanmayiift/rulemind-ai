@@ -163,7 +163,7 @@ def access_create_member(request: MemberCreateRequest) -> Dict[str, Any]:
         member = main.storage.create_member(tenant_id, request.email, request.name or request.email,
                                              request.role, password=request.password)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     _audit_member("member_created", tenant_id, member["id"],
                   "Created member '{0}' ({1})".format(member["email"], request.role), {"role": request.role})
     return member
@@ -357,7 +357,7 @@ def sso_start(tenant_id: Optional[str] = None) -> Dict[str, Any]:
         state = sso.issue_state(resolved_tenant or "", provider, nonce, cfg.get("acs_url", ""))
         return {"provider": "saml", "redirect_url": sso.saml_authn_request_url(cfg, state)}
     except sso.SsoError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/v1/auth/sso/oidc/callback")
@@ -374,7 +374,7 @@ def sso_oidc_callback(request: OidcCallbackRequest) -> Dict[str, Any]:
             raise HTTPException(status_code=404, detail="OIDC is not enabled for this workspace.")
         identity = sso.complete_oidc_login(cfg, request.code, state.get("n", ""))
     except sso.SsoError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
     return _sso_finish_login(tenant_id, identity, "oidc", cfg)
 
 
@@ -403,5 +403,5 @@ async def sso_saml_acs(http_request: Request) -> Dict[str, Any]:
             raise HTTPException(status_code=404, detail="SAML is not enabled for this workspace.")
         identity = sso.parse_and_verify_saml_response(cfg, str(saml_response))
     except sso.SsoError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
     return _sso_finish_login(tenant_id, identity, "saml", cfg)

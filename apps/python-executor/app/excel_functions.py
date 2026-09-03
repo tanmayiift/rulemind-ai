@@ -724,7 +724,7 @@ def XNPV(rate: Numeric, values: list, dates: list) -> float:
     flows = _nums(*values)
     ds = [_to_date(d) for d in dates]
     d0 = ds[0]
-    return sum(cf / (1 + r) ** ((d - d0).days / 365.0) for cf, d in zip(flows, ds))
+    return sum(cf / (1 + r) ** ((d - d0).days / 365.0) for cf, d in zip(flows, ds, strict=False))
 
 def XIRR(values: list, dates: list, guess: float = 0.1) -> float:
     flows = _nums(*values)
@@ -733,8 +733,8 @@ def XIRR(values: list, dates: list, guess: float = 0.1) -> float:
     days = [(d - d0).days / 365.0 for d in ds]
     rate = _num(guess)
     for _ in range(200):
-        npv = sum(cf / (1 + rate) ** t for cf, t in zip(flows, days))
-        dnpv = sum(-t * cf / (1 + rate) ** (t + 1) for cf, t in zip(flows, days))
+        npv = sum(cf / (1 + rate) ** t for cf, t in zip(flows, days, strict=False))
+        dnpv = sum(-t * cf / (1 + rate) ** (t + 1) for cf, t in zip(flows, days, strict=False))
         if abs(dnpv) < 1e-12:
             break
         new_rate = rate - npv / dnpv
@@ -756,7 +756,7 @@ def DB(cost: Numeric, salvage: Numeric, life: Numeric, period: Numeric, month: N
     if p == 1:
         return c * rate * m / 12
     total_depr = c * rate * m / 12
-    for i in range(2, int(p)):
+    for _ in range(2, int(p)):
         total_depr += (c - total_depr) * rate
     if p == l + 1:
         return (c - total_depr) * rate * (12 - m) / 12
@@ -1230,7 +1230,7 @@ def TRANSPOSE(array: list) -> list:
         return []
     if not isinstance(array[0], (list, tuple)):
         return [[v] for v in array]
-    return [list(row) for row in zip(*array)]
+    return [list(row) for row in zip(*array, strict=False)]
 
 def SORT_FUNC(array: list, sort_index: int = 1, sort_order: int = 1, by_col: bool = False) -> list:
     idx = int(sort_index) - 1
@@ -1269,9 +1269,9 @@ def SEQUENCE(rows: int, columns: int = 1, start: Numeric = 1, step: Numeric = 1)
     r, c = int(rows), int(columns)
     result = []
     val = s
-    for i in range(r):
+    for _ in range(r):
         row = []
-        for j in range(c):
+        for _ in range(c):
             row.append(val)
             val += st
         result.append(row if c > 1 else row[0])

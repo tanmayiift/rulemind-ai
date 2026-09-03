@@ -600,7 +600,7 @@ def compute_variable_values(
             for source_id, group_vars in source_groups.items()
         }
         for future in as_completed(futures):
-            for variable, execution, group_computed in future.result():
+            for variable, execution, _ in future.result():
                 computed_values[variable["id"]] = execution.get("value")
                 results.append(
                     {
@@ -1601,7 +1601,7 @@ def list_excel_functions() -> Dict[str, Any]:
         "text": [], "lookup_reference": [], "date_time": [], "information": [],
         "engineering": [], "database": [],
     }
-    for name, func in sorted(EXCEL_FUNCTIONS.items()):
+    for name in sorted(EXCEL_FUNCTIONS):
         # Categorize by function name patterns
         if name in {"SUM", "SUMIF", "SUMIFS", "SUMPRODUCT", "SUMSQ", "ABS", "ACOS", "ACOSH", "ASIN", "ASINH", "ATAN", "ATAN2", "ATANH", "CEILING", "COMBIN", "COMBINA", "COS", "COSH", "COT", "CSC", "DEGREES", "EVEN", "EXP", "FACT", "FACTDOUBLE", "FLOOR", "FLOOR_MATH", "GCD", "INT", "LCM", "LN", "LOG", "LOG10", "MOD", "MROUND", "MULTINOMIAL", "ODD", "PI", "POWER", "PRODUCT", "QUOTIENT", "RADIANS", "RAND", "RANDBETWEEN", "ROUND", "ROUNDDOWN", "ROUNDUP", "SEC", "SIGN", "SIN", "SINH", "SQRT", "SQRTPI", "SUBTOTAL", "TAN", "TANH", "TRUNC"}:
             categories["math_trig"].append(name)

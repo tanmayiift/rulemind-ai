@@ -77,7 +77,7 @@ def verify_state(token: str) -> Dict[str, Any]:
     try:
         claims = jwt.decode(token, _state_secret(), algorithms=["HS256"], issuer=STATE_ISSUER)
     except jwt.PyJWTError as exc:
-        raise SsoError("Invalid or expired login state: {0}".format(exc))
+        raise SsoError("Invalid or expired login state: {0}".format(exc)) from exc
     return claims
 
 
@@ -133,7 +133,7 @@ def verify_oidc_id_token(id_token: str, jwks: Dict[str, Any], *, issuer: str, cl
     try:
         header = jwt.get_unverified_header(id_token)
     except jwt.PyJWTError as exc:
-        raise SsoError("Malformed ID token: {0}".format(exc))
+        raise SsoError("Malformed ID token: {0}".format(exc)) from exc
     keys = {k.get("kid"): k for k in (jwks.get("keys") or [])}
     jwk = keys.get(header.get("kid"))
     if jwk is None and jwks.get("keys"):
@@ -148,7 +148,7 @@ def verify_oidc_id_token(id_token: str, jwks: Dict[str, Any], *, issuer: str, cl
             audience=client_id, issuer=issuer, leeway=leeway,
         )
     except jwt.PyJWTError as exc:
-        raise SsoError("ID token verification failed: {0}".format(exc))
+        raise SsoError("ID token verification failed: {0}".format(exc)) from exc
     if nonce is not None and claims.get("nonce") != nonce:
         raise SsoError("Nonce mismatch — possible replay.")
     if not claims.get("email"):
@@ -223,11 +223,11 @@ def parse_and_verify_saml_response(config: Dict[str, Any], saml_response_b64: st
     try:
         xml_bytes = base64.b64decode(saml_response_b64)
     except Exception as exc:
-        raise SsoError("SAMLResponse is not valid base64: {0}".format(exc))
+        raise SsoError("SAMLResponse is not valid base64: {0}".format(exc)) from exc
     try:
         root = etree.fromstring(xml_bytes)  # noqa: S320 - verified below
     except Exception as exc:
-        raise SsoError("SAMLResponse is not valid XML: {0}".format(exc))
+        raise SsoError("SAMLResponse is not valid XML: {0}".format(exc)) from exc
 
     cert_pem = _cert_to_pem(config.get("idp_cert", ""))
     if not cert_pem or "BEGIN CERTIFICATE" not in cert_pem:
@@ -238,7 +238,7 @@ def parse_and_verify_saml_response(config: Dict[str, Any], saml_response_b64: st
         verified = XMLVerifier().verify(root, x509_cert=cert_pem, require_x509=False)
         signed = verified.signed_xml  # type: ignore[union-attr]
     except Exception as exc:
-        raise SsoError("SAML signature verification failed: {0}".format(exc))
+        raise SsoError("SAML signature verification failed: {0}".format(exc)) from exc
 
     # The signed element is the Assertion (or the Response wrapping it).
     # signxml types verify() as VerifyResult | list[VerifyResult]; a SAML Response carries

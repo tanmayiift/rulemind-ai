@@ -198,7 +198,7 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple
     # variables instead of the source silently keeping its approving sample.
     # (A connector's sample keys are its field set here.) Mirrors the executor.
     if flat_fields:
-        for cid, sample in payloads.items():
+        for sample in payloads.values():
             if isinstance(sample, dict):
                 for field, value in flat_fields.items():
                     if field in sample:
