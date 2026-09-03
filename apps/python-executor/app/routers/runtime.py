@@ -93,7 +93,10 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
         elif request.targetType == "decide":
             if not request.targetId:
                 raise HTTPException(status_code=422, detail="targetId is required for decision batch simulation.")
-            result = decide(DecideRequest(policy_id=request.targetId, payload=payload))
+            # policy_id (not policyId) is valid: DecideRequest sets populate_by_name=True
+            # (main.py:269); verified at runtime. mypy reads only the alias because the
+            # pydantic plugin is not enabled.
+            result = decide(DecideRequest(policy_id=request.targetId, payload=payload))  # type: ignore[call-arg]
         else:
             raise HTTPException(status_code=422, detail="Unsupported batch targetType.")
         rows.append({"index": index, "payload": payload, "result": result})

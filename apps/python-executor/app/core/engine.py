@@ -155,7 +155,7 @@ def _as_map(collection: Any) -> Dict[str, Dict[str, Any]]:
     if isinstance(collection, dict):
         return collection
     if isinstance(collection, list):
-        return {item.get("id"): item for item in collection if isinstance(item, dict) and item.get("id")}
+        return {str(item["id"]): item for item in collection if isinstance(item, dict) and item.get("id")}
     return {}
 
 

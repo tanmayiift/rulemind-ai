@@ -15,7 +15,7 @@ import pathlib
 try:
     from dotenv import load_dotenv
 except ImportError:  # dotenv is a convenience, never a hard requirement
-    load_dotenv = None
+    load_dotenv = None  # type: ignore[assignment]
 
 if load_dotenv is not None and os.getenv("RULEMIND_SKIP_DOTENV") != "1":
     # Search upward from this file for a .env: the service directory

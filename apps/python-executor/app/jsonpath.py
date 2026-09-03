@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import math
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 
 def _resolve_attr(value: Any, key: str) -> Any:
@@ -60,7 +60,9 @@ def evaluate_math_expr(expression: str, context: Dict[str, Any]) -> Any:
     if source.startswith("$."):
         source = source.replace("$.", "root.", 1)
     tree = ast.parse(source, mode="eval")
-    allowed_functions = {"min": min, "max": max, "abs": abs, "round": round, "floor": math.floor, "ceil": math.ceil}
+    allowed_functions: Dict[str, Callable[..., Any]] = {
+        "min": min, "max": max, "abs": abs, "round": round, "floor": math.floor, "ceil": math.ceil,
+    }
 
     def visit(node: ast.AST) -> Any:
         if isinstance(node, ast.Expression):

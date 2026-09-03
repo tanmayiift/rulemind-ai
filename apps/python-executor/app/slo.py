@@ -16,7 +16,7 @@ import logging
 import os
 from collections import Counter
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .storage import Storage
 
@@ -37,7 +37,7 @@ try:  # pragma: no cover - exercised indirectly; import guard for envs without t
     SLO_DRIFT_DISTANCE = Gauge("rulemind_slo_outcome_drift", "Outcome-mix drift vs baseline (total-variation distance)", ["tenant"])
     SLO_HEALTHY = Gauge("rulemind_slo_healthy", "1 when the workspace SLO is met, 0 when breached", ["tenant"])
     SLO_BREACHES = Gauge("rulemind_slo_active_breaches", "Active SLO breaches by type (1 active, 0 clear)", ["tenant", "type"])
-    _BREACH_TYPES = ("latency_p95", "error_rate", "approval_rate_low", "approval_rate_high", "outcome_drift")
+    _BREACH_TYPES: Tuple[str, ...] = ("latency_p95", "error_rate", "approval_rate_low", "approval_rate_high", "outcome_drift")
 except Exception:  # pragma: no cover - metrics are best-effort
     Gauge = None  # type: ignore
     SLO_P95_LATENCY = SLO_ERROR_RATE = SLO_DRIFT_DISTANCE = SLO_HEALTHY = SLO_BREACHES = None  # type: ignore

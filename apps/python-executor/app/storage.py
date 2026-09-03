@@ -573,8 +573,10 @@ class Storage:
             )
 
         for variable in VARIABLES:
-            existing = session.scalar(select(Variable).where(Variable.tenant_id == tenant_id, Variable.public_id == variable["id"]))
-            if existing:
+            # A distinct name per model: reusing `existing` pins its inferred type to
+            # whichever branch mypy sees first.
+            existing_variable = session.scalar(select(Variable).where(Variable.tenant_id == tenant_id, Variable.public_id == variable["id"]))
+            if existing_variable:
                 continue
             last_test_result = {
                 "value": variable["seed_value"],
@@ -612,8 +614,10 @@ class Storage:
 
         variable_lookup = {item["id"]: item for item in VARIABLES}
         for rule in RULES:
-            existing = session.scalar(select(Rule).where(Rule.tenant_id == tenant_id, Rule.public_id == rule["id"]))
-            if existing:
+            # A distinct name per model: reusing `existing` pins its inferred type to
+            # whichever branch mypy sees first.
+            existing_rule = session.scalar(select(Rule).where(Rule.tenant_id == tenant_id, Rule.public_id == rule["id"]))
+            if existing_rule:
                 continue
             expression = generate_rule_expression_definition(rule, variable_lookup)
             session.add(
@@ -644,8 +648,10 @@ class Storage:
             )
 
         for scorecard in SCORECARDS:
-            existing = session.scalar(select(Scorecard).where(Scorecard.tenant_id == tenant_id, Scorecard.public_id == scorecard["id"]))
-            if existing:
+            # A distinct name per model: reusing `existing` pins its inferred type to
+            # whichever branch mypy sees first.
+            existing_scorecard = session.scalar(select(Scorecard).where(Scorecard.tenant_id == tenant_id, Scorecard.public_id == scorecard["id"]))
+            if existing_scorecard:
                 continue
             session.add(
                 Scorecard(
@@ -674,8 +680,10 @@ class Storage:
             )
 
         for policy in POLICIES:
-            existing = session.scalar(select(Policy).where(Policy.tenant_id == tenant_id, Policy.public_id == policy["id"]))
-            if existing:
+            # A distinct name per model: reusing `existing` pins its inferred type to
+            # whichever branch mypy sees first.
+            existing_policy = session.scalar(select(Policy).where(Policy.tenant_id == tenant_id, Policy.public_id == policy["id"]))
+            if existing_policy:
                 continue
             session.add(
                 Policy(
@@ -912,7 +920,10 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_connector(payload["id"], tenant_id=resolved)
+        created = self.get_connector(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("connector {0} vanished immediately after creation".format(payload["id"]))
+        return created
 
     def update_connector(self, connector_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -999,7 +1010,10 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_variable(payload["id"], tenant_id=resolved)
+        created = self.get_variable(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("variable {0} vanished immediately after creation".format(payload["id"]))
+        return created
 
     def update_variable(self, variable_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1090,7 +1104,10 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_rule(payload["id"], tenant_id=resolved)
+        created = self.get_rule(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("rule {0} vanished immediately after creation".format(payload["id"]))
+        return created
 
     def update_rule(self, rule_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1180,7 +1197,10 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_scorecard(payload["id"], tenant_id=resolved)
+        created = self.get_scorecard(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("scorecard {0} vanished immediately after creation".format(payload["id"]))
+        return created
 
     def update_scorecard(self, scorecard_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1269,7 +1289,10 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_policy(payload["id"], tenant_id=resolved)
+        created = self.get_policy(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("policy {0} vanished immediately after creation".format(payload["id"]))
+        return created
 
     def update_policy(self, policy_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -2091,9 +2114,10 @@ class Storage:
         Data Protection settings, stored under engine_config.pii_redact_keys). Cached briefly so
         the decision-log hot path doesn't read settings on every decision."""
         resolved = self._tenant_id(tenant_id)
-        cache = getattr(self, "_pii_keys_cache", None)
+        cache: Optional[Dict[str, Tuple[List[str], float]]] = getattr(self, "_pii_keys_cache", None)
         if cache is None:
-            cache = self._pii_keys_cache = {}
+            fresh: Dict[str, Tuple[List[str], float]] = {}
+            cache = self._pii_keys_cache = fresh
         entry = cache.get(resolved)
         now = _time.time()
         if entry and entry[1] > now:
@@ -2145,7 +2169,13 @@ class Storage:
     # ── AI Copilot config (BYO key) ────────────────────────────────────
     def _ai_config_row(self, session: Session, tenant_id: str) -> Setting:
         self._ensure_settings(session, tenant_id)
-        return session.scalar(select(Setting).where(Setting.tenant_id == tenant_id))
+        row = session.scalar(select(Setting).where(Setting.tenant_id == tenant_id))
+        # _ensure_settings has just created it if it was missing, so None here would be a
+        # real invariant break rather than an ordinary miss -- surface it instead of
+        # returning Optional and pushing the check onto every caller.
+        if row is None:  # pragma: no cover - _ensure_settings guarantees the row
+            raise RuntimeError(f"settings row missing for tenant {tenant_id}")
+        return row
 
     def get_ai_config_masked(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """UI-safe view — never exposes keys, only whether each provider is configured."""
@@ -2208,8 +2238,10 @@ class Storage:
     def replace_all(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> None:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
+            # Every model here carries tenant_id, but their common supertype is Base, which
+            # does not -- so the attribute is checked per-model at import time instead.
             for model in [Connector, Variable, Rule, Scorecard, Policy, Promotion, EntityHistory, Decision, ErrorEvent, AuditEvent]:
-                session.execute(delete(model).where(model.tenant_id == resolved))
+                session.execute(delete(model).where(model.tenant_id == resolved))  # type: ignore[attr-defined]
         for connector in payload.get("connectors", []):
             current = copy.deepcopy(connector)
             if self.get_connector(current["id"], tenant_id=resolved):
