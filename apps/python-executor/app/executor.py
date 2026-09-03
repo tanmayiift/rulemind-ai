@@ -347,7 +347,7 @@ class PolicyExecutor:
         """
         direct: set = set()
         for step in policy.get("steps", []):
-            ref_id = step.get("ref_id") or step.get("ref")
+            ref_id = str(step.get("ref_id") or step.get("ref") or "")
             if step.get("type") == "rule" and ref_id in rules:
                 rule = rules[ref_id]
                 self._collect_condition_variable_ids(rule.get("tree"), direct)
@@ -691,7 +691,7 @@ class PolicyExecutor:
         Guards against cycles and runaway depth."""
         if depth >= _MAX_WORKFLOW_DEPTH:
             raise ValueError("Max sub-workflow depth ({0}) exceeded".format(_MAX_WORKFLOW_DEPTH))
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         if not ref_id:
             raise ValueError("Sub-workflow step missing ref_id")
         if ref_id in self._visited_workflows:
@@ -905,7 +905,7 @@ class PolicyExecutor:
         decision_log.persist_decision(self.storage, record, ctx.tenant_id)
 
     def _execute_connector(self, step: Dict[str, Any], ctx: ExecutionContext, connectors: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         payload = ctx.payload.get(ref_id) if isinstance(ctx.payload, dict) else None
         if not payload:
             payload = connectors.get(ref_id, {}).get("sample_payload", {})
@@ -914,7 +914,7 @@ class PolicyExecutor:
         return {"status": "ok", "payload_keys": sorted(list((payload or {}).keys()))}
 
     def _execute_rule(self, step: Dict[str, Any], ctx: ExecutionContext, rules: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         rule = rules.get(ref_id)
         if not rule:
             raise ValueError("Unknown rule: {0}".format(ref_id))
@@ -928,7 +928,7 @@ class PolicyExecutor:
     def _execute_decision_table(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
         from .decision_tables import evaluate_decision_table
 
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         table = getattr(self, "_decision_tables", {}).get(ref_id)
         if not table:
             raise ValueError("Unknown decision table: {0}".format(ref_id))
@@ -940,7 +940,7 @@ class PolicyExecutor:
         return result
 
     def _execute_scorecard(self, step: Dict[str, Any], ctx: ExecutionContext, scorecards: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         scorecard = scorecards.get(ref_id)
         if not scorecard:
             raise ValueError("Unknown scorecard: {0}".format(ref_id))
@@ -1100,7 +1100,7 @@ class PolicyExecutor:
 
     def _execute_model(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
         from .model_executor import execute_model
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         model = self.storage.get_model(ref_id, include_blob=True)
         if not model:
             raise ValueError("Unknown model: {0}".format(ref_id))

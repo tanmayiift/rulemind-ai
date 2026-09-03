@@ -72,7 +72,7 @@ def policy_input_schema(policy_id: str) -> Dict[str, Any]:
 
 
 @router.post("/api/v1/policies")
-def create_policy(request: PolicyUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+def create_policy(request: PolicyUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:  # type: ignore[assignment]
     steps = [item.model_dump() for item in request.steps]
     validate_policy_steps(steps)
     policy_id = make_id(request.name, current_policy_map(), getattr(request, "id", None))
@@ -97,7 +97,9 @@ def create_policy(request: PolicyUpsertRequest, background_tasks: BackgroundTask
 def update_policy(
     policy_id: str,
     request: PolicyUpsertRequest,
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     steps = [item.model_dump() for item in request.steps]
     validate_policy_steps(steps)
@@ -232,7 +234,9 @@ def policy_promotion_diff(policy_id: str) -> Dict[str, Any]:
 def promote_policy(
     policy_id: str,
     request: PromoteRequest = Body(default=PromoteRequest()),
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
     skip_mece: bool = Query(default=False, alias="skipMece"),
 ) -> Dict[str, Any]:
     # MECE gate: check rules within this policy for overlaps before promotion

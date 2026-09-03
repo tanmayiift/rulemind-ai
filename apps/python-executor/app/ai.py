@@ -89,7 +89,7 @@ def _temperature_rejected(resp: Any, body: Dict[str, Any]) -> bool:
     return resp.status_code == 400 and "temperature" in body and "temperature" in resp.text.lower()
 
 
-async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> Tuple[str, Dict[str, int]]:
     url = "https://api.anthropic.com/v1/messages"
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
     body: Dict[str, Any] = {"model": model, "max_tokens": max_tokens, "system": system,
@@ -113,7 +113,7 @@ async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_
     return text, {"input_tokens": int(usage.get("input_tokens", 0)), "output_tokens": int(usage.get("output_tokens", 0))}
 
 
-async def _call_openai(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+async def _call_openai(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> Tuple[str, Dict[str, int]]:
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
     body: Dict[str, Any] = {"model": model, "max_tokens": max_tokens,
@@ -136,7 +136,7 @@ async def _call_openai(api_key: str, model: str, system: str, user: str, max_tok
     return text, {"input_tokens": int(usage.get("prompt_tokens", 0)), "output_tokens": int(usage.get("completion_tokens", 0))}
 
 
-async def _call_gemini(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+async def _call_gemini(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> Tuple[str, Dict[str, int]]:
     """Google Gemini via the Generative Language API.
 
     Shaped differently from the other two: the key rides in a header rather than

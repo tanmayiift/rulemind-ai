@@ -4,7 +4,7 @@ import math
 import os
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from .champion_challenger import analyze_champion_challenger
 from .runtime import cache_get_json, cache_set_json
@@ -21,7 +21,7 @@ def _analytics_window_start() -> Optional[datetime]:
     return datetime.utcnow() - timedelta(days=days)
 
 
-def _percentile(values: List[Union[int, float]], percentile: float) -> float:
+def _percentile(values: Sequence[Union[int, float]], percentile: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(float(value) for value in values)

@@ -120,7 +120,7 @@ def list_variables(
 
 
 @router.post("/api/v1/variables")
-def create_variable(request: VariableUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+def create_variable(request: VariableUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:  # type: ignore[assignment]
     connectors = current_connectors()
     if request.source_id not in connectors:
         raise HTTPException(status_code=422, detail="Unknown source connector.")
@@ -147,7 +147,9 @@ def create_variable(request: VariableUpsertRequest, background_tasks: Background
 def update_variable(
     variable_id: str,
     request: VariableUpsertRequest,
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     existing = ensure_exists(main.storage.get_variable(variable_id), "variable", variable_id)
     updated = main.storage.update_variable(
@@ -214,7 +216,9 @@ def test_variable_draft(request: VariableDraftTestRequest) -> Dict[str, Any]:
 def promote_variable(
     variable_id: str,
     request: PromoteRequest = Body(default=PromoteRequest()),
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     promoted = promote_entity("variable", variable_id, request.promoted_by, request.reason)
     if promoted["status"] == "prod":

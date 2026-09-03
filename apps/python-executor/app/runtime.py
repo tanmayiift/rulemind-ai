@@ -84,7 +84,8 @@ def cache_get_json(key: str) -> Optional[Any]:
     if client is not None:
         try:
             raw = client.get(key)
-            return json.loads(raw) if raw else None
+            # redis-py types its return as the sync/async union; this module is sync-only.
+            return json.loads(raw)  # type: ignore[arg-type]
         except RedisError:
             pass
     item = _MEMORY_CACHE.get(key)
@@ -126,7 +127,7 @@ def rate_limit_allow(key: str, limit: int, window_seconds: int = 60) -> tuple[bo
     if client is not None:
         try:
             bucket_key = "ratelimit:{0}:{1}".format(key, int(time.time() // window_seconds))
-            count = int(client.incr(bucket_key))
+            count = int(client.incr(bucket_key))  # type: ignore[arg-type]
             if count == 1:
                 client.expire(bucket_key, window_seconds + 1)
             if count > limit:

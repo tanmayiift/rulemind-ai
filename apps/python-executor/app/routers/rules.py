@@ -50,7 +50,7 @@ def get_rule(rule_id: str) -> Dict[str, Any]:
 
 
 @router.post("/api/v1/rules")
-def create_rule(request: RuleUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+def create_rule(request: RuleUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:  # type: ignore[assignment]
     normalized = normalize_rule_payload(request)
     rule_id = make_id(request.name, current_rule_map(), getattr(request, "id", None))
     created = main.storage.create_rule(
@@ -75,7 +75,9 @@ def create_rule(request: RuleUpsertRequest, background_tasks: BackgroundTasks = 
 def update_rule(
     rule_id: str,
     request: RuleUpsertRequest,
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     normalized = normalize_rule_payload(request)
     existing = ensure_exists(main.storage.get_rule(rule_id), "rule", rule_id)
@@ -117,7 +119,9 @@ def test_rule(rule_id: str, request: TestPayloadRequest = Body(default=TestPaylo
 def promote_rule(
     rule_id: str,
     request: PromoteRequest = Body(default=PromoteRequest()),
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     promoted = promote_entity("rule", rule_id, request.promoted_by, request.reason)
     if promoted["status"] == "prod":
@@ -137,7 +141,7 @@ def get_scorecard(scorecard_id: str) -> Dict[str, Any]:
 
 
 @router.post("/api/v1/scorecards")
-def create_scorecard(request: ScorecardUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+def create_scorecard(request: ScorecardUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:  # type: ignore[assignment]
     bins = [item.model_dump() for item in request.bins]
     validate_scorecard_bins(bins)
     scorecard_id = make_id(request.name, current_scorecard_map(), getattr(request, "id", None))
@@ -162,7 +166,9 @@ def create_scorecard(request: ScorecardUpsertRequest, background_tasks: Backgrou
 def update_scorecard(
     scorecard_id: str,
     request: ScorecardUpsertRequest,
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     bins = [item.model_dump() for item in request.bins]
     validate_scorecard_bins(bins)
@@ -200,7 +206,9 @@ def test_scorecard(scorecard_id: str, request: TestPayloadRequest = Body(default
 def promote_scorecard(
     scorecard_id: str,
     request: PromoteRequest = Body(default=PromoteRequest()),
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     promoted = promote_entity("scorecard", scorecard_id, request.promoted_by, request.reason)
     if promoted["status"] == "prod":
