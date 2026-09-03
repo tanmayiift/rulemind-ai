@@ -91,9 +91,13 @@ adversarial sweep of the full route and deserialization surface.
       caller-supplied policy ids, so cross-tenant collisions were routine. `edit`/`restore` now
       require the AUTHOR capability, so a viewer can watch but not write. Every REST sibling
       (`state`/`history`/`as-of`/`seed`) is authenticated and tenant-scoped too.
-- [ ] **3.2** The isolation matrix's discovery regex is its blind spot — `/ws/v1`, `/scim/v2`,
-      `/api/admin/v1` and nested action routes are invisible to it, so the anti-rot tripwire never
-      fires for them.
+- [x] **3.2** Widened the isolation matrix's discovery from `/api/v1/<name>` CRUD pairs to the
+      **whole route table**, WebSockets included. Every mutating route must now be probed,
+      covered by a named suite, or listed in `MUTATING_ROUTE_COVERAGE` with a reason — and a
+      guard-on-the-guard test asserts `/ws/v1`, `/scim/v2` and `/api/admin/v1` are actually
+      visible, so discovery cannot silently narrow again. Added the cross-tenant SCIM probes the
+      map promises (read/list/replace/patch-deactivate/delete all 404 across tenants). Writing
+      the map immediately caught five prefixes that name no live routes.
 - [x] **3.3** RBAC's unknown-write default flipped from `AUTHOR` to `MANAGE_ACCESS` (fail
       closed). Every previously-unmapped prefix is now classified explicitly, and the identity
       prefixes (`/scim/v2`, `/api/admin/v1`, `/api/v1/auth`, `/api/mobile/v1/auth`) require
@@ -162,11 +166,11 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **1020 OK** | monotonically up, SQLite + Postgres |
+| Python suite | 892 OK | **1030 OK** | monotonically up, SQLite + Postgres |
 | qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 (WebSocket authz covered by 14 Python tests) |
-| Isolation matrix | CRUD only | — | every mutating route |
+| Isolation matrix | CRUD only | **every mutating route, incl. `/ws/v1`, `/scim/v2`, `/api/admin/v1`** | done |
 | `helm install` clean cluster | crashloops | — | boots, probes pass, serves UI, survives upgrade |
 | Load test vs a budget | never run | — | worst-case decision time bounded + documented |
 
