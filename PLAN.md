@@ -44,7 +44,11 @@ adversarial sweep of the full route and deserialization surface.
       `engine_config.evaluation_budget_ms`; 0 disables.
 - [x] **1.4** `/decide` UPDATEd the policy row every request (`last_test_result`, a console
       badge). Scoped to the console path.
-- [x] **1.5** Rule/variable/scorecard/decision-table CRUD emitted no `AuditEvent`.
+- [x] **1.5** Rule/variable/scorecard/decision-table CRUD emitted no `AuditEvent` — and, found
+      while closing qa 6.2, there was **no route that read the trail back at all**. Every reader
+      filtered to one `event_type` or `entity_id`, so "show me every change to this rule" was
+      answerable only by opening the database. Added `GET /api/v1/audit` (filters + pagination,
+      ordered by chain position).
 - [x] **1.6** Two qa tests read fields the endpoints never return (3.10, 4.9).
 
 ## T2 · Untrusted authors have RCE
@@ -140,8 +144,8 @@ adversarial sweep of the full route and deserialization surface.
 
 | Gate | Start | Now | Target |
 |---|---|---|---|
-| Python suite | 892 OK | **918 OK** | monotonically up, SQLite + Postgres |
-| qa core | 26/31 | — | 31/31 |
+| Python suite | 892 OK | **938 OK** | monotonically up, SQLite + Postgres |
+| qa core | 26 pass / 5 fail | **30 pass / 0 fail / 1 warn** | 31/31 — the warn is T6.1, which must become a *fail* |
 | qa sandbox matrix | 21/21 | — | 21/21 + pool wedging, post-abuse re-exec, and an assertion on **which mode ran** |
 | Playwright | 53 | — | 53 + WebSocket authz |
 | Isolation matrix | CRUD only | — | every mutating route |

@@ -2125,13 +2125,35 @@ class Storage:
                     raise
                 continue
 
-    def list_audit_events(self, tenant_id: Optional[str] = None, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_audit_events(self, tenant_id: Optional[str] = None, event_type: Optional[str] = None,
+                          entity_type: Optional[str] = None, entity_id: Optional[str] = None,
+                          limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """Read the audit trail.
+
+        entity_type/entity_id/limit/offset were added when the trail got an HTTP read path: the
+        table is append-only and unbounded, so an unpaged fetch of a mature tenant is the same
+        timeout-and-OOM that list_decisions already documents. limit stays None by default so
+        the existing internal callers, which filter to one event_type and expect every match,
+        are unchanged.
+        """
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             stmt = select(AuditEvent).where(AuditEvent.tenant_id == resolved)
             if event_type:
                 stmt = stmt.where(AuditEvent.event_type == event_type)
-            rows = session.scalars(stmt.order_by(desc(AuditEvent.created_at))).all()
+            if entity_type:
+                stmt = stmt.where(AuditEvent.entity_type == entity_type)
+            if entity_id:
+                stmt = stmt.where(AuditEvent.entity_id == entity_id)
+            # seq is the chain position and is unique per tenant; created_at is not, so two
+            # events written in the same tick could otherwise swap places between pages and a
+            # paging reader would skip one. Matches verify_audit_chain's reasoning.
+            stmt = stmt.order_by(desc(AuditEvent.seq), desc(AuditEvent.created_at))
+            if offset:
+                stmt = stmt.offset(offset)
+            if limit is not None:
+                stmt = stmt.limit(limit)
+            rows = session.scalars(stmt).all()
             return [self._audit_event_to_dict(row) for row in rows]
 
     def verify_audit_chain(self, tenant_id: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Any]:

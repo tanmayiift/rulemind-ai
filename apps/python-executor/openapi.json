@@ -4986,6 +4986,109 @@
         "summary": "Analytics Sdk"
       }
     },
+    "/api/v1/audit": {
+      "get": {
+        "description": "The authoring audit trail: who changed which rule/variable/scorecard/policy, when.\n\nThis route did not exist. Events were written -- and after the entity-CRUD wiring, written\nfor every authoring entity -- but nothing read them back over HTTP, so the compliance\nartifact this product exists to produce could only be reached by opening the database. An\nauditor asking \"show me every change to this rule\" had no answer.\n\nTenant is passed explicitly rather than relying on the storage layer's fallback chain\n(`tenant_id or contextvar or default_tenant_id`). On an authenticated request the contextvar\nis set by the middleware and resolves correctly either way -- but the last link in that\nchain is the FIRST tenant, and an audit read reaching it would serve one tenant's change\nhistory to another. Cheap to not depend on.",
+        "operationId": "audit_events_api_v1_audit_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "event_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "entity_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "entity_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response Audit Events Api V1 Audit Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Audit Events"
+      }
+    },
     "/api/v1/audit/decisions": {
       "get": {
         "operationId": "audit_decisions_api_v1_audit_decisions_get",
@@ -5056,6 +5159,22 @@
                 }
               ],
               "title": "Outcome"
+            }
+          },
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
             }
           }
         ],
