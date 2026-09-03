@@ -23,7 +23,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ">=5.0.0 <7.0.0"
   build_runner: ^2.4.8
   # Headless SQLite for CI tests of the durable decision outbox (no device needed).
   sqflite_common_ffi: ^2.3.3
