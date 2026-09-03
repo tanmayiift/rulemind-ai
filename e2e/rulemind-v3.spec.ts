@@ -40,6 +40,14 @@ test("theme toggle switches the full shell and persists after reload", async ({ 
 // (Issue #125 read the symptom as order coupling between tests. It is leakage between runs;
 // e2e/global-setup.ts now resets the database so a run cannot inherit one.)
 test("connector toggle hides the source filter and removes inactive variables from rule dropdowns", async ({ page }) => {
+  // Switching the rule builder back to simple mode raises a window.confirm
+  // (RulesPage.tsx switchBuilderMode). Playwright AUTO-DISMISSES dialogs when no handler is
+  // registered, so confirm() returned false and the switch silently no-opped -- the click
+  // "succeeded" and did nothing, then `rule-add-condition` never rendered and the test hung
+  // for its full timeout. The other three tests in this file already register this; the
+  // omission here is why only this one failed (#166).
+  page.on("dialog", (dialog) => dialog.accept());
+
   await page.goto("/connectors");
 
   const deviceToggle = page.getByTestId("connector-toggle-device");

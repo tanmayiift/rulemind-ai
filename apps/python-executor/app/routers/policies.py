@@ -231,7 +231,7 @@ def policy_promotion_diff(policy_id: str) -> Dict[str, Any]:
 @router.post("/api/v1/policies/{policy_id}/promote")
 def promote_policy(
     policy_id: str,
-    request: PromoteRequest,
+    request: PromoteRequest = Body(default=PromoteRequest()),
     background_tasks: BackgroundTasks = None,
     skip_mece: bool = Query(default=False, alias="skipMece"),
 ) -> Dict[str, Any]:

@@ -8450,11 +8450,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PromoteRequest"
+                "$ref": "#/components/schemas/PromoteRequest",
+                "default": {
+                  "promoted_by": "system",
+                  "reason": "Manual promotion"
+                }
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -9717,11 +9720,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PromoteRequest"
+                "$ref": "#/components/schemas/PromoteRequest",
+                "default": {
+                  "promoted_by": "system",
+                  "reason": "Manual promotion"
+                }
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -10303,11 +10309,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PromoteRequest"
+                "$ref": "#/components/schemas/PromoteRequest",
+                "default": {
+                  "promoted_by": "system",
+                  "reason": "Manual promotion"
+                }
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -11289,11 +11298,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PromoteRequest"
+                "$ref": "#/components/schemas/PromoteRequest",
+                "default": {
+                  "promoted_by": "system",
+                  "reason": "Manual promotion"
+                }
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {

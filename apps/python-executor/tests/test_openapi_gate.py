@@ -56,6 +56,29 @@ class OpenApiGateTest(unittest.TestCase):
         self.assertIn("newly required field: RuleIn.mode", report["breaking"])
         self.assertNotIn("new optional field: RuleIn.mode", report["additive"])
 
+    def test_making_a_request_body_newly_required_is_breaking(self):
+        """Every client that was omitting the body starts getting 422s.
+
+        This class of change was invisible until it bit: relaxing four /promote endpoints
+        from a required body to an optional one changed the document and the gate reported
+        "API contract unchanged", because it only inspected operations and component schemas.
+        The harmless direction hid the fact that the harmful one was equally unseen.
+        """
+        old = spec(paths={"/api/v1/rules/{id}/promote": {"post": {"requestBody": {}}}})
+        new = spec(paths={"/api/v1/rules/{id}/promote": {"post": {"requestBody": {"required": True}}}})
+        report = openapi_gate.compare(old, new)
+        self.assertIn("request body newly required: POST /api/v1/rules/{id}/promote",
+                      report["breaking"])
+
+    def test_making_a_request_body_optional_is_additive(self):
+        """The direction actually taken. An existing client sending a body keeps working."""
+        old = spec(paths={"/api/v1/rules/{id}/promote": {"post": {"requestBody": {"required": True}}}})
+        new = spec(paths={"/api/v1/rules/{id}/promote": {"post": {"requestBody": {}}}})
+        report = openapi_gate.compare(old, new)
+        self.assertEqual(report["breaking"], [])
+        self.assertIn("request body now optional: POST /api/v1/rules/{id}/promote",
+                      report["additive"])
+
     def test_removing_an_enum_value_is_breaking(self):
         """A client may still be sending the removed value."""
         old = spec(schemas={"Out": {"properties": {"outcome": {"enum": ["approve", "review", "reject"]}}}})

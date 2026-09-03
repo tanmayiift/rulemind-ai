@@ -9,6 +9,11 @@ const apiBaseUrl = "http://127.0.0.1:8100";
 const pythonBin = process.env.PYTHON_BIN || "python3";
 const webBaseUrl = "http://127.0.0.1:3100";
 
+// Deliberately NOT the shipped dev default (storage.py's rm_live_devlocaltenantkey...).
+// The backend seeds whatever RULEMIND_DEV_API_KEY says, so a distinct literal here means
+// this suite can never pass by accidentally inheriting the committed default.
+const e2eApiKey = "rm_e2e_playwrightkey0000000000000000";
+
 // ABSOLUTE on purpose. This used to be the relative "sqlite:///.runtime/playwright-v3.db",
 // which the backend resolves against ITS cwd (apps/python-executor) rather than the repo
 // root — so `rm .runtime/playwright-v3.db` from the root deleted a file nothing used, and
@@ -26,6 +31,11 @@ export default defineConfig({
   },
   use: {
     baseURL: webBaseUrl,
+    // The 33 `request`-fixture tests in edge-cases.spec.ts sent no auth header at all --
+    // they passed only because AUTH_MODE=none disabled the check. One line here beats
+    // editing 33 call sites, and a per-request `headers:` still overrides it (which the
+    // negative tests in authz.spec.ts depend on).
+    extraHTTPHeaders: { "x-api-key": e2eApiKey },
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     video: "retain-on-failure"
@@ -65,7 +75,14 @@ export default defineConfig({
         CORS_ORIGINS: webBaseUrl,
         PYTHON_SANDBOX_TIMEOUT: "2000",
         PYTHON_SANDBOX_MEMORY: "128",
-        AUTH_MODE: "none"
+        // AUTH_MODE is deliberately UNSET, not "none". middleware.py early-returns on
+        // "none", skipping the API-key check, RBAC, CSRF and tenant resolution -- so all 48
+        // browser tests ran against an app with no authorization and structurally could not
+        // see an authz regression (#139). Unset leaves auth ON.
+        RULEMIND_DEV_API_KEY: e2eApiKey,
+        // Not a weakening -- the key and RBAC checks stay on. 48 serialized tests against a
+        // single tenant would otherwise sit under the limiter for no signal.
+        RATE_LIMIT_ENABLED: "0"
       }
     },
     {
@@ -80,7 +97,10 @@ export default defineConfig({
         HOST: "127.0.0.1",
         PORT: "3100",
         NEXT_PUBLIC_API_BASE_URL: apiBaseUrl,
-        AUTH_MODE: "none"
+        // apps/web/src/lib/store.ts reads this as its initial apiKey and api.ts sends it as
+        // x-api-key. Each Playwright context starts with empty localStorage, so this default
+        // wins over any persisted zustand value.
+        NEXT_PUBLIC_RULEMIND_DEV_API_KEY: e2eApiKey
       }
     }
   ]

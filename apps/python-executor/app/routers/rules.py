@@ -116,7 +116,7 @@ def test_rule(rule_id: str, request: TestPayloadRequest = Body(default=TestPaylo
 @router.post("/api/v1/rules/{rule_id}/promote")
 def promote_rule(
     rule_id: str,
-    request: PromoteRequest,
+    request: PromoteRequest = Body(default=PromoteRequest()),
     background_tasks: BackgroundTasks = None,
 ) -> Dict[str, Any]:
     promoted = promote_entity("rule", rule_id, request.promoted_by, request.reason)
@@ -199,7 +199,7 @@ def test_scorecard(scorecard_id: str, request: TestPayloadRequest = Body(default
 @router.post("/api/v1/scorecards/{scorecard_id}/promote")
 def promote_scorecard(
     scorecard_id: str,
-    request: PromoteRequest,
+    request: PromoteRequest = Body(default=PromoteRequest()),
     background_tasks: BackgroundTasks = None,
 ) -> Dict[str, Any]:
     promoted = promote_entity("scorecard", scorecard_id, request.promoted_by, request.reason)

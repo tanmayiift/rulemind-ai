@@ -865,6 +865,12 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
       setInlineTest(current.last_test_result ?? null);
       return;
     }
+    // builderMode is derived from the SELECTED rule, so the no-selection branch has to
+    // reset it too. Without this, deselecting a v2/tree rule leaves a user in the advanced
+    // tree editor with a blank new rule and no obvious way back -- the mode of a rule that
+    // is no longer open. It also made e2e #166 hang: the only dev-status rule was a v2 one,
+    // so the builder was pinned to advanced and the simple-mode palette never rendered.
+    setBuilderMode("simple");
     setRuleName("New Rule");
     setNodes([]);
     setRuleTree(createTreeGroup(activeVariables[0]));
@@ -1070,6 +1076,10 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
                 variant="ghost"
                 onClick={() => {
                   setSelectedRuleId(null);
+                  // Clearing selection re-runs the effect above, which now resets the mode --
+                  // but set it here too so "Clear" means "return to the initial state" on its
+                  // own terms rather than depending on effect ordering.
+                  setBuilderMode("simple");
                   setRuleName("New Rule");
                   setNodes([]);
                   setRuleTree(createTreeGroup(activeVariables[0]));

@@ -213,7 +213,7 @@ def test_variable_draft(request: VariableDraftTestRequest) -> Dict[str, Any]:
 @router.post("/api/v1/variables/{variable_id}/promote")
 def promote_variable(
     variable_id: str,
-    request: PromoteRequest,
+    request: PromoteRequest = Body(default=PromoteRequest()),
     background_tasks: BackgroundTasks = None,
 ) -> Dict[str, Any]:
     promoted = promote_entity("variable", variable_id, request.promoted_by, request.reason)

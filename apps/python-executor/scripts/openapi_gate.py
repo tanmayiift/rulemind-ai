@@ -71,6 +71,19 @@ def compare(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, List[str]]:
     for key in sorted(set(new_ops) - set(old_ops)):
         additive.append(f"new operation: {key[1].upper()} {key[0]}")
 
+    # requestBody.required. Found by shipping a change the gate could not see: relaxing
+    # /promote from a required body to an optional one moved `"required": true` out of the
+    # document and the classifier reported "unchanged". The relaxation is harmless, but the
+    # OPPOSITE direction -- making a body newly required -- breaks every client that was
+    # omitting it, and would have been just as invisible.
+    for key in sorted(set(old_ops) & set(new_ops)):
+        was = bool((old_ops[key].get("requestBody") or {}).get("required"))
+        now = bool((new_ops[key].get("requestBody") or {}).get("required"))
+        if now and not was:
+            breaking.append(f"request body newly required: {key[1].upper()} {key[0]}")
+        elif was and not now:
+            additive.append(f"request body now optional: {key[1].upper()} {key[0]}")
+
     old_schemas, new_schemas = _schemas(old), _schemas(new)
     for name in sorted(set(old_schemas) - set(new_schemas)):
         # A schema is only reachable through an operation, so a removed schema whose operations

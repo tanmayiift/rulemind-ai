@@ -138,13 +138,20 @@ test("evaluate rule with different payloads returns valid outcome", async ({ req
 
 test("promote rule endpoint responds correctly", async ({ request }) => {
   if (!createdRuleIdShared) return;
+  // This used to accept [200, 422] and only assert inside `if (res.ok())`, which hid TWO
+  // bugs for as long as the test existed. It always 422'd, because the endpoint declared
+  // `request: PromoteRequest` with no Body default while both its fields have defaults --
+  // so an empty body was rejected even though it was the intended contract. And the
+  // assertion behind the guard was wrong anyway: the endpoint returns the rule, whose
+  // field is `status`, not `new_status`.
+  //
+  // The 422 also had a consequence three files away: the rule stayed status="dev", and
+  // since none of the 13 seeded rules are dev, it became the ONLY dev rule -- which pinned
+  // the rules builder to advanced mode and hung rulemind-v3.spec.ts (#166).
   const res = await request.post(`${API_BASE}/api/v1/rules/${createdRuleIdShared}/promote`);
-  // Promotion may succeed (200) or fail if already promoted (422)
-  expect([200, 422]).toContain(res.status());
-  if (res.ok()) {
-    const result = await res.json();
-    expect(result.new_status).toBe("uat");
-  }
+  expect(res.status()).toBe(200);
+  const result = await res.json();
+  expect(result.status).toBe("uat");
 });
 
 // ─────────────────────────────────────────────────────────────
