@@ -168,3 +168,36 @@ def clamp_retries(value: object) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, min(n, MAX_RETRIES))
+
+
+# Polling reuses the same argument as the two clamps above, and needs it more. A poll is a loop
+# whose exit condition is controlled by the REMOTE side: `maxPolls x pollIntervalMs` is time this
+# server spends sleeping while a provider decides whether to answer, and an author who writes
+# maxPolls=1000, pollIntervalMs=60000 has asked for a 16-hour step. The evaluation budget bounds
+# it too (executor._poll_action checks the deadline before every attempt and clamps the sleep to
+# what is left), but the budget is per-tenant configuration and can itself be raised, so the
+# platform ceiling lives here where a tenant cannot move it.
+MAX_POLLS = env.env_int("RULEMIND_ACTION_MAX_POLLS", 10)
+MAX_POLL_INTERVAL_MS = env.env_int("RULEMIND_ACTION_MAX_POLL_INTERVAL_MS", 10000)
+
+
+def clamp_polls(value: object) -> int:
+    """Attempts, not retries: 1 means fire once and evaluate the condition once.
+
+    Floored at 1 rather than 0, because a poll step that never fires its request is not a
+    degraded poll -- it is a step that silently did nothing while reporting a result, which is
+    the failure mode the whole fail-closed contract exists to prevent.
+    """
+    try:
+        n = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 3
+    return max(1, min(n, MAX_POLLS))
+
+
+def clamp_poll_interval_ms(value: object) -> int:
+    try:
+        ms = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 1000
+    return max(0, min(ms, MAX_POLL_INTERVAL_MS))

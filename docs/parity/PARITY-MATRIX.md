@@ -19,8 +19,8 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 5 |
-| 🟡 partial | 6 |
+| ✅ present | 6 |
+| 🟡 partial | 5 |
 | ❌ absent | 10 |
 | ⛔ cut | 1 |
 
@@ -35,7 +35,7 @@ verified.
 | P03 | Outbound webhooks with event-type filters | 🟡 partial | `app/webhooks.py:30 is inbound-only; ad-hoc alertUrl at app/executor.py:560-576` | no subscription model, no event types, no filters | 4 | ~1 week | no |
 | P04 | Workflow step-through debugger | ❌ absent | `only post-hoc traces (ctx.trace) plus a loop-only tracer at app/executor.py:794` | — | 5 | ~3 weeks | no |
 | P05 | Modelset | ❌ absent | `0 hits for modelset/model_set; models are flat .pkl files in app/routers/models.py` | — | 5 | ~2 weeks | no |
-| P06 | Nested-key input validation | 🟡 partial | `app/model_executor.py:111 validates a flat list; app/jsonpath.py:14 composed only at app/executor.py:1376-1383` | not composed on the direct predict path; `INVALID_INPUT` names the flat target, not the path | 3 | days | no |
+| P06 | Nested-key input validation | ✅ present | `app/input_schema.py` validates against what connectors declare, reporting every issue with its full path incl. array indices; wired into `app/executor.py` AND `app/fast_decide.py`, both raising the same `InputValidationError`; `tests/test_nested_input_validation.py` (31) + `tests/test_fast_path_validation_and_budget_parity.py` assert the two paths agree | the model-predict path (`app/routers/models.py`) is still flat | 3 | days for the remaining model-predict path | no |
 | P07 | Matrix with dimensions + import | ❌ absent | `'matrix' is only a QA harness (apps/python-executor/simulation/scenario_matrix.py:1) and a backtest transition_matrix; closest analog is app/decision_tables.py:92` | — | 6 | ~4 weeks | **yes** |
 | P08 | Child workflow by alias | ✅ present | `app/executor.py:777-792` — `_execute_subworkflow` resolves `config.alias` through `engine_config.workflow_aliases`, flat or environment-keyed by the parent's status | — | 3 | done | no |
 | P09 | DLQ / Kafka / exactly-once | ❌ absent | `0 code hits for kafka/dlq/dead-letter; messaging is Redis pub/sub in app/decision_bus.py` | — | 8 | 6+ months | no |
@@ -50,7 +50,7 @@ verified.
 | P18 | Rate limiting on resource APIs | ✅ present | `app/rate_limit.py` — `classify()` maps method+path to decision/read/write/ai/export/admin with whole-segment matching; `check_request()` enforces the class bucket then the tenant aggregate | class shares are per tenant/env, not per individual route | 3 | done | no |
 | P19 | Superflows | ❌ absent | `0 hits repo-wide` | — | 7 | 3-6 months | no |
 | P20 | Predictor entity + values + reports | 🟡 partial | `'predictor' is only a synonym for scorecard at app/ai.py:511,523-532, routed at app/routers/ai.py:239-258` | no table, no values store, no reports | 4 | ~3 weeks | no |
-| P21 | Evaluation timeouts + 504 handling | ✅ present | `EvaluationBudgetExceeded at app/executor.py:159, enforced at :449,486,502,866,958-987; 504 handler at app/main.py:105-121; tested at tests/test_evaluation_budget.py:71` | covers the `PolicyExecutor` path only — `app/fast_decide.py` (opt-in `FAST_DECIDE=1`) and `app/routers/evaluations.py:70,87,106` sit outside it | 3 | days for the two remaining paths | no |
+| P21 | Evaluation timeouts + 504 handling | ✅ present | `EvaluationBudgetExceeded at app/executor.py:159, enforced at :449,486,502,866,958-987; 504 handler at app/main.py:105-121; tested at tests/test_evaluation_budget.py:71` | `app/routers/evaluations.py:70,87,106` runs model evaluation synchronously outside the executor and so outside the budget; the `app/fast_decide.py` gap is closed (same key, same default, checked between variables and once before the compiled core) | 3 | days for the remaining model-evaluation path | no |
 | P22 | Node-based workflow builder (branch / loop) | ✅ present | `apps/web/app/workflow-builder/page.tsx:31-45 PALETTE (13) matches the 13 types dispatched at app/executor.py:523-553; guarded by apps/web/test/workflow-builder-palette.test.ts` | a nested step list, not a free-form graph; no 'rule set' node | 7 | 3-6 months for the graph canvas | no |
 
 ## Reading the columns

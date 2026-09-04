@@ -516,7 +516,25 @@ class PolicyExecutor(
     private fun queueAction(step: PolicyStep, context: Map<String, Any?>): Map<String, Any?> {
         val blocking = step.config["onFailure"]?.toString() == "abort"
         val requestBody = resolveTemplate(step.config["bodyTemplate"] ?: emptyMap<String, Any?>(), context)
-        return mapOf(
+        // A queued operation is a REQUEST TO A HOST, so it has to carry everything the host needs
+        // to perform the step as the author configured it. `mode: "poll"` means "call this until
+        // the condition holds, then fail closed" -- a host that only sees url/method/body fires it
+        // once and reports whatever the first response happened to contain, which for a job-status
+        // endpoint is {"status": "pending"} treated as final. The server executor fails that case
+        // CLOSED (review), so dropping these fields here would make the same policy decide
+        // differently on device: exactly the divergence the parity contract exists to prevent.
+        val poll: Map<String, Any?> = if (step.config["mode"]?.toString() == "poll") {
+            mapOf(
+                "mode" to "poll",
+                "pollUntil" to (step.config["pollUntil"] ?: step.config["until"]),
+                "maxPolls" to step.config["maxPolls"],
+                "pollIntervalMs" to step.config["pollIntervalMs"],
+                "onPollTimeout" to (step.config["onPollTimeout"] ?: "review_gate"),
+            )
+        } else {
+            emptyMap()
+        }
+        return poll + mapOf(
             "id" to "op_${UUID.randomUUID().toString().replace("-", "").take(12)}",
             "stepId" to (step.id ?: step.refId ?: step.ref ?: step.type),
             "actionName" to (step.label ?: step.config["name"]?.toString() ?: step.type),

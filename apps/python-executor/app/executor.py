@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import copy
+import json
 import os
 import time
 import uuid
@@ -15,10 +16,17 @@ import httpx
 from . import circuit_breaker, input_schema
 from .experiments import apply_experiment_overrides, resolve_experiment_assignment
 from .jsonpath import evaluate_math_expr, resolve_jsonpath
-from .logic import evaluate_rule_definition, evaluate_scorecard, json_dumps, redact_payload
+from .logic import compare, evaluate_rule_definition, evaluate_scorecard, json_dumps, redact_payload
 from .sandbox import execute_variable
 from .storage import Storage, mask_secret_values
-from .egress import EgressBlocked, build_pinned_request, clamp_retries, clamp_timeout_ms
+from .egress import (
+    EgressBlocked,
+    build_pinned_request,
+    clamp_poll_interval_ms,
+    clamp_polls,
+    clamp_retries,
+    clamp_timeout_ms,
+)
 from .templates import resolve_template
 
 
@@ -1390,7 +1398,136 @@ class PolicyExecutor:
             ctx.paused_at_step = ctx.current_step_index
             ctx.pending_operations.append({"type": "async_action", "step_id": step_id, "url": config.get("url")})
             return {"paused": True, "awaiting": "callback", "stepId": step_id, "executionId": ctx.execution_id}
+        if config.get("mode") == "poll":
+            return await self._poll_action(step, ctx, config)
         return await self._fire_action_request(step, ctx, config)
+
+    # ------------------------------------------------------------------ polling actions
+    #
+    # THE GAP THIS CLOSES. The action step had exactly two shapes: fire once (with
+    # retry-on-FAILURE), and `mode: "async"`, which pauses the whole execution until the provider
+    # posts back to the workflow callback endpoint. Neither is polling.
+    #
+    # Retrying is not polling, and the difference is the whole point: a retry loop exits on the
+    # first 2xx, so a provider that answers `200 {"status": "pending"}` -- which is the normal
+    # shape of a job-status endpoint -- ends the loop on the first attempt with a result the
+    # policy then treats as final. The condition polling waits for is on the RESPONSE CONTENT,
+    # not on the transport.
+    #
+    # And async is not polling either: it requires the provider to call back. Every provider that
+    # only offers "POST to start, GET to check" -- KYC vendors, document processors, batch bureau
+    # pulls -- has no callback to give, so today they can only be modelled as a single shot that
+    # reads whatever the first response happened to contain.
+    #
+    # FAIL CLOSED. Three separate ways this refuses to report success it does not have:
+    #   * no condition, or a malformed one, is never satisfied (rather than trivially true);
+    #   * a body that is not JSON, or a path that is not in it, resolves to None -- and logic.py
+    #     returns False for every comparison against None, so it polls on and then times out;
+    #   * running out of attempts defaults to `review_gate`, NOT `continue`. Continuing would
+    #     hand the policy a "pending" payload and let a rule phrased as `reject if status ==
+    #     "failed"` approve it, which is the exact fail-open shape `_fail_closed_on_variable_errors`
+    #     exists to stop. An author who genuinely wants a best-effort poll sets onPollTimeout
+    #     explicitly.
+
+    @staticmethod
+    def _poll_condition_met(condition: Any, result: Dict[str, Any]) -> bool:
+        """Evaluate the exit condition against one response.
+
+        `compare` is logic.py's own primitive -- the operator set the TypeScript, Rust, Kotlin and
+        Dart engines are held to by the parity corpus. A poll condition is authored in the same UI
+        as a rule condition, so `status == "complete"` has to mean here exactly what it means
+        there; a second comparison implementation in this file would be a second set of operator
+        semantics to keep in step with four other engines.
+        """
+        if not isinstance(condition, dict) or not condition:
+            return False
+        body: Any = result.get("body")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (ValueError, TypeError):
+                body = None
+        view = {"status": result.get("status"), "success": result.get("success"), "body": body}
+        path = str(condition.get("path") or condition.get("field") or "")
+        if not path:
+            return False
+        # `$.body.status` is the explicit form. A bare `body.status` is accepted because that is
+        # what the condition builder emits for rules, and an author should not have to know which
+        # of the two surfaces they are on.
+        actual = resolve_jsonpath(path if path.startswith("$.") else "$." + path, view)
+        try:
+            return bool(compare(
+                actual,
+                str(condition.get("operator") or condition.get("op") or "=="),
+                condition.get("value"),
+                condition.get("value2"),
+                condition.get("type"),
+            ))
+        except Exception:  # pragma: no cover - a bad operator must not decide the policy
+            return False
+
+    async def _poll_action(self, step: Dict[str, Any], ctx: ExecutionContext, config: Dict[str, Any]) -> Dict[str, Any]:
+        condition = config.get("pollUntil") or config.get("until")
+        max_polls = clamp_polls(config.get("maxPolls", 3))
+        interval_ms = clamp_poll_interval_ms(config.get("pollIntervalMs", 1000))
+        step_id = str(step.get("id") or step.get("name") or "action")
+
+        result: Dict[str, Any] = {}
+        for attempt in range(max_polls):
+            # BEFORE the request, not after: the point is not to start work there is no time to
+            # finish. The single-shot path is bounded by clamp_timeout_ms alone because it makes
+            # one request; a poll makes up to `max_polls` of them with sleeps in between, so
+            # without this the step's ceiling is maxPolls x (timeout + interval) regardless of
+            # what the tenant's evaluation budget says.
+            self._check_budget(ctx, "action poll ({0})".format(step_id))
+            result = await self._fire_action_request(step, ctx, config)
+            if self._poll_condition_met(condition, result):
+                # Mutated in place, not copied: _fire_action_request appends the very same dict to
+                # ctx.action_results, so a copy would leave the recorded attempt without the poll
+                # fields and the returned one with them -- two versions of one action.
+                result["polls"] = attempt + 1
+                result["pollSatisfied"] = True
+                ctx.step_trace.append({
+                    "type": "action_poll", "stepId": step_id, "status": "satisfied",
+                    "polls": attempt + 1, "maxPolls": max_polls,
+                })
+                return result
+            if attempt < max_polls - 1 and interval_ms:
+                # Never sleep past the deadline. Sleeping the full interval and letting the NEXT
+                # _check_budget raise would report the overshoot as the poll's fault when it was
+                # this sleep's; clamping means the budget exception, when it comes, is raised at
+                # the moment the budget actually ran out.
+                remaining = self._budget_remaining_ms(ctx)
+                sleep_ms = interval_ms if remaining is None else max(0, min(interval_ms, remaining))
+                if sleep_ms:
+                    await asyncio.sleep(sleep_ms / 1000.0)
+
+        # Exhausted. The last response is kept rather than replaced, because an operator
+        # debugging a poll that never satisfied needs to see what the provider kept saying -- and
+        # it is annotated in place for the same reason as the success branch above, so
+        # ctx.action_results holds one entry per HTTP attempt with the last one marked, rather
+        # than N attempts plus a synthetic summary that looks like an N+1th call that never
+        # happened.
+        timed_out = result
+        timed_out["polls"] = max_polls
+        timed_out["pollSatisfied"] = False
+        timed_out["success"] = False
+        timed_out["error"] = "poll_condition_not_met after {0} attempt(s)".format(max_polls)
+        ctx.step_trace.append({
+            "type": "action_poll", "stepId": step_id, "status": "timeout",
+            "polls": max_polls, "maxPolls": max_polls,
+        })
+        self._record_action_error(
+            ctx, step, str(config.get("url", "")), str(config.get("method", "POST")).upper(),
+            timed_out["error"],
+        )
+        # Default review_gate, not the single-shot path's `continue` -- see the block comment above.
+        on_timeout = config.get("onPollTimeout", "review_gate")
+        if on_timeout == "abort":
+            raise ActionFailedError(timed_out["error"])
+        if on_timeout == "review_gate":
+            ctx.outcome = _merge_outcome(ctx.outcome, "review")
+        return timed_out
 
     async def _fire_action_request(self, step: Dict[str, Any], ctx: ExecutionContext, config: Dict[str, Any]) -> Dict[str, Any]:
         view = self._context_view(ctx)

@@ -567,6 +567,20 @@ class PolicyExecutor {
       "blocking": blocking,
       "status": "queued",
       "createdAt": DateTime.now().millisecondsSinceEpoch,
+      // A queued operation is a REQUEST TO A HOST, so it has to carry everything the host needs
+      // to perform the step as the author configured it. `mode: "poll"` means "call this until
+      // the condition holds, then fail closed" -- a host that only sees url/method/body fires it
+      // once and reports whatever the first response happened to contain, which for a job-status
+      // endpoint is `{"status": "pending"}` treated as final. The server executor fails that
+      // case CLOSED (review), so dropping these fields here would make the same policy decide
+      // differently on device: exactly the divergence the parity contract exists to prevent.
+      if (step.config["mode"]?.toString() == "poll") ...<String, dynamic>{
+        "mode": "poll",
+        "pollUntil": step.config["pollUntil"] ?? step.config["until"],
+        "maxPolls": step.config["maxPolls"],
+        "pollIntervalMs": step.config["pollIntervalMs"],
+        "onPollTimeout": step.config["onPollTimeout"] ?? "review_gate",
+      },
     };
   }
 

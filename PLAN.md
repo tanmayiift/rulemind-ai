@@ -313,7 +313,7 @@ outbox state leaks between tests.
 
 ## 8 · Phases 3–8 — parity *(months; each needs a checkpoint before starting)*
 
-- [ ] **8.1** Phase 3 quick wins (2–3 wk). **Audited 2026-09-03 against the code, not the
+- [x] **8.1** Phase 3 quick wins (2–3 wk). **Audited 2026-09-03 against the code, not the
   survey this list came from — two of the eight are already shipped:**
   - ~~connector connection-test~~ — exists: `POST /api/v1/connectors/{id}/test`
     (`routers/authoring.py:96`)
@@ -329,15 +329,18 @@ outbox state leaks between tests.
     - ~~retention in **months**~~ — `models.py:621` `audit_retention_months`, `archiver.py:72`
       `normalize_retention_months`
     - ~~504 / evaluation-timeout contract~~ — `main.py:153-162`, `EvaluationBudgetExceeded`
-    - **still open: polling conditions on the `action` step.** Zero hits for
-      `poll_until`/`max_polls`; `_execute_action` (`executor.py:1368`) offers only
-      async-callback and single-shot-with-retries, and retry-on-failure is not
-      poll-until-a-condition.
-  - **Two residual holes the strikethroughs must not hide**, both now Phase 1 work: nested
-    validation is **full-executor only** — neither `fast_decide.py` nor `core/engine.py`
-    imports `input_schema`, so `FAST_DECIDE=1` skips validation entirely — and the evaluation
-    budget is likewise executor-only, so the 504 contract does not apply on the fast path. A
-    performance flag that changes correctness is the same class of bug as the W5 fail-opens.
+    - ~~polling conditions on the `action` step~~ — shipped 2026-09-05. `mode: "poll"` in
+      `executor.py` `_poll_action`, condition through `logic.compare` (so `status == "complete"`
+      means here what it means in a rule, across all five engines), bounded by
+      `clamp_polls`/`clamp_poll_interval_ms` in `egress.py` and by the evaluation budget, and
+      failing **closed** to review on timeout rather than handing the policy a `pending` payload.
+      33 tests in `tests/test_action_polling.py`, plus the SDK handoff in Kotlin and Dart.
+  - ~~**Two residual holes the strikethroughs must not hide**~~ — both closed 2026-09-05 (B1/B2).
+    `fast_decide.py` now validates and budgets identically to the executor. `core/engine.py` is
+    deliberately untouched: its `validate_input` covers an unrelated `policy["input_schema"]`
+    that is only ever persisted for model rows, and as the no-I/O module shared with the Kotlin,
+    Dart and TS runtimes it has no access to connectors or tenant `engine_config` — which are
+    exactly what the nested schema is derived from.
 - [ ] **8.2** Phase 4 outbound webhooks, p12, predictor, DLQ (4–6 wk)
 - [ ] **8.3** Phase 5 canary, modelset, step-through debugger (6–8 wk)
 - [ ] **8.4** Phase 6 Monaco + matrix entity (6–10 wk)
@@ -606,8 +609,8 @@ GENERATED from the Python. Every fix mutation-checked.
 - [x] **B3** Playwright remote-capable: hosts behind env vars, `webServer` off for remote,
       wss derived from https, destructive specs gated behind `RM_E2E_ALLOW_DESTRUCTIVE`
 - [x] **B4** Adversarial review of B1-B3; anything refuted goes back
-- [ ] **B5** Polling conditions on the `action` step - five engines + generated corpus
-- [ ] **B6** Update P06 and P21 parity rows with the fixes
+- [x] **B5** Polling conditions on the `action` step - five engines + generated corpus
+- [x] **B6** Update P06 and P21 parity rows with the fixes
 - [ ] **B7** Full regression gate green (both DB lanes, 5 engines, all gates)
 
 ## C. Phase 2 - P01, connectors that actually fetch

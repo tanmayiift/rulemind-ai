@@ -64,13 +64,14 @@
     {
       "id": "P06",
       "name": "Nested-key input validation",
-      "state": "PARTIAL",
-      "evidence": "Nested-key input validation: app/input_schema.py validates the decision payload against what connectors already declare (schema_paths for required nested paths, sample_payload for types), reporting every issue at once with its full path including array indices. Hooked into app/executor.py before any variable computes, so an invalid payload produces no outcome, no Decision row and no billable unit. Gated by engine_config.input_validation (off|warn|enforce, default off); an unreadable mode resolves to enforce. Covered by apps/python-executor/tests/test_nested_input_validation.py (31 tests).",
-      "gap": "Full-executor only. The fast path (FAST_DECIDE=1) has no nested validation -- core/engine.py:87 validate_input is flat-only and driven by an unrelated policy.input_schema. The model-predict path (app/routers/models.py) is also still flat.",
+      "state": "PRESENT",
+      "evidence": "Nested-key input validation: app/input_schema.py validates the decision payload against what connectors already declare (schema_paths for required nested paths, sample_payload for types), reporting every issue at once with its full path including array indices. Hooked into app/executor.py before any variable computes, so an invalid payload produces no outcome, no Decision row and no billable unit. Gated by engine_config.input_validation (off|warn|enforce, default off); an unreadable mode resolves to enforce. Covered by apps/python-executor/tests/test_nested_input_validation.py (31 tests). Extended 2026-09-05 to the fast path: app/fast_decide.py validates before any variable computes, off the same tenant_catalog entry the executor reads, and raises input_schema.InputValidationError -- the executor's own class -- so /decide answers an identical 422 with FAST_DECIDE on or off. tests/test_fast_path_validation_and_budget_parity.py asserts the two paths return the same issue set, including array indices (bank.salary[1].amount), and that a rejected payload leaves no Decision row on either.",
+      "gap": "The model-predict path (app/routers/models.py) is still flat. core/engine.py's validate_input is also flat, but that is NOT this gap: it validates an unrelated policy[\"input_schema\"], which storage.py only ever persists for model rows (4007/4045/4064) and never onto a policy, and core/engine.py is the no-I/O module shared with the Kotlin, Dart and TS runtimes -- it has no access to connectors or tenant engine_config, which are what the nested schema is derived from.",
       "phase": 3,
-      "size": "days",
+      "size": "days for the remaining model-predict path",
       "engineSemantics": false,
-      "e2eFlow": "submit a nested payload with a missing leaf -> INVALID_INPUT names the path"
+      "e2eFlow": "submit a nested payload with a missing leaf -> INVALID_INPUT names the path",
+      "note": "Promoted 2026-09-05. The stated e2eFlow -- a nested payload with a missing leaf returns INVALID_INPUT naming the path -- is met on BOTH decision paths and covered by a test that asserts they return the identical issue set. It was PARTIAL because FAST_DECIDE=1 skipped validation entirely, which is the same class of defect as the fail-opens: a performance flag that changed correctness. The residual gap is the model-predict path, which is a different flow from the one this row claims."
     },
     {
       "id": "P07",
@@ -233,10 +234,10 @@
       "id": "P21",
       "name": "Evaluation timeouts + 504 handling",
       "state": "PRESENT",
-      "evidence": "EvaluationBudgetExceeded at app/executor.py:159; enforced, not merely declared -- _start_budget at app/executor.py:958-965 (called at :866 before catalog reads, DEFAULT_BUDGET_MS at :956, tenant override evaluation_budget_ms in engine_config), _check_budget at :973-987 called in the variable loop at :449 and the step loop at :486, each variable's own timeout clamped to the remaining budget at :450, and an explicit re-raise past the fail-closed broad handler at :502 so a nested sub-workflow cannot swallow it; app-level handler returning HTTP 504 at app/main.py:105-121 (status_code=504 at :114) with a documented body {detail, error, budget_ms, elapsed_ms, stage}; tested end-to-end in tests/test_evaluation_budget.py:71 test_a_slow_decision_returns_504, plus :83,:103,:125,:150,:175",
-      "gap": "the budget covers the PolicyExecutor path only. app/fast_decide.py has 0 budget/deadline references and is taken by /decide at app/routers/runtime.py:163-167 when FAST_DECIDE=1 (opt-in, default off); app/routers/evaluations.py:70,87,106 runs model evaluation synchronously outside the executor and so outside the budget",
+      "evidence": "EvaluationBudgetExceeded at app/executor.py:159; enforced, not merely declared -- _start_budget at app/executor.py:958-965 (called at :866 before catalog reads, DEFAULT_BUDGET_MS at :956, tenant override evaluation_budget_ms in engine_config), _check_budget at :973-987 called in the variable loop at :449 and the step loop at :486, each variable's own timeout clamped to the remaining budget at :450, and an explicit re-raise past the fail-closed broad handler at :502 so a nested sub-workflow cannot swallow it; app-level handler returning HTTP 504 at app/main.py:105-121 (status_code=504 at :114) with a documented body {detail, error, budget_ms, elapsed_ms, stage}; tested end-to-end in tests/test_evaluation_budget.py:71 test_a_slow_decision_returns_504, plus :83,:103,:125,:150,:175; extended 2026-09-05 to app/fast_decide.py, which reads the same engine_config.evaluation_budget_ms, anchors the deadline at its own `started` so the bundle build and any single-flight wait count against it, checks between variables, clamps each variable's sandbox timeout to the remaining budget, and checks once more between the variable loop and the compiled core -- covered by tests/test_fast_path_validation_and_budget_parity.py (24 tests)",
+      "gap": "app/routers/evaluations.py:70,87,106 runs model evaluation synchronously outside the executor and so outside the budget. The fast-path gap is closed.",
       "phase": 3,
-      "size": "days for the two remaining paths",
+      "size": "days for the remaining model-evaluation path",
       "engineSemantics": false,
       "e2eFlow": "a policy exceeds its budget under load -> 504 with a documented contract",
       "note": "Re-audit 2026-09-04 promoted this from PARTIAL. The old gap 'no 504 anywhere' is now false. The stated e2eFlow is met and covered by a test that asserts the 504 end-to-end; the residual holes are recorded in `gap` and keep their phase."
