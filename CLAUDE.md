@@ -97,8 +97,10 @@ Two gotchas worth keeping in mind:
   `RULEMIND_CONFIG_KEY`, `RULEMIND_ADMIN_JWT_SECRET`, `RULEMIND_ADMIN_PASSWORD` and
   `RULEMIND_DEV_API_KEY` all fall back to committed dev values if unset.
 
-`INTEGRATION.md` still advertises "the full environment-variable list" but covers only 14
-of them — treat `.env.example` as the authority.
+`INTEGRATION.md` §8 is correct as of 2026-09-05: it is titled "variables you are most likely
+to need" and says in bold that it is a selection covering 24 of ~97. This note previously
+claimed it still advertised "the full environment-variable list" — that was itself stale.
+`.env.example` remains the authority.
 
 ## AI layer (`app/ai.py`)
 
@@ -127,8 +129,11 @@ problem is recognisable if the lists drift again:
 
 - Commits are Conventional Commits with a scope: `feat(engine):`, `fix(web):`,
   `refactor(api):`. Every change lands through a squash-merged PR referencing `(#NNN)`.
-- Docs are written eagerly alongside features and **drift** — `README.md`, `.env.example`
-  are behind the code. `CHANGELOG.md` is no longer among them: it is now a per-package index
-  and this note's "still says 0.1.0 initial scaffold" was itself the stale claim.
-  Verify any doc claim against source before relying on it.
+- Docs are written eagerly alongside features and **drift**. So does this file: on 2026-09-05
+  three of its own claims were checked and all three were wrong — `INTEGRATION.md` (fixed
+  above), `CHANGELOG.md`'s "still says 0.1.0 initial scaffold" (it is a per-package index at
+  4.0.0), and, in `PLAN.md`, "PostgreSQL 16 → 18" (16 is what docker-compose, the Helm chart,
+  the k8s manifests and CI all pin). **Verify any doc claim against source before acting on
+  it, including the claims in this file** — a stale note here costs every session, because a
+  "known problem" that no longer exists is more expensive than an unknown one.
 - CI: `.github/workflows/ci.yml` and `sdk-verify.yml`.
