@@ -219,7 +219,11 @@ services:
   - type: web
     name: rulemind-dashboard
     runtime: static
-    region: singapore
+    # No `region`. Render rejects one on a static site ("static sites cannot have a region"),
+    # because there is no instance to place -- the files go to a global CDN. Which also means
+    # the co-location argument that puts everything else in Singapore does not apply here: the
+    # dashboard is served from wherever the visitor is, and only its API calls cross the
+    # distance to Singapore.
     # `corepack enable` first: the repo pins pnpm@9.15.0 in packageManager, and the build needs
     # that exact version to honour pnpm-lock.yaml. NEXT_OUTPUT=export is read by
     # apps/web/next.config.js -- see the comment there for why the export is opt-in rather than
