@@ -275,6 +275,21 @@ _MAX_WORKFLOW_DEPTH = 10
 # win. Production traffic replays the same catalog thousands of times and is where the win is.
 _SHARED_CATALOG_SOURCES = frozenset({"api", "sdk_server", "sdk_edge", "sdk_edge_resume", "callback"})
 
+# Sources allowed to pre-fill unsupplied fields from each connector's `sample_payload`.
+#
+# This is an AUTHORING affordance: in the test console you type {"bureau_score": 590} and want
+# the other twenty fields to hold plausible values so the policy runs end to end. On real
+# traffic it is a correctness hole with no visible symptom. Every connector's sample was seeded
+# unconditionally, so `POST /decide {"payload": {}}` returned **approve** on a demo
+# bureau_score of 756 -- a caller whose integration silently sent nothing got a confident
+# approval with a complete, legitimate-looking audit trail behind it. Failing closed on a
+# missing field is recoverable; approving on someone else's demo data is not.
+#
+# `simulation` keeps it because what-if and backtest are author-driven surfaces that write no
+# decision and are read as exploration, and stripping it there would change every existing
+# saved scenario. Nothing else does: not api, sdk_*, webhook, cron, callback, review or shadow.
+_SAMPLE_SEEDING_SOURCES = frozenset({"test_console", "simulation", "loop_debug"})
+
 
 class PolicyExecutor:
     def __init__(self, storage: Storage):
@@ -436,9 +451,14 @@ class PolicyExecutor:
 
     def _payloads_by_source(self, ctx: ExecutionContext) -> Dict[str, Dict[str, Any]]:
         connectors = self._catalog_for(ctx.tenant_id)["connectors"]
+        seed_samples = self._source in _SAMPLE_SEEDING_SOURCES
         normalized: Dict[str, Dict[str, Any]] = {}
         for connector_id, connector in connectors.items():
-            normalized[connector_id] = copy.deepcopy(connector.get("sample_payload", {}))
+            # See _SAMPLE_SEEDING_SOURCES: on production traffic an unsupplied field must stay
+            # unsupplied, so the variable that reads it fails and the decision fails closed --
+            # rather than quietly evaluating against demo data.
+            normalized[connector_id] = (
+                copy.deepcopy(connector.get("sample_payload", {})) if seed_samples else {})
 
         # A source-keyed dict (e.g. {"loan": {...}}) replaces that source wholesale;
         # everything else is a flat top-level field.
@@ -941,6 +961,9 @@ class PolicyExecutor:
             execution_id=str(uuid.uuid4()),
             started_at=datetime.utcnow(),
         )
+        # An authoring surface: debug_loop never goes through execute(), so _source would
+        # otherwise still read "api" and the sample pre-fill this endpoint relies on would stop.
+        self._source = "loop_debug"
         rules = {item["id"]: item for item in self.storage.list_rules(tenant_id=tenant_id)}
         scorecards = {item["id"]: item for item in self.storage.list_scorecards(tenant_id=tenant_id)}
         self._decision_tables = {item["id"]: item for item in self.storage.list_decision_tables(tenant_id=tenant_id)}

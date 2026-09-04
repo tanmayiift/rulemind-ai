@@ -24,6 +24,26 @@ _OUTCOME_PRECEDENCE = {"pending": 0, "pass": 1, "approve": 2, "review": 3, "reje
 _PURE_STEP_TYPES = {"rule", "scorecard", "outcome", "decision_table"}
 _DEFERRED_STEP_TYPES = {"connector", "action", "review_gate", "transform", "model"}
 
+# Steps this core CANNOT evaluate and must not skip past.
+#
+# These four were in neither set, so they fell to the `else` branch, recorded "unknown step
+# type" in the trace, and the loop CONTINUED -- the decision came back as whatever the
+# remaining steps said, at full confidence, with the skipped step visible only to someone
+# reading the trace. `loop`, `branch` and `workflow` decide WHICH steps run, so skipping one
+# does not omit a step, it omits an unknown number of them, gating rules included. A policy
+# whose reject lives inside a branch returns approve.
+#
+# Deferring them like an action would be wrong for the same reason: "deferred" means the host
+# will resolve it, and there is no host here -- what-if, backtest and governance replay call
+# this core AS the answer. Those are the surfaces used to JUSTIFY a decision, so a wrong one
+# here is worse than none.
+#
+# fast_decide fixed the same fail-open by declining the policy outright (_IO_STEP_TYPES); it
+# can, because a real executor is behind it. This core has nowhere to fall back to, so it
+# fails closed: the outcome is forced to review and input_valid is cleared, which is how every
+# caller already detects a decision it must not trust.
+_UNSUPPORTED_STEP_TYPES = {"loop", "branch", "workflow", "monitor"}
+
 
 class InputValidationError(ValueError):
     """Raised when a payload fails the bundle/policy input schema."""
@@ -262,7 +282,17 @@ def decide(
             # The pure core does not perform I/O; the host resolves these.
             result.trace.append({"step": step, "deferred": True})
         else:
-            result.trace.append({"step": step, "error": f"unknown step type {step_type}"})
+            # See _UNSUPPORTED_STEP_TYPES. Both the known-but-unevaluable types and any type
+            # this core has never heard of land here, and both mean the same thing: the steps
+            # that actually ran are not the policy. Fail closed rather than report a decision.
+            unsupported = (
+                "control-flow step type {0!r} cannot be evaluated by the pure core".format(step_type)
+                if step_type in _UNSUPPORTED_STEP_TYPES
+                else "unknown step type {0!r}".format(step_type))
+            result.trace.append({"step": step, "error": unsupported, "undecidable": True})
+            result.input_valid = False
+            result.validation_errors.append(unsupported)
+            result.outcome = _merge_outcome(result.outcome, "review")
 
     if result.outcome == "pending":
         result.outcome = "review"
