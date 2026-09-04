@@ -447,6 +447,38 @@ tests re-ran SQLite under a Postgres label.
 
 Vercel (dashboard) · Supabase (Postgres) · Upstash (Redis) · Koyeb (API + scheduler).
 
+- [x] **W7.0** (added) `/ready` now probes the SANDBOX, not just the database and Redis. This
+  is the prerequisite that makes W7.3's "prove the sandbox spawns there" answerable with a curl
+  instead of a guess: on a runtime that forbids `spawn`, every user-authored Python variable
+  fails, the decisions still come back (fail-closed, T1.2) but without the inputs the policy is
+  written around — and the pod answered 200, so the load balancer routed to it and the deploy
+  looked successful. `SANDBOX_FALLBACK_MODE=inline` reports `degraded`, not `ok`: it works, but
+  untrusted customer Python is running in the API process with no RLIMIT and no process
+  boundary. `/health` deliberately does NOT gain this — a liveness probe that spawns a process
+  per scrape restarts the fleet whenever the pool is briefly recycling.
+
+  Running `smoke_compose.sh` for this then found three more, none of which any unit test could
+  have caught:
+
+  1. **The readiness probe had never once detected a database outage.** `_dependency_status`
+     wrote `with storage.connect(): db_status = "ok"`, which looks like a connectivity check and
+     is not — `SessionLocal()` builds a Session lazily, acquiring no connection until a
+     statement runs, and the commit on an unused session is a no-op. With Postgres stopped it
+     still answered 200, so a pod with no database stayed in rotation. It runs `SELECT 1` now.
+     Invisible on SQLite, where the "connection" is a local file that is always there.
+  2. **The smoke test was grading the wrong server.** A stale uvicorn the QA harness had left on
+     127.0.0.1:8080 answered every check; two failed against a process that had never seen the
+     image, and the ones that passed were just as meaningless. A deployability gate that can
+     silently test something other than the deployment is worse than none, so it now refuses to
+     start when anything holds a port the stack publishes.
+  3. **The end-to-end decision had never run through compose.** Compose seeds nothing (correctly
+     — it may be someone's real environment), so there was no policy to decide against; that
+     check only ever passed against the stale server's seeded data. `RULEMIND_SEED_DEMO` is
+     declared in compose, off by default, and the smoke run opts in.
+
+  Also fixed the script's own reporting: `compose up`'s stderr was discarded and container logs
+  printed instead, so a port conflict showed forty lines of stale Redis chatter and never the
+  words "port is already allocated". **14 passed, 0 failed.**
 - [ ] **W7.1** Supabase project + Alembic chain · **W7.2** Upstash · **W7.3** Koyeb, with fresh
   `RULEMIND_CONFIG_KEY`/`RULEMIND_ADMIN_JWT_SECRET` (the production gate refuses the committed
   dev defaults). **Prove the sandbox spawns there** — if the runtime blocks `spawn`, every

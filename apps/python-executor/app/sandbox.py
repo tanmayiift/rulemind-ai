@@ -180,6 +180,42 @@ def _get_pool() -> ProcessPoolExecutor:
         return _pool
 
 
+def probe() -> Dict[str, Any]:
+    """Can this runtime actually execute a sandboxed variable? {"status", "mode", "detail"}.
+
+    The readiness probe checked the database and Redis and nothing else, so on a runtime that
+    forbids `spawn` -- some serverless and hardened container platforms do -- the process
+    reported READY while every Python variable failed. The decisions still come back, because
+    T1.2 makes a failed variable fail closed rather than fail open, but they are decided without
+    the variables the policy is written around, and nothing upstream says so. A load balancer
+    routes traffic to it, and the deploy looks successful.
+
+    Runs one trivial expression through the real path, so it answers the question that matters:
+    not "is the pool object present" but "did a worker start and return a value".
+    """
+    mode = "inline" if env.env_str("SANDBOX_MODE", "pool") == "inline" else "pool"
+    try:
+        result = execute_variable(
+            "def rulemind_readiness_probe(payload, variables):\n    return 1\n",
+            {}, {}, timeout_ms=5000)
+    except Exception as exc:  # noqa: BLE001 - a probe must report, never raise
+        return {"status": "error", "mode": mode, "detail": str(exc)}
+    if result.get("error"):
+        return {"status": "error", "mode": mode, "detail": str(result["error"])}
+    if result.get("value") != 1:
+        return {"status": "error", "mode": mode,
+                "detail": "sandbox returned {0!r}, expected 1".format(result.get("value"))}
+    detail = ""
+    if result.get("sandbox_fallback"):
+        # SANDBOX_FALLBACK_MODE=inline: it worked, but NOT in a subprocess. Untrusted customer
+        # Python is running in the API process with no RLIMIT and no process boundary, which is
+        # a materially different security posture and must not read as plain "ok".
+        return {"status": "degraded", "mode": "inline_fallback",
+                "detail": "the pool is unavailable and SANDBOX_FALLBACK_MODE=inline is running "
+                          "untrusted code in the API process: {0}".format(result.get("sandbox_error"))}
+    return {"status": "ok", "mode": mode, "detail": detail}
+
+
 def _recycle_pool(pool: ProcessPoolExecutor) -> None:
     """Terminate a pool's workers and drop it so the next call builds a fresh one.
 

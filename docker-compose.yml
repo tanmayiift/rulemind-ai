@@ -59,6 +59,11 @@ services:
       # production. Override with RULEMIND_ENV=production once you supply real
       # secrets.
       RULEMIND_ENV: ${RULEMIND_ENV:-development}
+      # Empty by default: a compose stack must not seed demo policies into what someone may be
+      # treating as a real environment. Declared here so it CAN be turned on from the outside --
+      # scripts/smoke_compose.sh sets it, because its end-to-end check needs a policy to decide
+      # against and there is otherwise nothing in the database.
+      RULEMIND_SEED_DEMO: ${RULEMIND_SEED_DEMO:-}
       REDIS_URL: redis://redis:6379/0
       PYTHON_SANDBOX_TIMEOUT: 2000
       PYTHON_SANDBOX_MEMORY: 128
@@ -98,6 +103,11 @@ services:
       RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
       RULEMIND_ADMIN_JWT_SECRET: ${RULEMIND_ADMIN_JWT_SECRET:-rulemind-admin-dev-secret}
       RULEMIND_ENV: ${RULEMIND_ENV:-development}
+      # Empty by default: a compose stack must not seed demo policies into what someone may be
+      # treating as a real environment. Declared here so it CAN be turned on from the outside --
+      # scripts/smoke_compose.sh sets it, because its end-to-end check needs a policy to decide
+      # against and there is otherwise nothing in the database.
+      RULEMIND_SEED_DEMO: ${RULEMIND_SEED_DEMO:-}
       REDIS_URL: redis://redis:6379/0
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}

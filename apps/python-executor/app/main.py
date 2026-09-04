@@ -1448,8 +1448,18 @@ def _dependency_status() -> Dict[str, Any]:
     configured and cannot be reached is an error.
     """
     try:
-        with storage.connect():
-            db_status = "ok"
+        # `SELECT 1`, not a bare `with storage.connect()`. SessionLocal() builds a Session
+        # LAZILY -- it acquires no DBAPI connection until a statement runs, and the commit on an
+        # unused session is a no-op -- so the bare form reported "ok" with Postgres stopped, and
+        # the readiness probe had never once detected a database outage. That is the entire job
+        # of this probe: take the pod out of rotation while its database is unreachable, and
+        # rejoin on its own when it comes back, with no restart. Caught by
+        # scripts/smoke_compose.sh, which stops the database and re-probes.
+        from sqlalchemy import text
+
+        with storage.connect() as session:
+            session.execute(text("SELECT 1"))
+        db_status = "ok"
     except Exception:
         db_status = "error"
 
@@ -1462,14 +1472,37 @@ def _dependency_status() -> Dict[str, Any]:
         except Exception:
             redis_status = "error"
 
-    healthy = db_status == "ok" and redis_status in ("ok", "not_configured")
-    return {
-        "status": "ok" if healthy else "degraded",
+    # The sandbox is a dependency in every sense that matters: user-authored Python variables are
+    # what a policy is written around, and if the runtime forbids `spawn` -- some serverless and
+    # hardened container platforms do -- every one of them fails. Decisions still come back,
+    # because T1.2 makes a failed variable fail CLOSED, but they are decided without the inputs
+    # the policy is about, and until now nothing upstream said so: the probe checked the database
+    # and Redis, answered 200, and the load balancer sent traffic to a pod that could not run the
+    # product. One trivial expression through the real path, so this answers "did a worker start
+    # and return a value", not "does a pool object exist".
+    from .sandbox import probe as sandbox_probe
+
+    sandbox = sandbox_probe()
+    sandbox_status = sandbox["status"]
+
+    healthy = (db_status == "ok" and redis_status in ("ok", "not_configured")
+               and sandbox_status != "error")
+    payload = {
+        "status": "ok" if healthy and sandbox_status == "ok" else "degraded",
         "db": db_status,
         "redis": redis_status,
+        # `degraded` is not `error`: SANDBOX_FALLBACK_MODE=inline works, but runs untrusted
+        # customer Python in the API process with no RLIMIT and no process boundary. That is a
+        # deliberate, configured trade, so it must not take the pod out of rotation -- and it
+        # must not read as plain "ok" either.
+        "sandbox": sandbox_status,
+        "sandbox_mode": sandbox["mode"],
         "version": "4.0.0",
         "healthy": healthy,
     }
+    if sandbox.get("detail"):
+        payload["sandbox_detail"] = sandbox["detail"]
+    return payload
 
 
 @app.get("/health")

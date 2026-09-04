@@ -52,6 +52,29 @@ echo "  ========================="
 echo
 
 # ---------------------------------------------------------------- build + boot
+# ---------------------------------------------------------------- pre-flight
+# Anything already bound to a port this stack publishes will answer the checks below INSTEAD of
+# the container, and every one of them would grade that other server. A stale uvicorn left on
+# 127.0.0.1:8080 by the QA harness did exactly that here: two checks failed against a process
+# that had never seen the image, and the two that "passed" against it were just as meaningless.
+# A deployability gate that can silently test something other than the deployment is worse than
+# no gate, so this refuses to start rather than reporting on the wrong server.
+PORTS_IN_USE=""
+for port in 8080 3000 55432 6380; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    PORTS_IN_USE="$PORTS_IN_USE $port"
+  fi
+done
+if [ -n "$PORTS_IN_USE" ]; then
+  bad "ports already in use:$PORTS_IN_USE — the checks would grade whatever is listening there"
+  for port in $PORTS_IN_USE; do
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tail -n +2 | sed 's/^/        /'
+  done
+  note "stop those first (docker compose down, or kill the stray process)."
+  exit 2
+fi
+ok "no conflicting listener on 8080/3000/55432/6380"
+
 echo "  building (this is also the .dockerignore check — watch the context size)…"
 BUILD_LOG=$(mktemp)
 if ! docker compose build >"$BUILD_LOG" 2>&1; then
@@ -63,10 +86,24 @@ CONTEXT=$(grep -oE 'transferring context: [0-9.]+[kMG]?B' "$BUILD_LOG" | tail -1
 [ -n "$CONTEXT" ] && note "build ${CONTEXT}"
 ok "images build"
 
+# The end-to-end decision check below needs a policy, and compose seeds nothing by default --
+# correctly, since a compose stack may be someone's real environment. Opt in for this run only.
+# This check used to "pass" against a stale uvicorn on the host that happened to have seeded
+# data, so the decision path through the actual compose stack had never been exercised.
+export RULEMIND_SEED_DEMO=1
+
 echo "  starting stack…"
-if ! docker compose up -d >/dev/null 2>&1; then
+UP_LOG=$(mktemp)
+if ! docker compose up -d >"$UP_LOG" 2>&1; then
   bad "compose up failed"
-  docker compose logs --tail 40 | sed 's/^/        /'
+  # `up`'s OWN output, not container logs. This discarded stderr and printed
+  # `docker compose logs` instead, which on a port conflict shows forty lines of stale Redis
+  # background-save chatter from a previous run and never the words "port is already allocated".
+  tail -20 "$UP_LOG" | sed 's/^/        /'
+  if grep -q "already allocated\|address already in use" "$UP_LOG"; then
+    note "a port this stack publishes is taken. Running containers:"
+    docker ps --format '        {{.Names}}  {{.Ports}}' | sed 's/^/  /'
+  fi
   exit 1
 fi
 
@@ -104,6 +141,25 @@ if [ "$UP" -eq 1 ]; then
   fi
   # Give it a moment to reconnect before the remaining checks.
   for _ in $(seq 1 30); do curl -fsS "$API/ready" >/dev/null 2>&1 && break; sleep 2; done
+fi
+
+# The sandbox must actually spawn INSIDE the container. This is the one platform assumption a
+# new host has to be tested for: if the runtime forbids `spawn`, every user-authored Python
+# variable fails and the product does not work -- while /ready used to answer 200 because it
+# only looked at the database and Redis. Rehearsing it here means the same curl answers the
+# question on any new host.
+if [ "$UP" -eq 1 ]; then
+  READY_BODY=$(curl -fsS "$API/ready" 2>/dev/null || echo '{}')
+  SANDBOX=$(echo "$READY_BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("sandbox","missing"))' 2>/dev/null || echo "missing")
+  MODE=$(echo "$READY_BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("sandbox_mode","?"))' 2>/dev/null || echo "?")
+  if [ "$SANDBOX" = "ok" ]; then
+    ok "the sandbox spawns inside the container (mode=$MODE)"
+  elif [ "$SANDBOX" = "missing" ]; then
+    bad "/ready does not report the sandbox at all"
+  else
+    bad "sandbox is '$SANDBOX' (mode=$MODE) — every Python variable will fail closed"
+    echo "$READY_BODY" | head -c 300 | sed 's/^/        /'
+  fi
 fi
 
 # The migration chain must have applied — a stale schema used to boot silently.
