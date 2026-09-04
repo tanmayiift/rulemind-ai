@@ -571,6 +571,95 @@ on, and it is now answered by a curl rather than a guess.
   **W7.6** push once so CI finally sees the whole series.
 
 
+---
+
+# Parity backlog build-out (opened 2026-09-05)
+
+Full scope approved: the entire parity backlog, multi-agent, with a standing test gate. The
+roadmap sizes phases 4-8 at 12+ months for 1-2 engineers, so this is delivered phase by phase,
+each leaving `main` green and deployable.
+
+**Standing gate on every item** (`docs/parity/LENS-QA.md:6-14`): tenant isolation, RBAC across
+5 roles, an audit event with the actor, OpenAPI regenerates clean, and at least one negative
+test. Anything touching decision semantics also gets five-engine parity against a corpus
+GENERATED from the Python. Every fix mutation-checked.
+
+## A. Phase 0 - prove the deployment
+
+- [x] **A1** `.env.deployed` gitignored + `.env.deployed.example` committed
+- [x] **A2** `scripts/smoke_deployed.sh` - 24 checks; 21/21 green unauthenticated
+- [x] **A3** Defect: `load-test.yml` set `RM_BASE`; k6 reads `BASE_URL`/`API_KEY` (my bug)
+- [x] **A4** Defect: `README.md` claimed auto-seeding, false since it became opt-in
+- [x] **A5** Defect: spec claimed `e2e/global-setup.ts` resets the DB; no such file exists
+- [x] **A6** Defect: `PLAN.md` 8.1 listed 6 open items; 5 had shipped
+- [ ] **A7** Seed the deployed workspace via `POST /api/v1/onboarding/load-samples`
+- [ ] **A8** Run `suite_sandbox` (21 cases) against the deployment
+- [ ] **A9** Run `suite_core` (31 cases) against the deployment
+- [ ] **A10** `smoke_deployed.sh` fully green including the 3 authenticated checks
+
+## B. Phase 1 - correctness bugs and harness debt
+
+- [ ] **B1** `FAST_DECIDE=1` skips input validation - wire `input_schema` into `fast_decide.py`
+      and `core/engine.py`, same semantics as `executor.py:399-417`, fail closed (closes P06)
+- [ ] **B2** Evaluation budget is executor-only - same exception class so the 504 handler at
+      `main.py:153-162` catches it (closes the P21 residual)
+- [ ] **B3** Playwright remote-capable: hosts behind env vars, `webServer` off for remote,
+      wss derived from https, destructive specs gated behind `RM_E2E_ALLOW_DESTRUCTIVE`
+- [ ] **B4** Adversarial review of B1-B3; anything refuted goes back
+- [ ] **B5** Polling conditions on the `action` step - five engines + generated corpus
+- [ ] **B6** Update P06 and P21 parity rows with the fixes
+- [ ] **B7** Full regression gate green (both DB lanes, 5 engines, all gates)
+
+## C. Phase 2 - P01, connectors that actually fetch
+
+- [ ] **C1** Decision-time fetch through the SSRF-guarded egress path, fail closed
+- [ ] **C2** `request_mapping` / `response_mapping` actually read and applied
+- [ ] **C3** Caching + per-source timeouts inside the evaluation budget
+- [ ] **C4** DoD five + P01 parity row + `README.md:6` claim becomes true
+
+## D. Phase 3 - roadmap phase 4 (parallel)
+
+- [ ] **D1** P02 p12 / PKCS#12 outbound client certificates
+- [ ] **D2** P03 outbound webhooks: subscription model, event types, filters
+- [ ] **D3** P20 predictor entity + values + reports
+- [ ] **D4** P09-partial: DLQ + `Idempotency-Key` on the existing bus
+- [ ] **D5** Migration chain serialized; DoD five each; regression gate
+
+## E. Phase 4 - roadmap phase 5 (parallel)
+
+- [ ] **E1** P04 workflow step-through debugger
+- [ ] **E2** P05 modelset
+- [ ] **E3** P11 canary deployment with delays
+- [ ] **E4** DoD five each; regression gate
+
+## F. Phase 5 - roadmap phase 6 (parallel)
+
+- [ ] **F1** P07 matrix entity with dimensions + import
+- [ ] **F2** P13 Monaco editor (highlighting, then completion)
+- [ ] **F3** DoD five each; regression gate
+
+## G. Phase 6 - roadmap phase 7 (sequential, a re-architecture)
+
+- [ ] **G1** P15 journey as a first-class entity - table, CRUD, web route, SDK across 5 engines
+- [ ] **G2** P19 superflows - needs product definition before engineering
+- [ ] **G3** DoD five each; regression gate
+
+## H. Phase 7 - roadmap phase 8
+
+- [ ] **H1** P09-full Kafka / exactly-once
+- [ ] **H2** P12 feature factory
+
+## I. Docs and CI
+
+- [x] **I1** parity.json + PARITY-MATRIX.md: P17 -> PRESENT, P10 re-word, P16 half-close,
+      six missing `gap` fields filled
+- [x] **I2** README architecture tree completed + Deployment section added
+- [ ] **I3** `E2E_TEST_PLAN.md`: 16 -> 25 migrations, 733 -> real test count, PG 16 -> 18,
+      artefact list
+- [ ] **I4** 13 per-package `CHANGELOG.md` files, regenerated from path-scoped `git log`
+- [ ] **I5** Vercel GitHub App access revoked (needs the user's 2FA)
+- [ ] **I6** CI: one commit without `[skip ci]` once the Actions quota resets
+
 ## Blockers
 
 ### RESOLVED 2026-09-03 — the #127 half of this was wrong
