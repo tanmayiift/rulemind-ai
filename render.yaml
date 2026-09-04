@@ -1,0 +1,187 @@
+# Render Blueprint — the API, its database and its cache, as code.
+#
+# WHY THIS FILE RATHER THAN THE DASHBOARD. A deployment clicked together in a web UI is not
+# reviewable, not reproducible, and not diffable: the next person cannot see that
+# RULEMIND_ENV=production is what arms the fail-closed secret gate, or that MODEL_POOL_SIZE=1
+# is a memory constraint rather than a preference. Everything below is a decision with a
+# reason, and `render.yaml` is where those reasons survive.
+#
+# Deploy:  Render Dashboard -> New -> Blueprint -> connect this repo.
+# Render reads this file, provisions all three resources, and prompts once for the four
+# secrets marked `sync: false` (they are deliberately NOT in this file).
+#
+# ── Why this shape ────────────────────────────────────────────────────────────────────────
+#
+# The original plan was Supabase (Postgres) + Upstash (Redis) + Koyeb (API). Koyeb's console
+# has been decommissioned — it is joining Mistral and offers no way to create a service or even
+# an API token — and the Supabase org's free tier is full (2/2 projects, both belonging to a
+# different project). Putting all three backend tiers on Render instead means one dashboard,
+# one region, and a private network between them rather than three public TLS hops per
+# decision. The dashboard stays on Vercel, which is what Vercel is actually good at: it is a
+# pure client-side SPA with zero API routes and zero SSR.
+#
+# ── The free tier's two real constraints ──────────────────────────────────────────────────
+#
+# 512 MB and 0.1 CPU. That drives three settings below and they are not arbitrary:
+#
+#   * `--workers 1`, not the Dockerfile's default of 2. Each uvicorn worker is an independent
+#     SQLAlchemy pool AND a resident copy of the ML stack (sklearn, lightgbm, numpy). Two of
+#     them do not fit in 512 MB, and the second one buys nothing at 0.1 CPU.
+#   * SANDBOX_POOL_SIZE=1 / MODEL_POOL_SIZE=1. Every sandbox worker is a spawned process with
+#     its own interpreter. The defaults (4 and 2) would be six interpreters in 512 MB.
+#   * No `preDeployCommand`. Render only offers it on paid instances, so migrations run in the
+#     start command instead — see below.
+#
+# Free web services sleep after 15 minutes idle and take ~30s to wake. That is a real
+# first-request penalty, not a bug; `/health` is static and answers immediately once awake.
+services:
+  # ── API + scheduler ─────────────────────────────────────────────────────────────────────
+  - type: web
+    name: rulemind-api
+    runtime: docker
+    dockerfilePath: ./apps/python-executor/Dockerfile
+    # The build context is the REPO ROOT, not apps/python-executor: every COPY in that
+    # Dockerfile is written relative to the root (`COPY apps/python-executor/app ./app`), so a
+    # context scoped to the service directory fails on the first COPY. docker-compose.yml
+    # builds it the same way.
+    dockerContext: .
+    plan: free
+    region: singapore
+    # Singapore because the database and key-value store below are in Singapore, and a
+    # decision makes several round trips to each. Co-locating them matters far more than
+    # proximity to any one user, and this is also the closest Render region to the operator.
+    healthCheckPath: /health
+    # /health, NOT /ready. Liveness here is deliberately static — no database, no Redis, no
+    # I/O. /ready is the one that reports dependencies (and, since this session, whether the
+    # sandbox can actually spawn); pointing a restart-triggering probe at it would cycle the
+    # service on any database blip. See app/main.py::health.
+    autoDeploy: false
+    # Off on purpose: this repo's CI is the gate, and a push should not deploy before it has
+    # run. Deploy from the dashboard or the deploy hook once CI is green.
+    startCommand: >-
+      sh -c "python3 -m alembic -c alembic.ini upgrade head &&
+      exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1"
+    # Migrations run HERE, which the Dockerfile's entrypoint deliberately does not do. Two
+    # things make that safe on this plan and it is worth being explicit about both, because
+    # the reasons it was removed from the entrypoint still apply everywhere else:
+    #   1. `&&`, not `;` or an `if`. A failed migration stops the boot. The original entrypoint
+    #      wrapped it in `if ... else echo WARNING; fi`, which defeats `set -e` — a failed
+    #      migration was logged and the API served against a stale schema.
+    #   2. The race that motivated moving migrations to a Helm pre-upgrade hook is N replicas
+    #      running the chain simultaneously. A free Render service is a single instance with no
+    #      horizontal scaling, so there is exactly one runner. Raise the plan and this must
+    #      move to a Render pre-deploy command or a one-off job before scaling past one.
+    envVars:
+      # ── the four the production gate refuses to start without ───────────────────────────
+      # app/security_config.py::verify_production_secrets fails closed outside local dev if any
+      # of these is unset or still its committed dev default. `sync: false` means Render
+      # prompts for the value once and stores it encrypted; it is never in this file or in git.
+      - key: RULEMIND_CONFIG_KEY
+        sync: false
+      - key: RULEMIND_ADMIN_JWT_SECRET
+        sync: false
+      - key: RULEMIND_ADMIN_PASSWORD
+        sync: false
+      - key: RULEMIND_DEV_API_KEY
+        sync: false
+
+      # ── what arms that gate in the first place ──────────────────────────────────────────
+      # Unset is NOT the same as "development": security_config falls back to NODE_ENV, which
+      # defaults to development, so a deployment that simply never sets this skips the whole
+      # check and boots on the four publicly-known defaults. Same trap as AUTH_MODE below.
+      - key: RULEMIND_ENV
+        value: production
+
+      # ── wiring ──────────────────────────────────────────────────────────────────────────
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rulemind-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: rulemind-kv
+          property: connectionString
+
+      # AUTH_MODE unset leaves auth ON (middleware tests for the literal string "none"), so
+      # this is belt and braces rather than a change — but an explicit value is the difference
+      # between "we chose this" and "nobody looked".
+      - key: AUTH_MODE
+        value: apikey
+
+      # Render terminates TLS at its edge and forwards exactly one hop, so the client IP is the
+      # last entry in X-Forwarded-For. Getting this wrong means the login lockout and the
+      # pre-auth rate limiter key on the proxy instead of the caller — one bucket for the
+      # entire internet.
+      - key: RULEMIND_TRUSTED_PROXY_HOPS
+        value: "1"
+
+      # ── the 512 MB budget (see the header) ───────────────────────────────────────────────
+      - key: SANDBOX_POOL_SIZE
+        value: "1"
+      - key: MODEL_POOL_SIZE
+        value: "1"
+      # fail, never inline. The fallback runs untrusted customer Python in the API process with
+      # no RLIMIT and no process boundary — precisely when the sandbox is already unhealthy.
+      # /ready reports `degraded` if this is ever flipped, which is how you would find out.
+      - key: SANDBOX_FALLBACK_MODE
+        value: fail
+
+      # One instance, so the scheduler runs in-process and there is no separate worker service
+      # to pay for. The DB lease still elects a leader, which keeps this correct if it ever
+      # scales past one.
+      - key: RULEMIND_RUN_API_SCHEDULER
+        value: "1"
+
+      # DB_POOL_SIZE * workers must stay under the database's connection limit. One worker at
+      # 5+5 is comfortable; the Dockerfile's default of 20+20 x 2 workers would be 80.
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "5"
+
+      # Set once the Vercel dashboard exists. Without it the browser blocks every API call from
+      # the dashboard, which looks like the API being down rather than a CORS policy.
+      - key: CORS_ORIGINS
+        sync: false
+
+      # Demo data OFF. This is a real deployment, and seeding invents policies and decisions
+      # that look like production records.
+      - key: RULEMIND_SEED_DEMO
+        value: ""
+
+  # ── Redis-compatible cache ──────────────────────────────────────────────────────────────
+  # Under `services`, not `databases`: Render's schema reserves `databases` for Postgres.
+  #
+  # Redis is genuinely optional here — the app documents in-process fallbacks for rate limiting
+  # and the decision bus, and /ready reports `not_configured` rather than an error without it.
+  # It is provisioned because two of those fallbacks are per-PROCESS, which stops being correct
+  # the moment there is more than one instance: the login-failure counter in particular resets
+  # on every restart and is not shared, so N instances would give an attacker N times the
+  # attempts before a lockout. A durable database tier was added underneath it this session, so
+  # that is no longer the disaster it was — but Redis is still the fast path.
+  - type: keyvalue
+    name: rulemind-kv
+    plan: free
+    region: singapore
+    ipAllowList: []
+    # Empty = private network only; nothing on the public internet can connect.
+    maxmemoryPolicy: noeviction
+    # noeviction, NOT allkeys-lru. This holds rate-limit counters and login-failure counters.
+    # Evicting a login-failure counter silently resets a lockout, which is the one thing it
+    # exists to prevent — better to fail the write and fall back to the database tier than to
+    # quietly forget that someone has been guessing.
+
+databases:
+  - name: rulemind-db
+    databaseName: rulemind
+    user: rulemind
+    plan: free
+    region: singapore
+    # Render's free Postgres is deleted after 30 days — it is for validating the deployment,
+    # not for holding anything that matters. Move to a paid instance (or back to Supabase, once
+    # a slot frees up) before this holds real decisions; the only thing that changes is
+    # DATABASE_URL, because the Alembic chain builds the schema from empty either way.
+    ipAllowList: []
+    # Empty = private network only. The API reaches it over Render's internal network; nothing
+    # on the public internet can connect.
