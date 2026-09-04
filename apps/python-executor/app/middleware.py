@@ -402,6 +402,69 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             return response
 
 
+# Paths whose responses are HTML that loads scripts and styles -- Swagger UI and ReDoc. They
+# need a looser CSP than the rest of the API, which serves nothing but JSON.
+_DOC_PATHS = ("/docs", "/redoc", "/docs/oauth2-redirect")
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Set the response headers a browser needs to defend itself. There were none at all.
+
+    Verified against the live deployment: the only header coming back was x-request-id. No
+    nosniff, no frame-ancestors, no HSTS, no referrer policy. Each of the four below closes
+    something specific rather than being cargo-culted:
+
+    * `X-Content-Type-Options: nosniff` -- an endpoint that reflects attacker-controlled text
+      inside a JSON body can otherwise be sniffed as HTML by older browsers and executed.
+    * `X-Frame-Options: DENY` plus `frame-ancestors 'none'` -- this API is never legitimately
+      framed, and the admin surface uses cookie auth, which is what makes clickjacking worth
+      preventing rather than theoretical.
+    * `Referrer-Policy: no-referrer` -- request paths carry policy, rule and decision IDs.
+      Without this they leak to any third-party host the browser is sent to next.
+    * `Strict-Transport-Security` -- only when the request actually arrived over TLS. Sending
+      it over plain HTTP is meaningless, and sending it from a local dev server would pin
+      localhost to HTTPS in the developer's browser for a year, which is a genuinely annoying
+      thing to do to someone.
+
+    The CSP is `default-src 'none'` because a JSON API should load nothing at all. The doc
+    routes are the one exception -- Swagger UI is HTML with its own scripts and styles -- so
+    they get a policy that permits exactly that and nothing more.
+    """
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        response = await call_next(request)
+        headers = response.headers
+        # setdefault throughout: a handler that has deliberately set one of these (a download
+        # endpoint choosing its own disposition-related policy, say) must win over a blanket
+        # default applied to every response.
+        headers.setdefault("X-Content-Type-Options", "nosniff")
+        headers.setdefault("X-Frame-Options", "DENY")
+        headers.setdefault("Referrer-Policy", "no-referrer")
+
+        path = request.url.path
+        if path.startswith(_DOC_PATHS):
+            headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'none'; img-src 'self' data: https://fastapi.tiangolo.com; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "font-src 'self' https://cdn.jsdelivr.net; connect-src 'self'; "
+                "frame-ancestors 'none'; base-uri 'none'")
+        else:
+            headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+
+        # X-Forwarded-Proto, not url.scheme: behind Render's (or any) TLS-terminating proxy the
+        # app sees plain http, so trusting url.scheme alone would never send HSTS in exactly the
+        # deployment where it matters.
+        forwarded = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+        if forwarded == "https" or request.url.scheme == "https":
+            headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        return response
+
+
 class TenantContextMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, storage) -> None:
         super().__init__(app)

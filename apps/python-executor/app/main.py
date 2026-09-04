@@ -31,7 +31,12 @@ from .logic import (
     nodes_to_tree,
     slugify,
 )
-from .middleware import IdempotencyMiddleware, RequestIdMiddleware, TenantContextMiddleware
+from .middleware import (
+    IdempotencyMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+    TenantContextMiddleware,
+)
 from .runtime import is_local_dev, redis_client
 from .security_config import verify_production_secrets
 from .sandbox import execute_variable
@@ -83,7 +88,32 @@ def _install_ai_usage_recorder() -> None:
 _install_ai_usage_recorder()
 
 
-app = FastAPI(title="RuleMind V4 API", version="4.0.0")
+def _docs_enabled() -> bool:
+    """Whether to publish Swagger UI, ReDoc and the OpenAPI schema.
+
+    They were on unconditionally, so the deployed API served /docs, /redoc and /openapi.json to
+    anyone, unauthenticated -- the complete endpoint map, every request and response schema, and
+    the shape of the decisioning model, handed to whoever asks. That is reconnaissance a
+    credentialled attacker would otherwise have to guess at, and it is free.
+
+    Off in production, on everywhere else, because they are genuinely useful in development.
+    RULEMIND_ENABLE_DOCS=1 re-enables them for a deployment that wants a public API reference --
+    an explicit decision rather than an accident of the default.
+    """
+    if env_bool("RULEMIND_ENABLE_DOCS", False):
+        return True
+    return (env_str("RULEMIND_ENV", "").strip().lower()
+            not in ("production", "prod", "staging"))
+
+
+_DOCS_ON = _docs_enabled()
+app = FastAPI(
+    title="RuleMind V4 API",
+    version="4.0.0",
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url="/redoc" if _DOCS_ON else None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_origins(),
@@ -114,6 +144,10 @@ app.add_middleware(TenantContextMiddleware, storage=current_storage)
 # to wrap the tenant middleware rather than sit inside it, or the 401/403/429 responses that
 # middleware returns early would carry no correlation id -- the exact responses worth tracing.
 app.add_middleware(RequestIdMiddleware)
+# Outermost of all, so its headers land on EVERY response -- including the 401/403/429 the
+# tenant middleware returns early, and including responses from exception handlers. A browser
+# needs nosniff and frame-ancestors on an error page just as much as on a success.
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.exception_handler(EvaluationBudgetExceeded)
