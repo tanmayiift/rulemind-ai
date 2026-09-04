@@ -50,13 +50,32 @@ packages/
   sdk-flutter/          Flutter SDK (Dart) + on-device engine + sample app
   ui/                   Shared UI primitives
   widget/               Embeddable widget
+  flutter-ui/           Shared Flutter widgets
 
+demo-app/               Flutter showcase app (on-device vs server parity)
 e2e/                    Playwright end-to-end tests
 test/                   TypeScript unit tests (engine, SDK, auth, cross-platform parity)
 qa/                     Automated QA suite + workbook manifest
+docs/                   Architecture, HLD, and the parity matrix (docs/parity/)
+scripts/                Deployment + verification gates (smoke_compose.sh, smoke_deployed.sh,
+                        verify_chart.py, check_audit_ignores.py)
+design/                 Design assets
+third_party/            Vendored dependencies
 infra/ k8s/ helm/       Deployment manifests
 observability/          Grafana / Prometheus / Tempo / OTel collector config
+render.yaml             The live deployment, as code — API + Postgres + Valkey + dashboard
 ```
+
+## Deployment
+
+The API, its database, its cache and the dashboard are all defined in `render.yaml` and run on
+Render. The dashboard is a **static site**: the web app is a pure client SPA, so it exports to
+files with `NEXT_OUTPUT=export` and is served from a CDN with no instance and no cold start.
+`/docs` is disabled outside development — see `RULEMIND_ENABLE_DOCS` in `.env.example`.
+
+`scripts/smoke_deployed.sh` checks a live instance end to end: dependency health, the sandbox
+actually spawning, security headers, that the API docs are not public, that CORS is scoped to
+the dashboard origin, and that a real decision runs and lands in the audit trail.
 
 ## Quick Start
 
