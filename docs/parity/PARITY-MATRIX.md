@@ -19,8 +19,8 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 4 |
-| 🟡 partial | 7 |
+| ✅ present | 5 |
+| 🟡 partial | 6 |
 | ❌ absent | 10 |
 | ⛔ cut | 1 |
 
@@ -39,14 +39,14 @@ verified.
 | P07 | Matrix with dimensions + import | ❌ absent | `'matrix' is only a QA harness (apps/python-executor/simulation/scenario_matrix.py:1) and a backtest transition_matrix; closest analog is app/decision_tables.py:92` | — | 6 | ~4 weeks | **yes** |
 | P08 | Child workflow by alias | ✅ present | `app/executor.py:777-792` — `_execute_subworkflow` resolves `config.alias` through `engine_config.workflow_aliases`, flat or environment-keyed by the parent's status | — | 3 | done | no |
 | P09 | DLQ / Kafka / exactly-once | ❌ absent | `0 code hits for kafka/dlq/dead-letter; messaging is Redis pub/sub in app/decision_bus.py` | — | 8 | 6+ months | no |
-| P10 | ClickHouse / OLAP store | 🟡 partial | `app/archiver.py:69 ClickHouseArchiver, driven by app/scheduler.py:71-95, scheduled at :409-411` | **no test touches the ClickHouse sink** — `tests/test_decision_archiver.py` uses `MemoryArchiver` only; also stores decisions, not predictor values | 4 | days to cover the sink | no |
+| P10 | ClickHouse / OLAP store | 🟡 partial | `app/archiver.py` ClickHouseArchiver, driven by `app/scheduler.py:71-95`; round-trip verified against a **real ClickHouse container** at `tests/test_archive_sinks_live.py:37,91`, wired into CI as a service | stores archived **decisions**, not predictor values — that half is P20 | 4 | P20 | no |
 | P11 | Canary deployment with delays | ❌ absent | `0 code hits for canary; app/champion_challenger.py:40 already has a day-indexed ramp` | — | 5 | 2-3 weeks | no |
 | P12 | Feature factory | ❌ absent | `0 hits in any .py/.ts/.tsx; app/backtest.py and app/analytics.py are the seeds` | — | 8 | multi-month | **yes** |
 | P13 | Monaco / embedded code editor | ❌ absent | `0 hits for monaco/codemirror/ace; authoring is plain <textarea>, e.g. apps/web/app/api-console/page.tsx:275` | — | 6 | ~2 days syntax highlighting, ~2 weeks completion | no |
 | P14 | SQL editor | ⛔ cut | `no SQL datasource exists to edit against; 0 hits for postgres/mysql/jdbc/snowflake in connector code` | — | — | n/a | no |
 | P15 | Journey as a first-class entity | ❌ absent | `no Journey model or table; only fixtures in app/experience_studio.py:292, demo-app/lib/journeys.dart` | — | 7 | 3-6 months | **yes** |
-| P16 | Partitioning / cold storage / retention in months | 🟡 partial | `audit_retention_days default 90 at app/models.py:576, settable at app/routers/governance.py:37,67-68; S3/Parquet sink at app/archiver.py:118,143-151` | days not months; 0 partitioning hits | 3 | days | no |
-| P17 | Excel functions (CUMIPMT, DAYS360, EDATE, EOMONTH) | 🟡 partial | `app/excel_functions.py:800,1306,1320,1335; EDATE/EOMONTH tested at tests/test_excel_functions.py:609,617 and in the TS twin at packages/rule-engine/src/excel-functions.ts:633,639` | **CUMIPMT and DAYS360 are Python-only and untested** — absent from the TS twin, absent from every conformance suite | 3 | days | **yes** |
+| P16 | Partitioning / cold storage / retention in months | 🟡 partial | retention in **months** shipped: `app/models.py:621 audit_retention_months`, `app/archiver.py:72 normalize_retention_months`, migration `20260904_0022`, 32 tests; S3/Parquet cold storage round-tripped against MinIO at `tests/test_archive_sinks_live.py` | table **partitioning** — 0 hits anywhere under `app/` | 3 | days | no |
+| P17 | Excel functions (CUMIPMT, DAYS360, EDATE, EOMONTH) | ✅ present | `packages/rule-engine/src/excel-functions.ts:397 CUMIPMT, :686 DAYS360` (with IPMT/PPMT/CUMPRINC), checked against `packages/shared/excel-financial-date.spec.json` — 50 cases **generated from the Python** — by `test/excel-financial-date-parity.test.ts` | — | 3 | done | **yes** |
 | P18 | Rate limiting on resource APIs | ✅ present | `app/rate_limit.py` — `classify()` maps method+path to decision/read/write/ai/export/admin with whole-segment matching; `check_request()` enforces the class bucket then the tenant aggregate | class shares are per tenant/env, not per individual route | 3 | done | no |
 | P19 | Superflows | ❌ absent | `0 hits repo-wide` | — | 7 | 3-6 months | no |
 | P20 | Predictor entity + values + reports | 🟡 partial | `'predictor' is only a synonym for scorecard at app/ai.py:511,523-532, routed at app/routers/ai.py:239-258` | no table, no values store, no reports | 4 | ~3 weeks | no |
@@ -75,13 +75,21 @@ that it was a script nothing invoked, which is its own small parable about this 
   (`app/executor.py:159`), a real deadline checked in both the variable and step loops, and an
   app-level handler returning HTTP 504 (`app/main.py:114`) with a documented body. The old gap
   "no 504 anywhere" is now false. Two paths remain outside it and are recorded in the row.
-- **P10 demoted to 🟡 partial.** The code is real; the *test* is not. `tests/test_decision_archiver.py`
-  exercises `MemoryArchiver` and says so in its own docstring, so the row's e2eFlow —
-  "ClickHouse round-trip verified" — is verified by nothing.
-- **P17 demoted to 🟡 partial.** Checked function by function this time: `CUMIPMT` and `DAYS360`
-  exist only in Python, have no test anywhere, and are missing from the TypeScript twin. The
-  previous evidence ("~230 functions; TS twin at …") was true of the library and false of two of
-  the four functions the row names.
+- **P10 stays 🟡 partial, but not for the reason the 2026-09-04 re-audit gave.** That audit
+  demoted it because nothing verified the round-trip. `b017dab` added one against a **real
+  ClickHouse container** (`tests/test_archive_sinks_live.py`), wired into CI as a service, so
+  that objection is answered. What remains is the row's other clause: it stores archived
+  *decisions*, not predictor values — and that half is P20's work, not this row's.
+- **P17 promoted to ✅ present.** The 2026-09-04 re-audit ran about three hours before `81252e8`
+  landed, so it recorded a gap that closed the same day. `CUMIPMT` and `DAYS360` (plus
+  `IPMT`/`PPMT`/`CUMPRINC`) are now in the TypeScript engine, checked against a 50-case corpus
+  **generated from the Python** rather than hand-written — which is this row's own e2eFlow, word
+  for word. Both mutations tried against it are caught: clamping both `DAYS360` ends, and making
+  `CUMIPMT`'s period range exclusive.
+- **P16 half-closed.** Retention in **months** shipped in `574da83` — 21 minutes *before* the
+  re-audit commit, so "days not months" was already false when it was written; this was missed
+  rather than overtaken. Table partitioning genuinely has not shipped: still 0 hits under
+  `app/`.
 - **P22's palette bug is fixed.** `decision_table` is in the palette
   (`apps/web/app/workflow-builder/page.tsx:34`) and `apps/web/test/workflow-builder-palette.test.ts`
   now parses both sources so the palette cannot silently fall behind the executor again.

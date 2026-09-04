@@ -25,7 +25,8 @@
       "phase": 4,
       "size": "~1 week",
       "engineSemantics": false,
-      "e2eFlow": "upload a client cert -> connector calls a mutually-authenticated endpoint"
+      "e2eFlow": "upload a client cert -> connector calls a mutually-authenticated endpoint",
+      "gap": "No PKCS#12 handling anywhere: 0 hits for p12/PKCS12/.pfx. app/mtls.py:128 is INBOUND client-cert verification (the server authenticating callers); this row is the opposite direction -- presenting a client certificate to an outbound datasource, which needs a cert store, per-connector selection and a decision-path fetch (P01)."
     },
     {
       "id": "P03",
@@ -57,7 +58,8 @@
       "phase": 5,
       "size": "~2 weeks",
       "engineSemantics": false,
-      "e2eFlow": "group models into a versioned set -> route by rule -> compare"
+      "e2eFlow": "group models into a versioned set -> route by rule -> compare",
+      "gap": "No modelset concept: models are flat .pkl blobs addressed one at a time in app/routers/models.py. 0 hits for modelset/model_set. Needs a grouping entity, version pinning across members, and a resolution rule at decision time."
     },
     {
       "id": "P06",
@@ -78,7 +80,8 @@
       "phase": 6,
       "size": "~4 weeks",
       "engineSemantics": true,
-      "e2eFlow": "import a 3-dimension pricing matrix from XLSX -> reference from a rule -> MECE reports gaps"
+      "e2eFlow": "import a 3-dimension pricing matrix from XLSX -> reference from a rule -> MECE reports gaps",
+      "gap": "No matrix entity: 0 hits for a matrix/dimension model in app/models.py. Decision tables (app/decision_tables.py) are the nearest thing but are flat row/column, with no named dimensions and no import path."
     },
     {
       "id": "P08",
@@ -106,13 +109,13 @@
       "id": "P10",
       "name": "ClickHouse / OLAP store",
       "state": "PARTIAL",
-      "evidence": "app/archiver.py:69 ClickHouseArchiver, registered at app/archiver.py:173, driven by archive_old_decisions at app/scheduler.py:71-95 and scheduled at app/scheduler.py:409-411; the retention/purge CONTRACT is tested in tests/test_decision_archiver.py:64,69,84",
-      "gap": "no test touches ClickHouseArchiver -- tests/test_decision_archiver.py imports MemoryArchiver only (its own docstring at :4 says so), so the ClickHouse client path is unexercised; and it stores archived decisions, not predictor values",
+      "evidence": "app/archiver.py ClickHouseArchiver, registered in _SINKS, driven by archive_old_decisions at app/scheduler.py:71-95 and scheduled at :409-411. The round-trip is now verified against a REAL ClickHouse container, not a mock: tests/test_archive_sinks_live.py:37,91 (skipUnless CLICKHOUSE_URL; wired into CI as a service container), asserting the exact column list and that `record` round-trips as replayable JSON. Column-level coverage also at tests/test_retention_months.py:418,438. The retention/purge contract is tested in tests/test_decision_archiver.py.",
+      "gap": "Stores archived DECISIONS, not predictor values -- the predictor half is P20. The other half of this gap ('no test touches ClickHouseArchiver') was closed on 2026-09-04.",
       "phase": 4,
       "size": "days to cover the sink; the predictor-values half is P20",
       "engineSemantics": false,
       "e2eFlow": "retention job archives decisions -> ClickHouse round-trip verified",
-      "note": "Re-audit 2026-09-04 demoted this from PRESENT. The code is real and the scheduler wiring is real, but the row's own e2eFlow says 'ClickHouse round-trip verified' and nothing verifies it. PRESENT requires a test covering the claim, not adjacent to it."
+      "note": "Still PARTIAL as of 2026-09-05, but for a different reason than the 2026-09-04 re-audit gave. That re-audit demoted it because 'nothing verifies the round-trip'; b017dab added a live ClickHouse round-trip, so that objection is answered. What remains is the predictor-values half, which is P20's work."
     },
     {
       "id": "P11",
@@ -122,7 +125,8 @@
       "phase": 5,
       "size": "2-3 weeks",
       "engineSemantics": false,
-      "e2eFlow": "promote at 5% canary -> watch the metric -> auto-rollback on SLO breach"
+      "e2eFlow": "promote at 5% canary -> watch the metric -> auto-rollback on SLO breach",
+      "gap": "No canary: promotion is all-or-nothing through dev -> uat -> prod. 0 hits for canary/rollout percentage. The A/B experiment machinery (app/experiments.py) splits traffic but does not stage a promotion or auto-roll-back on a metric."
     },
     {
       "id": "P12",
@@ -132,7 +136,8 @@
       "phase": 8,
       "size": "multi-month",
       "engineSemantics": true,
-      "e2eFlow": "define a derived feature -> backfill it -> use it in a scorecard"
+      "e2eFlow": "define a derived feature -> backfill it -> use it in a scorecard",
+      "gap": "No feature factory: 0 hits. Variables are authored one at a time in Python; there is no derived-feature pipeline, no backfill, and no feature store to read from at decision time."
     },
     {
       "id": "P13",
@@ -142,7 +147,8 @@
       "phase": 6,
       "size": "~2 days syntax highlighting, ~2 weeks completion",
       "engineSemantics": false,
-      "e2eFlow": "edit a Python variable with highlighting and RuleMind-aware completion"
+      "e2eFlow": "edit a Python variable with highlighting and RuleMind-aware completion",
+      "gap": "The variable editor is a plain textarea -- 0 hits for monaco/codemirror in apps/web/. No syntax highlighting, no completion, no inline diagnostics for the Python the sandbox will run."
     },
     {
       "id": "P14",
@@ -170,24 +176,25 @@
       "id": "P16",
       "name": "Partitioning / cold storage / retention in months",
       "state": "PARTIAL",
-      "evidence": "audit_retention_days default 90 at app/models.py:576, now settable over HTTP at app/routers/governance.py:37,67-68 (with a max(1,..) floor) and tested in tests/test_data_protection.py:40,64; S3/Parquet sink at app/archiver.py:118 with the Parquet branch at :143-151",
-      "gap": "days not months; 0 hits for table partitioning anywhere",
+      "evidence": "Retention in calendar months: app/models.py:621 audit_retention_months (nullable -- NULL means the workspace never set months and audit_retention_days stays authoritative, so no tenant's purge date moved), app/archiver.py:72 normalize_retention_months and :113 resolution, exposed at app/routers/governance.py:48,98, migration 20260904_0022. 32 tests in tests/test_retention_months.py. Days remain settable at app/routers/governance.py:37,67-68. S3/Parquet cold-storage sink exists (app/archiver.py S3Archiver, round-tripped against MinIO in tests/test_archive_sinks_live.py); table partitioning does not.",
+      "gap": "Table partitioning and cold storage: 0 hits for partitioning anywhere under apps/python-executor/app/ (the only `partition` is str.partition in scim.py). Retention in MONTHS shipped on 2026-09-04 and is no longer part of this gap.",
       "phase": 3,
       "size": "days",
       "engineSemantics": false,
-      "e2eFlow": "set retention in months -> old decisions archive then purge"
+      "e2eFlow": "set retention in months -> old decisions archive then purge",
+      "note": "Half-closed 2026-09-05. 'days not months' was already false when the 2026-09-04 re-audit ran -- 574da83 landed 21 minutes earlier -- so this was missed rather than overtaken."
     },
     {
       "id": "P17",
       "name": "Excel functions (CUMIPMT, DAYS360, EDATE, EOMONTH)",
-      "state": "PARTIAL",
-      "evidence": "all four exist in the Python engine -- app/excel_functions.py:800 CUMIPMT, :1306 DAYS360, :1320 EDATE, :1335 EOMONTH, registry at :1791, inside a ~230-function library; EDATE and EOMONTH are tested at tests/test_excel_functions.py:609,617 and present in the TS twin at packages/rule-engine/src/excel-functions.ts:633,639,728",
-      "gap": "CUMIPMT and DAYS360 are Python-only -- 0 hits in packages/rule-engine/src/excel-functions.ts, and 0 tests anywhere in apps/python-executor/tests, test/ or the SDK conformance suites; two of the four functions this row names are therefore unverified and outside the five-engine contract",
+      "state": "PRESENT",
+      "evidence": "All four exist in Python (app/excel_functions.py:800 CUMIPMT, :1306 DAYS360, :1320 EDATE, :1335 EOMONTH, registry at :1791). CUMIPMT and DAYS360 were Python-only until 81252e8 (2026-09-04) ported them plus IPMT/PPMT/CUMPRINC to TypeScript: packages/rule-engine/src/excel-functions.ts:397 CUMIPMT, :686 DAYS360, registered at :802,:817. Parity is checked against packages/shared/excel-financial-date.spec.json -- 50 cases GENERATED from the Python, not hand-written -- driven by test/excel-financial-date-parity.test.ts. EDATE/EOMONTH remain covered at tests/test_excel_functions.py:609,617.",
+      "gap": "",
       "phase": 3,
       "size": "days",
       "engineSemantics": true,
       "e2eFlow": "CUMIPMT and DAYS360 evaluate identically in Python and TypeScript over the shared corpus",
-      "note": "Re-audit 2026-09-04 demoted this from PRESENT. The old evidence ('~230 functions; TS twin at ...') was true of the library and false of the two functions the row names first -- exactly the kind of generous scoring the matrix exists to prevent."
+      "note": "Promoted to PRESENT 2026-09-05. The 2026-09-04 re-audit ran ~3h BEFORE 81252e8 landed, so it recorded a gap that was closed the same day. The row's own e2eFlow -- 'evaluate identically in Python and TypeScript over the shared corpus' -- is exactly what the generated corpus tests, and both mutations tried against it (clamping both DAYS360 ends, making CUMIPMT's range exclusive) are caught."
     },
     {
       "id": "P18",
@@ -246,5 +253,6 @@
       "e2eFlow": "build a branching workflow on a canvas -> every dispatched step type is reachable from the UI",
       "note": "Re-audit 2026-09-04 deleted the clause 'decision_table is dispatched but MISSING from the palette'. It is at apps/web/app/workflow-builder/page.tsx:34 and the new vitest asserts the palette can never fall behind the executor again."
     }
-  ]
+  ],
+  "meta": {}
 }
