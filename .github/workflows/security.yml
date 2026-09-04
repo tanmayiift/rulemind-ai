@@ -85,25 +85,21 @@ jobs:
       - name: pip-audit (gating, with documented backlog)
         run: |
           set -euo pipefail
-          # --- backlog: all fixable by bumping the pin in requirements.txt ---
+          # --- backlog: fixable by bumping the pin in requirements.txt ---
+          #
+          # Every entry here must still be REPORTED by pip-audit. 13 lines used to name
+          # advisories against pyjwt, lxml, python-dotenv, lightgbm and cryptography that had
+          # already been fixed by bumping the pin -- pip-audit accepts an id it never saw without
+          # complaint, so they sat here as pre-armed suppressions. Pin pyjwt back one day for a
+          # compatibility fix and seven advisories against the library that validates admin
+          # session JWTs and OIDC assertions would have been excused again, silently.
+          # scripts/check_audit_ignores.py (run below) now fails the job when that recurs.
           IGNORES=(
-            # cryptography 45.0.4 -> 46.0.6+ / 48.0.1 / 49.0.0 / 50.0.0
-            --ignore-vuln PYSEC-2026-35      # cryptography: fixed in 46.0.6
-            --ignore-vuln PYSEC-2026-36      # cryptography: fixed in 46.0.7
-            --ignore-vuln PYSEC-2026-2141    # cryptography: fixed in 46.0.5
+            # cryptography 46.0.7 -> 48.0.1 / 49.0.0 / 50.0.0
             --ignore-vuln PYSEC-2026-3552    # cryptography: fixed in 50.0.0
             --ignore-vuln PYSEC-2026-3553    # cryptography: fixed in 49.0.0
             --ignore-vuln PYSEC-2026-3554    # cryptography: fixed in 49.0.0
             --ignore-vuln GHSA-537c-gmf6-5ccf # cryptography: fixed in 48.0.1
-            # pyjwt 2.10.1 -> 2.13.0. Used for admin session JWTs and OIDC SSO, so
-            # this is the highest-priority line in this list.
-            --ignore-vuln PYSEC-2025-183     # pyjwt: no fixed release published
-            --ignore-vuln PYSEC-2026-120     # pyjwt: fixed in 2.12.0
-            --ignore-vuln PYSEC-2026-175     # pyjwt: fixed in 2.13.0
-            --ignore-vuln PYSEC-2026-176     # pyjwt: fixed in 2.12.1
-            --ignore-vuln PYSEC-2026-177     # pyjwt: fixed in 2.13.0
-            --ignore-vuln PYSEC-2026-178     # pyjwt: fixed in 2.13.0
-            --ignore-vuln PYSEC-2026-179     # pyjwt: fixed in 2.13.0
             # starlette 0.41.3 -> 1.3.1, which requires a coordinated fastapi bump
             --ignore-vuln PYSEC-2026-161     # starlette: fixed in 1.0.1
             --ignore-vuln PYSEC-2026-248     # starlette: fixed in 1.3.0
@@ -112,12 +108,11 @@ jobs:
             --ignore-vuln PYSEC-2026-1942    # starlette: fixed in 0.49.1
             --ignore-vuln PYSEC-2026-2280    # starlette: fixed in 1.1.0
             --ignore-vuln PYSEC-2026-2281    # starlette: fixed in 1.1.0
-            # remaining single-advisory packages
-            --ignore-vuln PYSEC-2026-87      # lxml: fixed in 6.1.0 (SAML XML-DSig path)
-            --ignore-vuln PYSEC-2026-2270    # python-dotenv: fixed in 1.2.2
-            --ignore-vuln PYSEC-2024-231     # lightgbm: fixed in 4.6.0
           )
           pip-audit --requirement apps/python-executor/requirements.txt --desc "${IGNORES[@]}"
+
+      - name: No dead advisory suppressions
+        run: python scripts/check_audit_ignores.py
 
       - name: pnpm audit (gating, with documented backlog)
         run: |
