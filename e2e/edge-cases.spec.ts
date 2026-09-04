@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 
-const API_BASE = "http://127.0.0.1:8100";
+import { ALLOW_DESTRUCTIVE, API_BASE_URL, DESTRUCTIVE_SKIP } from "./env";
+
+// Was a hardcoded "http://127.0.0.1:8100". RM_E2E_API overrides it; the default is unchanged.
+const API_BASE = API_BASE_URL;
 
 // Shared state across tests (populated by "create a rule" test)
 let createdRuleIdShared: string | undefined;
@@ -302,6 +305,13 @@ test("import/validate detects invalid rules with bad operators", async ({ reques
 });
 
 test("import with valid payload succeeds and returns report", async ({ request }) => {
+  // POST /api/v1/import replaces the WHOLE configuration -- connectors, variables, rules,
+  // scorecards, policies -- not just the objects this test created, and there is no undo. Against
+  // a local throwaway database that is free; against a deployment it overwrites whatever the
+  // people using it were in the middle of. Skipped rather than silently omitted so a remote run
+  // reports the gap instead of showing green for a check it never made.
+  test.skip(!ALLOW_DESTRUCTIVE, `POST /api/v1/import overwrites the entire configuration: ${DESTRUCTIVE_SKIP}`);
+
   const exportRes = await request.get(`${API_BASE}/api/v1/export?format=json`);
   const config = await exportRes.json();
 

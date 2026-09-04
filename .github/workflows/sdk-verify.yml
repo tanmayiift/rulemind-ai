@@ -529,9 +529,22 @@ jobs:
       # only a green one: re-run with AUTH_MODE=none, 8 of its 10 tests fail.
       # The 2 that still pass are correct to -- /health is exempt by design, and
       # /api/admin/v1 needs an admin JWT that AUTH_MODE does not grant.
+      #
+      # RM_E2E_ALLOW_DESTRUCTIVE=1 is REQUIRED here, not an optimisation. The
+      # flag exists to stop five tests from writing things a real deployment
+      # cannot take back (self-serve signup, POST /api/v1/import, deactivating
+      # the shared connector). None of that applies to CI: playwright.config.ts
+      # `rm -f`s the SQLite file at boot, so this job's database is created and
+      # discarded within the step. Leaving the flag unset here would skip both
+      # tenant-boundary tests -- the only cross-tenant isolation coverage the
+      # Playwright suite has, and two of the eight that the AUTH_MODE=none
+      # mutation above depends on. The gate would then be protecting an
+      # ephemeral database from writes, at the cost of the security coverage
+      # this lane was added for (#139).
       - name: Run Playwright suite (functional + authz lanes)
         env:
           PYTHON_BIN: python
+          RM_E2E_ALLOW_DESTRUCTIVE: "1"
         run: pnpm test:e2e
 
       - name: Upload Playwright report

@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
+import { ALLOW_DESTRUCTIVE, DESTRUCTIVE_SKIP } from "./env";
+
 test.describe.configure({ mode: "serial" });
 
 // The colour literals below are the visual contract and must track
@@ -43,6 +45,14 @@ test("theme toggle switches the full shell and persists after reload", async ({ 
 // so unlinking from there would pull the file out from under an already-running backend. There
 // is no e2e/global-setup.ts, and an earlier version of this comment said there was.)
 test("connector toggle hides the source filter and removes inactive variables from rule dropdowns", async ({ page }) => {
+  // The `finally` below is the whole reason this needs a gate. It restores the connector on a
+  // best-effort basis and swallows its own failure, which is correct locally -- the database is
+  // recreated at the head of every run, so a failed restore costs nothing. Against a deployment
+  // there is no such reset: one timed-out run leaves the shared `device` connector deactivated
+  // for everyone, and the variables that depend on it read "source inactive" until a human
+  // notices. Skipped, not quietly dropped, so a remote run says the coverage is missing.
+  test.skip(!ALLOW_DESTRUCTIVE, `deactivates the shared 'device' connector with a best-effort restore: ${DESTRUCTIVE_SKIP}`);
+
   // Switching the rule builder back to simple mode raises a window.confirm
   // (RulesPage.tsx switchBuilderMode). Playwright AUTO-DISMISSES dialogs when no handler is
   // registered, so confirm() returned false and the switch silently no-opped -- the click
@@ -232,6 +242,16 @@ test("scorecard calculation, policy execution, and export/import round-trip work
   const preview = page.getByTestId("export-preview");
   await expect(preview).toContainText('"connectors"');
   await expect(preview).toContainText('"variables"');
+
+  // The scorecard, policy and export assertions above run everywhere. They are not literally
+  // read-only -- `policy-run` posts to /api/v1/policies/{id}/execute, which appends a decision and
+  // an audit row -- but they are append-only telemetry in the workspace's own history rather than
+  // configuration a deployment would have to undo, which is the distinction that matters here. The
+  // import below is not: the file picker posts to /api/v1/import, which replaces the entire
+  // configuration rather than merging the objects this test produced, and nothing undoes it.
+  // Skipping HERE rather than at the top of the test keeps the read-only half covered against a
+  // deployment while still reporting the round-trip as skipped instead of passed.
+  test.skip(!ALLOW_DESTRUCTIVE, `POST /api/v1/import overwrites the entire configuration: ${DESTRUCTIVE_SKIP}`);
 
   const payload = await preview.textContent();
   const importPath = testInfo.outputPath("rulemind-import.json");

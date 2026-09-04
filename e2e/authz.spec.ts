@@ -1,5 +1,14 @@
 import { expect, test } from "@playwright/test";
 
+import { API_BASE_URL, mintKey, revokeMintedKeys } from "./env";
+
+// Three tests below mint viewer keys. Against a deployment those persist as real
+// credentials unless something removes them, so they go through the shared helper that
+// records each kid, and this hook revokes them when the file finishes.
+test.afterAll(async ({ request }) => {
+  await revokeMintedKeys(request);
+});
+
 /**
  * Authorization is actually enforced (#139).
  *
@@ -17,7 +26,8 @@ import { expect, test } from "@playwright/test";
  * so every test below that wants to be unauthenticated must override it explicitly.
  */
 
-const API = "http://127.0.0.1:8100";
+// Was a hardcoded "http://127.0.0.1:8100". RM_E2E_API overrides it; the default is unchanged.
+const API = API_BASE_URL;
 const BAD_KEY = "rm_live_notarealkey00000000000000000";
 
 // `test.describe.configure({ mode: "serial" })` was removed here (2026-09-04). The config already
@@ -49,12 +59,7 @@ test("health probes stay open without a key", async ({ request }) => {
 
 test("a viewer key can read but cannot author, promote, or mint keys", async ({ request }) => {
   // Minted with the owner key that extraHTTPHeaders supplies.
-  const created = await request.post(`${API}/api/v1/access/keys`, {
-    data: { role: "viewer", name: "e2e-viewer" }
-  });
-  expect(created.status(), await created.text()).toBe(200);
-  const viewer = (await created.json()).plaintext as string;
-  expect(viewer, "the endpoint must return the plaintext key exactly once").toBeTruthy();
+  const viewer = await mintKey(request, "viewer", "e2e-viewer");
   const asViewer = { "x-api-key": viewer };
 
   // READ is allowed.
@@ -82,10 +87,7 @@ test("a viewer key can read but cannot author, promote, or mint keys", async ({ 
 });
 
 test("a viewer key cannot promote", async ({ request }) => {
-  const created = await request.post(`${API}/api/v1/access/keys`, {
-    data: { role: "viewer", name: "e2e-viewer-promote" }
-  });
-  const viewer = (await created.json()).plaintext as string;
+  const viewer = await mintKey(request, "viewer", "e2e-viewer-promote");
 
   const rules = await request.get(`${API}/api/v1/rules`);
   const first = ((await rules.json()) as Array<{ id: string }>)[0];

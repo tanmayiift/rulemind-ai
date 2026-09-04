@@ -599,13 +599,13 @@ GENERATED from the Python. Every fix mutation-checked.
 
 ## B. Phase 1 - correctness bugs and harness debt
 
-- [ ] **B1** `FAST_DECIDE=1` skips input validation - wire `input_schema` into `fast_decide.py`
+- [x] **B1** `FAST_DECIDE=1` skips input validation - wire `input_schema` into `fast_decide.py`
       and `core/engine.py`, same semantics as `executor.py:399-417`, fail closed (closes P06)
-- [ ] **B2** Evaluation budget is executor-only - same exception class so the 504 handler at
+- [x] **B2** Evaluation budget is executor-only - same exception class so the 504 handler at
       `main.py:153-162` catches it (closes the P21 residual)
-- [ ] **B3** Playwright remote-capable: hosts behind env vars, `webServer` off for remote,
+- [x] **B3** Playwright remote-capable: hosts behind env vars, `webServer` off for remote,
       wss derived from https, destructive specs gated behind `RM_E2E_ALLOW_DESTRUCTIVE`
-- [ ] **B4** Adversarial review of B1-B3; anything refuted goes back
+- [x] **B4** Adversarial review of B1-B3; anything refuted goes back
 - [ ] **B5** Polling conditions on the `action` step - five engines + generated corpus
 - [ ] **B6** Update P06 and P21 parity rows with the fixes
 - [ ] **B7** Full regression gate green (both DB lanes, 5 engines, all gates)

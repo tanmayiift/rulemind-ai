@@ -2,17 +2,19 @@ import path from "node:path";
 
 import { defineConfig, devices } from "@playwright/test";
 
-const apiBaseUrl = "http://127.0.0.1:8100";
+import { API_BASE_URL, API_KEY, TARGETS_LOCAL_API, WEB_BASE_URL } from "./e2e/env";
+
+// Hosts and the suite key live in e2e/env.ts, which the specs import too -- see the header there
+// for why they are not four separate literals any more. Defaults are unchanged, so a local run
+// with no RM_E2E_* set behaves exactly as before.
+const apiBaseUrl = API_BASE_URL;
+const webBaseUrl = WEB_BASE_URL;
+const e2eApiKey = API_KEY;
+
 // The backend needs Python >= 3.10, but a bare `python3` is often an older system
 // interpreter (macOS ships 3.9), which fails to start the app and leaves the whole
 // suite unrunnable locally. Point PYTHON_BIN at a venv to override.
 const pythonBin = process.env.PYTHON_BIN || "python3";
-const webBaseUrl = "http://127.0.0.1:3100";
-
-// Deliberately NOT the shipped dev default (storage.py's rm_live_devlocaltenantkey...).
-// The backend seeds whatever RULEMIND_DEV_API_KEY says, so a distinct literal here means
-// this suite can never pass by accidentally inheriting the committed default.
-const e2eApiKey = "rm_e2e_playwrightkey0000000000000000";
 
 // ABSOLUTE on purpose. This used to be the relative "sqlite:///.runtime/playwright-v3.db",
 // which the backend resolves against ITS cwd (apps/python-executor) rather than the repo
@@ -71,7 +73,19 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] }
     }
   ],
-  webServer: [
+  // `undefined` — not an empty array, not `reuseExistingServer: true` — whenever RM_E2E_API points
+  // anywhere other than the local dev server. Two things in here are unsafe against a deployment:
+  // the backend command opens with `rm -f` on the developer's local SQLite file (deleting a
+  // database the remote run never reads), and `reuseExistingServer: false` makes Playwright boot
+  // and then kill servers on 8100/3100 that a remote run has no use for. The ports below are the
+  // local defaults these two entries know how to start.
+  //
+  // Overriding ONLY RM_E2E_WEB is refused outright by `e2e/env.ts`, which throws before this
+  // array is built. It used to be described here as harmless -- "fails the config's own readiness
+  // check rather than running against the wrong thing" -- which was true of the outcome and wrong
+  // about the order: TARGETS_LOCAL_API stays true in that case, so the backend entry runs its
+  // `rm -f` and only THEN fails the readiness poll. The local database was already gone.
+  webServer: TARGETS_LOCAL_API ? [
     {
       // Quoted: a checkout path containing a space otherwise splits into argv.
       // The `rm` is part of the server command ON PURPOSE. Playwright starts webServer
@@ -128,5 +142,5 @@ export default defineConfig({
         NEXT_PUBLIC_RULEMIND_DEV_API_KEY: e2eApiKey
       }
     }
-  ]
+  ] : undefined
 });

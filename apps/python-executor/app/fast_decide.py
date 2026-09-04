@@ -24,8 +24,15 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
-from . import env
+from . import env, input_schema
 from .core import decide as core_decide
+# Imported (not redeclared) so the exception the fast path raises is the SAME CLASS the
+# executor raises: main.py dispatches its 504 on `@app.exception_handler(EvaluationBudgetExceeded)`
+# by class identity, and a look-alike declared here would miss that handler and surface a
+# retryable timeout as a 500 that pages on-call. `PolicyExecutor` is imported for
+# DEFAULT_BUDGET_MS alone, so the two paths cannot drift to different defaults.
+# executor.py imports this module only from inside functions, so this edge is not a cycle.
+from .executor import EvaluationBudgetExceeded, PolicyExecutor
 from .logic import now_iso, redact_payload
 from .sandbox import _BoundedCache, execute_variable
 
@@ -308,6 +315,61 @@ def tenant_secrets(storage: Any, tenant_id: str, connectors: Dict[str, Any]) -> 
     return result
 
 
+# ── Evaluation budget ──────────────────────────────────────────────────────────────
+# The Tier 1.3 wall-clock bound was executor-only: this module had no deadline of any kind, so
+# FAST_DECIDE=1 removed the bound on a decision entirely. The bound matters MORE here, not less
+# — the fast path computes the tenant's whole variable catalog with no COMPUTE_ONLY_USED_VARS
+# filter, and the seeded demo tenant is 55 variables at the 2000ms per-variable timeout, i.e.
+# 110 seconds of one Starlette threadpool thread for a single request.
+#
+# Same engine_config key, same default, same clamping, same exception as PolicyExecutor.
+
+
+class _Budget:
+    """Wall-clock deadline for one fast-path decision. budget_ms 0 disables it.
+
+    `anchor` is a time.perf_counter() reading taken before ANY work, so the bundle build — up to
+    6 DB reads on a cache miss, plus a single-flight wait behind another thread's build — is
+    inside the budget. A decision that spends its whole budget in the DB is just as timed out as
+    one that spends it in the sandbox, and the caller cannot tell the difference anyway.
+
+    Cooperative, like the executor's: /decide is a sync `def` served from the threadpool, so
+    cancelling an await would return 504 while the work carried on holding its thread.
+    """
+
+    __slots__ = ("budget_ms", "deadline")
+
+    def __init__(self, budget_ms: int, anchor: float) -> None:
+        self.budget_ms = max(0, budget_ms)
+        self.deadline = (anchor + self.budget_ms / 1000.0) if self.budget_ms else None
+
+    def remaining_ms(self) -> Optional[int]:
+        """Milliseconds left, or None when no budget is set."""
+        if self.deadline is None:
+            return None
+        return int((self.deadline - time.perf_counter()) * 1000)
+
+    def check(self, stage: str) -> None:
+        remaining = self.remaining_ms()
+        if remaining is not None and remaining <= 0:
+            # budget + overshoot: how far past the deadline the last unit of work actually ran,
+            # which is what tells an operator whether the budget is too tight or one step misbehaves.
+            raise EvaluationBudgetExceeded(self.budget_ms, self.budget_ms - remaining, stage)
+
+
+def _budget_ms(engine_config: Dict[str, Any]) -> int:
+    """`engine_config.evaluation_budget_ms`, read exactly as PolicyExecutor._start_budget reads it.
+
+    A malformed value falls back to the default rather than disabling the budget — reading
+    `"abc"` as "no limit" would turn a typo into the unbounded request this exists to prevent.
+    """
+    try:
+        budget = int((engine_config or {}).get("evaluation_budget_ms", PolicyExecutor.DEFAULT_BUDGET_MS))
+    except (TypeError, ValueError):
+        budget = PolicyExecutor.DEFAULT_BUDGET_MS
+    return max(0, budget)
+
+
 def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dict[str, Any]:
     variables = storage.list_variables(tenant_id=tenant_id)
     rules = {item["id"]: item for item in storage.list_rules(tenant_id=tenant_id)}
@@ -339,6 +401,7 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         "rust_bundle": rust_bundle,
         "timeout_ms": int(settings.get("timeout_ms", 2000)),
         "memory_mb": int(settings.get("memory_mb", 128)),
+        "budget_ms": _budget_ms(settings),
     }
 
 
@@ -352,7 +415,8 @@ def _serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dic
     return result
 
 
-def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, str]]:
+def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
+                       budget: Optional["_Budget"] = None) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, str]]:
     connectors = bundle["connectors"]
     payloads: Dict[str, Any] = {cid: dict(sample) for cid, sample in connectors.items()}
     flat_fields: Dict[str, Any] = {}
@@ -373,11 +437,23 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple
     payloads["custom"] = dict(flat_fields) if flat_fields else dict(payload)
     values: Dict[str, Any] = {}
     errors: Dict[str, str] = {}
+    timeout_ms = bundle["timeout_ms"]
     for variable in bundle["variables"]:
+        # Two-part enforcement, mirroring PolicyExecutor._compute_variables. The check abandons
+        # the run between variables; the clamp stops the NEXT variable from overshooting the
+        # budget on its own -- without it a 2000ms variable started with 5ms of budget left
+        # still runs the full 2000ms, and across a 55-variable catalog that error compounds
+        # until the effective bound is timeout_ms x variable_count again.
+        effective_timeout = timeout_ms
+        if budget is not None:
+            budget.check("variable computation")
+            remaining = budget.remaining_ms()
+            if remaining is not None:
+                effective_timeout = max(1, min(timeout_ms, remaining))
         source_payload = payloads.get(variable.get("source_id"), {})
         execution = execute_variable(
             variable["code"], source_payload, values,
-            timeout_ms=bundle["timeout_ms"], memory_mb=bundle["memory_mb"],
+            timeout_ms=effective_timeout, memory_mb=bundle["memory_mb"],
         )
         values[variable["id"]] = execution.get("value")
         # A variable that errors becomes None here; surface the error to the caller so it is
@@ -390,7 +466,12 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any]) -> Tuple
 def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], tenant_id: str, log: bool = True, user_id: Optional[str] = None) -> Dict[str, Any]:
     started = time.perf_counter()
     bundle = _serving_bundle(storage, tenant_id, policy)
-    values, resolved_payload, variable_errors = _compute_variables(bundle, payload or {})
+    budget = _Budget(bundle["budget_ms"], started)
+    # BEFORE any variable is computed, exactly like PolicyExecutor.execute. Validation that runs
+    # after the work is not a guard, it is a report -- and the whole point is that the unchecked
+    # keys were becoming None and quietly re-phrasing gates.
+    validation_trace = _validate_input(storage, tenant_id, policy["id"], payload or {})
+    values, resolved_payload, variable_errors = _compute_variables(bundle, payload or {}, budget)
     # Variable computation errors on the fast path are recorded as observable error events (not
     # silently dropped), so a decision made on a None-defaulted variable is alertable.
     if variable_errors:
@@ -408,6 +489,10 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
             except Exception:  # pragma: no cover - observability must not break the decision
                 pass
 
+    # The executor checks the deadline before every step; the compiled core runs the whole step
+    # list as one unit, so this is the equivalent boundary. Without it a run whose variables ate
+    # the entire budget would still go on to evaluate.
+    budget.check("policy evaluation")
     if bundle["rust_bundle"] is not None:
         outcome = bundle["rust_bundle"].decide(values)
         result = {
@@ -423,6 +508,12 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
         result = core_decide(bundle["core_bundle"], payload or {}, {"variables": values, "strict_validation": False})
 
     latency_ms = round((time.perf_counter() - started) * 1000, 3)
+    # Warn-mode issues lead the trace, as they do on the slow path: the executor appends its
+    # input_validation entry before any step runs, and an operator diffing the two traces must
+    # not see the same decision described in a different order.
+    trace = list(result.get("trace", []))
+    if validation_trace is not None:
+        trace.insert(0, validation_trace)
     decision = {
         "policy_id": policy["id"],
         "outcome": result["outcome"] if result["outcome"] != "pending" else policy.get("defaultOutcome", "review"),
@@ -431,7 +522,7 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
         "variable_errors": dict(variable_errors),
         "rule_results": result.get("rule_results", []),
         "scorecard_result": result.get("scorecard_result"),
-        "trace": result.get("trace", []),
+        "trace": trace,
         "latency_ms": latency_ms,
     }
     # Recording the error above is observability; it does not make the decision correct. This
@@ -450,6 +541,79 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
         except Exception:  # pragma: no cover - dark launch must never break the live path
             pass
     return decision
+
+
+def _validate_input(storage: Any, tenant_id: str, policy_id: str,
+                    payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Fast-path twin of PolicyExecutor._validate_input (P06).
+
+    This module imported input_schema nowhere, so a tenant that had switched nested validation on
+    got it enforced on the slow path and NOT on the fast path -- FAST_DECIDE=1 silently unwired an
+    opt-in safety check, which is the third time this flag has changed correctness rather than
+    speed. An unchecked nested key resolves to None, logic.py compares False against None, and the
+    direction a typo breaks is then decided by how the rule author happened to word the gate.
+
+    Reads the SAME connectors and the SAME engine_config the executor reads (tenant_catalog is
+    literally what PolicyExecutor._catalog_for returns for a live decision), so the two paths
+    cannot resolve different settings or validate against a different schema.
+
+    Returns the warn-mode trace entry to prepend, or None. Raises input_schema.InputValidationError
+    -- the executor's exception, not a copy -- so /decide answers the same 422 with the same body
+    whichever path served it. Fails CLOSED: nothing downstream of this runs when it raises.
+    """
+    catalog = tenant_catalog(storage, tenant_id)
+    settings = input_schema.resolve_settings(
+        catalog["settings"].get("engine_config", {}) or {}, policy_id)
+    if not settings.enabled:
+        return None
+    issues = input_schema.validate_payload(payload, catalog["connectors"], settings)
+    if not issues:
+        return None
+    blocking = [issue for issue in issues if settings.blocks(issue)]
+    _record_input_issues(storage, tenant_id, policy_id, issues, blocked=bool(blocking))
+    entry = {
+        "type": "input_validation",
+        "status": "rejected" if blocking else "warned",
+        "mode": settings.mode,
+        "issues": [issue.to_dict() for issue in issues],
+        "detail": "{0} input problem(s) found; {1} of them block the decision.".format(
+            len(issues), len(blocking)),
+    }
+    if blocking:
+        raise input_schema.InputValidationError(issues, policy_id=policy_id, blocking=blocking)
+    return entry
+
+
+def _record_input_issues(storage: Any, tenant_id: str, policy_id: str,
+                         issues: Any, blocked: bool) -> None:
+    """Make a bad payload observable whether or not it was rejected — see the executor's twin.
+
+    Carries no execution_id because the fast path writes no workflow_execution row; every other
+    field matches, so an operator's error-event query finds both paths' issues together instead
+    of seeing warn mode go quiet the moment FAST_DECIDE was turned on.
+    """
+    try:
+        storage.add_error_event(
+            {
+                "tenant_id": tenant_id,
+                "scope": "decision",
+                "stage": "input_validation",
+                "entity_type": "policy",
+                "entity_id": policy_id,
+                "message": "Input payload {0}: {1} problem(s) at {2}".format(
+                    "rejected" if blocked else "flagged (warn mode)",
+                    len(issues),
+                    ", ".join(issue.path for issue in issues[:10])),
+                "details": {
+                    "policy_id": policy_id,
+                    "blocked": blocked,
+                    "issues": [issue.to_dict() for issue in issues],
+                },
+            },
+            tenant_id=tenant_id,
+        )
+    except Exception:  # pragma: no cover - observability must not break the decision
+        pass
 
 
 def _fail_closed_on_variable_errors(

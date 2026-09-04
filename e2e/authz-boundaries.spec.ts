@@ -1,5 +1,14 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
+import {
+  ALLOW_DESTRUCTIVE,
+  API_BASE_URL,
+  DESTRUCTIVE_SKIP,
+  WS_BASE_URL,
+  mintKey,
+  revokeMintedKeys
+} from "./env";
+
 /**
  * The boundaries that the 48 functional tests structurally cannot see (#139).
  *
@@ -36,8 +45,14 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
  * other principal has to override it explicitly.
  */
 
-const API = "http://127.0.0.1:8100";
-const WS = "ws://127.0.0.1:8100";
+// Both were hardcoded at 127.0.0.1:8100. RM_E2E_API overrides the pair; the defaults are
+// unchanged. WS is DERIVED from it rather than configured on its own -- the old literal was
+// `ws://`, so an https deployment got a plaintext handshake to a TLS origin, which browsers
+// refuse. The refusal looks identical to the one this file is trying to prove, so the WebSocket
+// test would have reported a green boundary while its positive control was failing for an
+// entirely unrelated reason.
+const API = API_BASE_URL;
+const WS = WS_BASE_URL;
 
 // Deliberately NOT `test.describe.configure({ mode: "serial" })`. The config already pins
 // `fullyParallel: false` and `workers: 1`, so these run one at a time regardless; the only thing
@@ -55,6 +70,12 @@ const WS = "ws://127.0.0.1:8100";
  * without platform-admin credentials. Nothing here depends on it staying public: if a
  * deployment sets `RULEMIND_SELF_SERVE_SIGNUP=0` the call 403s and these tests fail loudly
  * rather than silently degrading into single-tenant tests that prove nothing.
+ *
+ * DESTRUCTIVE. Every call leaves a permanent tenant behind holding a live API key, and there is no
+ * endpoint that removes either -- on a local throwaway database that is nothing, on a real
+ * deployment it is a workspace and a credential nobody can revoke through this API. Both callers
+ * therefore guard on RM_E2E_ALLOW_DESTRUCTIVE before they write anything at all; a new caller must
+ * do the same.
  */
 async function signUpTenant(request: APIRequestContext, company: string) {
   const res = await request.post(`${API}/api/v1/onboarding/signup`, {
@@ -67,14 +88,12 @@ async function signUpTenant(request: APIRequestContext, company: string) {
   return body as { tenant_id: string; api_key: string };
 }
 
-/** Mint a key in the DEFAULT workspace at a given role, using the owner key from the config. */
-async function mintKey(request: APIRequestContext, role: string, name: string) {
-  const res = await request.post(`${API}/api/v1/access/keys`, { data: { role, name } });
-  expect(res.status(), `minting a ${role} key failed: ${await res.text()}`).toBe(200);
-  const key = (await res.json()).plaintext as string;
-  expect(key, "the endpoint must return the plaintext key exactly once").toBeTruthy();
-  return key;
-}
+// Key minting lives in ./env so that the kid is recorded and revoked in afterAll below. The
+// local copy this replaced walked away from every key it created: against a deployment that left
+// five or six live credentials in the default workspace per run, some of them able to author.
+test.afterAll(async ({ request }) => {
+  await revokeMintedKeys(request);
+});
 
 /**
  * Attempt a WebSocket handshake from the browser and report whether it ever opened.
@@ -123,6 +142,10 @@ async function handshake(page: Page, url: string): Promise<{ opened: boolean; co
 // ── The tenant boundary ───────────────────────────────────────────────────────────────────────
 
 test("one workspace cannot read another's policy, and the refusal is 404 not 403", async ({ request }) => {
+  // Guarded BEFORE the policy is created, not just before signUpTenant: a skip further down would
+  // still leave "tenant-a-secret-policy" behind in the environment it was pointed at.
+  test.skip(!ALLOW_DESTRUCTIVE, `self-serve signup creates a permanent tenant and a live API key: ${DESTRUCTIVE_SKIP}`);
+
   const created = await request.post(`${API}/api/v1/policies`, {
     data: { name: "tenant-a-secret-policy", steps: [{ id: "s1", type: "rule", ref: "r1" }] }
   });
@@ -151,6 +174,9 @@ test("one workspace cannot read another's policy, and the refusal is 404 not 403
 });
 
 test("a listing never includes another workspace's objects", async ({ request }) => {
+  // Same guard, same reason, and again before the probe policy is written.
+  test.skip(!ALLOW_DESTRUCTIVE, `self-serve signup creates a permanent tenant and a live API key: ${DESTRUCTIVE_SKIP}`);
+
   // The other half of the boundary: a per-id 404 is worth nothing if the collection endpoint
   // hands the whole set over anyway.
   const created = await request.post(`${API}/api/v1/policies`, {
