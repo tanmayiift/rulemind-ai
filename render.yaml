@@ -78,16 +78,25 @@ services:
     envVars:
       # ── the four the production gate refuses to start without ───────────────────────────
       # app/security_config.py::verify_production_secrets fails closed outside local dev if any
-      # of these is unset or still its committed dev default. `sync: false` means Render
-      # prompts for the value once and stores it encrypted; it is never in this file or in git.
+      # of these is unset or still its committed dev default — the defaults are in this repo,
+      # so a deploy that forgot one would be running on publicly-known credentials.
+      #
+      # `generateValue: true`, not `sync: false`. Render generates a random value at create
+      # time and stores it encrypted, so these are never typed by anyone, never pass through a
+      # terminal or a chat log, and never exist in a file on someone's laptop. Read them back
+      # from the dashboard when you need one (RULEMIND_DEV_API_KEY is the tenant API key you
+      # will want for calling /decide).
+      #
+      # Nothing validates the API key's shape — storage._seed_default_api_key hashes whatever it
+      # is given — so a generated value works despite not carrying the usual `rm_live_` prefix.
       - key: RULEMIND_CONFIG_KEY
-        sync: false
+        generateValue: true
       - key: RULEMIND_ADMIN_JWT_SECRET
-        sync: false
+        generateValue: true
       - key: RULEMIND_ADMIN_PASSWORD
-        sync: false
+        generateValue: true
       - key: RULEMIND_DEV_API_KEY
-        sync: false
+        generateValue: true
 
       # ── what arms that gate in the first place ──────────────────────────────────────────
       # Unset is NOT the same as "development": security_config falls back to NODE_ENV, which
@@ -146,6 +155,9 @@ services:
 
       # Set once the Vercel dashboard exists. Without it the browser blocks every API call from
       # the dashboard, which looks like the API being down rather than a CORS policy.
+      # `sync: false` on purpose: the value is set in the dashboard after the Vercel URL is
+      # known, and a later Blueprint sync must not overwrite it. An empty/absent value is not
+      # dangerous -- parse_origins falls back to localhost, not to a wildcard.
       - key: CORS_ORIGINS
         sync: false
 
