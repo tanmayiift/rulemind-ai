@@ -66,6 +66,7 @@ from .models import (
     ReportDefinition,
     ReviewTask,
     Rule,
+    LoginAttempt,
     SamlAssertionSeen,
     SchedulerLease,
     Scorecard,
@@ -2200,6 +2201,62 @@ class Storage:
             return True
         except IntegrityError:
             return False
+
+    # ── durable login-failure counters (see models.LoginAttempt) ─────────
+    def read_login_attempts(self, key: str) -> Tuple[int, Optional[datetime]]:
+        """(failures, expires_at) for this key, or (0, None) once the window has passed.
+
+        An expired row is deleted on read rather than left for a sweep: these rows are only ever
+        consulted on the login path, so the reader is the one process guaranteed to notice, and
+        the table stays bounded without a job that could silently stop running.
+        """
+        now = datetime.utcnow()
+        with self.connect() as session:
+            row = session.get(LoginAttempt, key)
+            if row is None:
+                return 0, None
+            if row.expires_at <= now:
+                session.delete(row)
+                return 0, None
+            return int(row.failures or 0), row.expires_at
+
+    def bump_login_attempts(self, key: str, ttl_seconds: int) -> Tuple[int, datetime]:
+        """Count one failure and return (failures, expires_at).
+
+        The window is set on the FIRST failure and never extended, matching the Redis tier's
+        one-shot EXPIRE -- refreshing it on every attempt would let an attacker keep a victim
+        locked out indefinitely by continuing to guess.
+
+        Retries on the primary-key race the way add_audit_event does: two replicas can read the
+        same absent row and both INSERT, and the constraint turns that into a retry rather than
+        a lost count.
+        """
+        now = datetime.utcnow()
+        for attempt in range(5):
+            try:
+                with self.connect() as session:
+                    row = session.get(LoginAttempt, key)
+                    if row is not None and row.expires_at <= now:
+                        session.delete(row)
+                        session.flush()
+                        row = None
+                    if row is None:
+                        expires = now + timedelta(seconds=max(1, ttl_seconds))
+                        session.add(LoginAttempt(key=key, failures=1, expires_at=expires))
+                        return 1, expires
+                    row.failures = int(row.failures or 0) + 1
+                    return int(row.failures), row.expires_at
+            except IntegrityError:
+                if attempt >= 4:
+                    raise
+        raise RuntimeError("unreachable")  # pragma: no cover
+
+    def clear_login_attempts(self, key: str) -> None:
+        """Reset after a successful authentication."""
+        with self.connect() as session:
+            row = session.get(LoginAttempt, key)
+            if row is not None:
+                session.delete(row)
 
     def prune_saml_assertions(self, tenant_id: Optional[str] = None) -> int:
         """Drop consumed assertions whose validity window has passed -- they can no longer be

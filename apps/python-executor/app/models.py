@@ -384,6 +384,37 @@ class IdempotencyRecord(Base):
     )
 
 
+class LoginAttempt(Base):
+    """Failed-credential counters that survive a restart and are shared across replicas.
+
+    The counter had two tiers: Redis when configured, and a per-PROCESS dict otherwise. The
+    fallback is what most deployments actually run on, and it is not a lockout:
+
+      * restart the pod and the counter is gone, so an attacker who trips the limit just waits
+        for the next deploy, crash or scale event and resumes from zero;
+      * run two replicas and each keeps its own count, so N replicas mean N times the attempts
+        before anyone is locked out -- and a round-robin load balancer hands the attacker that
+        multiplier for free.
+
+    Neither is visible from the outside: the endpoint returns 429 exactly as it should, right up
+    until it silently doesn't. The database is the one store every replica already shares and
+    that outlives a process, so it is the correct fallback; Redis stays the fast path.
+
+    Keyed by the same salted digest as the Redis bucket (`middleware._login_bucket`), so the two
+    tiers agree on identity and neither stores an email address. No tenant_id: the platform-admin
+    account has no tenant, and the key already carries the scope.
+    """
+
+    __tablename__ = "login_attempts"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Set once on the FIRST failure and never refreshed. Extending the window on every attempt
+    # would let an attacker hold a victim's account locked indefinitely just by continuing to
+    # guess -- the same rule the Redis tier applies with its one-shot EXPIRE.
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
 class SamlAssertionSeen(Base):
     """One consumed SAML assertion id, so it cannot be replayed (T3.5).
 

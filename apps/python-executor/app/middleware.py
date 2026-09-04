@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from fastapi import Request
@@ -276,6 +277,20 @@ def _redis() -> Any:
         return None
 
 
+def _durable_store() -> Any:
+    """The app's own Storage, resolved per call like `_redis` above.
+
+    Bound at import this would be circular (main imports middleware), and a test that swaps
+    `main.storage` for a temp database would keep writing to the old one.
+    """
+    try:
+        from . import main
+
+        return getattr(main, "storage", None)
+    except Exception:  # pragma: no cover - a broken store must never break login
+        return None
+
+
 def login_guard_status(scope: str, identity: str) -> LoginGuard:
     """Whether this identity is currently locked out — call BEFORE verifying the credential.
 
@@ -291,7 +306,16 @@ def login_guard_status(scope: str, identity: str) -> LoginGuard:
             count = int(raw) if raw else 0
             ttl = int(client.ttl(key) or 0)
             return LoginGuard(locked=count >= maximum, failures=count, retry_after=max(1, ttl) if ttl > 0 else 1)
-        except Exception:  # noqa: BLE001 - fall through to the local counter
+        except Exception:  # noqa: BLE001 - fall through to the durable counter
+            pass
+    store = _durable_store()
+    if store is not None:
+        try:
+            count, expires_at = store.read_login_attempts(key)
+            remaining = int((expires_at - datetime.utcnow()).total_seconds()) if expires_at else 0
+            return LoginGuard(locked=count >= maximum, failures=count,
+                              retry_after=max(1, remaining))
+        except Exception:  # noqa: BLE001 - fall through to the in-process counter
             pass
     count, expires = _LOCAL_LOGIN_ATTEMPTS.read(key)
     remaining = int(max(0.0, expires - time.time())) if expires else 0
@@ -315,8 +339,19 @@ def record_login_failure(scope: str, identity: str) -> LoginGuard:
                 # indefinitely just by continuing to guess.
                 client.expire(key, ttl)
             remaining = int(client.ttl(key) or ttl)
-        except Exception:  # noqa: BLE001 - fall through to the local counter
+        except Exception:  # noqa: BLE001 - fall through to the durable counter
             count = 0
+    if not count:
+        # The database, not the per-process dict. Without Redis the dict was the whole lockout,
+        # and it is neither durable nor shared: a restart resets it, and each replica keeps its
+        # own count so N replicas multiply the attempts an attacker gets. See models.LoginAttempt.
+        store = _durable_store()
+        if store is not None:
+            try:
+                count, expires_at = store.bump_login_attempts(key, ttl)
+                remaining = int(max(1.0, (expires_at - datetime.utcnow()).total_seconds()))
+            except Exception:  # noqa: BLE001 - last resort below
+                count = 0
     if not count:
         count, expires = _LOCAL_LOGIN_ATTEMPTS.bump(key, ttl)
         remaining = int(max(1.0, expires - time.time()))
@@ -335,6 +370,12 @@ def clear_login_failures(scope: str, identity: str) -> None:
     if client is not None:
         try:
             client.delete(key)
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+    store = _durable_store()
+    if store is not None:
+        try:
+            store.clear_login_attempts(key)
         except Exception:  # noqa: BLE001 - best effort
             pass
     _LOCAL_LOGIN_ATTEMPTS.clear(key)

@@ -192,6 +192,54 @@ class PlatformAdminLockoutTests(_NoRedisTestCase):
         self.assertEqual(locked.status_code, 429, locked.text)
         self.assertIn("Retry-After", locked.headers)
 
+    def test_the_lockout_survives_a_process_restart(self):
+        """The whole point of the durable tier, and the one thing the dict could never do.
+
+        Without Redis the counter lived in a per-process dict, so an attacker who tripped the
+        limit only had to wait for the next deploy, crash or scale event and start again from
+        zero. The endpoint returned 429 exactly as designed right up until it silently didn't.
+        Dropping the in-process counters is what a restart looks like to this code -- the
+        database row is the only thing that should carry the count across it.
+        """
+        with mock.patch.dict(os.environ, {"RULEMIND_LOGIN_MAX_ATTEMPTS": "3"}):
+            for i in range(3):
+                self._login("wrong-{0}".format(i))
+
+            middleware.reset_login_attempts_for_tests()  # the "restart"
+
+            after_restart = self._login(ADMIN_PASSWORD)
+        self.assertEqual(after_restart.status_code, 429,
+                         "the lockout reset across a restart: {0}".format(after_restart.text))
+
+    def test_a_second_replica_sees_the_same_count(self):
+        """N replicas used to mean N times the attempts, handed over by round-robin routing.
+
+        Each process kept its own dict, so nothing was shared. A second TestClient over a
+        second app instance against the SAME storage is that second replica: the count must
+        already be there rather than starting fresh.
+        """
+        with mock.patch.dict(os.environ, {"RULEMIND_LOGIN_MAX_ATTEMPTS": "3"}):
+            for i in range(2):
+                self._login("wrong-{0}".format(i))
+            self.assertEqual(app_main.storage.read_login_attempts(
+                middleware._login_bucket("platform_admin", ADMIN_EMAIL))[0], 2)
+
+            middleware.reset_login_attempts_for_tests()  # this replica has no local state
+            third = self._login("wrong-3")
+            fourth = self._login(ADMIN_PASSWORD)
+        self.assertEqual(third.status_code, 401)
+        self.assertEqual(fourth.status_code, 429,
+                         "the replica counted from zero instead of sharing: {0}".format(fourth.text))
+
+    def test_a_successful_login_clears_the_durable_row_too(self):
+        key = middleware._login_bucket("platform_admin", ADMIN_EMAIL)
+        with mock.patch.dict(os.environ, {"RULEMIND_LOGIN_MAX_ATTEMPTS": "5"}):
+            self._login("wrong-1")
+            self.assertEqual(app_main.storage.read_login_attempts(key)[0], 1)
+            self.assertEqual(self._login(ADMIN_PASSWORD).status_code, 200)
+        self.assertEqual(app_main.storage.read_login_attempts(key)[0], 0,
+                         "a durable row outlived a successful sign-in")
+
     def test_the_mobile_twin_shares_the_counter(self):
         """`mobile_admin_login` verifies the SAME credential through a different exempt path.
         A per-endpoint counter would just move the attack one URL to the left."""
