@@ -2,8 +2,12 @@
 
 ## Authentication
 
-- `AUTH_MODE=none`: all requests execute as a local admin profile.
-- `AUTH_MODE=apikey`: provide `x-api-key` or `Authorization: Bearer re_...`.
+- `AUTH_MODE=none`: all requests execute as a local admin profile. Note that **leaving
+  `AUTH_MODE` unset is not the same as `none`** — `app/middleware.py` tests for the literal
+  string, so unset leaves authentication ON.
+- `AUTH_MODE=apikey`: provide `x-api-key` or `Authorization: Bearer rm_live_...`.
+  Keys are minted by `auth.generate_api_key` and always carry the `rm_live_` prefix; this line
+  documented `re_...`, which no version of the code has ever produced.
 - `AUTH_MODE=jwt`: provide a bearer JWT; verification uses configured issuer/JWKS.
 
 ## Rules

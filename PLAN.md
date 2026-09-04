@@ -341,6 +341,98 @@ chained status-line edits silently no-oped and the counter never advanced past
 `1/46`. This file is now updated **on `main` only**, in one place, after the
 work it describes is committed. Do not tick it from a feature branch.
 
+---
+
+# Production-readiness pass (opened 2026-09-04)
+
+Numbering below is independent of the waves above; those are closed. Three audits merged into
+15 correctness bugs, 21 coverage gaps, 10 unbuilt features, 17 doc drifts. Order is fix →
+validate → deploy.
+
+Two findings reframe what "validated" meant before this pass:
+
+**No CI signal.** `main` is ahead of `origin/main` and every commit carries `[skip ci]` (added
+to protect an exhausted Actions quota). Everything here has been validated locally only.
+
+**Green that asserted nothing.** `qa/e2e-full/suite_core.py` swallowed non-200 as success, so
+8 of 25 "passes" — every sandbox-escape case plus the timeout case — proved nothing. And the
+Postgres lane was 11% real: `Storage(path=…)` short-circuited `DATABASE_URL`, so 797 of 1360
+tests re-ran SQLite under a Postgres label.
+
+## W4 · Restore signal
+
+- [x] **W4.1** Fix the 8 fake passes in `suite_core.py`; re-record `results_core.json`.
+- [x] **W4.2** Core QA suite gates again (the 5 failures it waited on were fixed in `4090911`).
+- [x] **W4.3** Make the Postgres lane real — `RULEMIND_TEST_PG_SCHEMA_PER_PATH` gives each
+  test path its own Postgres SCHEMA, the Postgres equivalent of its own SQLite file.
+
+  Two things had to be right before it produced signal rather than noise. `SET search_path`
+  from a `connect` listener is silently undone: psycopg2 opens an implicit transaction for it
+  and the pool's rollback on check-in discards it, so every query ran against `public` and all
+  1361 tests shared one database. It is a libpq `-csearch_path` connect option now, which the
+  server applies at session start and no rollback touches. And the engine cache holds one engine
+  per test path — thousands over a run — so a pooled engine exhausted `max_connections` partway
+  through and 204 tests died on "sorry, too many clients already". `NullPool` for that lane.
+
+  **What it found, once real:** `scripts/backup_verify.py::_storage_for` claimed to bind Storage
+  to the URL it was given, but for a SQLite URL it passed only a path — which `$DATABASE_URL`
+  overrode. So verifying a SQLite backup on a host with `DATABASE_URL` set walked the audit
+  chain of the *live Postgres database* instead of the restored file, and reported the restore
+  clean. That is the one answer a backup verifier must never get wrong. Also two tests that
+  could only ever check one backend: `test_enterprise` asserted "no plaintext secret in the
+  database" by opening the SQLite file directly, and passed against a row it never read.
+- [x] **W4.4** Redis service in CI; `test_redis_integration.py`'s 10 tests stop skipping.
+- [x] **W4.5** Build the PyO3 extension in CI, so `test_rust_core.py` runs and the `_HAVE_RUST`
+  production branch at `fast_decide.py:328` gets covered for the first time.
+- [x] **W4.6** `cargo test` the decide-service (was `cargo check`; its 10 tests never ran).
+- [x] **W4.7** Replace the vacuous assertions — 7 Playwright "page loads" tests that the nav
+  satisfied on any route, 6 silent `if (!createdRuleIdShared) return;` exits, two scheduler
+  assertions accepting `"unconfigured"` (which means *not delivered*), and 3 seed-dependent
+  `skipTest`s including a backtest test that had never once run its assertions.
+- [x] **W4.8** Wire up the three scripts nothing invoked: `verify_chart.py` (every PR),
+  `smoke_compose.sh` (dispatch-only — it builds two images), `saturation.k6.js` (load-test).
+
+## W5 · Correctness bugs
+
+- [x] **W5.1** `executor.py:437` seeds every source from the connector sample, so
+  `POST /decide {"payload":{}}` returns **approve** on a demo `bureau_score: 756`. A broken
+  integration approves with a legitimate-looking audit trail. Scope seeding to test/simulation.
+- [x] **W5.2** `core/engine.py:24-25` — `loop`/`branch`/`workflow`/`monitor` are in neither
+  step-type set, so they hit "unknown step type" and the loop CONTINUES. Same fail-open fixed
+  in `fast_decide`, still open on the what-if / backtest / governance-replay path.
+- [x] **W5.3** `store.ts:51` API base URL is build-time inlined → the shipped bundle points at
+  `localhost:8080`. Hard blocker for the Vercel stage.
+- [x] **W5.4** Platform-admin audit events omit `tenant_id`; a superadmin brute-force lands in
+  an unrelated workspace's tamper-evident chain.
+- [x] **W5.5** `next` 14.2.25 → 14.2.34 (10 advisories) + retire 5 dead `--ignore-vuln` lines.
+- [x] **W5.6** `AuditEvent.metadata_json`/`ip_address` plaintext; `verify()` should report
+  `metadata_undecryptable`, not raise, on a wrong key.
+- [ ] **W5.7** Durable login lockout · **W5.8** ~30 raw `os.getenv` crash-at-import reads.
+- [x] **W5.9** deleted `auth.generate_rsa_keypair_material` — returned the SAME value as both
+  the public and the private key, and had zero callers.
+- [x] **W5.10** SAML replay pruner scheduled. `prune_saml_assertions` existed and had a test;
+  nothing called it. One row per SSO login, never read except to reject a replay, and that
+  lookup is on the login path — so the table grew forever and the cost landed on auth.
+
+## W6 · Coverage that hid the above
+
+- [ ] **W6.1** The exported legacy `evaluateScorecard` throws on data this product stores.
+- [ ] **W6.2** Recover the 3 unenumerated Python/TS divergences of the original 8.
+- [ ] **W6.3** ClickHouse/S3 round-trip against real containers · **W6.4** CUMIPMT/DAYS360 in
+  TypeScript (an `engineSemantics: true` row with zero coverage).
+
+## W7 · Deploy
+
+Vercel (dashboard) · Supabase (Postgres) · Upstash (Redis) · Koyeb (API + scheduler).
+
+- [ ] **W7.1** Supabase project + Alembic chain · **W7.2** Upstash · **W7.3** Koyeb, with fresh
+  `RULEMIND_CONFIG_KEY`/`RULEMIND_ADMIN_JWT_SECRET` (the production gate refuses the committed
+  dev defaults). **Prove the sandbox spawns there** — if the runtime blocks `spawn`, every
+  Python variable fails closed and the product does not work.
+- [ ] **W7.4** Vercel import + `CORS_ORIGINS` · **W7.5** deployed-environment suites + k6 ·
+  **W7.6** push once so CI finally sees the whole series.
+
+
 ## Blockers
 
 ### RESOLVED 2026-09-03 — the #127 half of this was wrong

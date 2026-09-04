@@ -719,13 +719,13 @@ curl -X POST http://localhost:8080/api/v1/import \
 ## Testing
 
 ```bash
-# TypeScript unit tests (34 tests across 8 files)
+# TypeScript unit tests (379 tests across 13 files)
 pnpm test
 
-# Python backend tests (224 tests)
+# Python backend tests (1361 tests across 124 modules)
 cd apps/python-executor && python3 -m unittest discover -s tests -p 'test_*.py'
 
-# Playwright E2E tests — full server stack (43 edge-case + 5 workflow tests)
+# Playwright E2E tests — full server stack (58 tests across 4 spec files)
 pnpm test:e2e
 
 # Type checking
@@ -760,8 +760,8 @@ cd packages/sdk-android && ./gradlew :sample-app:connectedDebugAndroidTest
 | `packages/rulemind-core-rs/` | Rust core engine with Python bindings (pyo3) |
 | `packages/rulemind-decide-service/` | Standalone Rust `/decide` service (own Dockerfile) |
 | `demo-app/` | Flutter showcase app (on-device vs server parity) |
-| `e2e/` | Playwright E2E tests (53 tests across 3 spec files) |
-| `test/` | TypeScript unit tests (157 tests across 9 files) |
+| `e2e/` | Playwright E2E tests (58 tests across 4 spec files) |
+| `test/` | TypeScript unit tests (379 tests across 13 files) |
 | `qa/e2e-full/` | API journey + sandbox-escape suites, responsive sweep |
 | `infra/`, `k8s/`, `helm/`, `observability/` | Deployment + Grafana/Prometheus/Tempo |
 | `docker-compose.yml` | Production deployment with Postgres + Redis |

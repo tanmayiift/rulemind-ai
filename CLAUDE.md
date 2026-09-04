@@ -69,7 +69,11 @@ make test                 # python unittest + vitest
 pnpm test:e2e             # Playwright
 ```
 
-Tests: 74 Python suites, 8 Vitest files, 2 Playwright specs, plus `qa/`.
+Tests: 124 Python modules (1369 tests), 13 Vitest files (379), 4 Playwright specs (58), plus
+`qa/`. The Python suite runs in two lanes: SQLite by default, and real Postgres under
+`DATABASE_URL` + `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` (each test path gets its own Postgres
+schema — without that flag `Storage(path=...)` silently falls back to SQLite and the Postgres
+lane is a near-no-op).
 
 ## Configuration
 
@@ -124,6 +128,7 @@ problem is recognisable if the lists drift again:
 - Commits are Conventional Commits with a scope: `feat(engine):`, `fix(web):`,
   `refactor(api):`. Every change lands through a squash-merged PR referencing `(#NNN)`.
 - Docs are written eagerly alongside features and **drift** — `README.md`, `.env.example`
-  and `CHANGELOG.md` (still says "0.1.0 initial scaffold") are all behind the code.
+  are behind the code. `CHANGELOG.md` is no longer among them: it is now a per-package index
+  and this note's "still says 0.1.0 initial scaffold" was itself the stale claim.
   Verify any doc claim against source before relying on it.
 - CI: `.github/workflows/ci.yml` and `sdk-verify.yml`.
