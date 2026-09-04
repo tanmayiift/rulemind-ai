@@ -574,6 +574,17 @@ class Setting(Base):
     engine_config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     source_defaults: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     audit_retention_days: Mapped[int] = mapped_column(Integer, default=90, nullable=False)
+    # Retention in CALENDAR months — the unit contracts and regulators are actually written in
+    # ("retain decisions for 7 years", "purge PII after 24 months"). Days is a lossy encoding of
+    # that: 7 years is 2557 days from today, not the 2555 a hand conversion produces.
+    #
+    # NULL means "this workspace never set months", and audit_retention_days stays authoritative
+    # — that is how every pre-existing tenant keeps the window it already had. Non-NULL wins over
+    # days, and audit_retention_days is then maintained as a mirror so the readers that still
+    # speak days (the /settings GET, workspace export, the experience-studio form, the web
+    # dashboard) stay approximately right. `archiver.retention_cutoff` is the one authority on
+    # which of the two applies; nothing should re-derive that precedence itself.
+    audit_retention_months: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     theme_mode: Mapped[str] = mapped_column(String(16), default="light", nullable=False)
     # Admin-only, config-driven white-label branding (accent/CTA colour, background,
     # sidebar, brand name/logo, hidden nav items). Empty values fall back to theme defaults.

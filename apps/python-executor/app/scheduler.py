@@ -72,7 +72,7 @@ def archive_old_decisions(storage: Storage) -> Dict[str, Any]:
     """Per tenant, archive decisions older than its retention window to the configured OLAP sink
     and purge them from the hot DB. No-op unless a sink is configured (DECISION_ARCHIVE_SINK).
     Bounds the transactional decision log while preserving history in cheap analytical storage."""
-    from .archiver import archiving_enabled, get_archiver
+    from .archiver import archiving_enabled, get_archiver, retention_cutoff
 
     if not archiving_enabled():
         return {"skipped": "archiving_disabled"}
@@ -83,10 +83,13 @@ def archive_old_decisions(storage: Storage) -> Dict[str, Any]:
         tenant_id = tenant.get("id")
         if not tenant_id:
             continue
-        days = int(storage.get_settings(tenant_id=tenant_id).get("audit_retention_days") or 0)
-        if days <= 0:
+        # Months when the workspace configured months, days otherwise, None when retention is
+        # off — resolved in one place so the purge can never disagree with what the settings
+        # screen shows. A calendar month is not 30 days, and this is the job that acts on the
+        # difference: getting it wrong here deletes decisions the workspace promised to keep.
+        cutoff = retention_cutoff(storage.get_settings(tenant_id=tenant_id))
+        if cutoff is None:
             continue  # retention disabled for this workspace
-        cutoff = datetime.utcnow() - timedelta(days=days)
         try:
             total += storage.archive_and_purge_decisions(tenant_id, cutoff, archiver)
             tenants += 1

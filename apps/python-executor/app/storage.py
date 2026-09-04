@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from sqlalchemy import case, delete, desc, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
+from .archiver import normalize_retention_months, retention_window_days
 from .audit_chain import GENESIS_HASH, compute_hash as compute_audit_hash, verify as verify_audit_chain_rows
 from .idempotency import is_expired as is_idempotency_expired, should_remember as should_remember_idempotent
 from .quota import METRIC_DECISIONS
@@ -2496,13 +2497,21 @@ class Storage:
         with self.connect() as session:
             row = session.scalar(select(Setting).where(Setting.tenant_id == resolved))
             if not row:
-                return copy.deepcopy(DEFAULT_SETTINGS)
+                defaults = copy.deepcopy(DEFAULT_SETTINGS)
+                # DEFAULT_SETTINGS predates months; keep the key present so callers never have to
+                # distinguish "no settings row" from "months not configured".
+                defaults.setdefault("audit_retention_months", None)
+                return defaults
             return {
                 "api_base_url": row.api_base_url,
                 "auth_config": copy.deepcopy(row.auth_config or {}),
                 "engine_config": copy.deepcopy(row.engine_config or {}),
                 "source_defaults": copy.deepcopy(row.source_defaults or {}),
+                # Both units are returned RAW. Resolving which one applies is
+                # archiver.retention_cutoff's job, and deriving days here would make
+                # update_settings' read-modify-write silently overwrite the stored value.
                 "audit_retention_days": row.audit_retention_days,
+                "audit_retention_months": row.audit_retention_months,
                 "theme_mode": row.theme_mode,
                 "branding": copy.deepcopy(row.branding or {}),
                 "updated_at": serialize_datetime(row.updated_at),
@@ -2524,7 +2533,30 @@ class Storage:
             row.auth_config = copy.deepcopy(next_value["auth_config"])
             row.engine_config = copy.deepcopy(next_value["engine_config"])
             row.source_defaults = copy.deepcopy(next_value["source_defaults"])
-            row.audit_retention_days = int(next_value["audit_retention_days"])
+            # ── Retention unit precedence ──────────────────────────────────────────────────
+            # A patch that names months makes calendar months authoritative (an explicit 0 or
+            # negative clears them back to days); a patch that names only days reverts the
+            # workspace to days, which is what the days-only endpoints and the dashboard send.
+            # A patch that names neither leaves both columns exactly as stored.
+            #
+            # While months is set, audit_retention_days is kept as a truthful mirror rather than
+            # left stale, so /api/v1/settings, workspace export and every other days-speaking
+            # reader report the real window instead of whatever the tenant last typed in days.
+            months_patch = patch.get("audit_retention_months")
+            days_patch = patch.get("audit_retention_days")
+            if months_patch is not None:
+                months = normalize_retention_months(months_patch)
+                row.audit_retention_months = months
+                row.audit_retention_days = (
+                    retention_window_days(months)
+                    if months
+                    else int(days_patch if days_patch is not None else next_value["audit_retention_days"])
+                )
+            elif days_patch is not None:
+                row.audit_retention_months = None
+                row.audit_retention_days = int(days_patch)
+            else:
+                row.audit_retention_days = int(next_value["audit_retention_days"])
             row.theme_mode = next_value["theme_mode"]
             row.branding = copy.deepcopy(next_value.get("branding") or {})
             row.updated_at = datetime.utcnow()

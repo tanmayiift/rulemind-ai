@@ -23,6 +23,11 @@ router = APIRouter()
 # ── Data protection ────────────────────────────────────────────────────────
 class DataProtectionRequest(BaseModel):
     retention_days: Optional[int] = None
+    # Retention in CALENDAR MONTHS, which is the unit customers and regulators actually write
+    # down ("retain for 7 years", "purge PII after 24 months"). Days is a lossy encoding of that:
+    # 7 years is 2557 days, not the 2555 an operator gets by multiplying. When months is set it
+    # is authoritative and days becomes a measured mirror; 0 clears it back to days.
+    retention_months: Optional[int] = None
     pii_redact_keys: Optional[List[str]] = None
 
 
@@ -35,8 +40,22 @@ def _data_protection_view(tenant_id: str) -> Dict[str, Any]:
     env_keys = [k.strip() for k in (os.getenv("RULEMIND_PII_REDACT_KEYS", "") or "").split(",") if k.strip()]
     return {
         "retention_days": int(settings.get("audit_retention_days", 90) or 90),
+        # None means this workspace never set months, and days stays authoritative. That
+        # distinction is load bearing -- fabricating a month count for a tenant whose 90 days is
+        # not a whole number of months would silently move their purge date.
+        "retention_months": settings.get("audit_retention_months"),
         "encryption_at_rest": decision_encryption_enabled(),
         "archive_sink": (os.getenv("DECISION_ARCHIVE_SINK", "none") or "none"),
+        # Whether the retention window above is actually ENFORCED. It usually is not: purging
+        # only happens as the second half of archive-then-purge, so with no sink configured
+        # (the default, and set in no deployment artifact) archive_old_decisions returns
+        # {"skipped": "archiving_disabled"} and nothing is ever deleted, however short the
+        # window. A workspace that set "purge after 24 months" for a compliance obligation is
+        # therefore retaining forever, and nothing said so. Reporting it here makes the setting
+        # honest rather than advisory; the default is deliberately unchanged, because flipping
+        # it would start deleting customer data on upgrade.
+        "retention_enforced": (os.getenv("DECISION_ARCHIVE_SINK", "none") or "none").strip().lower()
+        not in ("", "none"),
         "pii_redact_keys": custom,
         "builtin_redact_keys": sorted(REDACTED_KEYS),
         "env_redact_keys": env_keys,
@@ -66,6 +85,8 @@ def update_data_protection(request: Request, body: DataProtectionRequest) -> Dic
     patch: Dict[str, Any] = {}
     if body.retention_days is not None:
         patch["audit_retention_days"] = max(1, int(body.retention_days))
+    if body.retention_months is not None:
+        patch["audit_retention_months"] = max(0, int(body.retention_months))
     if body.pii_redact_keys is not None:
         engine = dict(settings.get("engine_config", {}) or {})
         engine["pii_redact_keys"] = [str(k).strip() for k in body.pii_redact_keys if str(k).strip()]

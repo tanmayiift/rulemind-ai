@@ -20,15 +20,106 @@ is selected, so the app and its tests run without those optional dependencies in
 The design is use-case agnostic: it archives the generic decision record (id, policy, outcome,
 latency, variant, timestamp, redacted payload) for ANY decisioning domain — lending, fraud,
 insurance, eligibility, pricing, content moderation — not anything lending-specific.
+
+This module also owns the RETENTION WINDOW arithmetic (`retention_cutoff` and friends below),
+because the window is what decides which rows a sink ever sees. It lives here rather than in the
+scheduler so the enforcement job, the settings write path and the tests all resolve
+months-vs-days through exactly one function.
 """
 from __future__ import annotations
 
+import calendar
 import gzip
 import io
 import json
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Mapping, Optional
+
+# ── Retention window ────────────────────────────────────────────────────────────────────────
+# Retention is configured in calendar months (`audit_retention_months`) or, for workspaces that
+# predate months, in days (`audit_retention_days`). Everything that needs "how far back does
+# this workspace keep decisions?" goes through `retention_cutoff`.
+
+# 100 years. A bound, not a policy: `add_months` shifts a datetime's year field, and an absurd
+# stored value would otherwise raise ValueError inside the purge job instead of being clamped.
+MAX_RETENTION_MONTHS = 1200
+
+
+def add_months(moment: datetime, months: int) -> datetime:
+    """Shift `moment` by whole calendar months. Negative shifts go backwards.
+
+    END-OF-MONTH CHOICE — **clamp to the last valid day of the target month.** 31 March minus one
+    month is 28 February (29th in a leap year), not 3 March; 31 January plus one month is 28/29
+    February, not 2/3 March. This is deliberate on two grounds:
+
+    * It is what every other calendar implementation an operator will compare against does —
+      dateutil's ``relativedelta``, PostgreSQL's ``interval '1 month'``, ``java.time``'s
+      ``plusMonths``, .NET's ``AddMonths``. A retention window that disagreed with the database's
+      own date arithmetic would be indefensible in an audit.
+    * It is the safe direction here. Retention cutoffs are computed by SUBTRACTING months from
+      now, and clamping puts the cutoff EARLIER than overflow would (28 Feb rather than 3 Mar),
+      so a window can only ever be honoured a day or two longer — never cut short. Retaining a
+      day too long is untidy; purging a day early breaks the promise the retention setting IS.
+    """
+    total = moment.year * 12 + (moment.month - 1) + months
+    year, month_index = divmod(total, 12)
+    month = month_index + 1
+    return moment.replace(year=year, month=month, day=min(moment.day, calendar.monthrange(year, month)[1]))
+
+
+def normalize_retention_months(value: Any) -> Optional[int]:
+    """Coerce a submitted or stored month count into a usable one.
+
+    None, zero, negatives and garbage all collapse to None, which means "months are not in use
+    for this workspace" — NOT "retain nothing". Anything else is clamped to
+    ``[1, MAX_RETENTION_MONTHS]``."""
+    if value is None:
+        return None
+    try:
+        months = int(value)
+    except (TypeError, ValueError):
+        return None
+    if months <= 0:
+        return None
+    return min(months, MAX_RETENTION_MONTHS)
+
+
+def retention_window_days(months: Any, now: Optional[datetime] = None) -> int:
+    """The month window measured in days against the real calendar as of `now`.
+
+    This is the lossy direction and exists only to keep `audit_retention_days` — and every reader
+    that still speaks days — approximately right for a months-configured workspace. Measured, not
+    multiplied: 84 months is 2557 days, not the 2555 that ``years * 365`` gives, and those two
+    leap days are exactly the error a hand conversion makes. The result drifts by at most a day as
+    leap years pass, which is why it is never used for enforcement — `retention_cutoff` is."""
+    moment = now or datetime.utcnow()
+    normalized = normalize_retention_months(months)
+    if not normalized:
+        return 0
+    return (moment - add_months(moment, -normalized)).days
+
+
+def retention_cutoff(settings: Mapping[str, Any], now: Optional[datetime] = None) -> Optional[datetime]:
+    """The instant before which a workspace's decisions are outside its retention window, or None
+    when retention is disabled for that workspace.
+
+    Months win over days when set, because months is what the customer bought; days is the legacy
+    encoding kept working for every tenant that never migrated. Returning None rather than a
+    far-past datetime is deliberate — None means "purge nothing", so an unset, malformed or
+    unreadable setting can never delete more than intended."""
+    moment = now or datetime.utcnow()
+    months = normalize_retention_months(settings.get("audit_retention_months"))
+    if months:
+        return add_months(moment, -months)
+    try:
+        days = int(settings.get("audit_retention_days") or 0)
+    except (TypeError, ValueError):
+        return None
+    if days <= 0:
+        return None
+    return moment - timedelta(days=days)
 
 
 class DecisionArchiver(ABC):

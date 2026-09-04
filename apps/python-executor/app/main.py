@@ -356,6 +356,10 @@ class SettingsRequest(BaseModel):
     engine_config: Optional[Dict[str, Any]] = None
     source_defaults: Optional[Dict[str, Any]] = None
     audit_retention_days: Optional[int] = None
+    # See governance.DataProtectionRequest: months is the unit retention is actually specified
+    # in. GET already returns it (this route returns get_settings() verbatim); without this
+    # field PUT silently dropped it, so it could be read but never written here.
+    audit_retention_months: Optional[int] = None
     theme_mode: Optional[str] = None
     branding: Optional[Dict[str, Any]] = None
 
