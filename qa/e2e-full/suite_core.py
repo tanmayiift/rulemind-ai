@@ -94,35 +94,78 @@ def run(r: Runner):
             got = res.get("value") if isinstance(res, dict) else res
             c.ok(got == 42, f"expected 42, got {got!r} (body={json.dumps(body)[:200]})")
 
+    # Each escape is a DECORATED FUNCTION BODY, and every request carries source_id -- the same
+    # two corrections already applied to case 3.1 above, which were never applied to this loop.
+    # Without them the endpoint 422s on a malformed request before the sandbox is ever reached,
+    # and the old `if status != 200: c.ok(True)` below turned that into a pass. All seven of
+    # these cases, plus 3.3, have therefore been asserting nothing:
+    #
+    #   sent:      {"code": "import os\nresult = ...", "payload": {}}
+    #   received:  422 {"detail":[{"loc":["body","source_id"],"msg":"Field required"}]}
+    #   recorded:  PASS
+    #
+    # The sandbox itself was fine all along -- a well-formed attempt returns
+    # {"error": "Import not allowed: os"}. It is the test that was broken, which is worse: a
+    # green row asserting the opposite of nothing.
     SANDBOX_ESCAPES = [
-        ("import os", "import os\nresult = os.listdir('/')"),
-        ("__import__", "result = __import__('os').listdir('/')"),
-        ("open file", "result = open('/etc/passwd').read()"),
-        ("builtins via subclass", "result = ().__class__.__bases__[0].__subclasses__()"),
-        ("eval", "result = eval(\"__import__('os').getcwd()\")"),
-        ("exec", "exec('import os'); result = 1"),
-        ("globals", "result = globals()['__builtins__']"),
+        ("import os", "    import os\n    return os.listdir('/')"),
+        ("__import__", "    return __import__('os').listdir('/')"),
+        ("open file", "    return open('/etc/passwd').read()"),
+        ("builtins via subclass", "    return ().__class__.__bases__[0].__subclasses__()"),
+        ("eval", "    return eval(\"__import__('os').getcwd()\")"),
+        ("exec", "    exec('import os')\n    return 1"),
+        ("globals", "    return globals()['__builtins__']"),
     ]
-    for i, (label, code) in enumerate(SANDBOX_ESCAPES, start=1):
+    for i, (label, body_src) in enumerate(SANDBOX_ESCAPES, start=1):
         with r.case(f"3.2.{i}", f"Sandbox blocks: {label}") as c:
-            resp = r.post("/api/v1/variables/test-draft", json={"code": code, "payload": {}})
+            code = ('@variable(source="custom")\n'
+                    "def probe(payload, variables, apis):\n" + body_src)
+            resp = r.post("/api/v1/variables/test-draft",
+                          json={"source_id": "custom", "code": code, "payload": {}})
+            # A 422 here means WE sent a malformed request, not that the sandbox blocked
+            # anything. That must fail loudly rather than masquerade as a block.
+            if resp.status_code == 422:
+                c.fail(f"malformed request, sandbox never reached: {resp.text[:200]}")
+                continue
+            # A non-200, non-422 rejection IS a block -- the request was refused before
+            # execution -- but say so explicitly rather than silently accepting any status.
             if resp.status_code != 200:
-                c.ok(True); continue
+                c.info({"status": resp.status_code, "body": resp.text[:200]})
+                c.ok(True, f"rejected with {resp.status_code}")
+                continue
             body = resp.json()
-            err = body.get("error") or body.get("traceback") or ""
-            val = body.get("result", body.get("value"))
-            blocked = bool(err) or val in (None, "")
-            c.ok(blocked, f"NOT BLOCKED — returned {str(val)[:160]!r}")
+            res = body.get("result", body)
+            err = (res.get("error") if isinstance(res, dict) else None) or body.get("error") or ""
+            val = res.get("value") if isinstance(res, dict) else res
+            blocked = bool(err) and val in (None, "")
+            c.ok(blocked, f"NOT BLOCKED — error={str(err)[:120]!r} value={str(val)[:160]!r}")
             c.info({"error": str(err)[:200], "result": str(val)[:200]})
 
     with r.case("3.3", "Sandbox enforces timeout on infinite loop") as c:
+        # Same two corrections. Previously this 422'd in about a millisecond and the only
+        # assertion was `elapsed < 15000`, which a 422 satisfies trivially -- so it passed
+        # without ever starting a loop, let alone timing one out.
+        code = ('@variable(source="custom")\n'
+                "def probe(payload, variables, apis):\n"
+                "    while True:\n"
+                "        pass\n")
         t0 = time.perf_counter()
         resp = r.post("/api/v1/variables/test-draft",
-                      json={"code": "while True: pass\nresult = 1", "payload": {}}, timeout=30)
+                      json={"source_id": "custom", "code": code, "payload": {}}, timeout=30)
         elapsed = (time.perf_counter() - t0) * 1000
         c.info({"elapsed_ms": round(elapsed), "status": resp.status_code,
                 "body": resp.text[:200]})
-        c.ok(elapsed < 15000, f"took {elapsed:.0f}ms — timeout not enforced")
+        if resp.status_code == 422:
+            c.fail(f"malformed request, sandbox never reached: {resp.text[:200]}")
+        else:
+            c.ok(elapsed < 15000, f"took {elapsed:.0f}ms — timeout not enforced")
+            # The loop must actually have RUN and been killed, not been rejected instantly.
+            # A sub-100ms result means nothing executed, which is how this passed before.
+            c.ok(elapsed > 100, f"returned in {elapsed:.0f}ms — nothing was executed")
+            if resp.status_code == 200:
+                res = resp.json().get("result", {})
+                err = res.get("error") if isinstance(res, dict) else None
+                c.ok(bool(err), f"no timeout error reported: {str(res)[:160]}")
 
     with r.case("3.4", "Rule test endpoint returns per-condition detail") as c:
         rules = r.get("/api/v1/rules").json()

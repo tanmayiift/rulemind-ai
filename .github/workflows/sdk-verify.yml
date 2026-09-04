@@ -343,8 +343,11 @@ jobs:
           RM_OUT: ${{ github.workspace }}/qa/results/results_sandbox.json
         run: python run.py sandbox
 
-      - name: Run core QA suite (non-gating until its 5 failures are fixed)
-        continue-on-error: true
+      # GATING as of the 8-fake-pass fix. The "5 failures" this step was waiting on were fixed
+      # in 4090911; the suite has been at 31/31 since, and the gate was simply never switched
+      # back on. Leaving it non-gating meant the one suite that drives a real server and probes
+      # the sandbox-escape matrix could go red without anyone noticing.
+      - name: Run core QA suite
         working-directory: qa/e2e-full
         env:
           RM_BASE: http://127.0.0.1:8080
