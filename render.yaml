@@ -60,11 +60,16 @@ services:
     # run. Deploy from the dashboard or the deploy hook once CI is green.
     # `dockerCommand`, not `startCommand`: Render rejects a docker-runtime service that carries
     # startCommand ("docker runtime must not have startCommand"). It replaces the image's CMD,
-    # which the entrypoint then execs -- entrypoint.sh ends in `exec "$@"`, so this runs as PID 1
-    # and signals reach uvicorn.
-    dockerCommand: >-
-      sh -c "python3 -m alembic -c alembic.ini upgrade head &&
-      exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1"
+    # which entrypoint.sh then execs (it ends in `exec "$@"`).
+    #
+    # A script path, not an inline command. The inline form
+    #   sh -c "alembic upgrade head && exec uvicorn ..."
+    # exited 127 without printing a line: Render splits this value into argv on whitespace
+    # rather than handing it to a shell, so the quotes survive as literal characters and
+    # `sh -c '"python3'` is not a command. Anything containing `&&` has the same problem.
+    # apps/python-executor/render-start.sh carries the logic, and can be run against the real
+    # image locally before anyone deploys it.
+    dockerCommand: ./render-start.sh
     # Migrations run HERE, which the Dockerfile's entrypoint deliberately does not do. Two
     # things make that safe on this plan and it is worth being explicit about both, because
     # the reasons it was removed from the entrypoint still apply everywhere else:

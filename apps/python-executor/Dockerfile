@@ -19,10 +19,13 @@ COPY apps/python-executor/app ./app
 COPY apps/python-executor/alembic ./alembic
 COPY apps/python-executor/package.json ./package.json
 COPY apps/python-executor/entrypoint.sh ./entrypoint.sh
+# Migrate-then-serve for single-instance platforms (Render's free tier has no pre-deploy hook).
+# Harmless everywhere else -- nothing invokes it unless a platform's start command asks for it.
+COPY apps/python-executor/render-start.sh ./render-start.sh
 RUN mkdir -p /app/apps/python-executor \
   && ln -s /app/app /app/apps/python-executor/app \
   && ln -s /app/alembic /app/apps/python-executor/alembic \
-  && chmod +x /app/entrypoint.sh
+  && chmod +x /app/entrypoint.sh /app/render-start.sh
 
 # Run as a non-root system account. This image executes untrusted customer Python
 # in the variable sandbox, and it previously ran as uid 0 — and with no USER
