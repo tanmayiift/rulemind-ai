@@ -31,7 +31,32 @@ function evaluateFormula(formula: string, context: Record<string, unknown>): unk
   }
 }
 
+/**
+ * @deprecated Evaluates the LEGACY `{ factors[], bands[] }` scorecard shape, which nothing in
+ * this product produces. Use {@link evaluateServerScorecard} for the shape the server actually
+ * stores (`{ base_score, max_score, bins[] }`) — that is what Python's `evaluate_scorecard`,
+ * the Rust core and the Kotlin and Dart SDKs all implement, and it is validated against the
+ * shared 166-case corpus.
+ *
+ * This function is kept because it is public API of `@rulemind/rule-engine` and removing it
+ * would break any external consumer on the old shape. It is exported alongside the working one
+ * under the more obvious name, though, so a caller reaching for "the scorecard function" picks
+ * this one — and on real data it used to die with
+ * `TypeError: Cannot read properties of undefined (reading 'reduce')`, which names neither the
+ * cause nor the fix. TypeScript callers are protected (`factors` is required, so the compiler
+ * rejects a server scorecard); JavaScript callers were not. Hence the explicit check below.
+ */
 export function evaluateScorecard(definition: ScorecardDefinition, input: Record<string, unknown>): ScorecardResult {
+  if (!Array.isArray(definition?.factors)) {
+    const looksLikeServerShape = Array.isArray((definition as { bins?: unknown })?.bins);
+    throw new TypeError(
+      looksLikeServerShape
+        ? "evaluateScorecard() takes the legacy { factors[], bands[] } shape, but this scorecard " +
+          "has `bins` — it is the shape the server stores. Call evaluateServerScorecard() instead."
+        : "evaluateScorecard() requires `factors` to be an array. If this scorecard came from " +
+          "the RuleMind API, call evaluateServerScorecard() instead."
+    );
+  }
   const scoringMethod = definition.scoring_method ?? "points";
 
   if (scoringMethod === "woe") {
