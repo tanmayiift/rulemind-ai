@@ -37,7 +37,20 @@ except ImportError:  # pragma: no cover - Rust extension optional
     _HAVE_RUST = False
 
 # step types that need live I/O or human interaction -> not fast-servable
-_IO_STEP_TYPES = {"action", "review_gate", "transform", "model"}
+# Step types the fast path CANNOT serve, so a policy containing one falls through to the full
+# executor. This is a correctness list, not a performance one.
+#
+# loop/branch/workflow/monitor were missing, and the consequence was the T1.2 failure mode
+# again in a new place: is_fast_servable() said yes, the compiled core did not recognise the
+# step, and it was silently skipped. A parent policy shaped [run KYC child, outcome approve]
+# therefore returned APPROVE at HTTP 200 with the gating child never executed -- but only under
+# FAST_DECIDE=1, which turns a performance flag into a correctness switch. The slow path was
+# fixed to fail closed on an unreachable child; the fast path has to DECLINE the policy instead,
+# because it cannot execute one at all.
+_IO_STEP_TYPES = {
+    "action", "review_gate", "transform", "model",
+    "loop", "branch", "workflow", "monitor",
+}
 
 _CACHE_LOCK = threading.Lock()
 

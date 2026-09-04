@@ -132,8 +132,30 @@ export function ConnectorsPage(props: { data: BootstrapPayload; refresh: () => v
     async (connectorId: string) => {
       setBusyId(connectorId);
       try {
-        await apiJson(apiBaseUrl, "/api/v1/connectors/" + connectorId + "/test", { method: "POST" }, apiKey);
-        props.onNotify("Connector test completed.");
+        // Read the RESULT, do not just confirm the request completed. The endpoint used to
+        // return passed:true without connecting to anything; it now opens a real socket and can
+        // legitimately answer 200 with passed:false (bureau down, credentials rejected, TLS
+        // failure). Reporting "test completed" for that is the same lie in a different place --
+        // an operator about to cut over to production would read it as a pass.
+        const body = (await apiJson(
+          apiBaseUrl,
+          "/api/v1/connectors/" + connectorId + "/test",
+          { method: "POST" },
+          apiKey
+        )) as { passed?: boolean; probe?: { outcome?: string; status?: number; reason?: string; probed?: boolean } };
+        const probe = body?.probe ?? {};
+        if (body?.passed) {
+          props.onNotify(
+            probe.probed === false
+              ? "Connector OK (simulated endpoint — not contacted)."
+              : "Connector reachable" + (probe.status ? " (HTTP " + probe.status + ")." : ".")
+          );
+        } else {
+          const detail = [probe.outcome, probe.status ? "HTTP " + probe.status : null, probe.reason]
+            .filter(Boolean)
+            .join(" — ");
+          props.onNotify("Connector test FAILED" + (detail ? ": " + detail : "."));
+        }
       } catch (error) {
         props.onNotify(error instanceof Error ? error.message : "Connector test failed.");
       } finally {

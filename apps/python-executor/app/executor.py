@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from . import circuit_breaker
+from . import circuit_breaker, input_schema
 from .experiments import apply_experiment_overrides, resolve_experiment_assignment
 from .jsonpath import evaluate_math_expr, resolve_jsonpath
 from .logic import evaluate_rule_definition, evaluate_scorecard, json_dumps, redact_payload
@@ -292,6 +292,9 @@ class PolicyExecutor:
         self._secrets: Dict[str, Dict[str, Any]] = {}
         # Set by execute(); decides whether this run may use the shared cross-request cache.
         self._source: str = "api"
+        # Environment of the policy being executed (dev/uat/prod). Read only by sub-workflow
+        # alias resolution, so an alias can point at a different child per environment.
+        self._environment: str = "dev"
 
     def _catalog_for(self, tenant_id: str) -> Dict[str, Any]:
         cat = self._catalog.get(tenant_id)
@@ -358,6 +361,78 @@ class PolicyExecutor:
                 cached = fast_decide._build_tenant_secrets(self.storage, tenant_id, connectors)
             self._secrets[tenant_id] = cached
         return cached
+
+    def _validate_input(self, ctx: ExecutionContext) -> None:
+        """Check the caller's nested input keys against the sources' declared schema (P06).
+
+        WHY THIS RUNS BEFORE ANYTHING ELSE. An unchecked nested key resolves to None, and
+        `logic.py` returns False for every comparison against None -- so a misspelled
+        `bureau.scores[0].scoreNmae` does not fail, it re-phrases the rule, and which direction it
+        breaks depends on how the author happened to word the gate. Same failure mode as a
+        variable that could not compute (_fail_closed_on_variable_errors), one step earlier in the
+        pipeline: there the input errored, here it was never checked.
+
+        Off by default. A hard schema check switched on globally would refuse every integration
+        already in production, so it is opt-in per tenant and per policy under
+        `engine_config.input_validation` -- see app/input_schema.py for the shape.
+
+        Not fail-open: when enforcement finds a blocking issue this RAISES, and no decision is
+        produced. `warn` mode records the same issues and lets the decision through, so an
+        operator can see what enforcement would reject before switching it on.
+        """
+        catalog = self._catalog_for(ctx.tenant_id)
+        settings = input_schema.resolve_settings(
+            catalog["settings"].get("engine_config", {}) or {}, ctx.policy_id)
+        if not settings.enabled:
+            return
+        issues = input_schema.validate_payload(ctx.payload, catalog["connectors"], settings)
+        if not issues:
+            return
+        blocking = [issue for issue in issues if settings.blocks(issue)]
+        self._record_input_issues(ctx, issues, blocked=bool(blocking))
+        ctx.step_trace.append({
+            "type": "input_validation",
+            "status": "rejected" if blocking else "warned",
+            "mode": settings.mode,
+            "issues": [issue.to_dict() for issue in issues],
+            "detail": "{0} input problem(s) found; {1} of them block the decision.".format(
+                len(issues), len(blocking)),
+        })
+        if blocking:
+            raise input_schema.InputValidationError(issues, policy_id=ctx.policy_id, blocking=blocking)
+
+    def _record_input_issues(
+        self, ctx: ExecutionContext, issues: List[input_schema.InputIssue], blocked: bool
+    ) -> None:
+        """Make a bad payload observable whether or not it was rejected.
+
+        Warn mode exists to be watched: an operator has to be able to see the typo'd integration
+        without reading decisions one at a time. Best-effort -- recording must never itself break
+        the decision.
+        """
+        try:
+            self.storage.add_error_event(
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "scope": "decision",
+                    "stage": "input_validation",
+                    "entity_type": "policy",
+                    "entity_id": ctx.policy_id,
+                    "message": "Input payload {0}: {1} problem(s) at {2}".format(
+                        "rejected" if blocked else "flagged (warn mode)",
+                        len(issues),
+                        ", ".join(issue.path for issue in issues[:10])),
+                    "details": {
+                        "policy_id": ctx.policy_id,
+                        "execution_id": ctx.execution_id,
+                        "blocked": blocked,
+                        "issues": [issue.to_dict() for issue in issues],
+                    },
+                },
+                tenant_id=ctx.tenant_id,
+            )
+        except Exception:  # noqa: BLE001 - observability must not break the decision
+            pass
 
     def _payloads_by_source(self, ctx: ExecutionContext) -> Dict[str, Dict[str, Any]]:
         connectors = self._catalog_for(ctx.tenant_id)["connectors"]
@@ -511,7 +586,15 @@ class PolicyExecutor:
                 # skipped, or a decision could pass a gate it should have failed (fail-open).
                 # Fail CLOSED — escalate to human review — and record an observable error event
                 # (not just the trace line) so it's alertable, never a silent wrong decision.
-                if step.get("type") in ("rule", "scorecard", "decision_table"):
+                #
+                # `workflow` belongs in this set for the same reason, and did not used to be in
+                # it. A sub-workflow is a bundle of gates; the errors that escape it are exactly
+                # the ones that mean NONE of them ran -- an unregistered alias, a dangling id, a
+                # cycle, depth exhaustion. The parent then finished with the child's rejections
+                # simply absent, which is the fail-open the child was composed in to prevent.
+                # (A step failing INSIDE the child is caught by the child's own _run_steps at
+                # depth+1 and handled there, so this only escalates whole-child failures.)
+                if step.get("type") in ("rule", "scorecard", "decision_table", "workflow"):
                     ctx.outcome = _merge_outcome(ctx.outcome, "review")
                     self._record_gate_error(ctx, step, error)
                 if config.get("onFailure") == "abort":
@@ -774,14 +857,60 @@ class PolicyExecutor:
             return {"branch": "default", "matched": True}
         return {"branch": None, "matched": False}
 
+    def _resolve_workflow_alias(self, alias: str, ctx: ExecutionContext) -> str:
+        """Map a sub-workflow alias to a policy id, within THIS tenant (P08).
+
+        The registry is `engine_config.workflow_aliases` on tenant settings -- the same
+        per-tenant settings pattern as `engine_config.shadow_map`. Two forms:
+
+            "workflow_aliases": {"kyc_check": "policy_kyc_v3"}
+            "workflow_aliases": {"kyc_check": {"dev": "policy_kyc_v4", "prod": "policy_kyc_v3"}}
+
+        The second is the point of the feature: a parent names `kyc_check` once and never has to
+        be rewritten as the child moves dev -> uat -> prod, or as a new version of the child
+        replaces it in one environment at a time. `default` covers environments not listed.
+
+        CROSS-TENANT IS STRUCTURALLY IMPOSSIBLE, not merely checked. The registry is read from
+        this tenant's own settings and the id it yields is loaded with a tenant-scoped
+        get_policy, so a tenant can only ever name policies it already owns; an alias pointing at
+        another tenant's id resolves to nothing and fails closed like any other dangling alias.
+
+        Returns "" when the alias is not registered. The caller treats that as fatal -- there is
+        deliberately NO fallback to "maybe a policy has this id", because a fallback would make a
+        typo'd alias silently run a policy nobody named.
+        """
+        registry = self._catalog_for(ctx.tenant_id)["settings"].get("engine_config", {}) or {}
+        entry: Any = (registry.get("workflow_aliases") or {}).get(alias)
+        if isinstance(entry, dict):
+            entry = entry.get(self._environment) or entry.get("default")
+        return str(entry) if entry else ""
+
     async def _execute_subworkflow(self, step, ctx, rules, scorecards, connectors, source, depth):
         """Invoke another policy as a step (composition), sharing the live context.
-        Guards against cycles and runaway depth."""
+        Guards against cycles and runaway depth.
+
+        A child may be named by raw `ref_id` or by a stable `config.alias`. The alias WINS when
+        both are present: a step that names an alias has opted into indirection, and quietly
+        running a stale hard-coded id when the registry does not answer is precisely the bug the
+        alias exists to prevent.
+        """
         if depth >= _MAX_WORKFLOW_DEPTH:
             raise ValueError("Max sub-workflow depth ({0}) exceeded".format(_MAX_WORKFLOW_DEPTH))
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        alias = str(config.get("alias") or step.get("alias") or "")
         ref_id = str(step.get("ref_id") or step.get("ref") or "")
+        if alias:
+            resolved = self._resolve_workflow_alias(alias, ctx)
+            if not resolved:
+                raise ValueError(
+                    "Sub-workflow alias '{0}' is not registered for this workspace "
+                    "(engine_config.workflow_aliases)".format(alias))
+            ref_id = resolved
         if not ref_id:
             raise ValueError("Sub-workflow step missing ref_id")
+        # Cycle check on the RESOLVED id, never on the alias. Two aliases can point at one policy
+        # (and an alias can point at a policy a parent also names by raw id), so guarding the
+        # name would let A -> B -> A back in through a second spelling of B.
         if ref_id in self._visited_workflows:
             raise ValueError("Sub-workflow cycle detected: {0}".format(ref_id))
         sub_policy = self.storage.get_policy(ref_id, tenant_id=ctx.tenant_id)
@@ -789,7 +918,10 @@ class PolicyExecutor:
             raise ValueError("Unknown sub-workflow: {0}".format(ref_id))
         self._visited_workflows.add(ref_id)
         await self._run_steps(sub_policy.get("steps", []) or [], ctx, rules, scorecards, connectors, source, depth + 1)
-        return {"workflow": ref_id, "outcome": ctx.outcome}
+        result = {"workflow": ref_id, "outcome": ctx.outcome}
+        if alias:
+            result["alias"] = alias
+        return result
 
     async def debug_loop(
         self,
@@ -864,6 +996,15 @@ class PolicyExecutor:
         # spends its whole budget on a slow DB is just as timed out as one that spends it in the
         # sandbox, and the caller cannot tell the difference anyway.
         self._start_budget(ctx)
+        # Sub-workflow aliases can resolve to a different child per environment, so record which
+        # environment this run is in before any step executes.
+        self._environment = str(policy.get("status") or "dev")
+
+        # Check the caller's input BEFORE computing anything. A resume carries the payload that
+        # was already validated at the original run, so re-checking it would only be able to
+        # reject a decision a human is already reviewing.
+        if not resume_from:
+            self._validate_input(ctx)
 
         assignment = resolve_experiment_assignment(self.storage, tenant_id, policy["id"], ctx.user_id or (ctx.payload.get("user_id") if isinstance(ctx.payload, dict) else None))
         if assignment:

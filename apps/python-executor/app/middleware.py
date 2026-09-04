@@ -153,6 +153,9 @@ def check_pre_auth_rate_limit(request: Request, path: str) -> Optional[JSONRespo
     decision = rate_limit.check(
         {"config": {"rate_limit_rpm": rpm}},
         key="preauth:{0}:{1}".format(prefix, address),
+        # These are IP-keyed, not tenant-keyed, so the RateLimit-* headers must not claim to
+        # describe a tenant budget the caller does not have yet.
+        scope="preauth:{0}".format(prefix),
     )
     if decision.allowed:
         return None
@@ -449,12 +452,19 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if not tenant.get("is_active", True):
             return JSONResponse(status_code=403, content={"error": "Tenant is inactive"})
 
-        # Limits come from app/rate_limit.py: per-tenant config, then per-plan env,
-        # then a global env, then a built-in default. RATE_LIMIT_ENABLED=0 turns the
-        # whole thing off, which is how load tests and benchmarks should run.
-        limit_decision = (
-            rate_limit.ALLOW_ALL if rate_limit.is_exempt(path)
-            else rate_limit.check(tenant)
+        # Limits come from app/rate_limit.py. check_request draws from TWO buckets: the one
+        # for this request's resource class (decision / read / write / ai / export / admin,
+        # per rate_limit.classify) and the tenant-wide aggregate that bounds their sum. It
+        # handles the exempt-path and kill-switch checks itself, so there is one call and no
+        # second place for the two to disagree.
+        #
+        # `cost` is derived from Content-Length rather than the body: a /decide/batch of N
+        # payloads is N decisions, and reading the body HERE — outermost, before the handler
+        # that streams it — would buffer every bulk upload. See rate_limit.request_cost.
+        limit_decision = rate_limit.check_request(
+            tenant, request.method, path,
+            cost=rate_limit.request_cost(request.method, path,
+                                         request.headers.get("content-length")),
         )
         if not limit_decision.allowed:
             return JSONResponse(
@@ -462,8 +472,12 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
                 headers=limit_decision.headers(),
                 content={
                     "error": "Rate limit exceeded",
-                    "detail": "Limit is {0} requests/minute for this tenant. Retry in {1}s.".format(
-                        limit_decision.limit, max(1, limit_decision.retry_after)),
+                    # Naming the budget is the difference between an actionable 429 and a
+                    # mystery: "you are out of AI calls" tells a client to back off on ONE
+                    # surface, where "you are rate limited" reads as a total outage.
+                    "detail": "Limit is {0} requests/minute on the '{1}' budget for this tenant. Retry in {2}s.".format(
+                        limit_decision.limit, limit_decision.scope or rate_limit.TENANT,
+                        max(1, limit_decision.retry_after)),
                 },
             )
 
@@ -485,7 +499,10 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             # Advertise the budget on every response, not just on rejection — a client
-            # that can see Remaining can slow down before it gets a 429.
+            # that can see Remaining can slow down before it gets a 429. With two buckets in
+            # play the numbers describe the BINDING one (fewest requests left), and
+            # RateLimit-Scope names it; advertising the aggregate unconditionally would tell
+            # a caller it has 900 requests left while its class bucket rejects the next one.
             if limit_decision.enforced:
                 for header, value in limit_decision.headers().items():
                     response.headers[header] = value

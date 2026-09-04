@@ -90,6 +90,20 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Without this the browser cannot READ these headers cross-origin, whatever the server
+    # sends: `allow_headers` governs the REQUEST, `expose_headers` the RESPONSE, and the default
+    # exposes only a handful of CORS-safelisted ones. So the rate-limit budget the API has always
+    # advertised has never been visible to the dashboard -- it could be throttled and had no way
+    # to see it coming or to back off. Same for the request id, which is what a user would quote
+    # in a support ticket.
+    expose_headers=[
+        "RateLimit-Limit",
+        "RateLimit-Remaining",
+        "RateLimit-Reset",
+        "RateLimit-Scope",
+        "Retry-After",
+        "X-Request-Id",
+    ],
 )
 # Registered BEFORE TenantContextMiddleware so it ends up INSIDE it: Starlette makes the
 # last-added middleware outermost, and idempotency must run after auth has passed and after
@@ -774,8 +788,14 @@ def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
             raise HTTPException(status_code=422, detail="Unknown rule in policy: {0}".format(ref_id))
         if step_type == "scorecard" and ref_id not in scorecards_map:
             raise HTTPException(status_code=422, detail="Unknown scorecard in policy: {0}".format(ref_id))
-        if step_type == "workflow" and not ref_id:
-            raise HTTPException(status_code=422, detail="Sub-workflow step requires a ref_id (target policy).")
+        # A sub-workflow may name its child by ALIAS instead of by raw id -- that is the whole
+        # point of aliases, so a policy can be promoted dev -> uat -> prod without rewriting
+        # every parent that calls it. Requiring ref_id unconditionally made an alias-only step
+        # unauthorable through the API, so an author had to carry a stale id alongside the alias.
+        if step_type == "workflow" and not (ref_id or (step.get("config") or {}).get("alias") or step.get("alias")):
+            raise HTTPException(
+                status_code=422,
+                detail="Sub-workflow step requires a ref_id (target policy) or an alias.")
         if step_type not in {"connector", "rule", "scorecard", "decision_table", "outcome", "transform", "action", "review_gate", "model", "branch", "loop", "workflow", "monitor"}:
             raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
 

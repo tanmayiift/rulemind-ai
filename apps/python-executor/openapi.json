@@ -598,6 +598,17 @@
               }
             ],
             "title": "Retention Days"
+          },
+          "retention_months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Months"
           }
         },
         "title": "DataProtectionRequest",
@@ -2638,6 +2649,17 @@
               }
             ],
             "title": "Audit Retention Days"
+          },
+          "audit_retention_months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Retention Months"
           },
           "auth_config": {
             "anyOf": [
@@ -5357,7 +5379,7 @@
     },
     "/api/v1/auth/login": {
       "post": {
-        "description": "Password login for a workspace member. Sets an httpOnly session cookie (browser) + a CSRF\ncookie, and also returns the token in the body for machine/mobile callers.",
+        "description": "Password login for a workspace member. Sets an httpOnly session cookie (browser) + a CSRF\ncookie, and also returns the token in the body for machine/mobile callers.\n\nExempted from the middleware's tenant check at UNAUTH_AUTH_PREFIXES, which also put it\nahead of the per-tenant rate limiter \u2014 so until the pre-auth throttle was added this\naccepted unlimited password guesses. It now counts failures per account as well, the same\nshape storage.verify_member_otp already used for OTP codes.",
         "operationId": "member_login_api_v1_auth_login_post",
         "requestBody": {
           "content": {
@@ -6122,6 +6144,7 @@
     },
     "/api/v1/connectors/{connector_id}/test": {
       "post": {
+        "description": "Actually connect to the connector's endpoint and report what happened.\n\nThis used to return ``passed: true`` unconditionally without opening a socket, which made the\ndashboard's \"Test connection\" button a source of false confidence right before a production\ncutover. See ``app/connector_probe.py`` for why the egress guard and the secret redaction are\nnot optional here, and why a misconfigured connector is a 422 while a downstream failure is a\n200 carrying ``passed: false``.",
         "operationId": "test_connector_api_v1_connectors__connector_id__test_post",
         "parameters": [
           {
@@ -7454,7 +7477,7 @@
     },
     "/api/v1/health": {
       "get": {
-        "description": "Liveness. Returns 503 when a hard dependency is down so an orchestrator's\nHTTP check can actually fail \u2014 it inspects the status code, not the body.",
+        "description": "Liveness. Deliberately static: no database, no Redis, no I/O of any kind.\n\nThis used to call _dependency_status() and answer 503 whenever Postgres was unreachable,\nand the Helm chart points its LIVENESS probe here. The two together mean a 30-second DB\nfailover \u2014 a survivable event \u2014 fails liveness on every replica at once and kubelet\nrestarts the entire API fleet, turning a brief dependency blip into a full outage with a\ncold-start thundering herd on the database that just came back.\n\nIt was also a sync `def`, so FastAPI ran it on the same bounded threadpool as /decide: a\nsaturated sandbox pool could time the probe out and trigger the same mass restart with\nevery dependency perfectly healthy. `async def` keeps it on the event loop, where nothing\na request handler does can starve it.\n\nLiveness answers one question \u2014 is this process still able to serve? \u2014 and only a restart\nfixes a \"no\". Whether the dependencies are reachable is READINESS, and it stays on /ready,\nwhere a \"no\" takes the pod out of the load-balancer rotation and puts it back by itself.",
         "operationId": "health_api_v1_health_get",
         "responses": {
           "200": {
@@ -7891,7 +7914,7 @@
     },
     "/api/v1/onboarding/signup": {
       "post": {
-        "description": "Public: create a workspace + issue a DEV key (shown once). Prod key comes later,\nafter the client verifies their integration. (In production, gate this behind email\nverification / CAPTCHA \u2014 it is intentionally open here for self-serve onboarding.)",
+        "description": "Public: create a workspace + issue a DEV key (shown once). Prod key comes later,\nafter the client verifies their integration.\n\nFour unauthenticated writes that end in a LIVE API key in the response body, on a path\nlisted in middleware.EXEMPT_PATHS \u2014 which returns from dispatch() roughly seventy lines\nbefore the rate-limit check, so the limiter was not merely skipped for this route, it was\nunreachable from it. TenantContextMiddleware now applies an IP-keyed pre-auth budget\nahead of both early returns; RULEMIND_SELF_SERVE_SIGNUP=0 closes the door entirely for a\ndeployment that provisions tenants out of band.",
         "operationId": "onboarding_signup_api_v1_onboarding_signup_post",
         "requestBody": {
           "content": {
@@ -11865,7 +11888,7 @@
     },
     "/health": {
       "get": {
-        "description": "Liveness. Returns 503 when a hard dependency is down so an orchestrator's\nHTTP check can actually fail \u2014 it inspects the status code, not the body.",
+        "description": "Liveness. Deliberately static: no database, no Redis, no I/O of any kind.\n\nThis used to call _dependency_status() and answer 503 whenever Postgres was unreachable,\nand the Helm chart points its LIVENESS probe here. The two together mean a 30-second DB\nfailover \u2014 a survivable event \u2014 fails liveness on every replica at once and kubelet\nrestarts the entire API fleet, turning a brief dependency blip into a full outage with a\ncold-start thundering herd on the database that just came back.\n\nIt was also a sync `def`, so FastAPI ran it on the same bounded threadpool as /decide: a\nsaturated sandbox pool could time the probe out and trigger the same mass restart with\nevery dependency perfectly healthy. `async def` keeps it on the event loop, where nothing\na request handler does can starve it.\n\nLiveness answers one question \u2014 is this process still able to serve? \u2014 and only a restart\nfixes a \"no\". Whether the dependencies are reachable is READINESS, and it stays on /ready,\nwhere a \"no\" takes the pod out of the load-balancer rotation and puts it back by itself.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -11885,7 +11908,7 @@
     },
     "/health/ready": {
       "get": {
-        "description": "Readiness. A readinessProbe only looks at the status code, so returning 200\nwith {\"ready\": false} \u2014 as this used to \u2014 meant the gate never fired.",
+        "description": "Readiness \u2014 the ONLY probe that touches the dependencies.\n\nA readinessProbe only looks at the status code, so returning 200 with {\"ready\": false}\n\u2014 as this used to \u2014 meant the gate never fired. Failing here is safe in a way failing\n/health is not: the pod leaves the service endpoints and rejoins on its own the moment\nthe dependency recovers, with no restart and no lost warm state.",
         "operationId": "ready_health_ready_get",
         "responses": {
           "200": {
@@ -11921,7 +11944,7 @@
     },
     "/ready": {
       "get": {
-        "description": "Readiness. A readinessProbe only looks at the status code, so returning 200\nwith {\"ready\": false} \u2014 as this used to \u2014 meant the gate never fired.",
+        "description": "Readiness \u2014 the ONLY probe that touches the dependencies.\n\nA readinessProbe only looks at the status code, so returning 200 with {\"ready\": false}\n\u2014 as this used to \u2014 meant the gate never fired. Failing here is safe in a way failing\n/health is not: the pod leaves the service endpoints and rejoins on its own the moment\nthe dependency recovers, with no restart and no lost warm state.",
         "operationId": "ready_ready_get",
         "responses": {
           "200": {

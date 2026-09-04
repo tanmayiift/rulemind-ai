@@ -34,7 +34,27 @@ __all__ = ["EgressBlocked", "PinnedRequest", "build_pinned_request", "vet_url"]
 
 
 class EgressBlocked(Exception):
-    """The target URL failed the SSRF guard. Carries a caller-safe reason."""
+    """The target URL failed the SSRF guard. Carries a caller-safe reason.
+
+    `reason` is a machine-readable code, because callers need to tell two very different
+    situations apart and were doing it by substring-matching the message:
+
+      * "the policy refused this target" is the CALLER'S fault -- a misconfiguration, 4xx.
+      * "DNS did not resolve" is a fact about the world -- the probe ran and the host is not
+        there, which is a successful probe reporting a failure, 200.
+
+    Both arrive as this one exception type. Matching on wording made a reworded message
+    silently reclassify every unresolvable host as a configuration error.
+    """
+
+    # Policy said no: scheme, allowlist, or a non-public address.
+    REASON_POLICY = "policy"
+    # The name did not resolve. Not a policy decision.
+    REASON_DNS = "dns"
+
+    def __init__(self, message: str, reason: str = "policy") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass
@@ -68,14 +88,16 @@ def _resolve(host: str, port: int) -> List[str]:
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
-        raise EgressBlocked("DNS resolution failed for {0}".format(host)) from exc
+        raise EgressBlocked(
+            "DNS resolution failed for {0}".format(host), reason=EgressBlocked.REASON_DNS) from exc
     ips: List[str] = []
     for info in infos:
         addr = str(info[4][0])
         if addr not in ips:
             ips.append(addr)
     if not ips:
-        raise EgressBlocked("host {0} did not resolve".format(host))
+        raise EgressBlocked(
+            "host {0} did not resolve".format(host), reason=EgressBlocked.REASON_DNS)
     return ips
 
 

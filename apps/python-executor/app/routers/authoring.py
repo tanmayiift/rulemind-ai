@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
 
 from .. import main
+from ..connector_probe import ConnectorMisconfigured, probe_connector, redact_connector_secrets
 from ..logic import now_iso
 from ..main import (
     ConnectorCreateRequest,
@@ -95,18 +96,49 @@ def delete_connector(connector_id: str) -> Dict[str, Any]:
 
 @router.post("/api/v1/connectors/{connector_id}/test")
 def test_connector(connector_id: str) -> Dict[str, Any]:
-    connector = ensure_exists(main.storage.get_connector(connector_id), "connector", connector_id)
-    return {
+    """Actually connect to the connector's endpoint and report what happened.
+
+    This used to return ``passed: true`` unconditionally without opening a socket, which made the
+    dashboard's "Test connection" button a source of false confidence right before a production
+    cutover. See ``app/connector_probe.py`` for why the egress guard and the secret redaction are
+    not optional here, and why a misconfigured connector is a 422 while a downstream failure is a
+    200 carrying ``passed: false``.
+    """
+    connector = ensure_exists(
+        main.storage.get_connector(connector_id, include_secrets=True), "connector", connector_id
+    )
+    try:
+        probe = probe_connector(connector)
+    except ConnectorMisconfigured as bad:
+        record_error("connectors", "connector_test", bad.reason, "connector", connector_id, {"code": bad.code})
+        raise HTTPException(status_code=422, detail=bad.reason) from bad
+    if not probe["passed"]:
+        record_error(
+            "connectors",
+            "connector_test",
+            "{0}: {1}".format(probe["outcome"], probe["reason"]),
+            "connector",
+            connector_id,
+            {"outcome": probe["outcome"], "status": probe["status"]},
+        )
+    config = connector.get("config") or {}
+    result = {
         "connector_id": connector["id"],
-        "passed": True,
+        "passed": probe["passed"],
+        "probe": probe,
         "schema_paths": connector["schema_paths"],
         "sample_payload": connector["sample_payload"],
         "config_summary": {
-            "auth_type": connector.get("config", {}).get("auth_type", "api_key"),
-            "base_url": connector.get("config", {}).get("base_url", ""),
-            "has_webhook": bool(connector.get("config", {}).get("webhook_url")),
+            "auth_type": config.get("auth_type", "api_key"),
+            "base_url": config.get("base_url", ""),
+            "has_webhook": bool(config.get("webhook_url")),
         },
     }
+    # The connector was loaded WITH secrets so the probe could authenticate. Nothing derived from
+    # them may leave here — scrubbed by value (a secret pasted into base_url's query, or echoed
+    # inside a transport error) and then by key name, over the whole body at once.
+    scrubbed: Dict[str, Any] = redact_connector_secrets(result, connector)
+    return scrubbed
 
 
 # ── Variables ──────────────────────────────────────────────────────────────
