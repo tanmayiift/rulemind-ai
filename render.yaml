@@ -58,7 +58,11 @@ services:
     autoDeploy: false
     # Off on purpose: this repo's CI is the gate, and a push should not deploy before it has
     # run. Deploy from the dashboard or the deploy hook once CI is green.
-    startCommand: >-
+    # `dockerCommand`, not `startCommand`: Render rejects a docker-runtime service that carries
+    # startCommand ("docker runtime must not have startCommand"). It replaces the image's CMD,
+    # which the entrypoint then execs -- entrypoint.sh ends in `exec "$@"`, so this runs as PID 1
+    # and signals reach uvicorn.
+    dockerCommand: >-
       sh -c "python3 -m alembic -c alembic.ini upgrade head &&
       exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1"
     # Migrations run HERE, which the Dockerfile's entrypoint deliberately does not do. Two
