@@ -59,8 +59,10 @@ def _audit_login_failure(scope: str, email: str, source_ip: str, guard: Any) -> 
     superadmin account is a support ticket. Best-effort: an audit-store failure must never
     turn into a login outage.
 
-    The platform-admin account has no tenant of its own, so storage resolves this onto the
-    default tenant. See the report — a platform-scoped audit sink is the right home.
+    Filed against Storage.PLATFORM_TENANT_ID, not a workspace. The platform-admin account has
+    no tenant, so this used to resolve onto whatever tenant was in context (or the default one)
+    and a brute-force campaign against the superadmin landed in an unrelated customer's
+    tamper-evident chain.
     """
     LOGGER.warning("failed login: scope=%s email=%s ip=%s failures=%s locked=%s",
                    scope, email, source_ip, guard.failures, guard.locked)
@@ -78,7 +80,7 @@ def _audit_login_failure(scope: str, email: str, source_ip: str, guard: Any) -> 
                 "failures": guard.failures, "locked": guard.locked,
                 "max_attempts": login_max_attempts(),
             },
-        })
+        }, tenant_id=main.storage.PLATFORM_TENANT_ID)
     except Exception:  # pragma: no cover - audit is best effort
         pass
 

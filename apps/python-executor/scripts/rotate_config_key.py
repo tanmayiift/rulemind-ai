@@ -63,7 +63,7 @@ from cryptography.fernet import Fernet, InvalidToken  # noqa: E402
 
 from app import storage as storage_mod  # noqa: E402
 from app.db import session_factory  # noqa: E402
-from app.models import Connector, Decision, HostedModel, Setting, Tenant, Webhook  # noqa: E402
+from app.models import AuditEvent, Connector, Decision, HostedModel, Setting, Tenant, Webhook  # noqa: E402
 
 LOGGER = logging.getLogger("rulemind.rotate")
 
@@ -212,6 +212,32 @@ def _rotate_settings(session: Any, after: Optional[str], limit: int) -> Tuple[in
     return changed, (rows[-1].id if rows else None)
 
 
+def _rotate_audit_events(session: Any, after: Optional[str], limit: int) -> Tuple[int, Optional[str]]:
+    """Audit metadata and source IPs, encrypted at rest since 20260904_0023.
+
+    Missing this table would have been the quiet kind of rotation bug: the run reports success,
+    the old key is retired, and the failure surfaces later as `metadata_undecryptable` on the
+    compliance endpoint -- for the one table whose whole purpose is to be readable years after
+    the fact. `metadata_json` is a JSON column holding a Fernet token STRING once encrypted, so
+    the plain _reencrypt_text applies; a pre-encryption row holds a dict and is skipped by the
+    isinstance check, exactly as in _rotate_decisions.
+    """
+    rows = _window(session, AuditEvent, AuditEvent.id, after, limit)
+    changed = 0
+    for row in rows:
+        touched = False
+        for column in ("metadata_json", "ip_address"):
+            value = getattr(row, column)
+            if not isinstance(value, str):
+                continue  # legacy plaintext dict, or NULL
+            rotated = _reencrypt_text(value)
+            if rotated is not None:
+                setattr(row, column, rotated)
+                touched = True
+        changed += 1 if touched else 0
+    return changed, (rows[-1].id if rows else None)
+
+
 def _window(session: Any, model: Any, pk: Any, after: Optional[str], limit: int) -> List[Any]:
     """One ordered page of rows after `after`. Keyset pagination, not OFFSET, so a resumed run
     cannot skip or repeat rows if the table is written to while the rotation is in flight."""
@@ -229,6 +255,7 @@ TABLES: List[Tuple[str, Callable[[Any, Optional[str], int], Tuple[int, Optional[
     ("settings", _rotate_settings),
     ("webhooks", _rotate_webhooks),
     ("hosted_models", _rotate_models),
+    ("audit_events", _rotate_audit_events),
     ("decisions", _rotate_decisions),  # last: much the largest, and the least urgent
 ]
 

@@ -136,8 +136,21 @@ def verify(events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
                     "found": event.get("seq"),
                 })
 
-        recomputed = compute_hash(event)
-        if recomputed != stored:
+        if event.get("metadata_undecryptable"):
+            # The row's `metadata` and `ip_address` are encrypted at rest and no configured key
+            # opens them, so compute_hash() cannot reconstruct the value the row committed to.
+            # Reporting content_hash_mismatch here would accuse the row of tampering when the
+            # real answer is that this process cannot read it -- the operator's next move is
+            # RULEMIND_CONFIG_KEY_OLD, not an incident. Counted as a break, because an
+            # unverifiable row must never be reported as verified.
+            breaks.append({
+                "id": event.get("id"),
+                "seq": event.get("seq"),
+                "reason": "metadata_undecryptable",
+                "remedy": ("Set the previous RULEMIND_CONFIG_KEY in RULEMIND_CONFIG_KEY_OLD "
+                           "(comma-separated), then run scripts/rotate_config_key.py."),
+            })
+        elif (recomputed := compute_hash(event)) != stored:
             breaks.append({
                 "id": event.get("id"),
                 "seq": event.get("seq"),

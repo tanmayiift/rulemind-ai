@@ -228,9 +228,21 @@ class PlatformAdminLockoutTests(_NoRedisTestCase):
                                           "RULEMIND_LOGIN_ALERT_AFTER": "2"}):
             for i in range(3):
                 self._login("wrong-{0}".format(i))
-        events = app_main.storage.list_audit_events(tenant_id=app_main.storage.default_tenant_id)
-        types = [event.get("event_type") for event in events]
-        self.assertIn("login_failed_repeatedly", types, types[:10])
+        # The event is raised...
+        platform = app_main.storage.list_audit_events(
+            tenant_id=app_main.storage.PLATFORM_TENANT_ID)
+        self.assertIn("login_failed_repeatedly", [e.get("event_type") for e in platform])
+
+        # ...and NOT in a customer workspace. This assertion is the fix: the superadmin has no
+        # tenant, so storage resolved these onto the default one and a credential-stuffing run
+        # against the platform account was appended to an unrelated workspace's tamper-evident
+        # chain -- events its owners cannot investigate, in a chain they are asked to attest to.
+        # This test previously asserted the event WAS in default_tenant_id, which is why the
+        # leak survived; it was pinning the bug.
+        workspace = app_main.storage.list_audit_events(
+            tenant_id=app_main.storage.default_tenant_id)
+        self.assertNotIn("login_failed_repeatedly", [e.get("event_type") for e in workspace],
+                         "platform-admin login failures leaked into a customer's audit chain")
 
 
 class MemberLoginLockoutTests(_NoRedisTestCase):

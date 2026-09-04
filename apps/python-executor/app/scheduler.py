@@ -98,6 +98,35 @@ def archive_old_decisions(storage: Storage) -> Dict[str, Any]:
     return {"archived": total, "tenants": tenants, "sink": archiver.name}
 
 
+async def _scheduled_prune_saml_assertions(storage: Storage) -> Dict[str, Any]:
+    """Drop consumed SAML assertions whose validity window has passed, across every tenant.
+
+    `storage.prune_saml_assertions` existed and had a test, but nothing ever called it in
+    production. The table it prunes gets one row per successful SSO login and is never read
+    except to reject a replay, so on any SSO-enabled deployment it grows forever -- and the
+    replay check is a lookup against it on every single login, so the cost lands on the hot
+    authentication path rather than showing up as a slow query somewhere ignorable.
+
+    Per tenant, because prune_saml_assertions is tenant-scoped like every other storage call.
+    """
+    if not _IS_LEADER:
+        return {"skipped": "not_leader"}
+
+    def _prune() -> Dict[str, Any]:
+        pruned = 0
+        for tenant in storage.list_tenants():
+            tenant_id = tenant.get("id")
+            if not tenant_id:
+                continue
+            try:
+                pruned += storage.prune_saml_assertions(tenant_id=tenant_id)
+            except Exception as exc:  # noqa: BLE001 - one bad tenant must not stop the sweep
+                logger.warning("saml prune: tenant %s failed: %s", tenant_id, exc)
+        return {"pruned": pruned}
+
+    return await asyncio.to_thread(_prune)
+
+
 async def _scheduled_archive_decisions(storage: Storage) -> Dict[str, Any]:
     if not _IS_LEADER:
         return {"skipped": "not_leader"}
@@ -415,4 +444,7 @@ def init_scheduler(storage: Storage) -> None:
     scheduler.add_job(_scheduled_slo_check, "interval",
                       minutes=int(os.getenv("SLO_CHECK_INTERVAL_MINUTES", "15")),
                       id="slo-check", args=[storage], replace_existing=True)
+    scheduler.add_job(_scheduled_prune_saml_assertions, "interval",
+                      hours=int(os.getenv("SAML_PRUNE_INTERVAL_HOURS", "6")),
+                      id="saml-assertion-prune", args=[storage], replace_existing=True)
     scheduler.start()

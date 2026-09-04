@@ -24,6 +24,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,8 @@ if str(APP_ROOT) not in sys.path:
 
 os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
 os.environ.pop("AUTH_MODE", None)
+
+import sqlalchemy  # noqa: E402
 
 from app.audit_chain import GENESIS_HASH, compute_hash  # noqa: E402
 from app.models import AuditEvent  # noqa: E402
@@ -242,6 +245,82 @@ class AuditChainTest(unittest.TestCase):
         event = self._append(1)[0]
         without = {k: v for k, v in event.items() if k != "hash"}
         self.assertEqual(compute_hash(without), event["hash"])
+
+
+class AuditEncryptionAtRestTest(unittest.TestCase):
+    """`metadata_json` and `ip_address` were the last plaintext PII columns in the schema.
+
+    Decision payloads have been encrypted since DECISION_ENCRYPT_AT_REST, but the audit trail
+    beside them stored the emails, usernames and source IPs of failed sign-ins, invitations and
+    role changes in the clear -- readable from any dump, backup or read replica.
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.storage = Storage(path=os.path.join(self.tempdir.name, "enc.db"), force_sqlite=True)
+        self.tenant = self.storage.default_tenant_id
+        self.storage.add_audit_event(
+            {"event_type": "login_failed_repeatedly", "entity_type": "auth", "detail": "d",
+             "metadata": {"email": "victim@example.com", "failures": 9},
+             # IPv6 on purpose: encrypted it lands near 140 characters, which did not fit the
+             # String(128) this column used to be. SQLite ignores declared widths, so only
+             # Postgres would have caught it -- in production, on IPv6 traffic.
+             "ip_address": "2001:db8::dead:beef"},
+            tenant_id=self.tenant)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _raw_row(self):
+        with self.storage.engine.connect() as conn:
+            return conn.execute(
+                sqlalchemy.text("select metadata_json, ip_address from audit_events "
+                                "where tenant_id = :t and event_type = 'login_failed_repeatedly'"),
+                {"t": self.tenant}).fetchone()
+
+    def test_metadata_and_ip_are_not_plaintext_in_the_database(self):
+        metadata_raw, ip_raw = self._raw_row()
+        self.assertNotIn("victim@example.com", str(metadata_raw))
+        self.assertNotIn("2001:db8", str(ip_raw))
+        # metadata_json is a JSON column, so the driver returns the token with its JSON quotes.
+        self.assertTrue(str(metadata_raw).strip('"').startswith("gAAAAA"),
+                        "metadata_json is not a Fernet token: {0!r}".format(metadata_raw)[:120])
+        self.assertTrue(str(ip_raw).startswith("gAAAAA"),
+                        "ip_address is not a Fernet token: {0!r}".format(ip_raw)[:120])
+
+    def test_the_application_still_reads_the_real_values(self):
+        event = self.storage.list_audit_events(tenant_id=self.tenant)[0]
+        self.assertEqual(event["metadata"]["email"], "victim@example.com")
+        self.assertEqual(event["ip_address"], "2001:db8::dead:beef")
+
+    def test_encryption_does_not_break_the_chain(self):
+        # The hash commits to metadata and ip_address as the APPLICATION sees them
+        # (audit_chain.CHAINED_FIELDS), and _audit_event_to_dict decrypts before the verifier
+        # rebuilds the row -- so encrypting at rest must leave every hash intact.
+        report = self.storage.verify_audit_chain(tenant_id=self.tenant)
+        self.assertTrue(report["ok"], report["breaks"])
+        self.assertEqual(report["verified"], 1)
+
+    def test_a_wrong_key_is_reported_not_raised(self):
+        """The rotated-key case. It used to raise DecryptionError out of the verifier.
+
+        `verify_audit_chain` feeds `_audit_event_to_dict` to the chain walker, so a key that no
+        longer opens the metadata turned the compliance endpoint into a 500 -- the audit chain
+        reporting itself as broken software rather than as a chain this process cannot read.
+        It must also not be reported as `content_hash_mismatch`, which accuses the row of
+        tampering when the operator's actual next move is RULEMIND_CONFIG_KEY_OLD.
+        """
+        # storage.crypto() re-reads the env on every call and caches on the secret itself, so
+        # patching the variable is enough -- no cache reset, and nothing leaks into other tests.
+        with mock.patch.dict(os.environ, {"RULEMIND_CONFIG_KEY": "a-completely-different-key"}):
+            report = self.storage.verify_audit_chain(tenant_id=self.tenant)
+
+        self.assertFalse(report["ok"])
+        reasons = [b["reason"] for b in report["breaks"]]
+        self.assertEqual(reasons, ["metadata_undecryptable"], report["breaks"])
+        self.assertIn("RULEMIND_CONFIG_KEY_OLD", report["breaks"][0]["remedy"])
+        # An unverifiable row must never be counted as verified.
+        self.assertEqual(report["verified"], 0)
 
 
 class AuditVerifyEndpointTest(unittest.TestCase):

@@ -299,7 +299,10 @@ class AuditEvent(Base):
     detail: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[Optional[dict]] = mapped_column("metadata_json", JSON, nullable=True)
     user_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    ip_address: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # 512, not 128: this column holds a Fernet token when AUDIT_ENCRYPT_AT_REST is on, and an
+    # encrypted IPv6 address lands around 140 characters. SQLite does not enforce declared
+    # widths, so the old 128 would have failed only on Postgres, only on IPv6, in production.
+    ip_address: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     # --- tamper-evident chain (see app/audit_chain.py) ---
