@@ -24,6 +24,8 @@ import threading
 import time
 from typing import Dict, Optional
 
+from . import env
+
 
 class CircuitOpenError(Exception):
     """Raised by allow() when the breaker is OPEN — the call was short-circuited, not attempted."""
@@ -41,14 +43,14 @@ HALF_OPEN = "half_open"
 
 def _env_int(name: str, default: int) -> int:
     try:
-        return max(1, int(os.getenv(name, str(default))))
+        return max(1, env.env_int(name, default))
     except (TypeError, ValueError):
         return default
 
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return max(0.1, float(os.getenv(name, str(default))))
+        return max(0.1, env.env_float(name, default))
     except (TypeError, ValueError):
         return default
 

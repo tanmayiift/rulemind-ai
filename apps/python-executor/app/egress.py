@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from typing import List, Optional
 from urllib.parse import urlparse, urlunparse
 
+from . import env
+
 __all__ = ["EgressBlocked", "PinnedRequest", "build_pinned_request", "vet_url"]
 
 
@@ -148,8 +150,8 @@ def build_pinned_request(url: str) -> PinnedRequest:
 
 # Clamps for author-supplied action tunables. Unclamped, one action could be
 # timeoutMs=600000 x retries=10 -- a 100-minute request holding a worker.
-MAX_TIMEOUT_MS = int(os.getenv("RULEMIND_ACTION_MAX_TIMEOUT_MS", "30000"))
-MAX_RETRIES = int(os.getenv("RULEMIND_ACTION_MAX_RETRIES", "5"))
+MAX_TIMEOUT_MS = env.env_int("RULEMIND_ACTION_MAX_TIMEOUT_MS", 30000)
+MAX_RETRIES = env.env_int("RULEMIND_ACTION_MAX_RETRIES", 5)
 
 
 def clamp_timeout_ms(value: object) -> int:

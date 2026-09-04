@@ -135,7 +135,7 @@ _FLIGHT = _SingleFlight()
 # staleness is therefore FAST_CACHE_EPOCH_TTL (default 1s; set 0 to check every decision),
 # never unbounded. Single-process/dev is unaffected (local counter + local clear).
 _EPOCH_KEY = "rulemind:fastcache:epoch:{0}"
-_EPOCH_TTL = float(os.getenv("FAST_CACHE_EPOCH_TTL", "1.0"))
+_EPOCH_TTL = env.env_float("FAST_CACHE_EPOCH_TTL", 1.0)
 _LOCAL_EPOCH: Dict[str, int] = _BoundedCache(_CACHE_CAPACITY)
 # tenant_id -> (fetched_at_monotonic, epoch)
 _EPOCH_CACHE: Dict[str, Tuple[float, int]] = _BoundedCache(_CACHE_CAPACITY)

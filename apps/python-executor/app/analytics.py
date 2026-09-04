@@ -9,13 +9,14 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 from .champion_challenger import analyze_champion_challenger
 from .runtime import cache_get_json, cache_set_json
 from .storage import Storage
+from . import env
 
 
 def _analytics_window_start() -> Optional[datetime]:
     """Start of the dashboard analytics window (naive UTC). Bounds the scanned decision set so
     the dashboards stay fast at scale; configurable via ANALYTICS_WINDOW_DAYS (default 90).
     Set to 0 to scan all history."""
-    days = int(os.getenv("ANALYTICS_WINDOW_DAYS", "90"))
+    days = env.env_int("ANALYTICS_WINDOW_DAYS", 90)
     if days <= 0:
         return None
     return datetime.utcnow() - timedelta(days=days)

@@ -76,6 +76,47 @@ class BlankEnvHelperTests(unittest.TestCase):
             self.assertEqual(env_mod.env_list("RM_TEST_LIST"), [])
 
 
+class NoRawNumericEnvReadsTests(unittest.TestCase):
+    """No `int(os.getenv(...))` / `float(os.getenv(...))` anywhere under `app/`.
+
+    The helper tests above prove `env_int` falls back on a blank value. This one proves the
+    codebase actually uses it. Twenty-four call sites still wrapped `os.getenv` in `int()` or
+    `float()` directly -- `SANDBOX_POOL_SIZE`, `MODEL_TIMEOUT_MS`, `SCHEDULER_LEASE_TTL`,
+    `RULEMIND_ACTION_MAX_TIMEOUT_MS` and the rest -- and most were at MODULE SCOPE, so a
+    set-but-blank value took the process down at import with a ValueError that never named the
+    variable. The Helm chart renders every optional value through `| quote`, so blank is what an
+    unconfigured setting actually looks like in a deploy.
+
+    A scan rather than one test per variable: the failure is a pattern, and enumerating call
+    sites by hand is how twenty-four of them accumulated in the first place.
+    """
+
+    def test_no_int_or_float_wrapped_os_getenv_remains(self):
+        import ast
+
+        app_root = Path(__file__).resolve().parents[1] / "app"
+        offenders = []
+        for source_file in sorted(app_root.rglob("*.py")):
+            if source_file.name == "env.py":
+                continue  # env.py is the thing that makes this safe; it reads os.environ itself
+            tree = ast.parse(source_file.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                    continue
+                if node.func.id not in ("int", "float") or not node.args:
+                    continue
+                inner = node.args[0]
+                if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == "getenv"):
+                    offenders.append("{0}:{1}".format(
+                        source_file.relative_to(app_root.parent), node.lineno))
+
+        self.assertEqual(offenders, [],
+                         "use env.env_int / env.env_float -- a set-but-blank value makes these "
+                         "raise ValueError, and at module scope that is a boot failure:\n  "
+                         + "\n  ".join(offenders))
+
+
 class DatabaseUrlTests(unittest.TestCase):
     """`DATABASE_URL=""` must not reach create_engine, and must not silently become SQLite in
     production."""

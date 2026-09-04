@@ -407,7 +407,16 @@ tests re-ran SQLite under a Postgres label.
 - [x] **W5.5** `next` 14.2.25 → 14.2.34 (10 advisories) + retire 5 dead `--ignore-vuln` lines.
 - [x] **W5.6** `AuditEvent.metadata_json`/`ip_address` plaintext; `verify()` should report
   `metadata_undecryptable`, not raise, on a wrong key.
-- [ ] **W5.7** Durable login lockout · **W5.8** ~30 raw `os.getenv` crash-at-import reads.
+- [x] **W5.7** Durable login lockout. Without Redis the counter was a per-PROCESS dict, which
+  is not a lockout: a restart resets it, and each replica keeps its own count so N replicas
+  multiply the attempts an attacker gets — handed over free by round-robin routing. The
+  endpoint returned 429 exactly as designed right up until it silently didn't. `login_attempts`
+  sits between Redis and the dict.
+- [x] **W5.8** 25 numeric `os.getenv` reads converted to `env.env_int`/`env_float`. A
+  set-but-blank value makes `int("")` raise, and most of these were at module scope — a boot
+  failure with a ValueError that never named the variable. The Helm chart renders optional
+  values through `| quote`, so blank is what an unconfigured setting actually looks like. An
+  AST scan in `test_blank_env_config` now fails on any new one (it caught one I had missed).
 - [x] **W5.9** deleted `auth.generate_rsa_keypair_material` — returned the SAME value as both
   the public and the private key, and had zero callers.
 - [x] **W5.10** SAML replay pruner scheduled. `prune_saml_assertions` existed and had a test;

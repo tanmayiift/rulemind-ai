@@ -40,11 +40,12 @@ from ..main import (
     workflow_executor,
 )
 from ..storage import _parse_client_datetime
+from .. import env
 
 router = APIRouter()
 
 # Max payload lines accepted per JSONL simulation upload (config so limits move without code).
-SIMULATION_JSONL_MAX = int(os.getenv("SIMULATION_JSONL_MAX", "50000"))
+SIMULATION_JSONL_MAX = env.env_int("SIMULATION_JSONL_MAX", 50000)
 
 
 # ── Test / simulation console ──────────────────────────────────────────────
@@ -347,7 +348,7 @@ def _run_decision_batch(policy: Dict[str, Any], payloads: List[Dict[str, Any]], 
     from ..fast_decide import fast_decide, is_fast_servable
 
     use_fast = is_fast_servable(policy)
-    workers = min(int(os.getenv("SIM_MAX_WORKERS", "32")), max(4, (os.cpu_count() or 4) * 4))
+    workers = min(env.env_int("SIM_MAX_WORKERS", 32), max(4, (os.cpu_count() or 4) * 4))
     default_outcome = policy.get("defaultOutcome") or "review"
 
     def _one(item: tuple) -> tuple:
@@ -685,9 +686,9 @@ async def stream_decisions(request: Request) -> StreamingResponse:
     tenant_id = active_tenant_id(request)
     after_param = request.query_params.get("after")
     once = request.query_params.get("once") in ("1", "true", "yes")
-    poll_seconds = float(os.getenv("DECISION_STREAM_POLL_SECONDS", "1.0"))
-    max_seconds = float(os.getenv("DECISION_STREAM_MAX_SECONDS", "3600"))
-    backlog_size = int(os.getenv("DECISION_STREAM_BACKLOG", "25"))
+    poll_seconds = env.env_float("DECISION_STREAM_POLL_SECONDS", 1.0)
+    max_seconds = env.env_float("DECISION_STREAM_MAX_SECONDS", 3600)
+    backlog_size = env.env_int("DECISION_STREAM_BACKLOG", 25)
 
     def _emit(row: Dict[str, Any]):
         # Advance the cursor to this row's full-precision timestamp, then frame the clean row.

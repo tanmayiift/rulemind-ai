@@ -15,22 +15,24 @@ from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeo
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Callable, Dict, List, Optional
 
+from . import env
+
 
 MAX_MODEL_SIZE_MB = 50
 
 # Wall-clock cap for a single model deserialize+predict in the isolated worker.
-MODEL_TIMEOUT_MS = int(os.getenv("MODEL_TIMEOUT_MS", "5000"))
+MODEL_TIMEOUT_MS = env.env_int("MODEL_TIMEOUT_MS", 5000)
 # Address-space cap for a model worker. Much higher than the variable sandbox's because numpy +
 # scikit-learn reserve large virtual regions just to import; too low a cap makes every prediction
 # fail with MemoryError. Still a hard ceiling on a runaway model.
-_MODEL_MEMORY_MB = int(os.getenv("MODEL_MEMORY_MB", "512"))
+_MODEL_MEMORY_MB = env.env_int("MODEL_MEMORY_MB", 512)
 
 # A DEDICATED process pool for models, separate from the variable sandbox: models need far more
 # memory and run a different (heavier, rarer) workload, so sharing one pool would either starve
 # models of memory or over-provision every variable worker.
 _model_pool: Optional[ProcessPoolExecutor] = None
 _model_pool_lock = threading.Lock()
-_MODEL_POOL_SIZE = int(os.getenv("MODEL_POOL_SIZE", "2"))
+_MODEL_POOL_SIZE = env.env_int("MODEL_POOL_SIZE", 2)
 
 
 def _model_worker_init() -> None:

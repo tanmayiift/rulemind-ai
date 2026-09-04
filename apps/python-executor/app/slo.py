@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from .storage import Storage
+from . import env
 
 logger = logging.getLogger("rulemind.slo")
 
@@ -69,14 +70,14 @@ def record_prometheus(tenant_id: str, report: Dict[str, Any]) -> None:
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.getenv(name, str(default)))
+        return env.env_float(name, default)
     except (TypeError, ValueError):
         return default
 
 
 def _env_int(name: str, default: int) -> int:
     try:
-        return int(os.getenv(name, str(default)))
+        return env.env_int(name, default)
     except (TypeError, ValueError):
         return default
 

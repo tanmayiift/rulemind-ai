@@ -10,6 +10,8 @@ from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeo
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Dict, Optional
 
+from . import env
+
 
 MAX_EXECUTION_MS = 2000
 MAX_MEMORY_MB = 128
@@ -86,7 +88,7 @@ class _BoundedCache(Dict[str, Any]):
 
 # Bound chosen so a large tenant's whole variable catalog fits (the demo tenant has ~55), with
 # generous headroom, while still being a hard ceiling. Override for pathological catalogs.
-_CODE_CACHE_CAPACITY = int(os.getenv("SANDBOX_CODE_CACHE_SIZE", "2048"))
+_CODE_CACHE_CAPACITY = env.env_int("SANDBOX_CODE_CACHE_SIZE", 2048)
 
 # Cache for validated+compiled code to avoid re-parsing on every call
 _validated_code_cache: Dict[str, bool] = _BoundedCache(_CODE_CACHE_CAPACITY)
@@ -116,13 +118,13 @@ def _source_key(source: str) -> str:
 # concurrent submits and concurrent recycles.
 _pool: Optional[ProcessPoolExecutor] = None
 _pool_lock = threading.Lock()
-_POOL_SIZE = int(os.getenv("SANDBOX_POOL_SIZE", "4"))
+_POOL_SIZE = env.env_int("SANDBOX_POOL_SIZE", 4)
 # Pool-wide address-space cap, applied once per worker at spawn (see _worker_init). It is
 # pool-wide and not per-tenant ON PURPOSE: workers are reused across tenants, and RLIMIT_AS can
 # only be lowered, so a per-call setrlimit in a reused worker meant the FIRST caller's cap stuck
 # for every later caller in that worker -- tenant A's 64MB silently applied to tenant B. A
 # uniform cap set at spawn is the only correct model for a shared pool.
-_POOL_MEMORY_MB = int(os.getenv("SANDBOX_MEMORY_MB", str(MAX_MEMORY_MB)))
+_POOL_MEMORY_MB = env.env_int("SANDBOX_MEMORY_MB", MAX_MEMORY_MB)
 
 
 # Environment variables an isolated worker must never be able to read. Sandbox workers run

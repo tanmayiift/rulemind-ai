@@ -15,6 +15,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .executor import PolicyExecutor
 from .storage import Storage
+from . import env
 
 logger = logging.getLogger("rulemind.scheduler")
 
@@ -24,7 +25,7 @@ scheduler = AsyncIOScheduler()
 # interval; only the current lease holder actually runs the scheduled jobs, so a
 # report/cron fires exactly once no matter how many pods are running.
 _OWNER_ID = "{0}:{1}".format(socket.gethostname(), uuid.uuid4().hex[:8])
-_LEASE_TTL_SECONDS = int(os.getenv("SCHEDULER_LEASE_TTL", "30"))
+_LEASE_TTL_SECONDS = env.env_int("SCHEDULER_LEASE_TTL", 30)
 _LEASE_RENEW_SECONDS = max(5, _LEASE_TTL_SECONDS // 3)
 _IS_LEADER = False
 
@@ -300,7 +301,7 @@ def generate_report_for(storage: Storage, report: Dict[str, Any], tenant_id: str
 
     decisions, truncated = storage.iter_decisions_window(
         tenant_id=tenant_id, since=_report_window_cutoff(report),
-        max_rows=int(os.getenv("REPORT_MAX_ROWS", "100000")),
+        max_rows=env.env_int("REPORT_MAX_ROWS", 100000),
     )
     result = generate_report(report, decisions)
     result["truncated"] = truncated
@@ -436,15 +437,15 @@ def init_scheduler(storage: Storage) -> None:
             args=[storage, report["id"], report.get("tenant_id", "")], replace_existing=True,
         )
     scheduler.add_job(_scheduled_review_timeouts, "interval", minutes=5, id="review-timeouts", args=[storage], replace_existing=True)
-    scheduler.add_job(retry_outbox, "interval", seconds=int(os.getenv("OUTBOX_RETRY_SECONDS", "60")),
+    scheduler.add_job(retry_outbox, "interval", seconds=env.env_int("OUTBOX_RETRY_SECONDS", 60),
                       id="email-outbox-retry", args=[storage], replace_existing=True)
     scheduler.add_job(_scheduled_archive_decisions, "interval",
-                      hours=int(os.getenv("DECISION_ARCHIVE_INTERVAL_HOURS", "24")),
+                      hours=env.env_int("DECISION_ARCHIVE_INTERVAL_HOURS", 24),
                       id="decision-archive", args=[storage], replace_existing=True)
     scheduler.add_job(_scheduled_slo_check, "interval",
-                      minutes=int(os.getenv("SLO_CHECK_INTERVAL_MINUTES", "15")),
+                      minutes=env.env_int("SLO_CHECK_INTERVAL_MINUTES", 15),
                       id="slo-check", args=[storage], replace_existing=True)
     scheduler.add_job(_scheduled_prune_saml_assertions, "interval",
-                      hours=int(os.getenv("SAML_PRUNE_INTERVAL_HOURS", "6")),
+                      hours=env.env_int("SAML_PRUNE_INTERVAL_HOURS", 6),
                       id="saml-assertion-prune", args=[storage], replace_existing=True)
     scheduler.start()
