@@ -105,19 +105,33 @@ class BacktestEndpointTests(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
     def test_backtest_seeded_policy(self):
-        # Use whatever seeded policy exists; endpoint should return a well-formed summary.
+        """Backtest a policy end to end: compile a bundle, record decisions, replay them.
+
+        This test used to skip itself twice -- once if seeding produced no policies, and again
+        on the 404 the endpoint returns when no bundle is compiled -- with a comment calling
+        both "valid". Seeding never compiles a bundle, so the 404 branch fired EVERY run and
+        the assertions below had never once executed. A skip is a pass, so the endpoint read
+        as covered. Build the preconditions instead of accepting their absence.
+        """
         policies = self.client.get("/api/v1/policies", headers=self.headers).json()
-        if not policies:
-            self.skipTest("no seeded policy")
+        self.assertTrue(policies, "RULEMIND_SEED_DEMO=1 produced no policies; seeding regressed")
         policy_id = policies[0]["id"]
+
+        # A backtest replays recorded decisions against a compiled bundle, so it needs both.
+        app_main.maybe_compile_bundle(app_main.storage.default_tenant_id, force=True)
+        for i in range(3):
+            d = self.client.post("/api/v1/decide", headers=self.headers,
+                                 json={"policy_id": policy_id, "payload": {"user_id": "bt-%d" % i}})
+            self.assertEqual(d.status_code, 200, d.text)
+
         r = self.client.post("/api/v1/policies/" + policy_id + "/backtest?sample=50", headers=self.headers)
-        # Either a bundle exists (200 + shape) or none is compiled yet (404) — both are valid.
-        if r.status_code == 404:
-            self.skipTest("no compiled bundle for seeded tenant")
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         for key in ("sample", "changed", "change_rate_pct", "transition_matrix", "original_distribution"):
             self.assertIn(key, body)
+        # The endpoint 404s on an empty bundle and returns sample=0 on an empty decision set;
+        # both used to be indistinguishable from a pass.
+        self.assertGreater(body["sample"], 0, "backtest replayed no decisions")
 
 
 if __name__ == "__main__":

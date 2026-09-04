@@ -45,8 +45,9 @@ class SmokeTests(unittest.TestCase):
 
     def test_decide_on_seeded_policy(self):
         policies = self.client.get("/api/v1/policies", headers=self.headers).json()
-        if not policies:
-            self.skipTest("no seeded policies")
+        # skipTest here made a seeding regression report as a pass; these tests exist to
+        # decide against a seeded policy, so its absence is the failure, not a reason to bail.
+        self.assertTrue(policies, "RULEMIND_SEED_DEMO=1 produced no policies; seeding regressed")
         policy_id = policies[0]["id"]
         resp = self.client.post(
             "/api/v1/decide",
@@ -58,8 +59,9 @@ class SmokeTests(unittest.TestCase):
 
     def test_mece_analysis(self):
         policies = self.client.get("/api/v1/policies", headers=self.headers).json()
-        if not policies:
-            self.skipTest("no seeded policies")
+        # skipTest here made a seeding regression report as a pass; these tests exist to
+        # decide against a seeded policy, so its absence is the failure, not a reason to bail.
+        self.assertTrue(policies, "RULEMIND_SEED_DEMO=1 produced no policies; seeding regressed")
         policy_id = policies[0]["id"]
         resp = self.client.post(f"/api/v1/policies/{policy_id}/analyze-mece", headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
