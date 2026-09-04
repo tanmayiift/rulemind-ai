@@ -158,13 +158,21 @@ services:
       - key: DB_MAX_OVERFLOW
         value: "5"
 
-      # Set once the Vercel dashboard exists. Without it the browser blocks every API call from
-      # the dashboard, which looks like the API being down rather than a CORS policy.
-      # `sync: false` on purpose: the value is set in the dashboard after the Vercel URL is
-      # known, and a later Blueprint sync must not overwrite it. An empty/absent value is not
-      # dangerous -- parse_origins falls back to localhost, not to a wildcard.
+      # The dashboard's origin. Without this the browser blocks every API call the dashboard
+      # makes, which presents as "the API is down" rather than as a CORS policy -- one of the
+      # more expensive ways to lose an afternoon.
+      #
+      # Hardcoded rather than `fromService`, because Render exposes a service's HOST but offers
+      # no way to prepend the scheme, and parse_origins needs a full origin. The value is
+      # deterministic: the service below is named rulemind-dashboard, so Render assigns
+      # rulemind-dashboard.onrender.com. Verify after the first deploy -- Render appends a
+      # suffix if a name is already taken globally, and then this needs updating to match.
+      #
+      # Not a wildcard, deliberately. `allow_credentials=True` is set on the CORS middleware and
+      # the member session rides in an httpOnly cookie, so "*" would let any site on the
+      # internet make credentialed calls with a logged-in user's session.
       - key: CORS_ORIGINS
-        sync: false
+        value: https://rulemind-dashboard.onrender.com
 
       # Demo data OFF. This is a real deployment, and seeding invents policies and decisions
       # that look like production records.
@@ -192,6 +200,49 @@ services:
     # Evicting a login-failure counter silently resets a lockout, which is the one thing it
     # exists to prevent — better to fail the write and fall back to the database tier than to
     # quietly forget that someone has been guessing.
+
+  # ── dashboard ───────────────────────────────────────────────────────────────────────────
+  # A STATIC SITE, not a web service, and that distinction is the whole reason it is here
+  # rather than on Vercel.
+  #
+  # The dashboard is a pure client SPA: 37 pages, zero Next.js API routes, zero dynamic route
+  # segments, no middleware, no next/image, no getServerSideProps. It compiles to plain files,
+  # so it needs a CDN and nothing else. Render static sites are free, have no instance to pay
+  # for, and — unlike the free WEB service tier — do not spin down after 15 minutes, so the
+  # dashboard has no cold start even though the API behind it does.
+  #
+  # Vercel was the original plan and is a fine host, but its GitHub App could not see this
+  # private repo and granting it required a GitHub sudo-mode re-auth. Render's GitHub App is
+  # already connected to this exact repository (it is deploying the API above), so this costs
+  # zero new accounts and zero new permission grants, and it lives in the same file as the rest
+  # of the deployment.
+  - type: web
+    name: rulemind-dashboard
+    runtime: static
+    region: singapore
+    # `corepack enable` first: the repo pins pnpm@9.15.0 in packageManager, and the build needs
+    # that exact version to honour pnpm-lock.yaml. NEXT_OUTPUT=export is read by
+    # apps/web/next.config.js -- see the comment there for why the export is opt-in rather than
+    # the default (it would break `next start`, which docker-compose and the smoke test use).
+    buildCommand: >-
+      corepack enable &&
+      pnpm install --frozen-lockfile &&
+      pnpm --filter @rulemind/web build
+    staticPublishPath: apps/web/out
+    # No catch-all rewrite to /index.html. A Next.js static export emits a real index.html per
+    # route, so a SPA-style catch-all would serve the wrong page for every deep link -- the
+    # dashboard is genuinely multi-page, not a single shell doing client-side routing.
+    autoDeploy: false
+    envVars:
+      - key: NEXT_OUTPUT
+        value: export
+      - key: NODE_VERSION
+        value: "20"
+      # Inlined at BUILD time by Next -- this is not a secret, it is a public API origin. The
+      # runtime override (window.__RULEMIND_CONFIG__) still takes precedence if a deployment
+      # ever needs to repoint the bundle without rebuilding; see apps/web/src/lib/store.ts.
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: https://rulemind-api.onrender.com
 
 databases:
   - name: rulemind-db

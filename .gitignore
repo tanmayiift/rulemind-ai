@@ -53,3 +53,6 @@ apps/python-executor/data/
 # local backend run dirtied the tree and blocked branch switches.
 qa/results/mobile-e2e-backend.log
 qa/results/mobile-e2e-backend.pid
+
+# Next.js static export target (NEXT_OUTPUT=export). Built by Render, never committed.
+apps/web/out/
