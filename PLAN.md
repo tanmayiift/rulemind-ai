@@ -425,10 +425,23 @@ tests re-ran SQLite under a Postgres label.
 
 ## W6 · Coverage that hid the above
 
-- [ ] **W6.1** The exported legacy `evaluateScorecard` throws on data this product stores.
-- [ ] **W6.2** Recover the 3 unenumerated Python/TS divergences of the original 8.
-- [ ] **W6.3** ClickHouse/S3 round-trip against real containers · **W6.4** CUMIPMT/DAYS360 in
-  TypeScript (an `engineSemantics: true` row with zero coverage).
+- [x] **W6.1** `evaluateScorecard` deprecated and given a shape guard. TypeScript callers were
+  already protected (`factors` is required on the type), so only JS consumers hit it — and they
+  got `Cannot read properties of undefined (reading 'reduce')`, naming neither cause nor fix.
+- [x] **W6.2** There are none left. All ten were closed by `server-scorecard.ts` and its
+  generated corpus, and each is covered — but two thinly, so seven cases were added where one
+  could pass by luck: negative fractional weights (Python's `int()` truncates toward zero,
+  -3.5 → -3, where `Math.floor` gives -4), the lower clamp at 0, and the four distinct ways a
+  formula can raise and must fall back to `base_score`. All five engines agree, at 173 cases.
+- [x] **W6.3** ClickHouse + MinIO round-trip against real containers, wired into CI. The finding
+  was bigger than the coverage gap: the sink clients are lazy optional imports absent from the
+  shipped image, so `DECISION_ARCHIVE_SINK=clickhouse` failed at the first write, the purge
+  never ran (it is the second half of archive-then-purge), and `retention_enforced` still
+  reported **true** — the one endpoint an operator would check to discover retention was not
+  happening said it was. `archiving_available()` now answers about behaviour, not configuration.
+  Also fixed a test that used the SHARED store and so passed only inside the full run.
+- [x] **W6.4** CUMIPMT, CUMPRINC, IPMT, PPMT and DAYS360 ported to TypeScript against a
+  50-case corpus generated from the Python, with the generator committed beside it.
 
 ## W7 · Deploy
 

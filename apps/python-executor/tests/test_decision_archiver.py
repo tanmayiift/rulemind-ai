@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 import uuid
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ os.environ.pop("AUTH_MODE", None)
 
 import app.main as app_main  # noqa: E402
 from app.archiver import MemoryArchiver, archiving_enabled, get_archiver  # noqa: E402
+from app.storage import Storage  # noqa: E402
 
 
 class _FailingArchiver(MemoryArchiver):
@@ -33,7 +35,14 @@ class _FailingArchiver(MemoryArchiver):
 
 class DecisionArchiverTests(unittest.TestCase):
     def setUp(self):
-        self.storage = app_main.storage
+        # A private store, not the shared one. `archive_and_purge_decisions` archives EVERY
+        # decision older than the cutoff for the tenant, so on shared storage the count depends
+        # on what other tests happened to leave behind: this suite passed inside the full run
+        # and failed on its own, which is the wrong way round for a test that asserts an exact
+        # number ("archived 9, expected 5").
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.storage = Storage(path=os.path.join(self.tempdir.name, "archive.db"))
         self.tenant_id = self.storage.default_tenant_id
         self.policy = self.storage.list_policies(status="prod", tenant_id=self.tenant_id)[0]
         self.tag = "arch_" + uuid.uuid4().hex[:8]

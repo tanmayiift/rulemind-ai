@@ -35,7 +35,7 @@ import json
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # ── Retention window ────────────────────────────────────────────────────────────────────────
 # Retention is configured in calendar months (`audit_retention_months`) or, for workspaces that
@@ -133,6 +133,20 @@ class DecisionArchiver(ABC):
     def write(self, decisions: List[Dict[str, Any]]) -> None:  # pragma: no cover - interface
         ...
 
+    def available(self) -> Tuple[bool, str]:
+        """Can this sink actually run here? (ok, reason-when-not).
+
+        Sink clients are lazy optional imports and NONE of them -- clickhouse-connect, boto3,
+        pyarrow -- is in requirements.txt, so they are absent from the shipped image. Setting
+        DECISION_ARCHIVE_SINK=clickhouse therefore produced an ImportError on the first write,
+        the purge (which only runs after a clean write) never happened, and
+        `GET /api/v1/governance/...` went on reporting `retention_enforced: true` because it
+        only looked at whether the variable was set. A workspace that configured "purge after
+        24 months" for a compliance obligation was retaining forever, and the endpoint it would
+        check to find that out said the opposite.
+        """
+        return True, ""
+
 
 class NullArchiver(DecisionArchiver):
     """Archiving disabled. Never used to purge (the retention job skips when the sink is null)."""
@@ -175,6 +189,14 @@ class ClickHouseArchiver(DecisionArchiver):
             "database": settings.get("CLICKHOUSE_DATABASE", "default"),
         }
         self._client = None
+
+    def available(self) -> Tuple[bool, str]:
+        try:
+            import clickhouse_connect  # noqa: F401
+        except ImportError:
+            return False, ("clickhouse-connect is not installed, so nothing can be archived and "
+                           "no decision is ever purged. `pip install clickhouse-connect`.")
+        return True, ""
 
     def _connect(self):
         if self._client is None:
@@ -222,6 +244,22 @@ class S3Archiver(DecisionArchiver):
         self._endpoint = settings.get("DECISION_ARCHIVE_S3_ENDPOINT") or None  # S3-compatible (MinIO/GCS)
         self._region = settings.get("AWS_REGION") or settings.get("DECISION_ARCHIVE_S3_REGION")
         self._client = None
+
+    def available(self) -> Tuple[bool, str]:
+        try:
+            import boto3  # noqa: F401
+        except ImportError:
+            return False, ("boto3 is not installed, so nothing can be archived and no decision "
+                           "is ever purged. `pip install boto3`.")
+        if not self._bucket:
+            return False, "DECISION_ARCHIVE_S3_BUCKET is not set."
+        if self._format == "parquet":
+            try:
+                import pyarrow  # noqa: F401
+            except ImportError:
+                return False, ("DECISION_ARCHIVE_S3_FORMAT=parquet needs pyarrow, which is not "
+                               "installed. `pip install pyarrow`, or use jsonl.")
+        return True, ""
 
     def _connect(self):
         if self._client is None:
@@ -278,6 +316,17 @@ def get_archiver(env: Optional[Dict[str, str]] = None) -> DecisionArchiver:
         # sink classes, and NullArchiver.__init__ takes no arguments.
         return factory(env)  # type: ignore[call-arg]
     return factory()
+
+
+def archiving_available(env: Optional[Dict[str, str]] = None) -> Tuple[bool, str]:
+    """Whether the configured sink is both selected AND able to run.
+
+    `archiving_enabled` answers only the first half, which is what made
+    `retention_enforced` a claim about configuration rather than about behaviour.
+    """
+    if not archiving_enabled(env):
+        return False, "DECISION_ARCHIVE_SINK is not set, so nothing is archived or purged."
+    return get_archiver(env).available()
 
 
 def archiving_enabled(env: Optional[Dict[str, str]] = None) -> bool:

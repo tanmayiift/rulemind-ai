@@ -32,10 +32,12 @@ class DataProtectionRequest(BaseModel):
 
 
 def _data_protection_view(tenant_id: str) -> Dict[str, Any]:
+    from ..archiver import archiving_available
     from ..logic import REDACTED_KEY_TOKENS, REDACTED_KEYS, _key_match_mode, _value_scan_mode
     from ..storage import decision_encryption_enabled
 
     settings = main.storage.get_settings(tenant_id=tenant_id)
+    _retention_enforced, _retention_reason = archiving_available()
     custom = (settings.get("engine_config", {}) or {}).get("pii_redact_keys", []) or []
     env_keys = [k.strip() for k in (os.getenv("RULEMIND_PII_REDACT_KEYS", "") or "").split(",") if k.strip()]
     return {
@@ -54,8 +56,15 @@ def _data_protection_view(tenant_id: str) -> Dict[str, Any]:
         # therefore retaining forever, and nothing said so. Reporting it here makes the setting
         # honest rather than advisory; the default is deliberately unchanged, because flipping
         # it would start deleting customer data on upgrade.
-        "retention_enforced": (os.getenv("DECISION_ARCHIVE_SINK", "none") or "none").strip().lower()
-        not in ("", "none"),
+        # ...and whether the sink can actually RUN. This used to test only that the variable was
+        # set, which made it a claim about configuration rather than about behaviour: the sink
+        # clients (clickhouse-connect, boto3, pyarrow) are lazy optional imports and none is in
+        # requirements.txt, so on the shipped image DECISION_ARCHIVE_SINK=clickhouse fails at the
+        # first write, the purge never runs -- it is the second half of archive-then-purge -- and
+        # this endpoint still answered `true`. The one place an operator would look to discover
+        # that retention was not happening told them it was.
+        "retention_enforced": _retention_enforced,
+        "retention_blocked_reason": _retention_reason or None,
         "pii_redact_keys": custom,
         "builtin_redact_keys": sorted(REDACTED_KEYS),
         "env_redact_keys": env_keys,
