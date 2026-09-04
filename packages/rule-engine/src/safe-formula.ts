@@ -28,6 +28,40 @@
  *   - booleans are numeric: `true + 1 === 2`
  */
 
+/**
+ * The plain Python builtins a formula may call, mirroring `logic._FORMULA_BUILTINS`. Excel
+ * functions cover most of it (ABS, MIN, MAX...), but formulas in the wild also use the lowercase
+ * Python names, and a corpus case `round(base_score + total_points / 3)` proved it: without
+ * these the formula raised, fell back to base_score, and scored 300 where Python scores 398.
+ *
+ * Supplied as an explicit table, never as a live namespace.
+ */
+export const FORMULA_BUILTINS: Record<string, (...args: never[]) => unknown> = {
+  abs: ((x: number) => Math.abs(x)) as never,
+  min: ((...xs: unknown[]) => Math.min(...xs.flat().map(Number))) as never,
+  max: ((...xs: unknown[]) => Math.max(...xs.flat().map(Number))) as never,
+  // Python round() is banker's rounding, and round(x) with no ndigits returns an int.
+  round: ((x: number, nd?: number) => {
+    if (nd === undefined) {
+      const f = Math.floor(x);
+      const d = x - f;
+      return d > 0.5 ? f + 1 : d < 0.5 ? f : f % 2 === 0 ? f : f + 1;
+    }
+    const m = Math.pow(10, nd);
+    const scaled = x * m;
+    const f = Math.floor(scaled);
+    const d = scaled - f;
+    const r = d > 0.5 ? f + 1 : d < 0.5 ? f : f % 2 === 0 ? f : f + 1;
+    return r / m;
+  }) as never,
+  int: ((x: unknown) => Math.trunc(Number(x))) as never,
+  float: ((x: unknown) => Number(x)) as never,
+  str: ((x: unknown) => String(x)) as never,
+  bool: ((x: unknown) => Boolean(x)) as never,
+  len: ((x: unknown) => (Array.isArray(x) ? x.length : String(x).length)) as never,
+  sum: ((x: unknown) => (Array.isArray(x) ? x.reduce((a: number, b) => a + Number(b), 0) : Number(x))) as never,
+};
+
 export class FormulaError extends Error {
   constructor(message: string) {
     super(message);
@@ -48,7 +82,7 @@ type Tok =
   | { k: "end" };
 
 const OPERATORS = [
-  "**", "//", "==", "!=", "<=", ">=", "(", ")", ",", "+", "-", "*", "/", "%", "<", ">",
+  "**", "//", "==", "!=", "<=", ">=", "(", ")", "[", "]", ",", "+", "-", "*", "/", "%", "<", ">",
 ];
 
 function tokenize(src: string): Tok[] {
@@ -301,6 +335,20 @@ class Parser {
       this.pos += 1;
       return t.v;
     }
+    if (t.k === "op" && t.v === "[") {
+      // A LIST LITERAL, so aggregates can be called as SUM([a, b, c]) -- Python's evaluator has
+      // the same production. Note this is a literal only: there is still no SUBSCRIPT production,
+      // so `x[0]` remains unspellable and a list cannot be used to reach into anything.
+      this.pos += 1;
+      const items: unknown[] = [];
+      if (!this.eatOp("]")) {
+        do {
+          items.push(this.ternary());
+        } while (this.eatOp(","));
+        this.expectOp("]");
+      }
+      return items;
+    }
     if (t.k === "op" && t.v === "(") {
       this.pos += 1;
       const inner = this.ternary();
@@ -358,5 +406,7 @@ export function evaluateFormulaSafely(
 ): unknown {
   if (typeof formula !== "string") throw new FormulaError("formula must be a string");
   if (formula.length > MAX_EXPRESSION_LENGTH) throw new FormulaError("formula too long");
-  return new Parser(tokenize(formula), context, functions).parse();
+  // Builtins first so a caller-supplied table can override them, matching Python, where
+  // _FORMULA_BUILTINS is merged into a dict already holding EXCEL_FUNCTIONS.
+  return new Parser(tokenize(formula), context, { ...FORMULA_BUILTINS, ...functions }).parse();
 }
