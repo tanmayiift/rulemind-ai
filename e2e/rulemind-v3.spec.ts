@@ -37,8 +37,11 @@ test("theme toggle switches the full shell and persists after reload", async ({ 
 // only on its last line, so any earlier failure left the connector off, and the next run
 // toggled it back ON and failed again. That made the failure self-perpetuating and, because a
 // --grep run inherits the same database, it failed standalone too once poisoned.
-// (Issue #125 read the symptom as order coupling between tests. It is leakage between runs;
-// e2e/global-setup.ts now resets the database so a run cannot inherit one.)
+// (Issue #125 read the symptom as order coupling between tests. It is leakage between runs.
+// The reset lives in the `rm -f` at the head of the backend's webServer command in
+// playwright.config.ts -- NOT in a globalSetup: Playwright starts webServer BEFORE globalSetup,
+// so unlinking from there would pull the file out from under an already-running backend. There
+// is no e2e/global-setup.ts, and an earlier version of this comment said there was.)
 test("connector toggle hides the source filter and removes inactive variables from rule dropdowns", async ({ page }) => {
   // Switching the rule builder back to simple mode raises a window.confirm
   // (RulesPage.tsx switchBuilderMode). Playwright AUTO-DISMISSES dialogs when no handler is

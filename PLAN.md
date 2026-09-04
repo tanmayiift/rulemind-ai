@@ -319,11 +319,25 @@ outbox state leaks between tests.
     (`routers/authoring.py:96`)
   - ~~expose `decision_table` in the builder palette~~ — shipped in #135 (4 refs in
     `apps/web/app/workflow-builder/page.tsx`)
-  - still open, all confirmed absent by grep: sub-workflow **by alias** (the `workflow` step
-    type exists at `executor.py:462`; alias resolution does not), nested-key model input
-    validation, per-resource rate limits, retention in **months** (`models.py:536` is
-    `audit_retention_days`, days only), the 504/evaluation-timeout contract, and polling
-    conditions on the `action` step
+  - **five of the six then-open items shipped on 2026-09-04**, so this is no longer a backlog.
+    Re-verified against the code 2026-09-05:
+    - ~~sub-workflow **by alias**~~ — `executor.py:880` `_resolve_workflow_alias`, alias wins
+      over `ref_id` at `:912-927`, registry in `engine_config.workflow_aliases`
+    - ~~nested-key input validation~~ — `app/input_schema.py`, hooked at `executor.py:399-417`
+    - ~~per-resource rate limits~~ — `rate_limit.py:164` `RESOURCE_CLASSES`, per-class
+      resolution at `:372-378`
+    - ~~retention in **months**~~ — `models.py:621` `audit_retention_months`, `archiver.py:72`
+      `normalize_retention_months`
+    - ~~504 / evaluation-timeout contract~~ — `main.py:153-162`, `EvaluationBudgetExceeded`
+    - **still open: polling conditions on the `action` step.** Zero hits for
+      `poll_until`/`max_polls`; `_execute_action` (`executor.py:1368`) offers only
+      async-callback and single-shot-with-retries, and retry-on-failure is not
+      poll-until-a-condition.
+  - **Two residual holes the strikethroughs must not hide**, both now Phase 1 work: nested
+    validation is **full-executor only** — neither `fast_decide.py` nor `core/engine.py`
+    imports `input_schema`, so `FAST_DECIDE=1` skips validation entirely — and the evaluation
+    budget is likewise executor-only, so the 504 contract does not apply on the fast path. A
+    performance flag that changes correctness is the same class of bug as the W5 fail-opens.
 - [ ] **8.2** Phase 4 outbound webhooks, p12, predictor, DLQ (4–6 wk)
 - [ ] **8.3** Phase 5 canary, modelset, step-through debugger (6–8 wk)
 - [ ] **8.4** Phase 6 Monaco + matrix entity (6–10 wk)

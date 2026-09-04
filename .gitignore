@@ -1,6 +1,9 @@
 .DS_Store
 .env
 .env.local
+# Credentials for talking to the DEPLOYED instance (scripts/smoke_deployed.sh,
+# the remote qa/e2e-full runs). Holds a live API key -- never committed, never echoed.
+.env.deployed
 .turbo
 .next
 dist

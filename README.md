@@ -111,7 +111,23 @@ This starts:
 - **API** at http://localhost:8080
 - **API docs** at http://localhost:8080/docs
 
-The backend auto-seeds a realistic sample tenant on first startup (connectors, ~55 variables, rules, scorecards, and several policies) so every screen has data immediately. The web app authenticates with the dev API key `rm_live_devlocaltenantkey000000000000` — set `NEXT_PUBLIC_RULEMIND_DEV_API_KEY` (or paste it in **Settings** in the dashboard).
+A fresh install starts with an **empty workspace** — a tenant, an API key and an admin user, but
+no connectors, variables, rules or policies. That is deliberate: a new customer builds their own
+inventory through guided onboarding rather than deleting someone's demo data first.
+
+To get the sample lending inventory (connectors, ~55 variables, rules, scorecards, several
+policies) so every screen has data immediately, do either:
+
+```bash
+RULEMIND_SEED_DEMO=1 pnpm dev          # seed at startup
+```
+
+...or, on a running instance, click **Load samples** in onboarding — the same thing the API does
+at `POST /api/v1/onboarding/load-samples`, which also compiles the policy bundle so `/decide`
+works straight away.
+
+The web app authenticates with the dev API key `rm_live_devlocaltenantkey000000000000` — set
+`NEXT_PUBLIC_RULEMIND_DEV_API_KEY` (or paste it in **Settings** in the dashboard).
 
 ## Docker Compose (Production)
 

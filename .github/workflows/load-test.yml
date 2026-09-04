@@ -75,7 +75,14 @@ jobs:
       # this workflow is workflow_dispatch only, so it costs nothing per PR.
       - name: Run k6 saturation sweep
         env:
-          RM_BASE: http://127.0.0.1:8080
+          # BASE_URL and API_KEY, NOT RM_BASE. saturation.k6.js reads __ENV.BASE_URL (:67) and
+          # __ENV.API_KEY (:68); RM_BASE is the variable the qa/e2e-full harness uses, and it was
+          # set here by mistake. The step still passed, because the script's defaults are the
+          # same host and the same dev key -- so it was reading neither of these values and
+          # nobody could tell. Point this workflow at any other origin and it would have
+          # silently load-tested localhost.
+          BASE_URL: http://127.0.0.1:8080
+          API_KEY: rm_live_devlocaltenantkey000000000000
         run: k6 run --summary-export=k6-saturation.json test/load/saturation.k6.js
         continue-on-error: true
 
