@@ -1,6 +1,6 @@
 # RuleMind AI — End-to-End Test Plan & Findings Log
 
-**Living document.** Last full pass: 2026-08-27, against **PostgreSQL 16** and a **full Docker stack**, with the **AI layer validated against a live provider key**. Environment: macOS 26.6 (Darwin 25.6, arm64) · Python 3.11.16 · Node 20.20.2 ·
+**Living document.** Counts in §10 refreshed **2026-09-05**; the narrative findings below are from the last full pass: 2026-08-27, against **PostgreSQL 16** and a **full Docker stack**, with the **AI layer validated against a live provider key**. Environment: macOS 26.6 (Darwin 25.6, arm64) · Python 3.11.16 · Node 20.20.2 ·
 pnpm 9.15.4 · Flutter 3.47.1 / Dart 3.13.1 · Xcode 26.6 · CocoaPods 1.11.3 · **no Docker**.
 
 Legend: ✅ pass · ⚠️ pass-with-finding · ❌ fail · ⛔ blocked · ⬜ not run
@@ -121,20 +121,44 @@ At concurrency 16, 222/400 requests returned **429** — the hardcoded 1 000 req
 * Sidebar IA — **F-18**.
 
 ## 10. Regression baseline — re-run against merged `main` on **PostgreSQL 16**
-| Suite | Result |
-|---|---|
-| Python unittest — **PostgreSQL** | ✅ **733 passed**, 4 skipped, 0 failed |
-| Python unittest — SQLite | ✅ 733 passed (same result) |
-| Vitest (TS) | ✅ **157 passed** |
-| Flutter SDK | ✅ **127 passed** |
-| Kotlin (`rulemind-core` + `sample-app`) | ✅ **20 passed** |
-| Demo app — unit | ✅ **4 passed** |
-| Demo app — iOS integration | ✅ **20 passed** (16/16 server-vs-device parity) |
-| Playwright `e2e/` | ⚠️ **44 / 48** — 1 order-dependent failure (#125), 3 blocked behind it |
-| Web route sweep | ✅ 34/36 clean |
 
-All 16 journey scenarios return outcomes **identical on Postgres and SQLite**.
-All 16 Alembic migrations apply cleanly to Postgres (32 tables).
+Refreshed **2026-09-05**. Every count in the previous version of this table was from the
+2026-08-27 pass and had roughly halved in accuracy since: Python read 733 against an actual
+1457, Vitest 157 against 443, Flutter 127 against 163. A stale baseline is worse than no
+baseline, because a real regression that lands between two passes reads as "the number went up
+anyway".
+
+| Suite | Result | Was (2026-08-27) |
+|---|---|---|
+| Python unittest — SQLite | ✅ **1457 passed**, 21 skipped, 0 failed | 733 |
+| Python unittest — **PostgreSQL** | ⬜ not re-run in this pass — see the note below | 733 |
+| Vitest (TS) | ✅ **443 passed** (15 files) | 157 |
+| Flutter SDK | ✅ **163 passed** | 127 |
+| Kotlin `rulemind-core` | ✅ **46 passed** | 20 (both modules) |
+| Kotlin `sample-app` | ✅ **4 passed** | — |
+| Rust `rulemind-core-rs` | ✅ **19 passed** (`--no-default-features`) | — |
+| Rust `rulemind-decide-service` | ✅ **10 passed** | — |
+| Playwright `e2e/` | ✅ **58 / 58** | ⚠️ 44 / 48 (#125) |
+
+The Postgres lane is marked not-run rather than assumed. It is the same suite, but the two lanes
+diverge for real — `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` is required or 66 modules construct
+`Storage(path=…)` and silently re-run SQLite, which is exactly how a "Postgres pass" can be
+green without having tested Postgres. Reporting yesterday's number as today's would be the same
+mistake in a different place.
+
+Playwright now runs 58, not 48: `e2e/authz.spec.ts` and `e2e/authz-boundaries.spec.ts` were added
+for #139, and five of those tests are gated behind `RM_E2E_ALLOW_DESTRUCTIVE=1` — set in CI, and
+required to reproduce 58/58, because without it the two tenant-boundary tests skip.
+
+**24** Alembic migrations (not 16) — `apps/python-executor/alembic/versions/`.
+
+PostgreSQL 16 is correct and unchanged: `docker-compose.yml`, the Helm chart, the k8s manifests
+and CI all pin `postgres:16`.
+
+Two claims that stood here are **removed rather than carried forward**, because both were
+cross-lane assertions and the Postgres lane was not re-run: "all 16 journey scenarios return
+outcomes identical on Postgres and SQLite", and the table count "(32 tables)". They go back in
+when the Postgres lane does.
 
 ## 11. Load — measured on PostgreSQL 16, 4 workers, limiter off
 | Config | conc 4 | conc 16 | conc 32 |
