@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+
+import sqlalchemy
 import sys
 import tempfile
 import unittest
@@ -133,10 +135,16 @@ class RuleMindEnterpriseTests(unittest.TestCase):
         self.assertEqual(updated["config"]["api_key"], "••••••••")
         self.assertEqual(updated["config"]["webhook_url"], "https://hooks.example/rulemind")
 
-        with sqlite3.connect(self.database_path) as connection:
+        # Read the raw column through the live engine rather than opening the SQLite file.
+        # The claim -- "the secret is not sitting in the database in plaintext" -- is about
+        # whatever database is actually in use, and sqlite3.connect() could only ever check one
+        # of them: on the Postgres lane it opened an empty file and the assertions below passed
+        # against a row that was never read.
+        with app_main.storage.engine.connect() as connection:
             encrypted_value = connection.execute(
-                "select encrypted_config from connectors where tenant_id = ? and public_id = ?",
-                (app_main.storage.default_tenant_id, "bureau"),
+                sqlalchemy.text("select encrypted_config from connectors "
+                                "where tenant_id = :tenant and public_id = :public_id"),
+                {"tenant": app_main.storage.default_tenant_id, "public_id": "bureau"},
             ).fetchone()[0]
 
         self.assertNotIn("rm_secret_value", encrypted_value)

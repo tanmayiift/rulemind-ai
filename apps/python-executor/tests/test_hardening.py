@@ -28,7 +28,8 @@ from app.storage import Storage  # noqa: E402
 class DbTuningTests(unittest.TestCase):
     def test_sqlite_runs_in_wal_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
-            s = Storage(path=os.path.join(tmp, "wal.db"))
+            # WAL is a SQLite journal mode; this assertion is meaningless on Postgres.
+            s = Storage(path=os.path.join(tmp, "wal.db"), force_sqlite=True)
             with s.connect() as session:
                 mode = session.execute(__import__("sqlalchemy").text("PRAGMA journal_mode")).scalar()
             self.assertEqual(str(mode).lower(), "wal")

@@ -312,6 +312,45 @@ def decrypt_decision_field(value: Any) -> Any:
         raise _decryption_error("decision field") from exc
 
 
+def audit_encryption_enabled() -> bool:
+    """Encrypt audit metadata and source IPs at rest (default ON).
+
+    The audit trail was the one PII store left in plaintext while the decisions beside it were
+    encrypted. `metadata_json` carries the emails, usernames and source IPs of failed sign-ins,
+    invitations and role changes; `ip_address` is a source IP by definition. Disable only for a
+    plaintext-required migration, exactly as with DECISION_ENCRYPT_AT_REST.
+    """
+    return env.env_bool("AUDIT_ENCRYPT_AT_REST", True)
+
+
+def encrypt_audit_field(value: Any) -> Any:
+    """Encrypt an audit metadata blob for storage. No-op when disabled or empty."""
+    if value is None or not audit_encryption_enabled():
+        return value
+    return crypto().encrypt(json_dumps(value).encode("utf-8")).decode("utf-8")
+
+
+def encrypt_audit_text(value: Optional[str]) -> Optional[str]:
+    """Encrypt a short audit string (the source IP). No-op when disabled or empty."""
+    if not value or not audit_encryption_enabled():
+        return value
+    return crypto().encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_audit_text(value: Optional[str]) -> Optional[str]:
+    """Decrypt a stored audit string, tolerating pre-encryption plaintext rows.
+
+    Raises DecryptionError only when the value IS ciphertext and no configured key opens it --
+    the rotated-key case, which the caller reports rather than crashing on.
+    """
+    if not isinstance(value, str) or not _looks_encrypted(value):
+        return value
+    try:
+        return crypto().decrypt(value.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise _decryption_error("audit ip_address") from exc
+
+
 def encrypt_secret_text(value: str) -> str:
     return crypto().encrypt(value.encode("utf-8")).decode("utf-8")
 
@@ -399,10 +438,13 @@ def mask_secret_values(value: Any) -> Any:
 
 
 class Storage:
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: Optional[str] = None, force_sqlite: bool = False):
+        # force_sqlite: for the few tests that are ABOUT the SQLite backend (file backup and
+        # restore, WAL mode, the rotation script run against a .db path) and build a
+        # `sqlite:///...` URL by hand afterwards. See db.test_schema_for.
         self.path = path
-        self.engine = engine_for(path)
-        self.SessionLocal = session_factory(path)
+        self.engine = engine_for(path, force_sqlite=force_sqlite)
+        self.SessionLocal = session_factory(path, force_sqlite=force_sqlite)
         self._create_schema()
         self._reconcile_sqlite_columns()
         self.default_tenant_id: Optional[str] = None
@@ -1069,21 +1111,51 @@ class Storage:
 
     @staticmethod
     def _audit_event_to_dict(model: AuditEvent) -> Dict[str, Any]:
-        return {
+        """Rebuild the application-level event, decrypting metadata and ip_address.
+
+        A wrong or rotated RULEMIND_CONFIG_KEY must not raise out of here. This function is what
+        `verify_audit_chain` feeds the verifier, so raising turned "one workspace's key was
+        rotated without RULEMIND_CONFIG_KEY_OLD" into a 500 from the compliance endpoint --
+        the audit chain reporting itself as broken software rather than as a chain it cannot
+        currently read. The undecryptable rows are flagged instead, and audit_chain.verify
+        reports them as `metadata_undecryptable` rather than comparing a hash it cannot
+        reconstruct and calling the row tampered.
+        """
+        undecryptable = False
+        try:
+            metadata = decrypt_decision_field(model.metadata_json)
+        except DecryptionError:
+            metadata, undecryptable = {}, True
+        # deepcopy unconditionally. decrypt_decision_field returns a legacy plaintext row's dict
+        # BY REFERENCE (it short-circuits on non-str), so without this the caller would be handed
+        # the live JSON column off the SQLAlchemy model -- and this dict is returned straight out
+        # of list_audit_events and the audit export. The pre-encryption code copied here for
+        # exactly that reason; it must not be lost to the decrypt path.
+        metadata = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
+        try:
+            ip_address = decrypt_audit_text(model.ip_address)
+        except DecryptionError:
+            ip_address, undecryptable = None, True
+        event = {
             "id": model.id,
             "tenant_id": model.tenant_id,
             "event_type": model.event_type,
             "entity_type": model.entity_type,
             "entity_id": model.entity_id,
             "detail": model.detail,
-            "metadata": copy.deepcopy(model.metadata_json or {}),
+            "metadata": metadata,
             "user_id": model.user_id,
-            "ip_address": model.ip_address,
+            "ip_address": ip_address,
             "created_at": serialize_datetime(model.created_at),
             "seq": model.seq,
             "prev_hash": model.prev_hash,
             "hash": model.hash,
         }
+        if undecryptable:
+            # Deliberately NOT in CHAINED_FIELDS -- it is a read-time observation about this
+            # process's keys, not part of what the row committed to.
+            event["metadata_undecryptable"] = True
+        return event
 
     @staticmethod
     def _bundle_to_dict(model: Bundle) -> Dict[str, Any]:
@@ -2354,6 +2426,20 @@ class Storage:
         except Exception:  # noqa: BLE001 - see the best-effort contract above
             LOGGER.warning("audit: failed to record %s %s for %s", entity_type, action, entity_id)
 
+    # Reserved tenant id for events that belong to the PLATFORM, not to any workspace.
+    #
+    # The platform-admin account has no tenant, so `_tenant_id` fell through to
+    # get_current_tenant_id() or default_tenant_id and filed superadmin events -- including the
+    # failed-login alerts raised during a credential-stuffing run -- into an unrelated customer's
+    # tamper-evident chain. That workspace's audit export then shows sign-in attempts against an
+    # account its owners do not have and cannot investigate, and the chain they are asked to
+    # attest to contains events that were never theirs.
+    #
+    # A reserved id rather than a new table: the chain, verification, retention and export all key
+    # on tenant_id already, so this gets a real, separately-verifiable chain for free. Tenant ids
+    # are uuid4 strings, so this cannot collide with one.
+    PLATFORM_TENANT_ID = "__platform__"
+
     def add_audit_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Append one audit event, linked into the tenant's tamper-evident chain.
 
@@ -2383,9 +2469,12 @@ class Storage:
                         entity_type=payload.get("entity_type"),
                         entity_id=payload.get("entity_id"),
                         detail=payload.get("detail", ""),
-                        metadata_json=copy.deepcopy(payload.get("metadata", {})),
+                        # Encrypted at rest; _audit_event_to_dict decrypts, so the chain hash
+                        # below is still computed over the plaintext the verifier rebuilds and
+                        # every pre-existing hash keeps verifying.
+                        metadata_json=encrypt_audit_field(copy.deepcopy(payload.get("metadata", {}))),
                         user_id=payload.get("user_id"),
-                        ip_address=payload.get("ip_address"),
+                        ip_address=encrypt_audit_text(payload.get("ip_address")),
                         created_at=datetime.utcnow(),
                         seq=seq,
                         prev_hash=prev_hash,

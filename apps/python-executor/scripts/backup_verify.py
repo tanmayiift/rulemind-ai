@@ -136,11 +136,17 @@ def _storage_for(url: str):
     Storage takes a filesystem `path` (SQLite) and otherwise reads $DATABASE_URL -- see
     app/db.py database_url(). So a Postgres target is selected by setting the environment
     for the construction, which is why this is a helper rather than one constructor call.
+
+    `force_sqlite` makes the SQLite branch mean what this function says it means: bound to
+    `url`, whatever the ambient $DATABASE_URL is. Without it, verifying a SQLite dump on a host
+    that has DATABASE_URL pointing at Postgres silently walks the audit chain of the LIVE
+    Postgres database instead of the restored file -- and reports the restore as clean, which
+    is the one answer a backup verifier must never give wrongly.
     """
     from app.storage import Storage
 
     if _is_sqlite(url):
-        return Storage(path=str(_sqlite_path(url)))
+        return Storage(path=str(_sqlite_path(url)), force_sqlite=True)
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = url
     try:

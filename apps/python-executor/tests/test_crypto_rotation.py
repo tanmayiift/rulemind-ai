@@ -240,7 +240,7 @@ class RotationScriptTests(unittest.TestCase):
         self.state_path = os.path.join(self.tempdir.name, "state.json")
         # Seed a workspace with something in every encrypted column, under the OLD key.
         with _KeyEnv("old-master-key"):
-            storage = Storage(path=self.db_path)
+            storage = Storage(path=self.db_path, force_sqlite=True)
             self.tenant_id = storage.default_tenant_id
             storage.set_email_config({"host": "smtp.acme", "from_addr": "a@acme",
                                       "password": "smtp-secret"}, tenant_id=self.tenant_id)
@@ -266,6 +266,9 @@ class RotationScriptTests(unittest.TestCase):
         env.update({
             storage_mod.CONFIG_KEY_VAR: primary,
             storage_mod.CONFIG_KEY_OLD_VAR: old,
+            # The rotation script is invoked as a subprocess against this literal
+            # sqlite URL, so every Storage in this suite is pinned to the same file
+            # with force_sqlite -- the Postgres lane would otherwise leave it empty.
             "DATABASE_URL": "sqlite:///{0}".format(self.db_path),
             "RULEMIND_SEED_DEMO": "0",
         })
@@ -276,7 +279,7 @@ class RotationScriptTests(unittest.TestCase):
 
     def _rows_readable_under(self, primary, old=""):
         with _KeyEnv(primary, old=old):
-            storage = Storage(path=self.db_path)
+            storage = Storage(path=self.db_path, force_sqlite=True)
             self.assertEqual(storage.get_email_credentials(tenant_id=self.tenant_id)["password"], "smtp-secret")
             self.assertEqual(storage.get_sso_config_internal(tenant_id=self.tenant_id)["client_secret"], "oidc-secret")
             self.assertEqual(storage.get_ai_credentials("anthropic", tenant_id=self.tenant_id)["api_key"], "sk-ant-rotate")
@@ -302,7 +305,7 @@ class RotationScriptTests(unittest.TestCase):
         # Guards against a vacuous pass above -- proves the rotation is what made it readable,
         # not that the data was somehow key-independent.
         with _KeyEnv("new-master-key"):
-            storage = Storage(path=self.db_path)
+            storage = Storage(path=self.db_path, force_sqlite=True)
             with self.assertRaises(storage_mod.DecryptionError):
                 storage.get_email_credentials(tenant_id=self.tenant_id)
 
@@ -344,7 +347,7 @@ class RotationScriptTests(unittest.TestCase):
         self.assertIn("DRY RUN", result.stdout + result.stderr)
         # Still only readable with the old key in the chain.
         with _KeyEnv("new-master-key"):
-            storage = Storage(path=self.db_path)
+            storage = Storage(path=self.db_path, force_sqlite=True)
             with self.assertRaises(storage_mod.DecryptionError):
                 storage.get_email_credentials(tenant_id=self.tenant_id)
 
@@ -358,7 +361,7 @@ class RotationScriptTests(unittest.TestCase):
         result = self._run("old-master-key", "")
         self.assertEqual(result.returncode, 0, result.stderr)
         with _KeyEnv("old-master-key"):
-            storage = Storage(path=self.db_path)
+            storage = Storage(path=self.db_path, force_sqlite=True)
             self.assertEqual(storage.get_email_credentials(tenant_id=self.tenant_id)["password"], "legacy-pw")
             with storage.connect() as session:
                 row = session.scalar(select(Tenant).where(Tenant.id == self.tenant_id))
@@ -370,7 +373,7 @@ class RotationScriptTests(unittest.TestCase):
     def test_hosted_model_blob_is_rotated_too(self):
         self.assertEqual(self._run("new-master-key", "old-master-key").returncode, 0)
         with _KeyEnv("new-master-key"):
-            storage = Storage(path=self.db_path)
+            storage = Storage(path=self.db_path, force_sqlite=True)
             with storage.connect() as session:
                 row = session.scalar(select(HostedModel).where(HostedModel.tenant_id == self.tenant_id))
                 blob = row.model_blob

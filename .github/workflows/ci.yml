@@ -66,6 +66,46 @@ jobs:
   # plain `alembic check` becomes meaningful; that is a change to
   # apps/python-executor/alembic/ and is not made here.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # scripts/smoke_compose.sh: the "it actually runs" half of the deployability gate, and the
+  # other script in this repo that nothing invoked. verify_chart.py above asserts the SHAPE of
+  # the manifests; this one boots the real stack and checks the things shape cannot show --
+  # that the migration chain applies, that liveness survives the database going away, that the
+  # web image does not contain the repo's .env, that the API does not run as root, and that a
+  # decision completes end to end.
+  #
+  # workflow_dispatch only, deliberately. It builds both images and boots Postgres, Redis, the
+  # API and the web app: several minutes of runner time per invocation, which is real budget on
+  # a free plan. Run it before a release or after touching Dockerfiles, compose, or the
+  # entrypoint -- not on every PR.
+  # ---------------------------------------------------------------------------
+  compose-smoke:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full-stack smoke test
+        run: bash scripts/smoke_compose.sh
+
+  # ---------------------------------------------------------------------------
+  # scripts/verify_chart.py exists and had never been run by anything. It asserts the
+  # DEPLOYMENT contract on rendered manifests, which is the part `helm lint` and
+  # `kubeconform -strict` cannot see: both reported a clean chart ("0 chart(s) failed",
+  # "Valid: 11, Invalid: 0") while it could not actually deploy. The script reported 44
+  # violations against that same chart. It shells out to `helm template`, so it needs helm
+  # and nothing else -- about ten seconds.
+  # ---------------------------------------------------------------------------
+  chart-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: azure/setup-helm@v4
+      - name: Verify the deployment contract on rendered manifests
+        run: python scripts/verify_chart.py --chart helm/rulemind
+
   migrations:
     runs-on: ubuntu-latest
     services:

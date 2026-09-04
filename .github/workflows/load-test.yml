@@ -68,6 +68,17 @@ jobs:
           API_KEY: rm_live_devlocaltenantkey000000000000
         run: k6 run --summary-export=k6-summary.json test/load/evaluate.k6.js
 
+      # test/load/saturation.k6.js had never been executed by any workflow. It answers a
+      # different question from evaluate.k6.js: not "is p95 acceptable at 50 VUs" but "where
+      # does this fall over, and does it shed load or collapse". That is the number the Koyeb
+      # sizing depends on. Same runner, same server, so it is nearly free to add here -- and
+      # this workflow is workflow_dispatch only, so it costs nothing per PR.
+      - name: Run k6 saturation sweep
+        env:
+          RM_BASE: http://127.0.0.1:8080
+        run: k6 run --summary-export=k6-saturation.json test/load/saturation.k6.js
+        continue-on-error: true
+
       - name: Stop FastAPI backend
         if: always()
         run: bash qa/mobile_e2e/stop_fastapi.sh
@@ -78,4 +89,6 @@ jobs:
         with:
           name: k6-summary
           retention-days: 14
-          path: k6-summary.json
+          path: |
+            k6-summary.json
+            k6-saturation.json

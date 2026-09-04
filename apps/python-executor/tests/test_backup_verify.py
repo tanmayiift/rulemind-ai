@@ -39,7 +39,9 @@ class BackupVerifyTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tempdir.name) / "live.db"
-        self.storage = Storage(path=str(self.db_path))
+        # force_sqlite: _dump()/_restore() below build a `sqlite:///` URL from this same
+        # path, so the Postgres lane must not redirect the write side out from under them.
+        self.storage = Storage(path=str(self.db_path), force_sqlite=True)
         self.tenant = self.storage.default_tenant_id
         for i in range(4):
             self.storage.add_audit_event(
