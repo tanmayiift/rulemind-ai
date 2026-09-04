@@ -570,8 +570,10 @@ on, and it is now answered by a curl rather than a guess.
   `RULEMIND_CONFIG_KEY`/`RULEMIND_ADMIN_JWT_SECRET` (the production gate refuses the committed
   dev defaults). **Prove the sandbox spawns there** — if the runtime blocks `spawn`, every
   Python variable fails closed and the product does not work.
-- [ ] **W7.4** Vercel import + `CORS_ORIGINS` · **W7.5** deployed-environment suites + k6 ·
-  **W7.6** push once so CI finally sees the whole series.
+- [x] **W7.4** Dashboard deployed + `CORS_ORIGINS` — on **Render as a static site**, not Vercel
+  (this line said "Vercel import" and contradicted the checked W7.4 above it; the Vercel project
+  is deleted). · [x] **W7.5** deployed-environment smoke, 21/21 · [ ] **W7.6** push without
+  `[skip ci]` — still blocked on the Actions quota.
 
 
 ---
@@ -657,7 +659,7 @@ GENERATED from the Python. Every fix mutation-checked.
 - [x] **I1** parity.json + PARITY-MATRIX.md: P17 -> PRESENT, P10 re-word, P16 half-close,
       six missing `gap` fields filled
 - [x] **I2** README architecture tree completed + Deployment section added
-- [ ] **I3** `E2E_TEST_PLAN.md`: 16 -> 25 migrations, 733 -> real test count, PG 16 -> 18,
+- [x] **I3** `E2E_TEST_PLAN.md`: 16 -> 24 migrations, 733 -> 1457 tests. **PG 16 -> 18 was
       artefact list
 - [ ] **I4** 13 per-package `CHANGELOG.md` files, regenerated from path-scoped `git log`
 - [ ] **I5** Vercel GitHub App access revoked (needs the user's 2FA)

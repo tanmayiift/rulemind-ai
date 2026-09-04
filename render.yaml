@@ -17,8 +17,9 @@
 # an API token — and the Supabase org's free tier is full (2/2 projects, both belonging to a
 # different project). Putting all three backend tiers on Render instead means one dashboard,
 # one region, and a private network between them rather than three public TLS hops per
-# decision. The dashboard stays on Vercel, which is what Vercel is actually good at: it is a
-# pure client-side SPA with zero API routes and zero SSR.
+# decision. The dashboard is here too, as a static site — see the block above that service for
+# why. (An earlier revision of this comment said it "stays on Vercel". It does not, and has not
+# since the first deploy; the Vercel project has been deleted.)
 #
 # ── The free tier's two real constraints ──────────────────────────────────────────────────
 #
