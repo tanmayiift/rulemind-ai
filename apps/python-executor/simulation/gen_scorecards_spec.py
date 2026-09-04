@@ -356,6 +356,21 @@ def build_weighted_cases() -> None:
         "base_score": 300, "max_score": 900,
         "bins": [{"variable_id": "a", "weight": -1.0, "ranges": [{"min": 0, "max": 10, "points": 40}]}],
     }, {"a": 5})
+    # Negative weights were covered by exactly ONE case, and they are where Python's int()
+    # (truncate toward zero) and a naive Math.floor port disagree: int(-3.5) is -3, floor is -4.
+    # A single case can pass by luck on a value that happens to be whole.
+    case("weighted-negative-fractional-truncates-toward-zero", g, {
+        "base_score": 300, "max_score": 900,
+        "bins": [{"variable_id": "a", "weight": -0.5, "ranges": [{"min": 0, "max": 10, "points": 7}]}],
+    }, {"a": 5}, "int(7 * -0.5) = int(-3.5) = -3, not -4. Math.floor gives -4.")
+    case("weighted-negative-weight-negative-points", g, {
+        "base_score": 300, "max_score": 900,
+        "bins": [{"variable_id": "a", "weight": -1.5, "ranges": [{"min": 0, "max": 10, "points": -5}]}],
+    }, {"a": 5}, "int(-5 * -1.5) = int(7.5) = 7. Two negatives, so the sign flips back.")
+    case("weighted-negative-drives-score-below-zero", g, {
+        "base_score": 100, "max_score": 900,
+        "bins": [{"variable_id": "a", "weight": -1.0, "ranges": [{"min": 0, "max": 10, "points": 400}]}],
+    }, {"a": 5}, "100 - 400 clamps at 0, the LOWER bound. Only max_score clamping was ported.")
     case("weighted-per-factor-truncation-not-sum-then-truncate", g, {
         "base_score": 300, "max_score": 900,
         "bins": [
@@ -551,6 +566,18 @@ def build_formula_cases() -> None:
          "it is refused and the score falls back to base_score. This is a BEHAVIOUR CHANGE from the "
          "old eval()-based evaluator, where variables['a'] worked.")
     case("formula-unknown-function-rejected", g, _formula_card("NOPE(1)"), {"a": 5, "b": 50})
+    # The error path had one case. A formula that RAISES must fall back to base_score -- not to
+    # 0, and not out of the function -- and the ways it can raise are different code paths:
+    # a runtime error inside a legal expression, a parse failure, and a name that resolves to
+    # nothing. A port that returns 0 on any of them scores every applicant at the floor.
+    case("formula-division-by-zero-falls-back-to-base", g, _formula_card("total_points / 0"),
+         {"a": 5, "b": 50}, "ZeroDivisionError -> base_score, not 0 and not a raise.")
+    case("formula-syntax-error-falls-back-to-base", g, _formula_card("base_score +"),
+         {"a": 5, "b": 50}, "unparseable -> base_score.")
+    case("formula-undefined-name-falls-back-to-base", g, _formula_card("no_such_variable + 1"),
+         {"a": 5, "b": 50}, "unbound name -> base_score.")
+    case("formula-negative-result-clamps-to-zero", g, _formula_card("0 - 500"),
+         {"a": 5, "b": 50}, "the LOWER clamp, which several ports omitted entirely.")
     case("formula-empty-bins", g, {
         "scoring_method": "formula", "base_score": 300, "max_score": 900, "formula": "base_score + 55", "bins": [],
     }, {})
