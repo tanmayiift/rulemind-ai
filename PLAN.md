@@ -683,3 +683,37 @@ cd apps/python-executor
 RULEMIND_AI_LIVE=1 RULEMIND_AI_LIVE_PROVIDER=anthropic RULEMIND_AI_LIVE_KEY='<key>' \
   ../../.venv-rulemind/bin/python -m unittest tests.test_ai_live -v
 ```
+
+### OPEN 2026-09-05 — three things that need you, not me
+
+These are the only items in this plan that cannot be finished from this session. Everything else
+either is done or is work I can do without you.
+
+**1. The deployed workspace is empty, so no authenticated call has ever succeeded against it.**
+`scripts/smoke_deployed.sh` is 21 passed / 0 failed / **3 skipped**, and the three skips are the
+ones that would prove the product *works* there rather than merely that it refuses strangers.
+A7–A10 all sit behind this.
+
+To unblock, paste the key into a gitignored file — nothing echoes it, and it never enters a
+transcript or a commit:
+
+```bash
+cp .env.deployed.example .env.deployed
+# then edit .env.deployed and set RULEMIND_DEPLOYED_API_KEY to the value of
+# RULEMIND_DEV_API_KEY from Render -> rulemind-api -> Environment
+```
+
+Then `scripts/smoke_deployed.sh` goes to 24/24, and the two remote-capable suites
+(`suite_sandbox`, `suite_core`) can run against Render.
+
+**2. Vercel's GitHub App still has access to this repository (I5).** The Vercel *project* that
+was failing on every push is **deleted** — that was the actual source of the "still getting
+vercel deployment errors" reports, and it is gone. What remains is only permission hygiene: the
+GitHub App can still read the repo. Revoking it needs a GitHub sudo-mode re-auth, which needs
+your 2FA, so it is yours to do:
+GitHub → Settings → Applications → Installed GitHub Apps → Vercel → Revoke.
+
+**3. GitHub Actions minutes are exhausted (I6).** Every recent run failed in 3–12 seconds with
+**zero steps executed** — a quota refusal, not a test failure and not `[skip ci]`. Until the
+quota resets, local runs are the only signal, and this plan says so rather than implying CI
+coverage it does not have. When it resets, one commit without `[skip ci]` closes it.
