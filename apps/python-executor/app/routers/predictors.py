@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .. import drift, main, predictors
@@ -130,6 +130,39 @@ def delete_predictor(predictor_id: str, request: Request) -> Dict[str, Any]:
     _audit("predictor_deleted", tenant_id, predictor_id,
            "Deleted predictor {0} and its recorded values".format(predictor_id))
     return {"deleted": True, "id": predictor_id}
+
+
+class BackfillRequest(BaseModel):
+    # Bounded per call. `predictors.MAX_BACKFILL_DECISIONS` caps it regardless of what is asked
+    # for, so one request cannot turn into an unbounded scan plus an unbounded insert.
+    limit: int = 1000
+
+
+@router.post("/api/v1/predictors/{predictor_id}/backfill")
+def backfill_predictor(predictor_id: str, request: Request,
+                       body: BackfillRequest = Body(default=BackfillRequest())) -> Dict[str, Any]:
+    """Replay historical decisions through this predictor (parity P12's "backfill it").
+
+    `predictors.observe` runs on the decision path, so it is forward-only: a predictor created
+    today has no history, and with the default 30-day baseline the drift report has nothing to
+    compare against for a month -- on a feature whose entire job is comparison. Everything needed
+    to fix that already existed: decisions store their computed_variables, scorecard_result and
+    outcome, and `extract` already maps one decision to one value.
+
+    Idempotent by decision id, so running it twice does not double the series, and each value is
+    stamped with the DECISION's timestamp rather than now. See `predictors.backfill` for why that
+    second point is the whole difficulty.
+    """
+    tenant_id = active_tenant_id(request)
+    predictor = main.storage.get_predictor(predictor_id, tenant_id=tenant_id)
+    if not predictor:
+        raise HTTPException(status_code=404, detail="Predictor not found.")
+
+    result = predictors.backfill(main.storage, predictor, tenant_id, limit=body.limit)
+    _audit("predictor_backfilled", tenant_id, predictor_id,
+           "Backfilled {0} values for predictor {1} from {2} historical decisions.".format(
+               result["written"], predictor_id, result["scanned"]))
+    return result
 
 
 @router.get("/api/v1/predictors/{predictor_id}/drift")

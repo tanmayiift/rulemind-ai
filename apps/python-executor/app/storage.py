@@ -4213,10 +4213,35 @@ class Storage:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             session.add_all([
-                PredictorValue(tenant_id=resolved, predictor_id=row["predictor_id"],
-                               decision_id=row.get("decision_id"), value=float(row["value"]))
+                PredictorValue(
+                    tenant_id=resolved, predictor_id=row["predictor_id"],
+                    decision_id=row.get("decision_id"), value=float(row["value"]),
+                    # `created_at` is normally the column default (now), because on the decision
+                    # path the observation IS being made now. A BACKFILL must override it with
+                    # the decision's own timestamp: stamping a 20-day-old decision as today puts
+                    # the entire replayed history inside the current window, which does not just
+                    # fail to build a baseline -- it builds a WRONG one that looks populated, and
+                    # the drift report then compares today against today and reports no drift.
+                    **({"created_at": row["created_at"]} if row.get("created_at") else {}))
                 for row in rows])
             return len(rows)
+
+    def predictor_covered_decision_ids(self, tenant_id: str, predictor_id: str) -> set:
+        """Decision ids this predictor already has a value for.
+
+        There is no unique constraint on (predictor_id, decision_id) -- the decision path writes
+        each decision exactly once, so it never needed one -- which means a backfill run twice
+        would DOUBLE the series and halve the apparent drift. This is how the second run knows
+        what to skip. Deliberately not a new constraint: adding one now would have to cope with
+        the NULL decision_ids the observe path can legitimately write.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            return {row for row in session.scalars(
+                select(PredictorValue.decision_id).where(
+                    PredictorValue.tenant_id == resolved,
+                    PredictorValue.predictor_id == predictor_id,
+                    PredictorValue.decision_id.is_not(None))).all()}
 
     def predictor_values_between(self, tenant_id: str, predictor_id: str,
                                  start: datetime, end: datetime) -> List[float]:

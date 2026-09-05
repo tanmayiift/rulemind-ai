@@ -706,7 +706,13 @@ GENERATED from the Python. Every fix mutation-checked.
 ## H. Phase 7 - roadmap phase 8
 
 - [ ] **H1** P09-full Kafka / exactly-once
-- [ ] **H2** P12 feature factory
+- [x] **H2** P12 feature factory — two of the three e2e clauses already worked (a variable
+  receives the already-computed variables, so a DERIVED feature is an ordinary variable; and
+  scorecards bin on variable_id). Backfill was the real gap, and it was hurting shipped P20 too:
+  `predictors.observe` is forward-only, so a new predictor had an empty 30-day baseline. The
+  difficulty is the timestamp — `PredictorValue.created_at` defaults to now, and accepting that
+  drops replayed history into the CURRENT window, so the drift report compares today against
+  today and reports no drift. A wrong baseline is worse than an empty one.
 
 ## I. Docs and CI
 

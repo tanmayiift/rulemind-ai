@@ -86,6 +86,9 @@ Everything below was installed from official sources into `~/.local` without sud
 | 8.7 | **Journey lifecycle** (parity P15): create a journey → lock it → duplicate it → run it from an SDK | ✅ `tests/test_journeys.py` (31) + `e2e/journeys.spec.ts`; driven in-browser end to end |
 | 8.8 | Lock freezes screens without blocking promotion | ✅ a locked journey refuses content edits (409, naming duplication as the way forward) but still promotes to prod, and locking does not bump the version a respondent's answers are keyed to |
 | 8.9 | Authored journeys reach the device, demos fall back | ✅ the SDK manifest serves active journeys in the camelCase shape the Flutter example reads; a workspace with none authored still gets the built-in demo flows, and demo scenarios are dropped once it has its own (journey ids are slugified titles, so they can collide with a demo's) |
+| 8.10 | **Derived feature → backfill → scorecard** (parity P12): a variable that reads other variables, backfilled over historical decisions, usable in a scorecard | ✅ `tests/test_predictor_backfill.py` (12) + `e2e/predictor-backfill.spec.ts`. The derived-feature and scorecard halves predated the work and are asserted rather than assumed |
+| 8.11 | A backfill is idempotent | ✅ and it matters: there is no unique constraint on (predictor_id, decision_id), so a second run would silently double the monitoring series and halve the apparent drift |
+| 8.12 | Backfilled values carry the decision's own timestamp | ✅ the column defaults to `now`, and accepting that would drop the whole replayed history into the current window — the drift report would then compare today against today and report no drift. A wrong baseline is worse than an empty one |
 
 ## 6. Case-wise history & audit — ⚠️→✅
 | # | Case | Result |

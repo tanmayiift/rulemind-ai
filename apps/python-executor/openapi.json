@@ -314,6 +314,17 @@
         "title": "AdminLoginRequest",
         "type": "object"
       },
+      "BackfillRequest": {
+        "properties": {
+          "limit": {
+            "default": 1000,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "BackfillRequest",
+        "type": "object"
+      },
       "BatchSimulationRequest": {
         "description": "Shared by the internal test console and the public /decide/batch.\n\n`/decide` takes `policyId`, so a caller reasonably expects `/decide/batch` to\nas well \u2014 but this shape came from the test console, where a batch can target a\nvariable, a rule or a policy. Rather than break existing callers, `policyId` is\naccepted as an alias: supplying it implies `targetType=\"policy\"`.",
         "properties": {
@@ -10718,6 +10729,59 @@
           }
         },
         "summary": "Update Predictor"
+      }
+    },
+    "/api/v1/predictors/{predictor_id}/backfill": {
+      "post": {
+        "description": "Replay historical decisions through this predictor (parity P12's \"backfill it\").\n\n`predictors.observe` runs on the decision path, so it is forward-only: a predictor created\ntoday has no history, and with the default 30-day baseline the drift report has nothing to\ncompare against for a month -- on a feature whose entire job is comparison. Everything needed\nto fix that already existed: decisions store their computed_variables, scorecard_result and\noutcome, and `extract` already maps one decision to one value.\n\nIdempotent by decision id, so running it twice does not double the series, and each value is\nstamped with the DECISION's timestamp rather than now. See `predictors.backfill` for why that\nsecond point is the whole difficulty.",
+        "operationId": "backfill_predictor_api_v1_predictors__predictor_id__backfill_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "predictor_id",
+            "required": true,
+            "schema": {
+              "title": "Predictor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackfillRequest",
+                "default": {
+                  "limit": 1000
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Backfill Predictor Api V1 Predictors  Predictor Id  Backfill Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backfill Predictor"
       }
     },
     "/api/v1/predictors/{predictor_id}/drift": {

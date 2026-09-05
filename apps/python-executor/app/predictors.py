@@ -24,6 +24,7 @@ chart, never as a failed or delayed decision.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("rulemind.predictors")
@@ -178,3 +179,94 @@ def _now_iso() -> str:
     from .logic import now_iso
 
     return now_iso()
+
+
+# --------------------------------------------------------------------------- #
+# Backfill (P12)
+# --------------------------------------------------------------------------- #
+# `observe` above is FORWARD-ONLY: it runs on the decision path, so a predictor created today has
+# no history at all. With the default 30-day baseline that makes a new predictor useless for a
+# month -- the drift report has nothing to compare against, on a feature whose entire job is
+# comparison. Every ingredient for fixing that already existed: decisions store their
+# computed_variables, scorecard_result and outcome, and `extract` already maps one decision to one
+# value. Backfill is that map applied to history instead of to the decision in hand.
+#
+# This is also the "backfill it" clause of parity P12's e2e flow. The other two clauses were
+# already true: a variable receives the previously-computed variables (see
+# executor._compute_variables -> sandbox.execute_variable(code, payload, values)), so a DERIVED
+# feature is just a variable that reads other variables; and scorecards bin on variable_id, so
+# using one is the ordinary path.
+
+# A single call is bounded so a workspace with a large decision table cannot turn one request into
+# an unbounded scan and an unbounded insert. The caller pages by lowering `before` on the next
+# call; the response says whether more remains.
+MAX_BACKFILL_DECISIONS = 5000
+
+
+def backfill(storage: Any, predictor: Dict[str, Any], tenant_id: str,
+             limit: int = 1000) -> Dict[str, Any]:
+    """Replay historical decisions through this predictor and record what it would have seen.
+
+    Idempotent by decision id. There is no unique constraint on (predictor_id, decision_id) --
+    the decision path writes each exactly once, so it never needed one -- so a second run would
+    otherwise DOUBLE the series, which halves the apparent drift rather than failing loudly.
+
+    Values are stamped with the DECISION's timestamp, not now. That is the whole difficulty of a
+    backfill: writing them at the current time drops the entire replayed history into the current
+    window, so the report compares today against today and confidently reports no drift. A wrong
+    baseline is worse than an empty one, because an empty one is visibly empty.
+    """
+    capped = max(1, min(int(limit), MAX_BACKFILL_DECISIONS))
+    decisions = storage.list_decisions(tenant_id=tenant_id, limit=capped)
+    covered = storage.predictor_covered_decision_ids(tenant_id, predictor["id"])
+
+    rows = []
+    skipped_existing = 0
+    no_value = 0
+    for decision in decisions:
+        decision_id = decision.get("id")
+        if decision_id and decision_id in covered:
+            skipped_existing += 1
+            continue
+        value = extract(predictor, decision)
+        if value is None:
+            # The decision does not carry this number -- it predates the scorecard, or the
+            # variable failed. A gap in the series is the honest record; see the module docstring.
+            no_value += 1
+            continue
+        rows.append({
+            "predictor_id": predictor["id"],
+            "value": value,
+            "decision_id": decision_id,
+            "created_at": _decision_time(decision),
+        })
+
+    written = storage.record_predictor_values(tenant_id, rows) if rows else 0
+    return {
+        "predictor_id": predictor["id"],
+        "scanned": len(decisions),
+        "written": written,
+        "skipped_already_recorded": skipped_existing,
+        "skipped_no_value": no_value,
+        # So a caller paging through history knows whether to ask again, rather than guessing
+        # from `scanned == limit` (which is also true when the last page happens to be full).
+        "more_available": len(decisions) == capped,
+    }
+
+
+def _decision_time(decision: Dict[str, Any]) -> Optional[datetime]:
+    """The decision's own timestamp, or None to let the column default stand.
+
+    `list_decisions` serialises `created_at` to an ISO string, so it has to come back. None on a
+    parse failure rather than a guess: the column default (now) is wrong for a backfill, but a
+    fabricated timestamp is worse -- it would place the value somewhere specific and false.
+    """
+    raw = decision.get("created_at")
+    if isinstance(raw, datetime):
+        return raw
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None

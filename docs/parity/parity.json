@@ -139,13 +139,14 @@
     {
       "id": "P12",
       "name": "Feature factory",
-      "state": "ABSENT",
-      "evidence": "0 hits in any .py/.ts/.tsx (only PLAN.md:332); app/backtest.py and app/analytics.py are the seeds",
+      "state": "PRESENT",
+      "evidence": "All three e2eFlow clauses, and two of them predate this work. DEFINE A DERIVED FEATURE: app/executor.py:803 calls sandbox.execute_variable(code, source_payload, values) where `values` is the accumulated map of already-computed variables, so a variable that reads other variables IS a derived feature -- exercised directly in tests/test_predictor_backfill.py. USE IT IN A SCORECARD: scorecards bin on variable_id, the ordinary path. BACKFILL IT: predictors.backfill + POST /api/v1/predictors/{id}/backfill replays historical decisions through `extract`, which already mapped one decision to one value. Idempotent by decision id (storage.predictor_covered_decision_ids), bounded per call at MAX_BACKFILL_DECISIONS, and each value is stamped with the DECISION's timestamp rather than now. tests/test_predictor_backfill.py (12), all six mutations fatal.",
       "phase": 8,
-      "size": "multi-month",
+      "size": "done",
       "engineSemantics": true,
       "e2eFlow": "define a derived feature -> backfill it -> use it in a scorecard",
-      "gap": "No feature factory: 0 hits. Variables are authored one at a time in Python; there is no derived-feature pipeline, no backfill, and no feature store to read from at decision time."
+      "gap": "There is no separate feature STORE: a derived feature is a variable, computed on the decision path, and what is persisted per decision is the predictor observation. That is the right shape for monitoring and for backfilling a baseline, and the wrong one for training-set assembly -- 'give me these 40 features for these 100k applications as of last March' is still a query over decisions, not a served feature table. Backfill also pages from the most recent decision backwards, so covering a long history means repeated calls.",
+      "note": "ABSENT (multi-month) -> PRESENT 2026-09-05. The row said 'no derived-feature pipeline, no backfill, and no feature store'; the first was already false and the third is a shape decision rather than a missing feature. Backfill was the real gap, and it was hurting SHIPPED P20 too: predictors.observe runs on the decision path, so a predictor created today had an empty 30-day baseline -- a drift report with nothing to compare against, on a feature whose whole job is comparison. The difficulty is the timestamp: PredictorValue.created_at defaults to now, and a backfill that accepts that drops the entire replayed history into the current window, so the report compares today against today and reports NO DRIFT. A wrong baseline is worse than an empty one. Note `add_decision` ignores a caller-supplied created_at by design -- backdating a decision would let a caller reorder the audit chronology -- so the tests backdate rows directly instead of relaxing that."
     },
     {
       "id": "P13",
