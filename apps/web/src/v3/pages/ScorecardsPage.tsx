@@ -78,16 +78,26 @@ import {
   SectionHeader,
   InfoBanner,
   EmptyState,
+  EnvironmentEmptyState,
 } from "../kit";
 
 export function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment, isMobile } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, setEnvironment, isMobile } = useRuleMindStore();
   const connectorMap = React.useMemo(
     () => Object.fromEntries(props.data.connectors.map((connector) => [connector.id, connector])),
     [props.data.connectors]
   );
   const environmentScorecards = props.data.scorecards.filter((scorecard) => scorecard.status === environment);
+  // Counted across ALL environments, so the empty state can say where the work is rather than
+  // implying the workspace is empty when only this environment is.
+  const scorecardCountsByEnvironment = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    props.data.scorecards.forEach((item) => {
+      counts[item.status] = (counts[item.status] || 0) + 1;
+    });
+    return counts;
+  }, [props.data.scorecards]);
   const editableVariables = React.useMemo(() => {
     const referenced = new Set(
       environmentScorecards.flatMap((scorecard) => scorecard.bins.map((bin) => bin.variable_id))
@@ -201,6 +211,17 @@ export function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => v
           </div>
         }
       />
+
+      {environmentScorecards.length === 0 ? (
+        <EnvironmentEmptyState
+          icon={<Layers size={28} />}
+          entityPlural="scorecards"
+          counts={scorecardCountsByEnvironment}
+          current={environment}
+          onSwitch={(next) => setEnvironment(next as typeof environment)}
+          createHint="Build a points-based scorecard over your variables below."
+        />
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 220px 220px 180px", gap: 10 }}>
         <InlineSelect value={selectedId ?? ""} onChange={(event) => setSelectedId(event.target.value || null)} data-testid="scorecard-select">

@@ -43,6 +43,13 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/scorecards" as Route, label: "Scorecards", icon: "scorecards" },
       { href: "/models" as Route, label: "ML Models", icon: "variables" },
       { href: "/evaluations" as Route, label: "Model Evaluation", icon: "testing" },
+      // Policies were reachable only by typing the URL, which is the worst possible gap: a
+      // policy is the thing that CHAINS connectors, variables, rules and scorecards into a
+      // decision, the dashboard counts them on its front page, and nothing linked to them.
+      { href: "/policies" as Route, label: "Policies", icon: "policies" },
+      { href: "/workflows" as Route, label: "Workflows", icon: "policies" },
+      { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
+      { href: "/segments" as Route, label: "Segments", icon: "variables" },
     ],
   },
   {
@@ -51,6 +58,8 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/test-console" as Route, label: "Test Console", icon: "testing" },
       { href: "/api-console" as Route, label: "API Console", icon: "connectors" },
       { href: "/simulation" as Route, label: "Simulation", icon: "testing" },
+      { href: "/batch" as Route, label: "Batch Decisions", icon: "testing" },
+      { href: "/ab-tests" as Route, label: "A/B Tests", icon: "testing" },
       { href: "/lifecycle" as Route, label: "Lifecycle", icon: "policies" },
       { href: "/collab" as Route, label: "Collab Editor", icon: "policies" },
       { href: "/deploy" as Route, label: "Deploy", icon: "deploy" },
@@ -61,6 +70,7 @@ const NAVIGATION: ReadonlyArray<{
     items: [
       { href: "/decision-explorer" as Route, label: "Decision Explorer", icon: "audit" },
       { href: "/review-queue" as Route, label: "Review Queue", icon: "audit" },
+      { href: "/approvals" as Route, label: "Approvals", icon: "audit" },
       { href: "/schedules" as Route, label: "Schedules", icon: "deploy" },
       { href: "/audit" as Route, label: "Audit Logs", icon: "audit" },
       { href: "/reports" as Route, label: "Reports", icon: "exports" },

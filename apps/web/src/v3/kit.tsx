@@ -414,6 +414,77 @@ export function InfoBanner(props: { message: string; toneKey?: "accent" | "warni
   );
 }
 
+/**
+ * The empty state for a list that is filtered by ENVIRONMENT.
+ *
+ * THE PROBLEM THIS EXISTS FOR. Every entity page filters on `status === environment`, the
+ * environment defaults to `dev`, and the demo inventory a new workspace is seeded with is almost
+ * entirely `prod`. So a first-run user opens Policies and sees nothing -- while the Dashboard,
+ * which does NOT filter, tells them on its front page that they have 4. Two screens disagreeing
+ * about whether your work exists is worse than either being wrong on its own.
+ *
+ * A plain "No policies yet" is a lie in that state. This says how many live in each OTHER
+ * environment and offers the switch, so "empty" is a fact about the filter rather than a fact
+ * about the workspace.
+ */
+export function EnvironmentEmptyState(props: {
+  icon: React.ReactNode;
+  entityPlural: string;
+  counts: Record<string, number>;
+  current: string;
+  onSwitch: (environment: string) => void;
+  createHint?: string;
+}) {
+  const theme = useTheme();
+  const elsewhere = STATUS_ORDER.filter((env) => env !== props.current && (props.counts[env] || 0) > 0);
+  const total = Object.values(props.counts).reduce((sum, n) => sum + n, 0);
+
+  // Genuinely empty workspace: the ordinary empty state, and no misleading offer to look
+  // somewhere else that is also empty.
+  if (total === 0) {
+    return (
+      <EmptyState
+        icon={props.icon}
+        title={"No " + props.entityPlural + " yet"}
+        description={props.createHint || ("Create your first " + props.entityPlural.replace(/s$/, "") + " to get started.")}
+      />
+    );
+  }
+
+  return (
+    <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 32, textAlign: "center" }}>
+      <div style={{ fontSize: "var(--rm-fs-hero)", marginBottom: 6, display: "grid", placeItems: "center", color: theme.dim }}>{props.icon}</div>
+      <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>
+        {"No " + props.entityPlural + " in " + props.current.toUpperCase()}
+      </div>
+      <div style={{ fontSize: "var(--rm-fs-body)", color: theme.muted, marginTop: 6 }}>
+        {elsewhere.length
+          ? "You have " + elsewhere.map((env) => props.counts[env] + " in " + env.toUpperCase()).join(" and ") + "."
+          : "Nothing in the other environments either."}
+      </div>
+      {elsewhere.length ? (
+        <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 16, flexWrap: "wrap" }}>
+          {elsewhere.map((env) => (
+            <button
+              key={env}
+              type="button"
+              onClick={() => props.onSwitch(env)}
+              data-testid={"empty-switch-" + env}
+              style={{
+                padding: "8px 14px", borderRadius: 8, cursor: "pointer",
+                border: "1px solid " + theme.accent, background: theme.accentBg, color: theme.accent,
+                fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number,
+              }}
+            >
+              {"View " + props.counts[env] + " in " + env.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function EmptyState(props: { icon: React.ReactNode; title: string; description: string }) {
   const theme = useTheme();
   return (

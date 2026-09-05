@@ -78,6 +78,7 @@ import {
   SectionHeader,
   InfoBanner,
   EmptyState,
+  EnvironmentEmptyState,
 } from "../kit";
 
 type RuleBuilderMode = "simple" | "advanced";
@@ -830,7 +831,7 @@ function AdvancedRuleTreeEditor(props: {
 
 export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment, isMobile } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, setEnvironment, isMobile } = useRuleMindStore();
   const connectorMap = React.useMemo(
     () => Object.fromEntries(props.data.connectors.map((connector) => [connector.id, connector])),
     [props.data.connectors]
@@ -839,6 +840,16 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
     () => props.data.rules.filter((rule) => rule.status === environment),
     [environment, props.data.rules]
   );
+  // Counted across ALL environments, so the empty state can say where the work is
+  // rather than implying the workspace is empty when only this environment is.
+  const rulesCountsByEnvironment = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    props.data.rules.forEach((item) => {
+      counts[item.status] = (counts[item.status] || 0) + 1;
+    });
+    return counts;
+  }, [props.data.rules]);
+
   const activeVariables = React.useMemo(
     () => props.data.variables.filter((variable) => connectorMap[variable.source_id]?.is_active),
     [connectorMap, props.data.variables]
@@ -1278,7 +1289,14 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
             <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>{filteredSavedRules.length} shown</div>
           </div>
           {filteredSavedRules.length === 0 ? (
-            <EmptyState icon={<Layers size={28} />} title="No saved rules" description={"Create and save a rule in " + environment.toUpperCase() + " to manage it here."} />
+            <EnvironmentEmptyState
+              icon={<Layers size={28} />}
+              entityPlural="rules"
+              counts={rulesCountsByEnvironment}
+              current={environment}
+              onSwitch={(next) => setEnvironment(next as typeof environment)}
+              createHint="Build one in the Builder tab and save it to manage it here."
+            />
           ) : (
             filteredSavedRules.map((rule) => {
               const usedSourceIds = Array.from(
