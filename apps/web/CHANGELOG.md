@@ -7,6 +7,41 @@ Entries are derived from **path-scoped** `git log` against this directory rather
 from the commit's conventional-commit scope — scopes drift (`fix(ops)`, `fix(scale)`,
 `feat(api)` all land here), whereas the touched path cannot lie.
 
+## Unreleased
+
+### Added
+
+- **A real code editor for Python variables.** The variable editor was a plain `<textarea>` for
+  the code the sandbox actually runs. It is now CodeMirror 6 with Python highlighting themed from
+  the app's own tokens (so it follows the light/dark toggle rather than becoming a bright
+  rectangle), bracket closing, history and indent-with-tab.
+- **RuleMind-aware completion**, built from live page state rather than a static list: the
+  selected source's `sample_payload` keys after `payload.`, the workspace's other variables after
+  `variables.`, and the `@variable(source=…)` decorator with its three parameters. Change the
+  source dropdown and the completions change with it.
+- **Inline diagnostics.** Syntax and sandbox-policy errors are marked in the gutter before the
+  author clicks Test, served by `POST /api/v1/variables/lint` — which reuses the sandbox's own
+  `validate_source`, so a marker is the rule rather than a second implementation of it. Debounced
+  at 600ms, and a failed request renders nothing rather than an error banner.
+
+### Changed
+
+- **CodeMirror, not Monaco**, and the parity row counts them as equivalent. The dashboard deploys
+  as a static site and must be self-contained: `@monaco-editor/react` pulls Monaco from a CDN at
+  run time by default, and self-hosting it under `output: "export"` means hand-rolled worker
+  plumbing. Monaco is also ~5MB against ~250KB, for one editor on one page.
+- The dashboard is deployed as a **Render static site**, not Vercel. It is a pure client SPA — no
+  API routes, no dynamic segments, no middleware — so it exports to files, and a static site is
+  free and does not spin down.
+
+### Fixed
+
+- **Selecting a saved variable deselected it.** CodeMirror's `docChanged` is also true for the
+  programmatic replace that pushes a new `value` in from props, so loading a saved variable read
+  as an edit, `beginDraft()` ran, and `variable-promote` never rendered. Fixed with an annotation
+  on the sync transaction. Typecheck, both builds and 19 unit tests all passed with this bug
+  present — only the end-to-end spec caught it.
+
 ## 4.0.0 — 2026-09-03
 
 First tagged release. `git tag` was empty before this, so there is no prior boundary

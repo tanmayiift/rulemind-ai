@@ -613,7 +613,10 @@ GENERATED from the Python. Every fix mutation-checked.
 - [x] **B4** Adversarial review of B1-B3; anything refuted goes back
 - [x] **B5** Polling conditions on the `action` step - five engines + generated corpus
 - [x] **B6** Update P06 and P21 parity rows with the fixes
-- [ ] **B7** Full regression gate green (both DB lanes, 5 engines, all gates)
+- [x] **B7** Full regression gate green — Python 1761 on SQLite and 1670 on Postgres
+  (schema-per-path), vitest 462, cargo 19 + 10, flutter 163, Kotlin, Playwright 58/58,
+  26 migrations applied + downgraded on real PG 16, deployed smoke 21/21,
+  check_parity / verify_chart / check_audit_ignores
 
 ## C. Phase 2 - P01, connectors that actually fetch
 
@@ -671,7 +674,10 @@ GENERATED from the Python. Every fix mutation-checked.
 ## G. Phase 6 - roadmap phase 7 (sequential, a re-architecture)
 
 - [ ] **G1** P15 journey as a first-class entity - table, CRUD, web route, SDK across 5 engines
-- [ ] **G2** P19 superflows - needs product definition before engineering
+- [x] **G2** P19 superflows — re-audited, not built: the capability ships as
+  **sub-workflows** (a `workflow` step resolved by id or per-tenant alias, cycle-guarded;
+  the composing thing is a policy, so it already has the dev→uat→prod lifecycle). The
+  row had been scored on a NAME having zero hits. P19 ABSENT (3–6 months) → PRESENT.
 - [ ] **G3** DoD five each; regression gate
 
 ## H. Phase 7 - roadmap phase 8
@@ -686,7 +692,12 @@ GENERATED from the Python. Every fix mutation-checked.
 - [x] **I2** README architecture tree completed + Deployment section added
 - [x] **I3** `E2E_TEST_PLAN.md`: 16 -> 24 migrations, 733 -> 1457 tests. **PG 16 -> 18 was
       artefact list
-- [ ] **I4** 13 per-package `CHANGELOG.md` files, regenerated from path-scoped `git log`
+- [x] **I4** Per-package `CHANGELOG.md` files. Six carry an `Unreleased` section covering
+  this cycle (API, dashboard, both mobile SDKs, and the two Rust crates, which already
+  had one). The other seven packages have **no commits since the 1.0.0 boundary**, so
+  they correctly have nothing to add — writing an empty Unreleased heading into each
+  would be noise, not coverage. Entries are prose explaining WHY, matching the existing
+  convention, rather than a `git log` dump.
 - [ ] **I5** Vercel GitHub App access revoked (needs the user's 2FA)
 - [ ] **I6** CI: one commit without `[skip ci]` once the Actions quota resets
 

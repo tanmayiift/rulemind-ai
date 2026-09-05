@@ -7,6 +7,66 @@ Entries are derived from **path-scoped** `git log` against this directory rather
 from the commit's conventional-commit scope — scopes drift (`fix(ops)`, `fix(scale)`,
 `feat(api)` all land here), whereas the touched path cannot lie.
 
+## Unreleased
+
+### Added
+
+- **Connectors that actually fetch (P01).** `request_mapping` and `response_mapping` were written
+  by the dashboard and read by zero backend lines; a connector step never opened a socket.
+  `app/connector_fetch.py` now retrieves a source at decision time through the SSRF-guarded egress
+  path, opt-in per connector, with a tenant- and connector-scoped response cache and per-attempt
+  timeouts inside the evaluation budget.
+- **Outbound webhook subscriptions (P03).** A first-class subscription entity with 13 closed event
+  types and ANDed filters evaluated through `logic.compare`, HMAC-signed with the same helper
+  `webhooks.py` verifies inbound. Events are emitted from `add_audit_event` and `add_decision` —
+  the two documented funnels — so a subscriber cannot miss whichever code path was added last.
+- **Outbound PKCS#12 client certificates (P02).** `app/mtls.py` was inbound-only; nothing ever
+  presented a client certificate. `app/client_certs.py` unwraps a bundle from the connector config
+  and presents it, with contexts cached per (tenant, connector, bundle fingerprint) so a rotation
+  takes effect without a restart.
+- **Predictors and PSI drift (P20).** `predictors` + `predictor_values` tables, CRUD, and a drift
+  report using the industry-conventional 0.10/0.25 PSI bands with per-bin contributions, so the
+  report says *where* the population moved. Values are also fanned out to the configured OLAP sink.
+- **Polling conditions on the `action` step.** Retrying is not polling: a retry loop exits on the
+  first 2xx, and a job-status endpoint answers `200 {"status": "pending"}`. Bounded, budgeted, and
+  failing closed to review.
+- **A dead letter for the decision WAL.** A record that can never re-insert was retried on every
+  boot forever with nothing surfacing it. Now bounded, moved out of the boot path, never deleted,
+  logged at ERROR on every boot, and requeueable.
+- **Automatic canary rollback (P11)**, on a guardrail breach only — never on a challenger merely
+  losing. Opt-in, leader-gated, audited.
+- **Editor diagnostics** at `POST /api/v1/variables/lint`, reusing `sandbox.validate_source`.
+
+### Fixed
+
+- **`FAST_DECIDE=1` changed correctness in three separate ways**, each a performance flag acting
+  as a correctness switch. It skipped nested input validation entirely; it had no evaluation
+  budget, so the 504 contract did not apply; and it seeded every source with its `sample_payload`
+  on production traffic, where the executor deliberately leaves an unsupplied source empty so the
+  decision fails closed. All three now match the executor, with cross-path tests.
+- **A canary that never ramped.** `current_ramp_weight` was called only from analytics, so
+  `assign_variant` used the static weight: a canary set to ramp 10% → 25% → 50% served 10% forever
+  while the dashboard rendered the schedule as live. Ramping the challenger alone is not enough —
+  the champion must take the remainder, or its static 90 still swallows the hash space.
+- **Name resolution ran outside the evaluation budget.** `build_pinned_request` → `getaddrinfo` is
+  blocking with no timeout of its own and ran before the deadline was consulted, so a decision's
+  wall clock tracked resolver latency with no ceiling (4013ms measured against a 300ms budget)
+  while blocking the event loop. Fixed here and on the pre-existing action path.
+- **The PKCS#12 bundle and its passphrase were stored in the clear.** `SECRET_FIELD_MARKERS` is a
+  substring test and contained `password`, which does not match `passphrase`, and nothing matching
+  `client_cert_p12` — so a private key sat in a connector row readable with only the read
+  capability.
+- **A slow engine-cache leak in the test suite.** `db._engine_cache` is keyed by URL and never
+  evicts, so every test using a fresh temp path leaked a pool holding SQLite handles to a deleted
+  directory. Added `db.dispose_engine`.
+
+### Changed
+
+- Retention's archive-then-purge round trip is now covered end to end, including the ordering
+  guarantee: a failing sink purges **nothing**, because the alternative leaves decisions in
+  neither the hot database nor the cold store.
+
+
 ## 4.0.0 — 2026-09-03
 
 First tagged release. `git tag` was empty before this, so there is no prior boundary

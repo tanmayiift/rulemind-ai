@@ -7,6 +7,17 @@ Entries are derived from **path-scoped** `git log` against this directory rather
 from the commit's conventional-commit scope — scopes drift (`fix(ops)`, `fix(scale)`,
 `feat(api)` all land here), whereas the touched path cannot lie.
 
+## Unreleased
+
+### Added
+
+- **Polling actions survive the handoff to the host.** A queued `action` operation now carries
+  `mode: "poll"`, its exit condition, bounds and `onPollTimeout` when the author configured one.
+  This engine performs no outbound I/O — actions are queued for the host app — so a host that saw
+  only url/method/body would fire once and report whatever came back, which for a job-status
+  endpoint is `{"status": "pending"}` treated as final. The server executor fails that case
+  CLOSED, so dropping the fields would make the same policy decide differently on device.
+
 ## 4.1.0-beta.1 — 2026-09-03
 
 First tagged release. `git tag` was empty before this, so there is no prior boundary
