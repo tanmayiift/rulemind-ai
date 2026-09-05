@@ -85,7 +85,16 @@ from .models import (
 from .seed_data import CONNECTORS, DEFAULT_SETTINGS, POLICIES, RULES, SCORECARDS, VARIABLES
 
 
-SECRET_FIELD_MARKERS = ("token", "secret", "password", "api_key", "apikey", "client_secret", "private_key")
+SECRET_FIELD_MARKERS = (
+    "token", "secret", "password", "api_key", "apikey", "client_secret", "private_key",
+    # Added with outbound client certificates (P02). "password" does NOT match
+    # "passphrase", and nothing here matched "client_cert_p12" -- so a PKCS#12 bundle and
+    # its passphrase were stored in the clear and echoed back unredacted, which is a
+    # private key in a connector row. This list is a substring test, so a new secret-ish
+    # config key is only protected if a marker actually appears in it; naming alone is not
+    # enough.
+    "passphrase", "client_cert_p12",
+)
 
 # Verified API keys are cached per-Storage-instance (bcrypt is deliberately
 # ~200ms; running it per request caps the whole API at a few req/s). TTL below.

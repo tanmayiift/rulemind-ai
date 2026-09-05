@@ -636,7 +636,10 @@ GENERATED from the Python. Every fix mutation-checked.
 
 ## D. Phase 3 - roadmap phase 4 (parallel)
 
-- [ ] **D1** P02 p12 / PKCS#12 outbound client certificates
+- [x] **D1** P02 p12 / PKCS#12 outbound client certificates — `app/client_certs.py`,
+  wired into `connector_fetch`. Python's `ssl` cannot build a client identity from
+  memory, so the decrypted PEM touches a 0600 temp file unlinked in a `finally`; two of
+  the seven mutations were exactly that leak.
 - [x] **D2** P03 outbound webhooks: subscription model, event types, filters — and
   `manage_access` rather than `author`, because a subscription is standing egress
   configuration, not a policy artifact

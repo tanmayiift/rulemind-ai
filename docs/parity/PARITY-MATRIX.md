@@ -19,9 +19,9 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 9 |
+| ✅ present | 10 |
 | 🟡 partial | 6 |
-| ❌ absent | 6 |
+| ❌ absent | 5 |
 | ⛔ cut | 1 |
 
 `⛔ cut` means a deliberate decision not to build it — see the row for why.
@@ -31,7 +31,7 @@ verified.
 | id | feature | state | evidence (primary) | gap | phase | size | 5-engine |
 |---|---|---|---|---|---|---|---|
 | P01 | Datasource management + connection testing | ✅ present | `app/connector_fetch.py` fetches a source at decision time (opt-in per connector); `request_mapping` composes the call via `templates.resolve_template`, `response_mapping` reshapes the reply via `jsonpath.resolve_jsonpath` — neither had a backend reader before; egress-guarded and pinned, tenant+connector-scoped cache, timeouts AND name resolution clamped to the evaluation budget; fails **closed** (default `review_gate`, never sample_payload); `tests/test_connector_fetch.py` (46) + `..._refuted.py` (29) | the fast path declines fetch-configured tenants rather than implementing a second transport | 4 | done | no |
-| P02 | p12 / PKCS#12 datasource credentials | ❌ absent | `0 hits for p12/PKCS12/.pfx; app/mtls.py:128 is INBOUND auth, not outbound client certs` | — | 4 | ~1 week | no |
+| P02 | p12 / PKCS#12 datasource credentials | ✅ present | `app/client_certs.py` unwraps a PKCS#12 bundle from the connector config and presents it on outbound calls via `connector_fetch`; chain included; server verification unchanged (`create_default_context`, asserted); contexts cached per (tenant, connector, bundle fingerprint) so rotation takes effect without a restart; the decrypted PEM touches only a 0600 temp file unlinked in a `finally`; `tests/test_client_certs.py` (23) | configured through connector config rather than a dedicated upload endpoint, and no expiry warning before the handshake fails | 4 | done | no |
 | P03 | Outbound webhooks with event-type filters | ✅ present | `webhook_subscriptions` table + `/api/v1/webhook-subscriptions` CRUD and `/test`; 13 closed event types (typo refused at authoring, not stored inert); ANDed filters through `logic.compare`, and a filter that cannot be evaluated does NOT deliver; HMAC-signed with the same helper `webhooks.py` verifies inbound, over the exact bytes sent; egress-guarded, `follow_redirects=False`; `manage_access`, not `author`; 55 tests + probed in the isolation matrix | no durable outbox — a subscriber down for the whole retry window misses that event (the decision is unaffected) | 4 | done | no |
 | P04 | Workflow step-through debugger | ❌ absent | `only post-hoc traces (ctx.trace) plus a loop-only tracer at app/executor.py:794` | — | 5 | ~3 weeks | no |
 | P05 | Modelset | ❌ absent | `0 hits for modelset/model_set; models are flat .pkl files in app/routers/models.py` | — | 5 | ~2 weeks | no |

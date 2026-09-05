@@ -20,13 +20,14 @@
     {
       "id": "P02",
       "name": "p12 / PKCS#12 datasource credentials",
-      "state": "ABSENT",
-      "evidence": "0 hits repo-wide for p12/PKCS12/.pfx (the only near-miss is PKCS1v15 signature padding at app/compiler.py:91); app/mtls.py:128 evaluate_client_cert reads the x-client-cert REQUEST header via app/middleware.py:396 -- inbound auth, not outbound client certs",
+      "state": "PRESENT",
+      "evidence": "app/client_certs.py presents a client certificate on outbound calls, from a PKCS#12 bundle stored on the connector (config.client_cert_p12 + client_cert_passphrase). PKCS#12 rather than a PEM pair because that is what a partner's onboarding pack contains -- one password-protected file holding key, leaf and chain -- and splitting it with openssl first means an operator handling a private key by hand. Wired into connector_fetch._build_request, so the identity rides on the request and reaches httpx as `verify`; server verification is NOT weakened (the context starts from ssl.create_default_context, and there is a test asserting check_hostname and CERT_REQUIRED). Intermediates from the bundle are included, or a partner without the chain cached rejects the handshake with an error that looks like a bad certificate rather than a missing one. Contexts are cached per (tenant, connector, bundle fingerprint): the fingerprint is in the key so a rotation takes effect without a restart, and the tenant is in it because connector ids are seeded identically per tenant. tests/test_client_certs.py (23).",
       "phase": 4,
-      "size": "~1 week",
+      "size": "done",
       "engineSemantics": false,
       "e2eFlow": "upload a client cert -> connector calls a mutually-authenticated endpoint",
-      "gap": "No PKCS#12 handling anywhere: 0 hits for p12/PKCS12/.pfx. app/mtls.py:128 is INBOUND client-cert verification (the server authenticating callers); this row is the opposite direction -- presenting a client certificate to an outbound datasource, which needs a cert store, per-connector selection and a decision-path fetch (P01)."
+      "gap": "The bundle is configured through the connector's config rather than through a dedicated upload endpoint with its own RBAC, and there is no expiry warning -- a certificate that lapses surfaces as a handshake failure at decision time rather than as a notice beforehand. mtls.evaluate_client_cert already computes expiry for the inbound direction and is the piece to reuse.",
+      "note": "ABSENT -> PRESENT 2026-09-05. The old gap was '0 hits for p12/PKCS12/.pfx; app/mtls.py:128 is INBOUND client-cert verification' -- correct, and this is the opposite direction. Python's ssl module cannot build a client identity from memory (load_cert_chain reads paths only), so the decrypted PEM touches a 0600 temp file that is unlinked immediately after load and in a `finally`; the key then lives only in the SSLContext. Two of the seven mutations run against this were exactly that leak, and both are caught."
     },
     {
       "id": "P03",

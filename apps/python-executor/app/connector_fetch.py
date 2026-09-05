@@ -90,7 +90,7 @@ from urllib.parse import urlencode, urlparse, urlunparse
 import httpx
 from fastapi import HTTPException
 
-from . import circuit_breaker, env
+from . import circuit_breaker, client_certs, env
 from .connector_probe import (
     ConnectorMisconfigured,
     SIMULATE_SCHEME,
@@ -281,9 +281,13 @@ class _Request:
     fingerprint: str
     display_url: str
     secrets: Set[str] = field(default_factory=set)
+    # The client identity to present, when the partner requires mutual TLS. Built once per
+    # (tenant, connector, bundle fingerprint) in client_certs; None for the ordinary case.
+    ssl_context: Any = None
 
 
-def _build_request(connector: Dict[str, Any], view: Dict[str, Any]) -> _Request:
+def _build_request(connector: Dict[str, Any], view: Dict[str, Any],
+                   tenant_id: str = "") -> _Request:
     """Turn the connector's config + request_mapping into one concrete HTTP request.
 
     Raises ConnectorMisconfigured for anything an author must fix; the caller turns that into a
@@ -352,6 +356,10 @@ def _build_request(connector: Dict[str, Any], view: Dict[str, Any]) -> _Request:
         fingerprint=_fingerprint(method, url, headers, body),
         display_url=_display_url(url),
         secrets=resolved | connector_secret_values(connector),
+        # Built here rather than in _send so that a bad bundle surfaces as a configuration
+        # failure on THIS connector -- with a code an operator can act on -- instead of as an
+        # opaque TLS handshake error attributed to the partner.
+        ssl_context=client_certs.context_for(connector, tenant_id),
     )
 
 
@@ -558,7 +566,16 @@ async def _send(request: _Request, deadline: Optional[float]) -> Tuple[int, str]
     last: _TransportFailed = _TransportFailed("unreachable", "request was never attempted")
     # follow_redirects=False is load-bearing: chasing a 3xx connects to a host that never went
     # through vet_url, undoing the pinning above.
-    async with httpx.AsyncClient(timeout=request.timeout_ms / 1000.0, follow_redirects=False) as client:
+    # `verify` carries the client identity as well as the trust store: httpx takes one SSLContext
+    # for both, and client_certs.context_for starts from ssl.create_default_context(), so server
+    # verification is unchanged when a client certificate is present. Passing the context does
+    # NOT weaken anything -- that is worth stating, because `verify=<object>` reads like an
+    # override of the default verification and is not one.
+    client_kwargs: Dict[str, Any] = {
+        "timeout": request.timeout_ms / 1000.0, "follow_redirects": False}
+    if request.ssl_context is not None:
+        client_kwargs["verify"] = request.ssl_context
+    async with httpx.AsyncClient(**client_kwargs) as client:
         for attempt in range(request.retries + 1):
             # Per-attempt clamp, not just a per-request one: with `retries` the step's ceiling
             # would otherwise be (retries + 1) x timeout regardless of the evaluation budget.
@@ -655,7 +672,7 @@ async def fetch_source(
     started = time.perf_counter()
 
     try:
-        request = _build_request(connector, view)
+        request = _build_request(connector, view, tenant_id)
     except ConnectorMisconfigured as bad:
         # An author error, not a downstream one — but it still fails closed. A connector that
         # says "fetch me" and cannot be turned into a request has not supplied its data.
