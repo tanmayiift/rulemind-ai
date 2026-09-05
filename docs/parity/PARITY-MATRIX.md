@@ -19,8 +19,8 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 7 |
-| 🟡 partial | 7 |
+| ✅ present | 8 |
+| 🟡 partial | 6 |
 | ❌ absent | 7 |
 | ⛔ cut | 1 |
 
@@ -30,7 +30,7 @@ verified.
 
 | id | feature | state | evidence (primary) | gap | phase | size | 5-engine |
 |---|---|---|---|---|---|---|---|
-| P01 | Datasource management + connection testing | 🟡 partial | `app/routers/authoring.py:96` — the connector `/test` route DOES exist | it never connects: `authoring.py:97-110` echoes stored config and returns `passed:true`; untested | 3 | days | no |
+| P01 | Datasource management + connection testing | ✅ present | `app/connector_fetch.py` fetches a source at decision time (opt-in per connector); `request_mapping` composes the call via `templates.resolve_template`, `response_mapping` reshapes the reply via `jsonpath.resolve_jsonpath` — neither had a backend reader before; egress-guarded and pinned, tenant+connector-scoped cache, timeouts AND name resolution clamped to the evaluation budget; fails **closed** (default `review_gate`, never sample_payload); `tests/test_connector_fetch.py` (46) + `..._refuted.py` (29) | the fast path declines fetch-configured tenants rather than implementing a second transport | 4 | done | no |
 | P02 | p12 / PKCS#12 datasource credentials | ❌ absent | `0 hits for p12/PKCS12/.pfx; app/mtls.py:128 is INBOUND auth, not outbound client certs` | — | 4 | ~1 week | no |
 | P03 | Outbound webhooks with event-type filters | 🟡 partial | `app/webhooks.py:30 is inbound-only; ad-hoc alertUrl at app/executor.py:560-576` | no subscription model, no event types, no filters | 4 | ~1 week | no |
 | P04 | Workflow step-through debugger | ❌ absent | `only post-hoc traces (ctx.trace) plus a loop-only tracer at app/executor.py:794` | — | 5 | ~3 weeks | no |

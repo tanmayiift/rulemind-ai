@@ -617,10 +617,10 @@ GENERATED from the Python. Every fix mutation-checked.
 
 ## C. Phase 2 - P01, connectors that actually fetch
 
-- [ ] **C1** Decision-time fetch through the SSRF-guarded egress path, fail closed
-- [ ] **C2** `request_mapping` / `response_mapping` actually read and applied
-- [ ] **C3** Caching + per-source timeouts inside the evaluation budget
-- [ ] **C4** DoD five + P01 parity row + `README.md:6` claim becomes true
+- [x] **C1** Decision-time fetch through the SSRF-guarded egress path, fail closed
+- [x] **C2** `request_mapping` / `response_mapping` actually read and applied
+- [x] **C3** Caching + per-source timeouts inside the evaluation budget
+- [x] **C4** DoD five + P01 parity row + `README.md:6` claim becomes true
 
 ## D. Phase 3 - roadmap phase 4 (parallel)
 
@@ -634,7 +634,7 @@ GENERATED from the Python. Every fix mutation-checked.
 
 - [ ] **E1** P04 workflow step-through debugger
 - [ ] **E2** P05 modelset
-- [ ] **E3** P11 canary deployment with delays
+- [x] **E3** P11 canary — ramp now drives live traffic; automated rollback remains
 - [ ] **E4** DoD five each; regression gate
 
 ## F. Phase 5 - roadmap phase 6 (parallel)

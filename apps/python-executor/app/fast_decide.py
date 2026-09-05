@@ -203,7 +203,31 @@ def fast_path_eligible(storage: Any, policy: Dict[str, Any], tenant_id: str) -> 
     for experiment in storage.list_experiments(tenant_id=tenant_id):
         if experiment.get("status") == "running" and experiment.get("target_policy_id") == policy_id:
             return False
-    return True
+    return not tenant_fetches_sources(storage, tenant_id)
+
+
+def tenant_fetches_sources(storage: Any, tenant_id: str) -> bool:
+    """Has this tenant switched decision-time source fetching on for any connector?
+
+    If so the fast path must DECLINE the decision, exactly as it declines a policy containing an
+    IO step: this module retrieves nothing, and `_compute_variables` below builds every source
+    payload from `sample_payload`. Serving such a policy here would mean FAST_DECIDE=1 quietly
+    reverting the fail-closed contract the executor now enforces — the connector would be
+    configured to pull a real bureau report, and the decision would be made on the demo sample
+    instead, at HTTP 200. That is a performance flag acting as a correctness switch, which is
+    the precise shape of the bug `_IO_STEP_TYPES` was widened to fix.
+
+    Declining rather than implementing: `fast_decide` is a synchronous function called from
+    Starlette's threadpool and from a 32-way batch ThreadPoolExecutor, and a source fetch is an
+    async HTTP call inside a wall-clock budget. Bolting one in here would be a second transport,
+    a second cache and a second fail-closed policy to keep in step with the executor's — the
+    divergence this decline exists to prevent. Tenants that opt in pay the full executor;
+    everyone else is untouched, because the check is false for every connector without the flag.
+    """
+    from .connector_fetch import fetch_enabled
+
+    catalog = tenant_catalog(storage, tenant_id)
+    return any(fetch_enabled(connector) for connector in catalog["connectors"].values())
 
 
 def invalidate(tenant_id: Optional[str] = None) -> None:

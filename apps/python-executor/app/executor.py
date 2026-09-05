@@ -204,6 +204,13 @@ class ExecutionContext:
     decision_table_results: Dict[str, Any] = field(default_factory=dict)
     transform_outputs: Dict[str, Any] = field(default_factory=dict)
     action_results: List[Dict[str, Any]] = field(default_factory=list)
+    # One redacted entry per decision-time source fetch (attempted, cached, skipped or failed).
+    source_fetches: List[Dict[str, Any]] = field(default_factory=list)
+    # {connector_id: {"error": message, "on_failure": mode}} for sources that were configured to
+    # be fetched and could not be. Kept apart from the payload for the same reason
+    # `variable_errors` is: an ABSENT source payload and an EMPTY one are indistinguishable once
+    # the variables have run, and the absent case must not be answered with sample data.
+    source_fetch_errors: Dict[str, Dict[str, str]] = field(default_factory=dict)
     # Innermost active loop bindings (item + index names -> values); exposed in the
     # context view so loop-body steps and conditions can reference the current item.
     loop_scope: Dict[str, Any] = field(default_factory=dict)
@@ -248,6 +255,10 @@ class ExecutionContext:
             decision_table_results=copy.deepcopy(payload.get("decision_table_results", {})),
             transform_outputs=copy.deepcopy(payload.get("transform_outputs", {})),
             action_results=copy.deepcopy(payload.get("action_results", [])),
+            # Restored on resume so a paused decision cannot come back with its failed sources
+            # forgotten — the fail-closed guard runs again after the resume completes.
+            source_fetches=copy.deepcopy(payload.get("source_fetches", [])),
+            source_fetch_errors=copy.deepcopy(payload.get("source_fetch_errors", {})),
             loop_scope=copy.deepcopy(payload.get("loop_scope", {})),
             pending_operations=copy.deepcopy(payload.get("pending_operations", [])),
             outcome=str(payload.get("outcome", "pending")),
@@ -298,6 +309,21 @@ _SHARED_CATALOG_SOURCES = frozenset({"api", "sdk_server", "sdk_edge", "sdk_edge_
 # saved scenario. Nothing else does: not api, sdk_*, webhook, cron, callback, review or shadow.
 _SAMPLE_SEEDING_SOURCES = frozenset({"test_console", "simulation", "loop_debug"})
 
+# Sources that must NEVER perform a decision-time source fetch (connector_fetch).
+#
+# Identical membership to _SAMPLE_SEEDING_SOURCES, and not by coincidence: these are the
+# author-driven surfaces, and the reason they pre-fill from samples is the reason they must not
+# reach for the real thing. A backtest is the sharp case — `_run_decision_batch` fans thousands
+# of historical payloads out across 32 threads, so one click would become thousands of live
+# bureau pulls, a rate-limit incident and a bill, all to re-derive outcomes for applications
+# that were decided months ago. The surface for "does my connector actually work" already
+# exists and opens exactly one connection: POST /api/v1/connectors/{id}/test.
+#
+# Deliberately a separate constant rather than a reuse of the set above: they answer different
+# questions, and the day someone wants the test console to fetch live, that must not also
+# silently switch backtests on.
+_NO_FETCH_SOURCES = frozenset({"test_console", "simulation", "loop_debug"})
+
 
 class PolicyExecutor:
     def __init__(self, storage: Storage):
@@ -313,6 +339,11 @@ class PolicyExecutor:
         # may be the process-wide shared one, and mutating a shared dict from a request thread
         # is a data race waiting to happen.
         self._secrets: Dict[str, Dict[str, Any]] = {}
+        # {tenant_id: {connector_id: connector-with-secrets}}. Only populated for connectors that
+        # actually fetch, and read from the DB rather than the shared epoch cache: it is one
+        # extra query on a path that is about to make an HTTP call anyway, and it means a
+        # rotated credential takes effect on the next decision instead of after the catalog TTL.
+        self._connector_configs: Dict[str, Dict[str, Any]] = {}
         # Set by execute(); decides whether this run may use the shared cross-request cache.
         self._source: str = "api"
         # Environment of the policy being executed (dev/uat/prod). Read only by sub-workflow
@@ -534,6 +565,220 @@ class PolicyExecutor:
                 if other != vid and other not in needed and other in code:
                     stack.append(other)
         return needed
+
+    # ------------------------------------------------------------- decision-time source fetch
+    #
+    # THE GAP THIS CLOSES. `_execute_connector` never opened a socket. When the caller supplied
+    # no data for a source it substituted that connector's `sample_payload` and reported
+    # `{"status": "ok"}` for a source it had not contacted -- and a sample_payload is by
+    # construction a healthy, approving example. A policy whose bureau integration was dead
+    # therefore decided on demo data, at HTTP 200, with a complete-looking audit trail.
+    #
+    # WHY THIS RUNS BEFORE _compute_variables AND NOT IN THE CONNECTOR STEP. Variables are
+    # computed once, up front, from `_payloads_by_source`; steps run afterwards. So a connector
+    # step that mutates ctx.payload cannot affect a single variable -- the data would arrive
+    # after everything that reads it. Retrieval has to happen where the payload map is still
+    # being assembled, which is here. The connector step keeps its job of REPORTING what
+    # happened to its source (see _execute_connector).
+    #
+    # WHAT IS FETCHED. Only connectors that opted in (`config.fetch_at_decision`), only when the
+    # caller supplied nothing for that source, and only for sources something in this run
+    # actually reads. A connector without the flag is untouched, so every policy that worked
+    # before this existed still works unchanged.
+
+    def _sources_in_use(self, policy: Dict[str, Any], tenant_id: str, needed_variable_ids: Optional[set]) -> set:
+        """Source ids this run will read: every computed variable's source, plus any source a
+        connector step names. Over-inclusive on purpose -- fetching a source nothing reads only
+        costs a request, while skipping one that IS read reintroduces the empty-payload
+        fail-open this module exists to close."""
+        sources: set = set()
+        for variable in self._catalog_for(tenant_id)["variables"]:
+            if needed_variable_ids is not None and variable["id"] not in needed_variable_ids:
+                continue
+            sources.add(str(variable.get("source_id") or ""))
+        self._collect_connector_sources(policy.get("steps", []) or [], sources, tenant_id, set())
+        return sources
+
+    def _collect_connector_sources(self, steps: Any, sources: set, tenant_id: str, seen: set) -> None:
+        """Every connector step reachable from `steps`, INCLUDING nested ones.
+
+        This walked only the top level once, and that was the original fail-open surviving inside
+        the fix for it. A conditional data pull -- "only hit the bureau when amount > X" -- is
+        precisely why a connector step sits inside a branch, so the nested case is the common one,
+        not the exotic one. A source missed here is never fetched, so ctx.source_fetch_errors
+        stays empty, neither fail-closed guard fires, and `_execute_connector` answers the step
+        with `sample_payload` at status ok. That was reproduced end to end as a live `approve`
+        decided entirely on demo data for a connector explicitly configured to fetch.
+
+        Sub-workflows are followed too, because a child policy's connector steps are just as
+        reachable. `seen` guards the same cycle `_execute_workflow` guards at run time; here a
+        cycle would only spin rather than mis-decide, but a spin during payload assembly is a
+        hang before any budget check has run.
+        """
+        if not isinstance(steps, list):
+            return
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            step_type = step.get("type")
+            ref = str(step.get("ref_id") or step.get("ref") or "")
+            config = step.get("config") if isinstance(step.get("config"), dict) else {}
+            if step_type == "connector":
+                sources.add(ref)
+                continue
+            if step_type == "loop":
+                self._collect_connector_sources(config.get("steps"), sources, tenant_id, seen)
+                continue
+            if step_type == "branch":
+                for branch in config.get("branches", []) or []:
+                    if isinstance(branch, dict):
+                        self._collect_connector_sources(branch.get("steps"), sources, tenant_id, seen)
+                self._collect_connector_sources(config.get("default"), sources, tenant_id, seen)
+                continue
+            if step_type == "workflow":
+                if not ref or ref in seen:
+                    continue
+                seen.add(ref)
+                try:
+                    sub = self.storage.get_policy(ref, tenant_id=tenant_id)
+                except Exception:  # pragma: no cover - a missing child fails later, in the step
+                    sub = None
+                if sub:
+                    self._collect_connector_sources(
+                        sub.get("steps", []) or [], sources, tenant_id, seen)
+
+    def _connector_with_secrets(self, tenant_id: str, connector_id: str) -> Optional[Dict[str, Any]]:
+        """The connector row with its config decrypted. A fetch cannot authenticate with the
+        masked `••••••••` that `list_connectors` (and therefore the catalog) returns."""
+        cache = self._connector_configs.setdefault(tenant_id, {})
+        if connector_id not in cache:
+            cache[connector_id] = self.storage.get_connector(
+                connector_id, include_secrets=True, tenant_id=tenant_id)
+        return cache[connector_id]
+
+    async def _fetch_sources(
+        self,
+        ctx: ExecutionContext,
+        policy: Dict[str, Any],
+        connectors: Dict[str, Any],
+        needed_variable_ids: Optional[set] = None,
+    ) -> None:
+        from . import connector_fetch
+
+        if self._simulate or self._source in _NO_FETCH_SOURCES:
+            return
+        candidates = [cid for cid in sorted(connectors) if connector_fetch.fetch_enabled(connectors[cid])]
+        if not candidates:
+            return
+        in_use = self._sources_in_use(policy, ctx.tenant_id, needed_variable_ids)
+        view: Optional[Dict[str, Any]] = None
+        for connector_id in candidates:
+            if connector_id not in in_use:
+                continue
+            supplied = ctx.payload.get(connector_id) if isinstance(ctx.payload, dict) else None
+            if isinstance(supplied, dict) and supplied:
+                # The source-agnostic contract: a caller who sends the data owns it. Fetching is
+                # for the case where they did not, so this is not an optimisation to be tuned
+                # away -- overwriting a supplied payload with a fetched one would change what
+                # every existing integration decides.
+                ctx.source_fetches.append(
+                    {"source": connector_id, "status": "skipped", "outcome": "caller_supplied"})
+                continue
+            # Before the request, not after: the budget must not be spent starting work there is
+            # no time to finish. connector_fetch clamps each attempt's own timeout to what is
+            # left, the same two-part enforcement _compute_variables and _poll_action use.
+            self._check_budget(ctx, "connector fetch ({0})".format(connector_id))
+            connector = self._connector_with_secrets(ctx.tenant_id, connector_id) or connectors[connector_id]
+            if view is None:
+                view = self._context_view(ctx)
+            result = await connector_fetch.fetch_source(
+                connector, view, ctx.tenant_id, deadline=ctx.deadline)
+            entry = connector_fetch.trace_entry(result, connector)
+            ctx.source_fetches.append(entry)
+            if result.get("status") == "ok":
+                ctx.payload[connector_id] = result.get("payload") or {}
+                continue
+            behaviour = connector_fetch.on_fetch_failure(connector)
+            entry["on_failure"] = behaviour
+            message = str(entry.get("error") or "source fetch failed")
+            # NOT ctx.payload[connector_id] = sample_payload. There is no branch here that
+            # answers a failed fetch with demo data; the source stays absent and the decision
+            # fails closed in _fail_closed_on_fetch_errors.
+            ctx.source_fetch_errors[connector_id] = {"error": message, "on_failure": behaviour}
+            self._record_source_fetch_error(ctx, connector_id, entry)
+            if behaviour == connector_fetch.ON_FAILURE_ABORT:
+                raise connector_fetch.SourceFetchFailed(connector_id, message)
+
+    def _fail_closed_on_fetch_errors(self, ctx: ExecutionContext) -> None:
+        """Send a decision to review when a source it declared it needs could not be retrieved.
+
+        The argument is `_fail_closed_on_variable_errors`, one layer out. A source that did not
+        arrive makes every variable reading it None, and logic.py returns False for every
+        comparison against None -- so which way the decision falls is decided by how the author
+        happened to phrase the gate:
+
+            "reject if fraud_score >= 90"    -> False -> NOT rejected   (fails OPEN)
+            "approve if bureau_score >= 700" -> False -> not approved   (fails closed)
+
+        Every "flag the bad ones" rule fails open, which is the whole fraud and risk category.
+
+        Review even over a reject, for the reason that guard gives: an adverse action has to
+        carry a reason, and "we could not reach the bureau" is not one to put in a denial
+        letter. There is no global opt-out here -- the escape hatch is per connector
+        (`on_fetch_failure: "continue"`), so switching it off is a decision about one source
+        rather than about the whole tenant.
+        """
+        from . import connector_fetch
+
+        if not ctx.source_fetch_errors:
+            return
+        failed = sorted(
+            source_id for source_id, info in ctx.source_fetch_errors.items()
+            if info.get("on_failure") != connector_fetch.ON_FAILURE_CONTINUE)
+        if not failed or ctx.outcome == "review":
+            return
+        original = ctx.outcome
+        ctx.outcome = "review"
+        ctx.step_trace.append({
+            "type": "source_fetch_guard",
+            "status": "failed_closed",
+            "outcome": "review",
+            "original_outcome": original,
+            "failed_sources": failed,
+            "detail": "Sent to review: {0} data source(s) could not be retrieved, and an absent "
+                      "source silently changes gate outcomes.".format(len(failed)),
+        })
+
+    def _record_source_fetch_error(self, ctx: ExecutionContext, source_id: str, entry: Dict[str, Any]) -> None:
+        """Make a failed source retrieval observable and alertable, not just traced.
+
+        For an egress refusal this is also the security signal that a connector was pointed at
+        an internal address: the request never left the process, but the attempt is what a
+        security team wants to see. Best-effort -- recording must never break the decision, and
+        `entry` is already redacted by connector_fetch.trace_entry.
+        """
+        try:
+            self.storage.add_error_event(
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "scope": "decision",
+                    "stage": "source_fetch_error",
+                    "entity_type": "connector",
+                    "entity_id": source_id,
+                    "message": "Data source could not be retrieved ({0}): {1}".format(
+                        entry.get("outcome"), entry.get("error")),
+                    "details": {
+                        "policy_id": ctx.policy_id,
+                        "execution_id": ctx.execution_id,
+                        "outcome": entry.get("outcome"),
+                        "url": entry.get("url"),
+                        "on_failure": entry.get("on_failure"),
+                    },
+                },
+                tenant_id=ctx.tenant_id,
+            )
+        except Exception:  # noqa: BLE001 - observability must not break the decision
+            pass
 
     def _compute_variables(self, ctx: ExecutionContext, needed_ids: Optional[set] = None) -> None:
         catalog = self._catalog_for(ctx.tenant_id)
@@ -1060,6 +1305,10 @@ class PolicyExecutor:
             # computing the full catalog per case is the dominant backtest cost.
             if simulate or os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1":
                 needed = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
+            # Retrieve opted-in sources BEFORE the variables that read them. A connector step
+            # runs after this point and so cannot supply data to a single variable; see the
+            # block comment on _fetch_sources.
+            await self._fetch_sources(ctx, policy, connectors, needed_variable_ids=needed)
             self._compute_variables(ctx, needed_ids=needed)
 
         steps = policy.get("steps", [])
@@ -1073,6 +1322,9 @@ class PolicyExecutor:
 
         if ctx.status == "running":
             ctx.status = "completed"
+        # Both guards, in this order. Each is a no-op when the other has already sent the
+        # decision to review; running only one would leave the other's failure mode open.
+        self._fail_closed_on_fetch_errors(ctx)
         self._fail_closed_on_variable_errors(ctx)
         ctx.completed_at = datetime.utcnow()
         ctx.total_latency_ms = int((ctx.completed_at - ctx.started_at).total_seconds() * 1000)
@@ -1313,9 +1565,55 @@ class PolicyExecutor:
         decision_log.persist_decision(self.storage, record, ctx.tenant_id)
 
     def _execute_connector(self, step: Dict[str, Any], ctx: ExecutionContext, connectors: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Report on this step's source. Retrieval already happened in `_fetch_sources`.
+
+        The step cannot ACQUIRE data usefully -- steps run after every variable has been
+        computed, so anything written to ctx.payload here arrives after everything that reads
+        it. What it can do is tell the truth about the source, which is the half that was
+        missing: it used to answer `{"status": "ok"}` for a source it had never contacted.
+        """
         ref_id = str(step.get("ref_id") or step.get("ref") or "")
+        failure = ctx.source_fetch_errors.get(ref_id)
+        if failure:
+            # The one line this whole feature turns on: a source whose fetch failed is NOT
+            # answered with its sample_payload. Reporting `ok` on demo data is how a dead
+            # bureau produced confident approvals.
+            return {
+                "status": "failed",
+                "source": ref_id,
+                "error": failure.get("error"),
+                "on_failure": failure.get("on_failure"),
+                "payload_keys": [],
+            }
         payload = ctx.payload.get(ref_id) if isinstance(ctx.payload, dict) else None
         if not payload:
+            # DEFENCE IN DEPTH, and the second half of a fail-open that was reproduced as a live
+            # `approve`. The guard above only fires when a fetch was ATTEMPTED and failed. If the
+            # source was never reached at all -- and `_sources_in_use` missing a nested connector
+            # step was exactly that -- there is no error to find, and this branch would answer a
+            # fetch-configured source with its sample_payload, which is by construction a healthy,
+            # approving example.
+            #
+            # So the seeding is gated on the connector, not on the truthiness of the payload: a
+            # connector that opted into fetching never receives sample data here, whatever route
+            # got us to this step. Reaching this line for such a connector means retrieval did not
+            # run when it should have, which is a bug in this file -- so it reports `failed` and
+            # lets the fail-closed path do its job, rather than papering over it with demo data.
+            #
+            # Unchanged for every connector that never opted in: on the authoring surfaces this is
+            # the sample pre-fill the test console relies on, and on production traffic
+            # `_payloads_by_source` has already left the source empty, so it only affects what the
+            # trace reports -- not what any variable saw.
+            from . import connector_fetch
+            if connector_fetch.fetch_enabled(connectors.get(ref_id) or {}):
+                return {
+                    "status": "failed",
+                    "source": ref_id,
+                    "error": "source_not_retrieved: this connector is configured to fetch at "
+                             "decision time but no data was retrieved for it",
+                    "on_failure": connector_fetch.on_fetch_failure(connectors.get(ref_id) or {}),
+                    "payload_keys": [],
+                }
             payload = connectors.get(ref_id, {}).get("sample_payload", {})
             if ref_id:
                 ctx.payload[ref_id] = copy.deepcopy(payload)
@@ -1582,8 +1880,30 @@ class PolicyExecutor:
         # SSRF guard on the REAL, secret-injecting path (the console guard never covered this).
         # Resolve + range-check the host, then pin the connection to the vetted IP so a DNS
         # rebind can't swing it to an internal address between check and connect.
+        # Resolution runs off the event loop and under whatever budget is left, for the reason
+        # spelled out in connector_fetch._send: build_pinned_request -> egress.vet_url ->
+        # socket.getaddrinfo is a BLOCKING resolve with no timeout of its own, so leaving it
+        # ahead of the deadline check bounded only the connect and let one unresponsive
+        # nameserver (stock config: timeout 5s x 2 attempts) blow through even the default 10s
+        # budget on a single step -- while blocking every other request in the worker. This is
+        # the path connector_fetch copied, so the same fix belongs on both or the budget is
+        # unenforceable on anything that opens a socket.
+        remaining_ms = self._budget_remaining_ms(ctx)
+        resolve_timeout = timeout if remaining_ms is None else max(0.001, min(timeout, remaining_ms / 1000.0))
         try:
-            pinned = build_pinned_request(url)
+            pinned = await asyncio.wait_for(
+                asyncio.to_thread(build_pinned_request, url), resolve_timeout)
+        except asyncio.TimeoutError as expired:
+            last_error = "timeout: name resolution exceeded the remaining evaluation budget"
+            self._record_action_error(ctx, step, url, method, last_error)
+            failure_result = {"success": False, "error": last_error, "attempts": 0}
+            ctx.action_results.append(failure_result)
+            on_failure = config.get("onFailure", "continue")
+            if on_failure == "abort":
+                raise ActionFailedError(last_error) from expired
+            if on_failure == "review_gate":
+                ctx.outcome = _merge_outcome(ctx.outcome, "review")
+            return failure_result
         except EgressBlocked as blocked:
             last_error = "blocked_by_egress_policy: {0}".format(blocked)
             self._record_action_error(ctx, step, url, method, last_error)

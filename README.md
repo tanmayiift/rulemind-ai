@@ -5,7 +5,9 @@
 
 Open-source, source-agnostic decisioning engine. Build rules, scorecards, and policies from any JSON data source — then deploy them through `dev > uat > prod` with full audit trails.
 
-RuleMind accepts JSON payloads from pluggable connectors (bureau, bank, GST, device, KYC, or custom APIs), lets teams author Python variables, click-built rules, scorecards, and multi-step policies — all from a visual dashboard.
+RuleMind accepts JSON payloads from pluggable connectors (bureau, bank, GST, device, KYC, or custom APIs) — pushed in with the decision request, or **retrieved by RuleMind at decision time** from the connector's own endpoint, through an SSRF-guarded egress path and inside the evaluation budget. It lets teams author Python variables, click-built rules, scorecards, and multi-step policies — all from a visual dashboard.
+
+Decision-time retrieval is opt-in per connector and **fails closed**: if a source cannot be reached, the decision goes to review rather than proceeding on that connector's sample payload.
 
 > **Operators:** see **[INTEGRATION.md](INTEGRATION.md)** for the resilience/security/evaluation reference — circuit breaker, durable decision WAL, PII redaction, backtest sample-vs-full modes, cross-engine operator semantics, and the full environment-variable list.
 

@@ -201,3 +201,26 @@ def clamp_poll_interval_ms(value: object) -> int:
     except (TypeError, ValueError):
         return 1000
     return max(0, min(ms, MAX_POLL_INTERVAL_MS))
+
+
+# Decision-time source fetching (connector_fetch) caches a downstream's response for a
+# connector-configured TTL. The ceiling lives here, next to the other clamps, for the same
+# reason MAX_POLLS does: the evaluation budget is per-tenant configuration and a tenant can
+# raise it, so the platform bound must sit somewhere a tenant cannot move. What is bounded here
+# is STALENESS -- how old the bureau/KYC data behind a decision is allowed to be.
+MAX_CACHE_TTL_MS = env.env_int("RULEMIND_CONNECTOR_MAX_CACHE_TTL_MS", 300000)
+
+
+def clamp_cache_ttl_ms(value: object) -> int:
+    """0 means "do not cache", and that is where an unreadable value lands.
+
+    Unlike the timeout clamp, garbage does NOT fall back to a working default: a typo in a TTL
+    must not silently authorise serving a decision on a response that was pulled for a different
+    request minutes ago. Not caching is always correct; caching for an accidental duration is
+    not.
+    """
+    try:
+        ms = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(ms, MAX_CACHE_TTL_MS))
