@@ -134,6 +134,9 @@ MUTATING_ROUTE_COVERAGE = {
     "/api/v1/executions": "resumes an execution looked up in the caller's tenant",
     "/api/v1/decisions": "replays a decision looked up in the caller's tenant",
     "/api/v1/workflows": "loop-debug / callbacks against the caller's own tenant",
+    "/api/v1/debug": "step-through debug sessions live in a PROCESS DICT, not a table, so the "
+                     "usual CRUD probe has nothing to read -- tests/test_debugger.py probes it "
+                     "directly (another workspace gets 404 on a session it did not start)",
     "/api/v1/ai": "AI drafting; produces a draft for the caller, stores nothing cross-tenant",
     "/api/v1/analytics": "recompute over the caller's own decisions",
     "/api/v1/access": "member management within the caller's tenant, gated at MANAGE_ACCESS",

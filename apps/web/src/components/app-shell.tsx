@@ -66,6 +66,7 @@ const NAVIGATION: ReadonlyArray<{
     group: "Operate",
     items: [
       { href: "/decision-explorer" as Route, label: "Decision Explorer", icon: "audit" },
+      { href: "/debugger" as Route, label: "Debugger", icon: "testing" },
       { href: "/review-queue" as Route, label: "Review Queue", icon: "audit" },
       { href: "/schedules" as Route, label: "Schedules", icon: "deploy" },
       { href: "/audit" as Route, label: "Audit Logs", icon: "audit" },
@@ -113,6 +114,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   // A header that names the wrong page is worse than one that says nothing: it is the one part
   // of the chrome a user trusts to tell them where they are.
   "/decision-explorer": { title: "Decision Explorer", subtitle: "Find any decision and see exactly why it was made — node by node, with the inputs it saw." },
+  "/debugger": { title: "Step-through Debugger", subtitle: "Pause before a step, read what the policy knows there, then advance one step. Nothing is logged or billed." },
   // Alias routes: these render another page outright, so the header names what you are
   // actually looking at. They are deliberately NOT in the sidebar -- advertising
   // "Approvals" and opening Deploy would be a broken promise.

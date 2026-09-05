@@ -491,6 +491,8 @@ class PolicyExecutor:
     def _payloads_by_source(self, ctx: ExecutionContext) -> Dict[str, Dict[str, Any]]:
         connectors = self._catalog_for(ctx.tenant_id)["connectors"]
         seed_samples = self._source in _SAMPLE_SEEDING_SOURCES
+        if self.seed_samples_override is not None:
+            seed_samples = self.seed_samples_override
         normalized: Dict[str, Dict[str, Any]] = {}
         for connector_id, connector in connectors.items():
             # See _SAMPLE_SEEDING_SOURCES: on production traffic an unsupplied field must stay
@@ -834,6 +836,13 @@ class PolicyExecutor:
             self._check_budget(ctx, "step {0}".format(step.get("id") or index))
             if depth == 0:
                 ctx.current_step_index = index
+                # Depth 0 only: a debugger steps through the POLICY's steps. Pausing inside a
+                # branch arm or a sub-workflow would leave `paused_at_step` pointing at an index
+                # in a list the resume path cannot address, and the run could never continue.
+                if self.debug_stop_before is not None and index >= self.debug_stop_before:
+                    ctx.status = "paused"
+                    ctx.paused_at_step = index
+                    return
             config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
             condition = config.get("condition")
             if condition and not evaluate_condition(condition, self._context_view(ctx)):
@@ -1230,6 +1239,29 @@ class PolicyExecutor:
         result["outcome"] = ctx.outcome
         result["status"] = ctx.status
         return result
+
+    # Step-through debugging (P04). None means "run to completion", which is every ordinary
+    # decision; an integer means "pause BEFORE the step at this index".
+    #
+    # Deliberately reuses the pause the executor already has for review gates and async actions
+    # rather than inventing a debug mode: `paused_at_step` + `ExecutionContext.to_dict/from_dict`
+    # + `_run_steps(start_index=...)` already express "stopped here, resume from here". A second,
+    # debug-only execution path would be a second set of semantics to keep in step with the real
+    # one, and the whole point of a debugger is that it shows you what production does.
+    debug_stop_before: Optional[int] = None
+
+    # Sample seeding, decoupled from `simulate`. None means "whatever this source normally does".
+    #
+    # `simulate=True` forces `_source = "simulation"`, and simulation is in
+    # _SAMPLE_SEEDING_SOURCES -- so asking for "no side effects" silently also asks for "fill
+    # every unsupplied field from the connector's demo payload". For what-if and backtest that is
+    # correct and deliberate. For the STEP-THROUGH DEBUGGER it is the one thing that must not
+    # happen: an operator replaying a rejected application would be shown avg_balance=45200 and
+    # liveness=98.4 out of the demo fixture, decide the policy is broken, and change a threshold
+    # that was never the problem -- production saw none of those fields and failed closed, which
+    # is why it rejected. The debugger needs simulate's silence, not simulation's generosity, so
+    # the two are separate knobs rather than one.
+    seed_samples_override: Optional[bool] = None
 
     async def execute(
         self,

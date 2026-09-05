@@ -107,6 +107,8 @@ _AUTHOR_PREFIXES = (
     "/api/v1/webhooks",
     "/api/v1/bundles",
     "/api/v1/segments",
+    "/api/v1/debug",        # P04: stepping a policy is authoring-time inspection; it runs
+                            # with simulate=True and writes no decision.
     "/api/v1/model-sets",  # P05: groups models this workspace already has and routes
                            # between them; grants no reach the author lacked.
     "/api/v1/predictors",   # P20: names an existing number and records it in THIS workspace,

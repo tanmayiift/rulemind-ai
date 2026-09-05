@@ -189,6 +189,17 @@ export default function DecisionExplorerPage() {
                     ✦ {explaining ? "Explaining…" : "Explain (AI)"}
                   </button>
                 ) : null}
+                {/* The other half of the parity P04 flow: this pane explains what HAPPENED, and
+                    for a decision you disagree with the next question is always "where did it go
+                    wrong" -- which needs the run stopped at each step, not a finished trace. The
+                    debugger opens with this decision's own payload already loaded. */}
+                <Link
+                  href={{ pathname: "/debugger", query: { decision: selected.id } }}
+                  data-testid="step-through-decision"
+                  style={{ border: "1px solid " + theme.border, background: "transparent", color: theme.text, borderRadius: 8, padding: "6px 11px", fontSize: 12, fontWeight: 600, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6 }}
+                >
+                  ⏯ Step through
+                </Link>
               </div>
               {explain ? (
                 <div style={{ marginBottom: 14, padding: 12, borderRadius: 10, background: theme.accentBg, border: "1px solid " + theme.border }}>

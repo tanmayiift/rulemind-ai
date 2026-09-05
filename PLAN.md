@@ -658,7 +658,14 @@ GENERATED from the Python. Every fix mutation-checked.
 
 ## E. Phase 4 - roadmap phase 5 (parallel)
 
-- [ ] **E1** P04 workflow step-through debugger
+- [x] **E1** P04 workflow step-through debugger — `/api/v1/debug/sessions` + a web surface,
+  built as ONE executor field (`debug_stop_before`) on the real execution path rather than a
+  debug interpreter. Two things it turned up: the parity test compared two `simulate=True` runs
+  and so could not see that `simulate` also switches SAMPLE SEEDING on — the debugger was showing
+  demo values for fields the caller never sent (fixed with `seed_samples_override`; the test now
+  compares against a real production run) — and `_payloads_by_source` overwrites
+  `normalized["custom"]` unconditionally, so a seeding test written against `custom` passes
+  whether or not seeding is on.
 - [x] **E2** P05 modelset — ordered routing by branch-style condition, pinned on a blob
   hash (nothing increments the version column), compare and drift endpoints
 - [x] **E3** P11 canary — ramp drives live traffic, and a guardrail breach now halts the

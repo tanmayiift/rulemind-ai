@@ -105,6 +105,24 @@ def audit_decisions_count() -> Dict[str, int]:
     return {"total": main.storage.count_decisions()}
 
 
+@router.get("/api/v1/audit/decisions/{decision_id}")
+def audit_decision(decision_id: str, request: Request) -> Dict[str, Any]:
+    """One decision by id.
+
+    Declared AFTER /count deliberately: FastAPI matches in declaration order, so a
+    `{decision_id}` route above it would swallow `/count` and answer it with a 404 for a
+    decision literally named "count".
+
+    Added for the step-through debugger, whose entry point from the Decision Explorer is
+    "replay this execution" -- fetching the whole page of decisions to find one by id works
+    only until a workspace has more than a page of them.
+    """
+    decision = main.storage.get_decision(decision_id, tenant_id=main.active_tenant_id(request))
+    if not decision:
+        raise HTTPException(status_code=404, detail="Decision not found.")
+    return decision
+
+
 @router.get("/api/v1/audit/promotions")
 def audit_promotions() -> List[Dict[str, Any]]:
     return main.storage.list_promotions()

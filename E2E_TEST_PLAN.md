@@ -77,6 +77,9 @@ Everything below was installed from official sources into `~/.local` without sud
 | 5.1 | Trace covers every policy step | ✅ |
 | 5.2 | Per-condition variable / operator / threshold / value / passed | ✅ |
 | 5.3 | Decision id returned by `/decide` | ✅ (**F-11** fixed) |
+| 5.4 | **Step through a failing execution** (parity P04): Decision Explorer → "Step through" → the debugger opens with that decision's payload → advance one step at a time and read the variables, rule results and outcome-so-far at each stop | ✅ `tests/test_debugger.py` (25); verified in-browser against the demo inventory |
+| 5.5 | The debugger's answers equal production's | ✅ stepped vs a real `simulate=False` run, incl. the empty payload. Was NOT true on first build: `simulate=True` also switches sample seeding on, so it showed demo values for fields the caller never sent — see `PolicyExecutor.seed_samples_override` |
+| 5.6 | Stepping has no side effects | ✅ no decision row, no billed unit, no outbound action; the control asserts a normal run *does* write one, so a build that never writes at all cannot pass |
 
 ## 6. Case-wise history & audit — ⚠️→✅
 | # | Case | Result |

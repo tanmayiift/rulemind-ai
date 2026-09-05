@@ -3311,6 +3311,24 @@
         "title": "SsoConfigRequest",
         "type": "object"
       },
+      "StartRequest": {
+        "properties": {
+          "payload": {
+            "default": {},
+            "title": "Payload",
+            "type": "object"
+          },
+          "policy_id": {
+            "title": "Policy Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy_id"
+        ],
+        "title": "StartRequest",
+        "type": "object"
+      },
       "SubscriptionPatch": {
         "properties": {
           "event_types": {
@@ -5684,6 +5702,47 @@
         "summary": "Audit Decisions Count"
       }
     },
+    "/api/v1/audit/decisions/{decision_id}": {
+      "get": {
+        "description": "One decision by id.\n\nDeclared AFTER /count deliberately: FastAPI matches in declaration order, so a\n`{decision_id}` route above it would swallow `/count` and answer it with a 404 for a\ndecision literally named \"count\".\n\nAdded for the step-through debugger, whose entry point from the Decision Explorer is\n\"replay this execution\" -- fetching the whole page of decisions to find one by id works\nonly until a workspace has more than a page of them.",
+        "operationId": "audit_decision_api_v1_audit_decisions__decision_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "decision_id",
+            "required": true,
+            "schema": {
+              "title": "Decision Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Audit Decision Api V1 Audit Decisions  Decision Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Audit Decision"
+      }
+    },
     "/api/v1/audit/errors": {
       "get": {
         "operationId": "audit_errors_api_v1_audit_errors_get",
@@ -6614,6 +6673,206 @@
           }
         },
         "summary": "Test Connector"
+      }
+    },
+    "/api/v1/debug/sessions": {
+      "post": {
+        "description": "Begin a debug run, stopped before the first step.",
+        "operationId": "start_session_api_v1_debug_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Start Session Api V1 Debug Sessions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Session"
+      }
+    },
+    "/api/v1/debug/sessions/{session_id}": {
+      "delete": {
+        "operationId": "end_session_api_v1_debug_sessions__session_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response End Session Api V1 Debug Sessions  Session Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "End Session"
+      },
+      "get": {
+        "operationId": "get_session_api_v1_debug_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Session Api V1 Debug Sessions  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session"
+      }
+    },
+    "/api/v1/debug/sessions/{session_id}/run": {
+      "post": {
+        "description": "Let it run to completion from where it is paused.",
+        "operationId": "run_session_api_v1_debug_sessions__session_id__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Run Session Api V1 Debug Sessions  Session Id  Run Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Session"
+      }
+    },
+    "/api/v1/debug/sessions/{session_id}/step": {
+      "post": {
+        "description": "Execute exactly one step and stop again.",
+        "operationId": "step_session_api_v1_debug_sessions__session_id__step_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Step Session Api V1 Debug Sessions  Session Id  Step Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Step Session"
       }
     },
     "/api/v1/decide": {
