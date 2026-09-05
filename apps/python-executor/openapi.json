@@ -1859,6 +1859,160 @@
         "title": "PolicyUpsertRequest",
         "type": "object"
       },
+      "PredictorPatch": {
+        "properties": {
+          "baseline_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Days"
+          },
+          "bins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bins"
+          },
+          "current_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Days"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Type"
+          }
+        },
+        "title": "PredictorPatch",
+        "type": "object"
+      },
+      "PredictorRequest": {
+        "properties": {
+          "baseline_days": {
+            "default": 30,
+            "title": "Baseline Days",
+            "type": "integer"
+          },
+          "bins": {
+            "default": 10,
+            "title": "Bins",
+            "type": "integer"
+          },
+          "current_days": {
+            "default": 7,
+            "title": "Current Days",
+            "type": "integer"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source_type"
+        ],
+        "title": "PredictorRequest",
+        "type": "object"
+      },
       "PromoteRequest": {
         "properties": {
           "promoted_by": {
@@ -9052,6 +9206,283 @@
           }
         },
         "summary": "Whatif Endpoint"
+      }
+    },
+    "/api/v1/predictors": {
+      "get": {
+        "operationId": "list_predictors_api_v1_predictors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Predictors Api V1 Predictors Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Predictors"
+      },
+      "post": {
+        "operationId": "create_predictor_api_v1_predictors_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Create Predictor Api V1 Predictors Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Predictor"
+      }
+    },
+    "/api/v1/predictors/source-types": {
+      "get": {
+        "operationId": "list_source_types_api_v1_predictors_source_types_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response List Source Types Api V1 Predictors Source Types Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Source Types"
+      }
+    },
+    "/api/v1/predictors/{predictor_id}": {
+      "delete": {
+        "operationId": "delete_predictor_api_v1_predictors__predictor_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "predictor_id",
+            "required": true,
+            "schema": {
+              "title": "Predictor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Predictor Api V1 Predictors  Predictor Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Predictor"
+      },
+      "get": {
+        "operationId": "get_predictor_api_v1_predictors__predictor_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "predictor_id",
+            "required": true,
+            "schema": {
+              "title": "Predictor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Predictor Api V1 Predictors  Predictor Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Predictor"
+      },
+      "patch": {
+        "operationId": "update_predictor_api_v1_predictors__predictor_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "predictor_id",
+            "required": true,
+            "schema": {
+              "title": "Predictor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictorPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Update Predictor Api V1 Predictors  Predictor Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Predictor"
+      }
+    },
+    "/api/v1/predictors/{predictor_id}/drift": {
+      "get": {
+        "description": "PSI of the recent window against the baseline window.\n\nThe windows default to the predictor's OWN stored settings rather than to a constant, so two\npeople asking \"is it drifting?\" get the same answer -- a drift number is only comparable\nagainst its own history when the windows are fixed. Overriding them per request is allowed\nfor exploration, and the response echoes which were used so a screenshot is self-describing.\n\nThe two windows are ADJACENT, not overlapping: the baseline ends where the current window\nbegins. An overlapping baseline contains the very observations it is being compared against,\nwhich damps exactly the signal the report exists to show.",
+        "operationId": "predictor_drift_api_v1_predictors__predictor_id__drift_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "predictor_id",
+            "required": true,
+            "schema": {
+              "title": "Predictor Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "baseline_days",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Baseline Days"
+            }
+          },
+          {
+            "in": "query",
+            "name": "current_days",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Current Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Predictor Drift Api V1 Predictors  Predictor Id  Drift Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Predictor Drift"
       }
     },
     "/api/v1/providers": {

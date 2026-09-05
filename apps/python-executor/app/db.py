@@ -84,6 +84,33 @@ def _default_database_url() -> str:
     )
 
 _engine_cache: dict[str, Engine] = {}
+
+
+def dispose_engine(url: str, schema: Optional[str] = None) -> bool:
+    """Drop one cached engine and close its pooled connections. Returns whether one was cached.
+
+    THE CACHE IS KEYED BY URL AND NOTHING EVER EVICTS, which is correct in a server (a handful of
+    URLs, held for the process lifetime) and a slow leak in a test suite: every test that builds
+    `Storage(path=<a fresh tempdir>)` mints a new key, and its pool keeps SQLite file handles open
+    against a directory the test then deletes. At around 1700 tests that surfaced as
+    `sqlite3.OperationalError: unable to open database file` in an unrelated module -- the
+    accumulated pools, not the test that happened to be running.
+
+    Exposed rather than left to tests to reach into `_engine_cache`, so the disposal happens
+    through the pool's own `dispose()` instead of dropping a reference and hoping.
+    """
+    cache_key = "{0}#{1}".format(url, schema) if schema else url
+    # The session factory holds a reference to the same engine, so dropping only the engine
+    # entry would leave a live factory handing out connections from a pool nothing can reach.
+    _session_factory_cache.pop(cache_key, None)
+    engine = _engine_cache.pop(cache_key, None)
+    if engine is None:
+        return False
+    try:
+        engine.dispose()
+    except Exception:  # pragma: no cover - a failed dispose must not fail a teardown
+        pass
+    return True
 _session_factory_cache: dict[str, sessionmaker[Session]] = {}
 
 

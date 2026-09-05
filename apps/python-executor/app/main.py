@@ -1438,6 +1438,10 @@ async def startup() -> None:
 
         register_audit_listener(webhook_dispatch.on_audit_event)
         register_decision_listener(webhook_dispatch.on_decision)
+
+        from . import predictors as predictors_module
+
+        register_decision_listener(predictors_module.on_decision)
     except Exception:  # pragma: no cover - a listener must never block startup
         pass
     # Fail closed: refuse to serve in production with default/unset critical secrets.
@@ -1897,6 +1901,7 @@ from .routers.platform import router as platform_router  # noqa: E402
 from .routers.sdk import router as sdk_router  # noqa: E402
 from .routers import runtime as _runtime  # noqa: E402
 from .routers.runtime import router as runtime_router  # noqa: E402
+from .routers.predictors import router as predictors_router  # noqa: E402
 from .routers.webhook_subscriptions import router as webhook_subscriptions_router  # noqa: E402
 from .routers.collab import router as collab_router  # noqa: E402
 from .routers.evaluations import router as evaluations_router  # noqa: E402
@@ -1922,6 +1927,7 @@ app.include_router(models_router)
 app.include_router(platform_router)
 app.include_router(sdk_router)
 app.include_router(runtime_router)
+app.include_router(predictors_router)
 app.include_router(webhook_subscriptions_router)
 app.include_router(collab_router)
 app.include_router(evaluations_router)

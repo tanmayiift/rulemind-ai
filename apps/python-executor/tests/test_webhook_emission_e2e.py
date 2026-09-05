@@ -98,6 +98,15 @@ class _Base(unittest.TestCase):
     def tearDown(self):
         storage_module.clear_audit_listeners()
         storage_module.clear_decision_listeners()
+        # Dispose the engine, not just the tempdir. db._engine_cache is keyed by URL and never
+        # evicts -- correct in a server (a handful of URLs for the process lifetime), a slow leak
+        # in a suite where every test mints a fresh temp path. The pool keeps SQLite handles open
+        # against a directory the next line deletes, and at ~1700 tests that surfaced as
+        # "unable to open database file" in an unrelated module.
+        try:
+            self.storage.engine.dispose()
+        except Exception:  # pragma: no cover - teardown must not fail the test
+            pass
         app_main.storage = self._orig_storage
         self.tempdir.cleanup()
 

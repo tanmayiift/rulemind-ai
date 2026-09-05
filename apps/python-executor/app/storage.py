@@ -76,6 +76,8 @@ from .models import (
     Tenant,
     UsageRecord,
     Variable,
+    Predictor,
+    PredictorValue,
     Webhook,
     WebhookSubscription,
     WorkflowExecution,
@@ -3948,6 +3950,122 @@ class Storage:
             "is_active": model.is_active,
             "secret_hash": decrypt_secret_text(model.secret_hash) if include_secret else ("••••••••" if model.secret_hash else None),
             "payload_mapping": copy.deepcopy(model.payload_mapping or {}),
+            "created_at": serialize_datetime(model.created_at),
+            "updated_at": serialize_datetime(model.updated_at),
+        }
+
+    # ── predictors (P20) ──────────────────────────────────────────────────
+    def create_predictor(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        with self.connect() as session:
+            model = Predictor(
+                id=payload.get("id") or uuid4_str(),
+                tenant_id=resolved,
+                name=payload["name"],
+                description=payload.get("description"),
+                source_type=payload["source_type"],
+                source_id=payload.get("source_id"),
+                is_active=bool(payload.get("is_active", True)),
+                baseline_days=int(payload.get("baseline_days", 30)),
+                current_days=int(payload.get("current_days", 7)),
+                bins=int(payload.get("bins", 10)),
+            )
+            session.add(model)
+            session.flush()
+            return self._predictor_to_dict(model)
+
+    def update_predictor(self, predictor_id: str, patch: Dict[str, Any],
+                         tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(Predictor, predictor_id)
+            if not model or model.tenant_id != resolved:
+                return None
+            for field in ("name", "description", "source_type", "source_id", "is_active",
+                          "baseline_days", "current_days", "bins"):
+                if field in patch:
+                    setattr(model, field, patch[field])
+            session.flush()
+            return self._predictor_to_dict(model)
+
+    def delete_predictor(self, predictor_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(Predictor, predictor_id)
+            if not model or model.tenant_id != resolved:
+                return False
+            # The observations go with it. Orphaned values would keep a deleted predictor's rows
+            # growing forever with nothing able to read them.
+            session.query(PredictorValue).filter(
+                PredictorValue.tenant_id == resolved,
+                PredictorValue.predictor_id == predictor_id).delete(synchronize_session=False)
+            session.delete(model)
+            return True
+
+    def get_predictor(self, predictor_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(Predictor, predictor_id)
+            if not model or model.tenant_id != resolved:
+                return None
+            return self._predictor_to_dict(model)
+
+    def list_predictors(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(Predictor).where(Predictor.tenant_id == resolved)
+                .order_by(desc(Predictor.created_at))).all()
+            return [self._predictor_to_dict(row) for row in rows]
+
+    def active_predictors(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Read on EVERY decision, so it is a narrow query and nothing else."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(Predictor).where(Predictor.tenant_id == resolved,
+                                        Predictor.is_active.is_(True))).all()
+            return [self._predictor_to_dict(row) for row in rows]
+
+    def record_predictor_values(self, tenant_id: str, rows: List[Dict[str, Any]]) -> int:
+        """Bulk-insert observations. One statement for all predictors of one decision, because
+        this is on the decision path and N predictors must not mean N round trips."""
+        if not rows:
+            return 0
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            session.add_all([
+                PredictorValue(tenant_id=resolved, predictor_id=row["predictor_id"],
+                               decision_id=row.get("decision_id"), value=float(row["value"]))
+                for row in rows])
+            return len(rows)
+
+    def predictor_values_between(self, tenant_id: str, predictor_id: str,
+                                 start: datetime, end: datetime) -> List[float]:
+        """The values in a window, as bare floats -- the only thing the drift maths needs, and
+        materialising dicts for a 30-day window would be a lot of objects for nothing."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            return [float(v) for v in session.scalars(
+                select(PredictorValue.value).where(
+                    PredictorValue.tenant_id == resolved,
+                    PredictorValue.predictor_id == predictor_id,
+                    PredictorValue.created_at >= start,
+                    PredictorValue.created_at < end)).all()]
+
+    @staticmethod
+    def _predictor_to_dict(model: "Predictor") -> Dict[str, Any]:
+        return {
+            "id": model.id,
+            "tenant_id": model.tenant_id,
+            "name": model.name,
+            "description": model.description,
+            "source_type": model.source_type,
+            "source_id": model.source_id,
+            "is_active": model.is_active,
+            "baseline_days": model.baseline_days,
+            "current_days": model.current_days,
+            "bins": model.bins,
             "created_at": serialize_datetime(model.created_at),
             "updated_at": serialize_datetime(model.updated_at),
         }

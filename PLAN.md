@@ -643,12 +643,15 @@ GENERATED from the Python. Every fix mutation-checked.
 - [x] **D2** P03 outbound webhooks: subscription model, event types, filters — and
   `manage_access` rather than `author`, because a subscription is standing egress
   configuration, not a policy artifact
-- [ ] **D3** P20 predictor entity + values + reports
+- [x] **D3** P20 predictor entity + values + reports — PSI drift with the conventional
+  0.10/0.25 bands; a predictor POINTS at a number rather than recomputing one, and
+  capture hooks `add_decision` so the series cannot miss a decision path
 - [x] **D4** P09-partial: DLQ on the decision WAL. `Idempotency-Key` already shipped in
   W7.x (`app/idempotency.py` + the `idempotency_records` table), so this was the DLQ half
   only: a WAL decision that can never re-insert is now bounded and dead-lettered instead
   of retried on every boot forever.
-- [ ] **D5** Migration chain serialized; DoD five each; regression gate
+- [x] **D5** Migration chain serialized (one head, 26 revisions, applied + downgraded
+  against real Postgres 16); DoD five per entity; regression gate green on BOTH lanes
 
 ## E. Phase 4 - roadmap phase 5 (parallel)
 

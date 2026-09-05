@@ -219,6 +219,8 @@ class TenantIsolationMatrixTest(unittest.TestCase):
             "name": "iso_dt", "inputs": [], "outputs": [], "rows": []})
         made["experiments"] = self._create("experiments", {
             "name": "iso_exp", "policy_id": policy["id"], "variants": []})
+        made["predictors"] = self._create("predictors", {
+            "name": "iso_pred", "source_type": "variable", "source_id": variable["id"]})
         made["webhook-subscriptions"] = self._create("webhook-subscriptions", {
             "name": "iso_sub", "url": "https://example.com/events",
             "event_types": ["decision.rejected"]})

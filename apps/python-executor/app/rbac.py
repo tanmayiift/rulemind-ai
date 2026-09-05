@@ -107,6 +107,9 @@ _AUTHOR_PREFIXES = (
     "/api/v1/webhooks",
     "/api/v1/bundles",
     "/api/v1/segments",
+    "/api/v1/predictors",   # P20: names an existing number and records it in THIS workspace,
+                            # so it is authoring -- unlike a webhook subscription, which sends
+                            # workspace data to a third party and is manage_access above.
     # Added when the unknown-write default was flipped to fail-closed. Each of these was
     # previously reaching AUTHOR only by falling off the end of the map; they are listed
     # explicitly so the fail-closed default cannot lock an author out of them.

@@ -4,7 +4,8 @@ import uuid
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import (JSON, BigInteger, Boolean, Date, DateTime, Float, Index, Integer,
+                        LargeBinary, String, Text, UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -549,6 +550,54 @@ class Webhook(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     secret_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     payload_mapping: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+
+class Predictor(Base, TimestampMixin):
+    """A named number a decision already produces, tracked over time (P20).
+
+    It POINTS at a value rather than computing one -- see app/predictors.py for why -- so the
+    columns are a pointer (source_type + source_id) plus a baseline window, not a definition.
+    """
+
+    __tablename__ = "predictors"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_predictors_tenant_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    # How many days back the baseline window reaches, and how many days the current window
+    # covers. Stored per predictor rather than passed per request so that two people asking "is
+    # it drifting?" get the same answer -- a drift number is only comparable against its own
+    # history if the windows are fixed.
+    baseline_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    current_days: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
+    bins: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+
+
+class PredictorValue(Base):
+    """One observation. Deliberately narrow and unencrypted: a score with no identifiers beside
+    it is not personal data, and this table is read in bulk for a distribution -- decrypting a
+    field per row would make a 30-day window a per-request cost rather than a query."""
+
+    __tablename__ = "predictor_values"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    predictor_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    decision_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        # The only query this table serves: one predictor's values in a time window, for one
+        # tenant. A composite index in that order is what keeps a 30-day baseline from becoming a
+        # full scan as the table grows with decision volume.
+        Index("ix_predictor_values_lookup", "tenant_id", "predictor_id", "created_at"),
+    )
 
 
 class WebhookSubscription(Base, TimestampMixin):

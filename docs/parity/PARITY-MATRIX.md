@@ -19,8 +19,8 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 10 |
-| 🟡 partial | 6 |
+| ✅ present | 11 |
+| 🟡 partial | 5 |
 | ❌ absent | 5 |
 | ⛔ cut | 1 |
 
@@ -49,7 +49,7 @@ verified.
 | P17 | Excel functions (CUMIPMT, DAYS360, EDATE, EOMONTH) | ✅ present | `packages/rule-engine/src/excel-functions.ts:397 CUMIPMT, :686 DAYS360` (with IPMT/PPMT/CUMPRINC), checked against `packages/shared/excel-financial-date.spec.json` — 50 cases **generated from the Python** — by `test/excel-financial-date-parity.test.ts` | — | 3 | done | **yes** |
 | P18 | Rate limiting on resource APIs | ✅ present | `app/rate_limit.py` — `classify()` maps method+path to decision/read/write/ai/export/admin with whole-segment matching; `check_request()` enforces the class bucket then the tenant aggregate | class shares are per tenant/env, not per individual route | 3 | done | no |
 | P19 | Superflows | ✅ present | ships as **sub-workflow**: `executor.py` `workflow` step, resolved by raw id or per-tenant alias with cycle detection on the resolved id; the composing thing is a policy, so it has the dev→uat→prod lifecycle (`promote_policy` has no step-type restriction); `workflow-builder/page.tsx` lists "Sub-workflow" as a palette item; 4 test modules | — | 7 | done | no |
-| P20 | Predictor entity + values + reports | 🟡 partial | `'predictor' is only a synonym for scorecard at app/ai.py:511,523-532, routed at app/routers/ai.py:239-258` | no table, no values store, no reports | 4 | ~3 weeks | no |
+| P20 | Predictor entity + values + reports | ✅ present | `predictors` + `predictor_values` tables, `/api/v1/predictors` CRUD, drift report at `/{id}/drift`; a predictor POINTS at a scorecard score / variable / outcome rather than recomputing it; values captured at `storage.add_decision` so the series covers every decision path; PSI (`app/drift.py`) with conventional 0.10/0.25 bands, baseline quantile bins, per-bin contributions; `tests/test_drift.py` (18) + `tests/test_predictors_api.py` (30) | values live in the primary DB, not ClickHouse — routing them to the configured archive sink is the remaining scale piece | 4 | done | no |
 | P21 | Evaluation timeouts + 504 handling | ✅ present | `EvaluationBudgetExceeded at app/executor.py:159, enforced at :449,486,502,866,958-987; 504 handler at app/main.py:105-121; tested at tests/test_evaluation_budget.py:71` | `app/routers/evaluations.py:70,87,106` runs model evaluation synchronously outside the executor and so outside the budget; the `app/fast_decide.py` gap is closed (same key, same default, checked between variables and once before the compiled core) | 3 | days for the remaining model-evaluation path | no |
 | P22 | Node-based workflow builder (branch / loop) | ✅ present | `apps/web/app/workflow-builder/page.tsx:31-45 PALETTE (13) matches the 13 types dispatched at app/executor.py:523-553; guarded by apps/web/test/workflow-builder-palette.test.ts` | a nested step list, not a free-form graph; no 'rule set' node | 7 | 3-6 months for the graph canvas | no |
 
