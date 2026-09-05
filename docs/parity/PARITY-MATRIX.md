@@ -19,8 +19,8 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 13 |
-| 🟡 partial | 3 |
+| ✅ present | 14 |
+| 🟡 partial | 2 |
 | ❌ absent | 5 |
 | ⛔ cut | 1 |
 
@@ -39,7 +39,7 @@ verified.
 | P07 | Matrix with dimensions + import | ❌ absent | `'matrix' is only a QA harness (apps/python-executor/simulation/scenario_matrix.py:1) and a backtest transition_matrix; closest analog is app/decision_tables.py:92` | — | 6 | ~4 weeks | **yes** |
 | P08 | Child workflow by alias | ✅ present | `app/executor.py:777-792` — `_execute_subworkflow` resolves `config.alias` through `engine_config.workflow_aliases`, flat or environment-keyed by the parent's status | — | 3 | done | no |
 | P09 | DLQ / Kafka / exactly-once | 🟡 partial | idempotency: `app/idempotency.py` + `idempotency_records` with a (tenant, key) unique constraint; dead letter: a WAL decision that cannot re-insert is bounded by `DECISION_WAL_MAX_REPLAY_ATTEMPTS`, moved out of the boot path (never deleted), counted in `recover()`, logged at ERROR every boot, and requeued by `replay_dead_letter`; `tests/test_decision_wal_dead_letter.py` (14) | no broker — Redis pub/sub with DB polling, so no partition/consumer group/offset for exactly-once to be about | 8 | 6+ months for the Kafka half | no |
-| P10 | ClickHouse / OLAP store | 🟡 partial | `app/archiver.py` ClickHouseArchiver, driven by `app/scheduler.py:71-95`; round-trip verified against a **real ClickHouse container** at `tests/test_archive_sinks_live.py:37,91`, wired into CI as a service | stores archived **decisions**, not predictor values — that half is P20 | 4 | P20 | no |
+| P10 | ClickHouse / OLAP store | ✅ present | `ClickHouseArchiver` for archived decisions (covered by `test_archive_sinks_live.py`), plus predictor values fanned out to their own narrow table via a DEFAULTED `write_predictor_values` on the interface — so existing sinks are untouched; `ColdStoreFanOutTest` covers the fan-out, the no-sink no-op, and a dead sink costing neither the decision nor the hot copy | `S3Archiver` inherits the no-op, so S3 deployments archive decisions but not predictor values | 4 | done | no |
 | P11 | Canary deployment with delays | ✅ present | `app/champion_challenger.py` ramp + guardrails + promote/hold/rollback; the ramp drives live traffic via `app/experiments.py`; `scheduler.auto_rollback_experiments` halts a running experiment on a GUARDRAIL BREACH (not on merely losing), leader-gated, audited, off by default behind `EXPERIMENT_AUTO_ROLLBACK`; `test_canary_ramp_assignment.py` (14) + `test_experiment_auto_rollback.py` (12) | halts the experiment rather than reverting an already-promoted policy — a separate lifecycle | 5 | done | no |
 | P12 | Feature factory | ❌ absent | `0 hits in any .py/.ts/.tsx; app/backtest.py and app/analytics.py are the seeds` | — | 8 | multi-month | **yes** |
 | P13 | Monaco / embedded code editor | 🟡 partial | CodeMirror 6 at `apps/web/src/v3/editor/PythonCodeEditor.tsx` — Python highlighting themed from the app's tokens (both themes), plus RuleMind-aware completion from live state (`rulemind-completion.ts`: the source's `sample_payload` keys after `payload.`, other variables after `variables.`, the decorator); `test/rulemind-completion.test.ts` (19) + `e2e/rulemind-v3.spec.ts` types into it | no inline diagnostics (`@codemirror/lint` unwired); only the variables page, not the API console | 6 | ~1 week for diagnostics | no |

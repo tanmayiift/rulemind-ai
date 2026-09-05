@@ -145,3 +145,36 @@ def on_decision(storage: Any, decision: Dict[str, Any]) -> None:
         storage.record_predictor_values(tenant_id, rows)
     except Exception:  # pragma: no cover
         logger.warning("could not record predictor values for %s", tenant_id, exc_info=True)
+        return
+    _fan_out_to_archive(tenant_id, rows)
+
+
+def _fan_out_to_archive(tenant_id: str, rows: List[Dict[str, Any]]) -> None:
+    """Copy the observations to the configured cold store, if there is one (P10 + P20).
+
+    A FAN-OUT, NOT A MOVE, and that is the difference from decision archiving. A decision is
+    archived when it falls OUT of the retention window and is then purged from the hot database.
+    A predictor value is copied out as it is produced and stays where it is, because the hot copy
+    is what the drift report reads -- the cold copy is for the long-horizon analysis a primary
+    database is the wrong shape for.
+
+    Best effort, after the primary write and never in front of it. The sink is optional
+    (DECISION_ARCHIVE_SINK), its client is a lazy optional import that is NOT in the shipped
+    image, and this runs on the decision path. A cold store that is unreachable, unconfigured or
+    uninstalled must cost the decision nothing.
+    """
+    try:
+        from .archiver import archiving_enabled, get_archiver
+
+        if not archiving_enabled():
+            return
+        get_archiver().write_predictor_values([
+            {**row, "tenant_id": tenant_id, "created_at": _now_iso()} for row in rows])
+    except Exception:  # pragma: no cover - the cold copy is never worth a decision
+        logger.warning("could not archive predictor values for %s", tenant_id, exc_info=True)
+
+
+def _now_iso() -> str:
+    from .logic import now_iso
+
+    return now_iso()

@@ -133,6 +133,21 @@ class DecisionArchiver(ABC):
     def write(self, decisions: List[Dict[str, Any]]) -> None:  # pragma: no cover - interface
         ...
 
+    def write_predictor_values(self, values: List[Dict[str, Any]]) -> None:
+        """Ship predictor observations to the same cold store (P10 + P20).
+
+        A DEFAULTED NO-OP, not an abstractmethod, so every existing sink keeps working untouched
+        and a sink that has no useful place to put these simply does not. Making it abstract
+        would break NullArchiver and any out-of-tree implementation for a capability most sinks
+        do not need.
+
+        Separate from `write` rather than folded into it because the two have different shapes and
+        different lifetimes: a decision is archived when it falls out of the retention window,
+        while a predictor value is copied out as it is produced -- the hot copy is what the drift
+        report reads, so this is a fan-out for long-horizon analysis, not a move.
+        """
+        return None
+
     def available(self) -> Tuple[bool, str]:
         """Can this sink actually run here? (ok, reason-when-not).
 
@@ -164,11 +179,15 @@ class MemoryArchiver(DecisionArchiver):
 
     def __init__(self) -> None:
         self.written: List[Dict[str, Any]] = []
+        self.predictor_values: List[Dict[str, Any]] = []
         self.batches: int = 0
 
     def write(self, decisions: List[Dict[str, Any]]) -> None:
         self.written.extend(decisions)
         self.batches += 1
+
+    def write_predictor_values(self, values: List[Dict[str, Any]]) -> None:
+        self.predictor_values.extend(values)
 
 
 class ClickHouseArchiver(DecisionArchiver):
@@ -181,6 +200,7 @@ class ClickHouseArchiver(DecisionArchiver):
         # declared type, so every .get() below is an error on the None arm.
         settings = env if env is not None else os.environ
         self._table = settings.get("CLICKHOUSE_TABLE", "rulemind_decisions")
+        self._predictor_table = settings.get("CLICKHOUSE_PREDICTOR_TABLE", "rulemind_predictor_values")
         self._settings = {
             "host": settings.get("CLICKHOUSE_HOST", "localhost"),
             "port": int(settings.get("CLICKHOUSE_PORT", "8123")),
@@ -226,6 +246,30 @@ class ClickHouseArchiver(DecisionArchiver):
             for d in decisions
         ]
         client.insert(self._table, rows, column_names=columns)
+
+    def write_predictor_values(self, values: List[Dict[str, Any]]) -> None:
+        """Its own table, not a column on the decisions table.
+
+        A predictor value is one number per predictor per decision, so folding it in would mean
+        either a wide sparse row per decision or N decision rows per decision. A narrow table is
+        also what an OLAP store is good at: the drift query is a scan of one column over a time
+        range, which is the shape ClickHouse exists for.
+        """
+        if not values:
+            return
+        client = self._connect()
+        columns = ["predictor_id", "tenant_id", "decision_id", "value", "created_at"]
+        rows = [
+            [
+                v.get("predictor_id"),
+                v.get("tenant_id"),
+                v.get("decision_id"),
+                float(v.get("value") or 0.0),
+                v.get("created_at"),
+            ]
+            for v in values
+        ]
+        client.insert(self._predictor_table, rows, column_names=columns)
 
 
 class S3Archiver(DecisionArchiver):

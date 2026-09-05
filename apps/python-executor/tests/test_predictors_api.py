@@ -341,6 +341,136 @@ class ValueCaptureTest(_Base):
             type(self.storage).active_predictors = original
 
 
+class ColdStoreFanOutTest(_Base):
+    """Predictor values reach the configured OLAP sink as well as the primary DB (P10 + P20).
+
+    A FAN-OUT, not a move: a decision is archived when it falls OUT of the retention window and
+    is then purged, while a predictor value is copied out as it is produced and STAYS -- the hot
+    copy is what the drift report reads. The cold copy is for the long-horizon analysis a primary
+    database is the wrong shape for.
+    """
+
+    def setUp(self):
+        super().setUp()
+        storage_module.register_decision_listener(predictors_module.on_decision)
+        from app.archiver import MemoryArchiver
+
+        self.sink = MemoryArchiver()
+
+    def decide(self, **overrides):
+        payload = {"id": "dec_cold", "tenant_id": self.tenant, "policy_id": "pol",
+                   "outcome": "approve", "payload": {},
+                   "computed_variables": {"bureau_score": 712}, "source": "api"}
+        payload.update(overrides)
+        return self.storage.add_decision(payload, tenant_id=self.tenant)
+
+    def decide_with_sink(self, enabled=True, sink=None, **overrides):
+        from unittest import mock as _mock
+
+        with _mock.patch("app.archiver.archiving_enabled", return_value=enabled):
+            with _mock.patch("app.archiver.get_archiver", return_value=sink or self.sink):
+                return self.decide(**overrides)
+
+    def hot_values(self, predictor_id):
+        return self.storage.predictor_values_between(
+            self.tenant, predictor_id, datetime.utcnow() - timedelta(days=1),
+            datetime.utcnow() + timedelta(days=1))
+
+    def test_a_value_reaches_both_the_hot_db_and_the_sink(self):
+        created = self.create()
+        self.decide_with_sink()
+        self.assertEqual(self.hot_values(created["id"]), [712.0], "the hot copy is missing")
+        self.assertEqual(len(self.sink.predictor_values), 1, "the cold copy is missing")
+
+    def test_the_archived_row_carries_its_tenant_and_predictor(self):
+        """A cold store row with no workspace or predictor on it cannot be queried for anything."""
+        created = self.create()
+        self.decide_with_sink()
+        row = self.sink.predictor_values[0]
+        self.assertEqual(row["tenant_id"], self.tenant)
+        self.assertEqual(row["predictor_id"], created["id"])
+        self.assertEqual(row["value"], 712.0)
+        self.assertTrue(row["created_at"], "no timestamp, so it cannot be windowed")
+
+    def test_the_hot_copy_is_kept_not_moved(self):
+        """The drift report reads the hot copy. Treating this like decision archiving -- write
+        then purge -- would empty the table the report queries."""
+        created = self.create()
+        self.decide_with_sink()
+        self.assertEqual(len(self.hot_values(created["id"])), 1)
+
+    def test_no_sink_configured_is_a_silent_no_op(self):
+        created = self.create()
+        self.decide_with_sink(enabled=False)
+        self.assertEqual(self.hot_values(created["id"]), [712.0])
+        self.assertEqual(self.sink.predictor_values, [])
+
+    def test_a_broken_sink_never_costs_the_decision_or_the_hot_copy(self):
+        """The sink's client is a lazy optional import that is NOT in the shipped image, and this
+        runs on the decision path."""
+        class _Exploding:
+            name = "exploding"
+
+            def write(self_inner, decisions):
+                raise RuntimeError("sink down")
+
+            def write_predictor_values(self_inner, values):
+                raise RuntimeError("sink down")
+
+        created = self.create()
+        self.decide_with_sink(sink=_Exploding())
+        self.assertEqual(len(self.storage.list_decisions(tenant_id=self.tenant)), 1,
+                         "a dead cold store lost the decision")
+        self.assertEqual(self.hot_values(created["id"]), [712.0],
+                         "a dead cold store lost the hot copy")
+
+    def test_the_fan_out_swallows_its_own_failures(self):
+        """The guard INSIDE _fan_out_to_archive, reached directly.
+
+        storage._notify_decision_listeners wraps every listener, so the decision-level test above
+        passes with this try/except deleted -- a mutation proved it, and it is the THIRD time in
+        this codebase that an outer defence-in-depth wrapper has masked an inner guard. Two layers
+        is correct; testing only the outer one means the inner one is decoration. Here the inner
+        one is what keeps a dead cold store from aborting on_decision before the HOT write's own
+        error handling is reached.
+        """
+        class _Exploding:
+            name = "exploding"
+
+            def write(self_inner, decisions):
+                raise RuntimeError("sink down")
+
+            def write_predictor_values(self_inner, values):
+                raise RuntimeError("sink down")
+
+        from unittest import mock as _mock
+
+        with _mock.patch("app.archiver.archiving_enabled", return_value=True):
+            with _mock.patch("app.archiver.get_archiver", return_value=_Exploding()):
+                # Must not raise.
+                predictors_module._fan_out_to_archive(self.tenant, [{"predictor_id": "p", "value": 1.0}])
+
+    def test_an_unimportable_sink_client_is_swallowed_too(self):
+        """The realistic failure: clickhouse-connect is a lazy optional import and is NOT in the
+        shipped image, so a deployment that sets DECISION_ARCHIVE_SINK=clickhouse without it
+        raises ImportError on the first call -- on the decision path."""
+        from unittest import mock as _mock
+
+        with _mock.patch("app.archiver.archiving_enabled", return_value=True):
+            with _mock.patch("app.archiver.get_archiver",
+                             side_effect=ImportError("No module named 'clickhouse_connect'")):
+                predictors_module._fan_out_to_archive(self.tenant, [{"predictor_id": "p", "value": 1.0}])
+
+    def test_a_sink_without_the_method_is_fine(self):
+        """write_predictor_values is a DEFAULTED no-op on the interface, so an out-of-tree sink
+        that predates it keeps working."""
+        from app.archiver import NullArchiver
+
+        created = self.create()
+        self.decide_with_sink(sink=NullArchiver())
+        self.assertEqual(self.hot_values(created["id"]), [712.0])
+
+
 class TheStatedFlowTest(_Base):
     """P20's e2eFlow: define a predictor -> values accumulate -> the report shows drift."""
 
