@@ -80,6 +80,9 @@ Everything below was installed from official sources into `~/.local` without sud
 | 5.4 | **Step through a failing execution** (parity P04): Decision Explorer → "Step through" → the debugger opens with that decision's payload → advance one step at a time and read the variables, rule results and outcome-so-far at each stop | ✅ `tests/test_debugger.py` (25); verified in-browser against the demo inventory |
 | 5.5 | The debugger's answers equal production's | ✅ stepped vs a real `simulate=False` run, incl. the empty payload. Was NOT true on first build: `simulate=True` also switches sample seeding on, so it showed demo values for fields the caller never sent — see `PolicyExecutor.seed_samples_override` |
 | 5.6 | Stepping has no side effects | ✅ no decision row, no billed unit, no outbound action; the control asserts a normal run *does* write one, so a build that never writes at all cannot pass |
+| 5.7 | **Import a 3-dimension pricing matrix** (parity P07): upload .csv/.xlsx → map columns to dimensions and outputs → import → the optimiser reports the sheet's uncovered ranges → the table evaluates | ✅ `tests/test_decision_table_import.py` (36) + `e2e/decision-table-import.spec.ts`; driven in-browser with a real 4-row sheet |
+| 5.8 | An unreadable cell refuses the import | ✅ every problem returned at once, each naming its row and column; nothing is created. A skipped cell is a WILDCARD, so a partial import would apply a row's price to every input |
+| 5.9 | Column types come from the data | ✅ and it is not cosmetic — with `field_type` defaulted to "string" the optimiser cannot order the column, every row reads "not_analyzable", and the gap analysis reports nothing at all |
 
 ## 6. Case-wise history & audit — ⚠️→✅
 | # | Case | Result |

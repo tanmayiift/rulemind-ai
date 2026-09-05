@@ -711,6 +711,108 @@
         "title": "DecisionTableEvaluateRequest",
         "type": "object"
       },
+      "DecisionTableImportColumn": {
+        "description": "One spreadsheet column, mapped onto the table.",
+        "properties": {
+          "field_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field Type"
+          },
+          "header": {
+            "title": "Header",
+            "type": "string"
+          },
+          "role": {
+            "default": "input",
+            "title": "Role",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
+          "variable_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variable Id"
+          }
+        },
+        "required": [
+          "header"
+        ],
+        "title": "DecisionTableImportColumn",
+        "type": "object"
+      },
+      "DecisionTableImportRequest": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionTableImportColumn"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "hit_policy": {
+            "default": "first",
+            "title": "Hit Policy",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "replace_existing": {
+            "default": false,
+            "title": "Replace Existing",
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "columns",
+          "rows"
+        ],
+        "title": "DecisionTableImportRequest",
+        "type": "object"
+      },
       "DecisionTableRequest": {
         "properties": {
           "default_row": {
@@ -7069,6 +7171,46 @@
           }
         },
         "summary": "Analyze Decision Table Draft"
+      }
+    },
+    "/api/v1/decision-tables/import": {
+      "post": {
+        "description": "Create a decision table from a parsed spreadsheet grid (parity P07).\n\nThe workbook is parsed in the browser -- SheetJS is already a web dependency and already does\nthis in the simulation page -- and what arrives here is rows of cells plus the author's\nmapping of headers onto dimensions and outputs. See `app/decision_table_import.py` for why the\nbinary deliberately does not reach the API process.\n\nThe response carries the optimiser's analysis, so the import itself is where conflicts and\nUNCOVERED INPUT SPACE surface. That is the point of importing a matrix rather than retyping\nit: the gaps in a hand-built pricing sheet are exactly what nobody notices by reading it.",
+        "operationId": "import_decision_table_api_v1_decision_tables_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionTableImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Import Decision Table Api V1 Decision Tables Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Decision Table"
       }
     },
     "/api/v1/decision-tables/{table_id}": {

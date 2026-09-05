@@ -9,8 +9,10 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
+from pydantic import BaseModel
 
 from .. import main
+from ..context import get_current_api_key_id
 from ..logic import generate_rule_expression_definition, now_iso, slugify
 from ..main import (
     DecisionTableDraft,
@@ -20,6 +22,7 @@ from ..main import (
     RuleUpsertRequest,
     ScorecardUpsertRequest,
     TestPayloadRequest,
+    active_role,
     active_tenant_id,
     current_rule_map,
     current_scorecard_map,
@@ -270,6 +273,87 @@ def analyze_decision_table_draft(draft: DecisionTableDraft) -> Dict[str, Any]:
     from ..decision_tables import analyze_decision_table
 
     return analyze_decision_table(draft.model_dump())
+
+
+class DecisionTableImportColumn(BaseModel):
+    """One spreadsheet column, mapped onto the table."""
+
+    header: str
+    role: str = "input"           # "input" | "output" | anything else = ignore this column
+    variable_id: Optional[str] = None   # inputs only
+    field_type: Optional[str] = None    # inputs only
+    type: Optional[str] = None          # outputs only: "outcome" constrains the value
+
+
+class DecisionTableImportRequest(BaseModel):
+    name: str
+    columns: List[DecisionTableImportColumn]
+    rows: List[Dict[str, Any]]
+    hit_policy: str = "first"
+    description: Optional[str] = None
+    # Default False: an import that overwrites a table someone else is using, because two
+    # spreadsheets happened to share a title, is not a mistake the author can undo.
+    replace_existing: bool = False
+
+
+@router.post("/api/v1/decision-tables/import")
+def import_decision_table(request: DecisionTableImportRequest) -> Dict[str, Any]:
+    """Create a decision table from a parsed spreadsheet grid (parity P07).
+
+    The workbook is parsed in the browser -- SheetJS is already a web dependency and already does
+    this in the simulation page -- and what arrives here is rows of cells plus the author's
+    mapping of headers onto dimensions and outputs. See `app/decision_table_import.py` for why the
+    binary deliberately does not reach the API process.
+
+    The response carries the optimiser's analysis, so the import itself is where conflicts and
+    UNCOVERED INPUT SPACE surface. That is the point of importing a matrix rather than retyping
+    it: the gaps in a hand-built pricing sheet are exactly what nobody notices by reading it.
+    """
+    from ..decision_table_import import ImportError_, build_table
+    from ..decision_tables import analyze_decision_table
+
+    try:
+        table = build_table(
+            name=request.name,
+            columns=[column.model_dump() for column in request.columns],
+            rows=request.rows,
+            hit_policy=request.hit_policy,
+            description=request.description,
+        )
+    except ImportError_ as error:
+        # 422 with EVERY problem, not the first: a 40-row sheet should not need 40 round trips.
+        raise HTTPException(status_code=422, detail={
+            "message": "The sheet could not be imported.", "problems": error.problems}) from error
+
+    table_id = slugify(request.name)
+    existing = {t["id"] for t in main.storage.list_decision_tables()}
+    if table_id in existing and not request.replace_existing:
+        table_id = f"{table_id}_{uuid.uuid4().hex[:6]}"
+    table["id"] = table_id
+
+    if table_id in existing:
+        saved = main.storage.update_decision_table(table_id, table)
+    else:
+        saved = main.storage.create_decision_table(table)
+    # `create_decision_table` already writes a `decision_table_created` event, but without an
+    # actor and with no way to tell a hand edit from a bulk import. An import is the one write
+    # here that comes from OUTSIDE the product -- a spreadsheet someone was emailed -- so who ran
+    # it and how many rows it brought in is the part worth being able to ask about later.
+    try:
+        main.storage.add_audit_event(
+            {"event_type": "decision_table_imported", "entity_type": "decision_table",
+             "entity_id": table_id,
+             "detail": "Imported {0} rows into decision table {1} from a spreadsheet.".format(
+                 len(table["rows"]), table_id),
+             "metadata": {"actor_api_key_id": get_current_api_key_id(), "actor_role": active_role(),
+                          "rows": len(table["rows"]), "inputs": len(table["inputs"]),
+                          "outputs": len(table["outputs"]), "replaced": table_id in existing}},
+            tenant_id=main.storage._tenant_id())
+    except Exception:  # pragma: no cover - audit is best effort; the import already succeeded
+        pass
+
+    saved["analysis"] = analyze_decision_table(saved)
+    return saved
 
 
 @router.post("/api/v1/decision-tables/{table_id}/analyze")

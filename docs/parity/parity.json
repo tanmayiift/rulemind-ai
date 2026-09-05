@@ -80,13 +80,14 @@
     {
       "id": "P07",
       "name": "Matrix with dimensions + import",
-      "state": "ABSENT",
-      "evidence": "'matrix' appears only as a QA harness (apps/python-executor/simulation/scenario_matrix.py:1), a backtest transition_matrix (app/backtest.py:113) and test-suite names; closest product analog is app/decision_tables.py:92 evaluate_decision_table; /api/v1/import at app/routers/runtime.py:616 takes config JSON only -- no XLSX, no openpyxl",
+      "state": "PRESENT",
+      "evidence": "The MATRIX ships as `decision_tables` (app/models.py:792): `inputs` are named dimensions, each bound to a variable and typed; `outputs` are multiple and only the outcome-typed one is constrained, so a price or a limit is expressible; rows state a condition per dimension. `app/decision_tables.py` evaluates with a per-cell trace, and `analyze_decision_table` reports conflicts, GAPS, unreachable and shadowed rows through `mece.analyze_mece`. IMPORT is `app/decision_table_import.py` + POST /api/v1/decision-tables/import (app/routers/rules.py): the workbook is parsed in the BROWSER -- SheetJS is already a web dependency -- and what reaches the API is a grid plus the author's mapping, so no OOXML parser runs on a 512MB API process. `parse_cell` turns spreadsheet notation into conditions (`>= 1000`, `100 - 999`, `gold|silver`, `in [...]`, `*`), column types are inferred from the data, and any cell it cannot read REFUSES the whole import. tests/test_decision_table_import.py (36) + e2e/decision-table-import.spec.ts; UI at apps/web/app/decision-tables/page.tsx.",
       "phase": 6,
-      "size": "~4 weeks",
+      "size": "done",
       "engineSemantics": true,
       "e2eFlow": "import a 3-dimension pricing matrix from XLSX -> reference from a rule -> MECE reports gaps",
-      "gap": "No matrix entity: 0 hits for a matrix/dimension model in app/models.py. Decision tables (app/decision_tables.py) are the nearest thing but are flat row/column, with no named dimensions and no import path."
+      "gap": "One sheet, the first one in the workbook: a workbook with a matrix per tab has to be imported a tab at a time. Import creates or replaces a whole table rather than merging into an existing one, so there is no 'update these 12 rows' path. And the cell grammar is deliberately closed -- regex and cross-column expressions are not accepted, because a spreadsheet cell that needs either is past the point where a matrix is the right shape.",
+      "note": "ABSENT (~4 weeks) -> PARTIAL (days) -> PRESENT, all on 2026-09-05. The row said 'no matrix entity' and called decision tables 'flat row/column with no named dimensions'; `inputs` ARE named dimensions, and the row's own MECE-gap clause was already satisfied by code the row never mentioned. Only import was missing. Building it found a REAL bug in the process: with `field_type` defaulted to 'string', `analyze_decision_table` cannot order the column, so every row came back 'not_analyzable' and the gap analysis reported NOTHING -- on the feature whose selling point is finding the holes in a pricing matrix. Types are now read off the data. Two of the first inference tests passed for the wrong reason (the fixture declared the types it was asserting) and were only caught by a mutation refusing to die."
     },
     {
       "id": "P08",

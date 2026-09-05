@@ -674,7 +674,15 @@ GENERATED from the Python. Every fix mutation-checked.
 
 ## F. Phase 5 - roadmap phase 6 (parallel)
 
-- [ ] **F1** P07 matrix entity with dimensions + import
+- [x] **F1** P07 matrix entity with dimensions + import — the ENTITY already existed:
+  `decision_tables`' `inputs` are named dimensions, and its optimiser already reported gaps,
+  so the row's "~4 weeks, no matrix entity" was wrong and only import was missing. Added
+  `app/decision_table_import.py` + `POST /decision-tables/import`, parsing the workbook in the
+  browser (SheetJS is already a web dependency; OOXML on a 512MB API process is a
+  decompression-bomb surface). Found a real bug on the way: `field_type` defaulted to "string"
+  makes `analyze_decision_table` unable to order the column, so every row came back
+  "not_analyzable" and the GAP ANALYSIS SILENTLY REPORTED NOTHING. Types are now read off the
+  data. Two inference tests passed for the wrong reason until a mutation refused to die.
 - [x] **F2** P13 editor — CodeMirror 6: highlighting, RuleMind-aware completion, and
   inline diagnostics served by the sandbox's own validate_source
 - [ ] **F3** DoD five each; regression gate
