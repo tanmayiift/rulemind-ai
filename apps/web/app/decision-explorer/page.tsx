@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { THEMES } from "../../src/v3/theme";
@@ -130,7 +131,23 @@ export default function DecisionExplorerPage() {
       {error ? <div style={{ ...card, padding: 14, color: theme.danger, marginBottom: 16 }}>{error}</div> : null}
       {loading ? <div style={{ ...card, padding: 40, textAlign: "center", color: theme.muted }}>Loading decisions…</div> : null}
       {!loading && decisions.length === 0 ? (
-        <div style={{ ...card, padding: 48, textAlign: "center", color: theme.muted }}>No decisions logged yet. Run a decision from the Test Console to see it here.</div>
+        <div style={{ ...card, padding: 48, textAlign: "center", color: theme.muted }}>
+          <div style={{ marginBottom: 14 }}>No decisions logged yet.</div>
+          {/* The old copy named the Test Console and left the user to find it. An empty state
+              that tells you where to go should take you there -- otherwise it is a dead end
+              wearing the costume of guidance. */}
+          <Link
+            href="/test-console"
+            style={{
+              display: "inline-block", padding: "9px 16px", borderRadius: 8,
+              border: "1px solid " + theme.accent, background: theme.accentBg,
+              color: theme.accent, textDecoration: "none",
+              fontSize: "var(--rm-fs-body)", fontWeight: 600,
+            }}
+          >
+            Run your first decision
+          </Link>
+        </div>
       ) : null}
 
       {!loading && decisions.length > 0 ? (

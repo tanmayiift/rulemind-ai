@@ -47,9 +47,7 @@ const NAVIGATION: ReadonlyArray<{
       // policy is the thing that CHAINS connectors, variables, rules and scorecards into a
       // decision, the dashboard counts them on its front page, and nothing linked to them.
       { href: "/policies" as Route, label: "Policies", icon: "policies" },
-      { href: "/workflows" as Route, label: "Workflows", icon: "policies" },
       { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
-      { href: "/segments" as Route, label: "Segments", icon: "variables" },
     ],
   },
   {
@@ -58,7 +56,6 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/test-console" as Route, label: "Test Console", icon: "testing" },
       { href: "/api-console" as Route, label: "API Console", icon: "connectors" },
       { href: "/simulation" as Route, label: "Simulation", icon: "testing" },
-      { href: "/batch" as Route, label: "Batch Decisions", icon: "testing" },
       { href: "/ab-tests" as Route, label: "A/B Tests", icon: "testing" },
       { href: "/lifecycle" as Route, label: "Lifecycle", icon: "policies" },
       { href: "/collab" as Route, label: "Collab Editor", icon: "policies" },
@@ -70,7 +67,6 @@ const NAVIGATION: ReadonlyArray<{
     items: [
       { href: "/decision-explorer" as Route, label: "Decision Explorer", icon: "audit" },
       { href: "/review-queue" as Route, label: "Review Queue", icon: "audit" },
-      { href: "/approvals" as Route, label: "Approvals", icon: "audit" },
       { href: "/schedules" as Route, label: "Schedules", icon: "deploy" },
       { href: "/audit" as Route, label: "Audit Logs", icon: "audit" },
       { href: "/reports" as Route, label: "Reports", icon: "exports" },
@@ -112,6 +108,25 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/reports": { title: "Reports", subtitle: "Build reports over your decisions — dynamic columns from inputs/outputs, filters, timezone, and scheduled email delivery." },
   "/workflow-builder": { title: "Workflow Builder", subtitle: "Drag-and-drop canvas for policy steps — connectors, rules, branches, sub-workflows, monitors, and outcomes." },
   "/models": { title: "ML Models", subtitle: "Upload, host, test, and run Python models (.pkl / joblib) as policy steps." },
+  // Every route below was falling through to PAGE_COPY["/"], so the header showed
+  // "RuleMind — Generic decisioning engine…" while you stood on Decision Explorer or Approvals.
+  // A header that names the wrong page is worse than one that says nothing: it is the one part
+  // of the chrome a user trusts to tell them where they are.
+  "/decision-explorer": { title: "Decision Explorer", subtitle: "Find any decision and see exactly why it was made — node by node, with the inputs it saw." },
+  // Alias routes: these render another page outright, so the header names what you are
+  // actually looking at. They are deliberately NOT in the sidebar -- advertising
+  // "Approvals" and opening Deploy would be a broken promise.
+  "/approvals": { title: "Deploy", subtitle: "Promote tested assets through DEV, UAT, and PROD with audit-safe controls." },
+  "/segments": { title: "Dashboard", subtitle: "System overview, source health, and underwriting flow coverage." },
+  "/batch": { title: "Test Console", subtitle: "Single-run, batch simulation, and production API preview workflows." },
+  "/ab-tests": { title: "A/B Tests", subtitle: "Champion vs challenger experiments with traffic ramps, guardrails, and significance." },
+  "/workflows": { title: "Dashboard", subtitle: "System overview, source health, and underwriting flow coverage." },
+  "/simulation": { title: "Simulation", subtitle: "Replay historical payloads against a draft policy to see what would have changed." },
+  "/lifecycle": { title: "Lifecycle", subtitle: "What is in DEV, UAT and PROD right now, and what changed between them." },
+  "/collab": { title: "Collab Editor", subtitle: "Edit a draft with teammates in real time, with presence and version history." },
+  "/evaluations": { title: "Model Evaluation", subtitle: "Score a hosted model against a labelled set — accuracy, drift, and confusion matrix." },
+  "/model-sets": { title: "Model Sets", subtitle: "Group models into a versioned set, route between them by rule, and compare candidates on one input." },
+  "/predictors": { title: "Predictors", subtitle: "Track a number a decision already produces, and watch its population drift over time." },
   "/decision-tables": { title: "Decision Tables", subtitle: "Grid-authored decision logic — condition columns, rows, hit policies, with a live optimiser flagging conflicts, gaps, unreachable rows, and invalid values." },
 };
 
