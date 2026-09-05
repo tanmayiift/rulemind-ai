@@ -19,9 +19,9 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 15 |
+| ✅ present | 16 |
 | 🟡 partial | 1 |
-| ❌ absent | 5 |
+| ❌ absent | 4 |
 | ⛔ cut | 1 |
 
 `⛔ cut` means a deliberate decision not to build it — see the row for why.
@@ -34,7 +34,7 @@ verified.
 | P02 | p12 / PKCS#12 datasource credentials | ✅ present | `app/client_certs.py` unwraps a PKCS#12 bundle from the connector config and presents it on outbound calls via `connector_fetch`; chain included; server verification unchanged (`create_default_context`, asserted); contexts cached per (tenant, connector, bundle fingerprint) so rotation takes effect without a restart; the decrypted PEM touches only a 0600 temp file unlinked in a `finally`; `tests/test_client_certs.py` (23) | configured through connector config rather than a dedicated upload endpoint, and no expiry warning before the handshake fails | 4 | done | no |
 | P03 | Outbound webhooks with event-type filters | ✅ present | `webhook_subscriptions` table + `/api/v1/webhook-subscriptions` CRUD and `/test`; 13 closed event types (typo refused at authoring, not stored inert); ANDed filters through `logic.compare`, and a filter that cannot be evaluated does NOT deliver; HMAC-signed with the same helper `webhooks.py` verifies inbound, over the exact bytes sent; egress-guarded, `follow_redirects=False`; `manage_access`, not `author`; 55 tests + probed in the isolation matrix | no durable outbox — a subscriber down for the whole retry window misses that event (the decision is unaffected) | 4 | done | no |
 | P04 | Workflow step-through debugger | ❌ absent | `only post-hoc traces (ctx.trace) plus a loop-only tracer at app/executor.py:794` | — | 5 | ~3 weeks | no |
-| P05 | Modelset | ❌ absent | `0 hits for modelset/model_set; models are flat .pkl files in app/routers/models.py` | — | 5 | ~2 weeks | no |
+| P05 | Modelset | ✅ present | `model_sets` table + `app/modelsets.py`; ordered members routed by `evaluate_condition` (the same expression a branch step takes), first match wins, unevaluable conditions SKIPPED not matched; a `model` step naming a set resolves through it and records which member answered; pinning is a sha256 of the blob because nothing increments the `version` column; `/compare` runs every member on one input, `/drift` reports moved members; `tests/test_modelsets.py` (24) | comparison is serial and in-process; no automatic promotion from a comparison | 5 | done | no |
 | P06 | Nested-key input validation | ✅ present | `app/input_schema.py` validates against what connectors declare, reporting every issue with its full path incl. array indices; wired into `app/executor.py` AND `app/fast_decide.py`, both raising the same `InputValidationError`; `tests/test_nested_input_validation.py` (31) + `tests/test_fast_path_validation_and_budget_parity.py` assert the two paths agree | the model-predict path (`app/routers/models.py`) is still flat | 3 | days for the remaining model-predict path | no |
 | P07 | Matrix with dimensions + import | ❌ absent | `'matrix' is only a QA harness (apps/python-executor/simulation/scenario_matrix.py:1) and a backtest transition_matrix; closest analog is app/decision_tables.py:92` | — | 6 | ~4 weeks | **yes** |
 | P08 | Child workflow by alias | ✅ present | `app/executor.py:777-792` — `_execute_subworkflow` resolves `config.alias` through `engine_config.workflow_aliases`, flat or environment-keyed by the parent's status | — | 3 | done | no |

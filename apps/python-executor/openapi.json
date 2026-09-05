@@ -355,6 +355,17 @@
         "title": "BatchSimulationRequest",
         "type": "object"
       },
+      "CompareRequest": {
+        "properties": {
+          "features": {
+            "default": {},
+            "title": "Features",
+            "type": "object"
+          }
+        },
+        "title": "CompareRequest",
+        "type": "object"
+      },
       "ConnectorCreateRequest": {
         "properties": {
           "color": {
@@ -1601,6 +1612,107 @@
           "input_data"
         ],
         "title": "ModelPredictRequest",
+        "type": "object"
+      },
+      "ModelSetPatch": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "members": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Members"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "ModelSetPatch",
+        "type": "object"
+      },
+      "ModelSetRequest": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "members": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "members"
+        ],
+        "title": "ModelSetRequest",
         "type": "object"
       },
       "OidcCallbackRequest": {
@@ -7894,6 +8006,285 @@
           }
         },
         "summary": "Validate Import"
+      }
+    },
+    "/api/v1/model-sets": {
+      "get": {
+        "operationId": "list_model_sets_api_v1_model_sets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Model Sets Api V1 Model Sets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Model Sets"
+      },
+      "post": {
+        "operationId": "create_model_set_api_v1_model_sets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelSetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Create Model Set Api V1 Model Sets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Model Set"
+      }
+    },
+    "/api/v1/model-sets/{set_id}": {
+      "delete": {
+        "operationId": "delete_model_set_api_v1_model_sets__set_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Model Set Api V1 Model Sets  Set Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Model Set"
+      },
+      "get": {
+        "operationId": "get_model_set_api_v1_model_sets__set_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Model Set Api V1 Model Sets  Set Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Model Set"
+      },
+      "patch": {
+        "operationId": "update_model_set_api_v1_model_sets__set_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelSetPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Update Model Set Api V1 Model Sets  Set Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Model Set"
+      }
+    },
+    "/api/v1/model-sets/{set_id}/compare": {
+      "post": {
+        "description": "Run EVERY member on the same input and return the predictions side by side.\n\nRouting is deliberately bypassed: the point of a comparison is to see what each candidate\nwould have said, including the ones this input would not have routed to. The response still\nreports which member routing WOULD have chosen, so the two readings are available together.\n\nOne member failing does not fail the comparison -- a candidate that errors is exactly what an\noperator is looking for, and hiding the others behind it would defeat the endpoint.",
+        "operationId": "compare_model_set_api_v1_model_sets__set_id__compare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompareRequest",
+                "default": {
+                  "features": {}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Compare Model Set Api V1 Model Sets  Set Id  Compare Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compare Model Set"
+      }
+    },
+    "/api/v1/model-sets/{set_id}/drift": {
+      "get": {
+        "description": "Which members have moved since they were pinned.\n\nReported, never enforced. Retraining a model is a legitimate thing to do, and blocking a\ndecision because of it would make this feature a liability -- what the set owes the operator\nis that the change is VISIBLE, not that it is prevented.",
+        "operationId": "model_set_drift_api_v1_model_sets__set_id__drift_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Model Set Drift Api V1 Model Sets  Set Id  Drift Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Model Set Drift"
       }
     },
     "/api/v1/models": {

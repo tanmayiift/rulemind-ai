@@ -228,6 +228,11 @@ class TenantIsolationMatrixTest(unittest.TestCase):
         made["models"] = self._create("models", {
             "name": "iso_model", "type": "sklearn",
             "model_base64": base64.b64encode(pickle.dumps(_Predictor())).decode()})
+        # After models on purpose: a set names them, so the fixture order IS a dependency, the
+        # same way rules and scorecards need a variable above.
+        made["model-sets"] = self._create("model-sets", {
+            "id": "iso_set", "name": "iso_set",
+            "members": [{"model_id": self._id_of(made["models"]), "label": "only"}]})
         return made
 
     @staticmethod

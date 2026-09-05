@@ -1986,7 +1986,31 @@ class PolicyExecutor:
     def _execute_model(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
         from .model_executor import execute_model
         ref_id = str(step.get("ref_id") or step.get("ref") or "")
-        model = self.storage.get_model(ref_id, include_blob=True)
+        # A model step may name a MODEL SET as well as a model (P05). Sets are looked up second,
+        # so an existing model keeps winning on an id collision and no policy changes meaning:
+        # the two namespaces are separate today and a set added later must not shadow a model
+        # someone has been running for months.
+        model = self.storage.get_model(ref_id, include_blob=True, tenant_id=ctx.tenant_id)
+        routed_label = None
+        if not model:
+            from . import modelsets
+
+            model_set = self.storage.get_model_set(ref_id, tenant_id=ctx.tenant_id)
+            if model_set and model_set.get("is_active", True):
+                member, reason = modelsets.resolve_member(model_set, self._context_view(ctx))
+                if member is None:
+                    # No member matched and there is no unconditional one. Raising is right: a
+                    # model step exists to produce a number, and inventing one -- or silently
+                    # skipping the step -- would let the policy decide on a value no model gave.
+                    raise ValueError(
+                        "Model set '{0}' routed nowhere: {1}".format(ref_id, reason))
+                routed_label = member["label"]
+                model = self.storage.get_model(
+                    member["model_id"], include_blob=True, tenant_id=ctx.tenant_id)
+                if not model:
+                    raise ValueError(
+                        "Model set '{0}' routes to '{1}', which no longer exists".format(
+                            ref_id, member["model_id"]))
         if not model:
             raise ValueError("Unknown model: {0}".format(ref_id))
         config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
@@ -2011,6 +2035,12 @@ class PolicyExecutor:
         # Store prediction in variables for downstream steps
         if result.get("prediction") is not None:
             ctx.variables[output_variable] = result["prediction"]
+        if routed_label is not None:
+            # Which member answered, in the step result and therefore in the trace. Without it a
+            # decision made through a set is unexplainable after the fact: the outcome names the
+            # SET, and the set may route differently for the next applicant.
+            result = {**result, "model_set": ref_id, "routed_to": routed_label,
+                      "model_id": model.get("id")}
         return result
 
     async def _execute_review_gate(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:

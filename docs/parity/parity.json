@@ -56,13 +56,14 @@
     {
       "id": "P05",
       "name": "Modelset",
-      "state": "ABSENT",
-      "evidence": "0 hits for modelset/model_set outside PLAN.md and docs/parity/; models are flat .pkl files in app/routers/models.py",
+      "state": "PRESENT",
+      "evidence": "app/modelsets.py + the model_sets table (migration 20260905_0027), CRUD at /api/v1/model-sets, side-by-side comparison at /{id}/compare, and a drift report at /{id}/drift. ROUTING is an ordered member list evaluated by executor.evaluate_condition -- the same expression a BRANCH step takes, because routing between models is the same shape of decision as routing between steps -- first match wins, a member with no condition is the default, and an UNEVALUABLE condition is skipped rather than treated as matching. A `model` step naming a set resolves through it (executor._execute_model), and the step result records which member answered, so a decision made through a set stays explainable after the fact. VERSION PINNING is on a sha256 of the model blob, not on the version column: routers/models.py writes version=1 on every upload and nothing increments it, so a version pin would report 'in sync' against different weights. tests/test_modelsets.py (24), probed -- not exempted -- in tests/test_tenant_isolation_matrix.py.",
       "phase": 5,
-      "size": "~2 weeks",
+      "size": "done",
       "engineSemantics": false,
       "e2eFlow": "group models into a versioned set -> route by rule -> compare",
-      "gap": "No modelset concept: models are flat .pkl blobs addressed one at a time in app/routers/models.py. 0 hits for modelset/model_set. Needs a grouping entity, version pinning across members, and a resolution rule at decision time."
+      "gap": "Comparison runs members in-process one after another, so a set of many models makes the endpoint proportionally slower; it is an authoring tool rather than a decision path, so that is acceptable but worth naming. There is also no automatic promotion from a comparison -- picking a winner is a human editing the routing.",
+      "note": "ABSENT -> PRESENT 2026-09-05. Building this found two things about the existing model surface: nothing increments `version` on upload (so the natural pin does not work), and there is NO update endpoint for models at all -- retraining is delete-then-recreate. Both are reflected in the design and the tests rather than worked around silently."
     },
     {
       "id": "P06",

@@ -107,6 +107,8 @@ _AUTHOR_PREFIXES = (
     "/api/v1/webhooks",
     "/api/v1/bundles",
     "/api/v1/segments",
+    "/api/v1/model-sets",  # P05: groups models this workspace already has and routes
+                           # between them; grants no reach the author lacked.
     "/api/v1/predictors",   # P20: names an existing number and records it in THIS workspace,
                             # so it is authoring -- unlike a webhook subscription, which sends
                             # workspace data to a third party and is manage_access above.

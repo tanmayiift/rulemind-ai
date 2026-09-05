@@ -739,6 +739,28 @@ class HostedModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class ModelSet(Base, TimestampMixin):
+    """A versioned group of hosted models with a routing rule (P05).
+
+    Members live in a JSON column rather than a second table because they are an ORDERED list
+    whose order is the routing semantics -- first match wins. A child table would need an explicit
+    position column and an ordering join to reproduce exactly that, for a list bounded at 20.
+    """
+
+    __tablename__ = "model_sets"
+    __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_model_sets_tenant_public"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    public_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # [{model_id, label, condition, pinned_version}, ...] -- see app/modelsets.py.
+    members: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="dev", nullable=False)
+
+
 class ModelEvaluation(Base):
     """A predictive-model evaluation run (Gini/AUC/KS/PR-AUC/calibration/PSI/…) against
     ground-truth labels, optionally tied to a hosted model. Persisted so results survive

@@ -659,7 +659,8 @@ GENERATED from the Python. Every fix mutation-checked.
 ## E. Phase 4 - roadmap phase 5 (parallel)
 
 - [ ] **E1** P04 workflow step-through debugger
-- [ ] **E2** P05 modelset
+- [x] **E2** P05 modelset — ordered routing by branch-style condition, pinned on a blob
+  hash (nothing increments the version column), compare and drift endpoints
 - [x] **E3** P11 canary — ramp drives live traffic, and a guardrail breach now halts the
   experiment automatically (leader-gated, audited, opt-in)
 - [ ] **E4** DoD five each; regression gate

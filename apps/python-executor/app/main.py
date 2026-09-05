@@ -1905,6 +1905,7 @@ from .routers.platform import router as platform_router  # noqa: E402
 from .routers.sdk import router as sdk_router  # noqa: E402
 from .routers import runtime as _runtime  # noqa: E402
 from .routers.runtime import router as runtime_router  # noqa: E402
+from .routers.modelsets import router as modelsets_router  # noqa: E402
 from .routers.predictors import router as predictors_router  # noqa: E402
 from .routers.webhook_subscriptions import router as webhook_subscriptions_router  # noqa: E402
 from .routers.collab import router as collab_router  # noqa: E402
@@ -1931,6 +1932,7 @@ app.include_router(models_router)
 app.include_router(platform_router)
 app.include_router(sdk_router)
 app.include_router(runtime_router)
+app.include_router(modelsets_router)
 app.include_router(predictors_router)
 app.include_router(webhook_subscriptions_router)
 app.include_router(collab_router)

@@ -76,6 +76,7 @@ from .models import (
     Tenant,
     UsageRecord,
     Variable,
+    ModelSet,
     Predictor,
     PredictorValue,
     Webhook,
@@ -3950,6 +3951,78 @@ class Storage:
             "is_active": model.is_active,
             "secret_hash": decrypt_secret_text(model.secret_hash) if include_secret else ("••••••••" if model.secret_hash else None),
             "payload_mapping": copy.deepcopy(model.payload_mapping or {}),
+            "created_at": serialize_datetime(model.created_at),
+            "updated_at": serialize_datetime(model.updated_at),
+        }
+
+    # ── model sets (P05) ──────────────────────────────────────────────────
+    def create_model_set(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        with self.connect() as session:
+            model = ModelSet(
+                id=payload.get("id") or uuid4_str(),
+                tenant_id=resolved,
+                public_id=payload.get("public_id") or payload.get("id") or uuid4_str(),
+                name=payload["name"],
+                description=payload.get("description"),
+                members=copy.deepcopy(payload.get("members") or []),
+                is_active=bool(payload.get("is_active", True)),
+                status=payload.get("status", "dev"),
+            )
+            session.add(model)
+            session.flush()
+            return self._model_set_to_dict(model)
+
+    def update_model_set(self, set_id: str, patch: Dict[str, Any],
+                         tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(ModelSet).where(
+                ModelSet.tenant_id == resolved, ModelSet.public_id == set_id))
+            if not model:
+                return None
+            for field in ("name", "description", "members", "is_active", "status"):
+                if field in patch:
+                    setattr(model, field, copy.deepcopy(patch[field]))
+            session.flush()
+            return self._model_set_to_dict(model)
+
+    def delete_model_set(self, set_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(ModelSet).where(
+                ModelSet.tenant_id == resolved, ModelSet.public_id == set_id))
+            if not model:
+                return False
+            session.delete(model)
+            return True
+
+    def get_model_set(self, set_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(ModelSet).where(
+                ModelSet.tenant_id == resolved, ModelSet.public_id == set_id))
+            return self._model_set_to_dict(model) if model else None
+
+    def list_model_sets(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(ModelSet).where(ModelSet.tenant_id == resolved)
+                .order_by(desc(ModelSet.created_at))).all()
+            return [self._model_set_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _model_set_to_dict(model: "ModelSet") -> Dict[str, Any]:
+        return {
+            "id": model.public_id,
+            "row_id": model.id,
+            "tenant_id": model.tenant_id,
+            "name": model.name,
+            "description": model.description,
+            "members": copy.deepcopy(model.members or []),
+            "is_active": model.is_active,
+            "status": model.status,
             "created_at": serialize_datetime(model.created_at),
             "updated_at": serialize_datetime(model.updated_at),
         }
