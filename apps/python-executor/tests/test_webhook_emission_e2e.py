@@ -84,7 +84,10 @@ class _Receiver:
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        # ignore_cleanup_errors: delivery is fire-and-forget on a daemon thread by design, so a
+        # case can finish while one is still writing. A cleanup failure is noise about the
+        # temp directory, never a signal about the code under test.
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "emit.db"))
         self.storage = app_main.storage
@@ -242,6 +245,14 @@ class DeliveryNeverAffectsTheEmitterTest(_Base):
         self.assertLess(elapsed_ms, 800,
                         "recording an audit event waited on webhook delivery ({0:.0f}ms)".format(
                             elapsed_ms))
+        # Join the delivery thread before returning. The assertion above is the subject of this
+        # test; cleaning up after it is orthogonal, and NOT doing so is a real bug -- the thread
+        # sleeps 3s and then writes delivery health, while tearDown deletes the tempdir holding
+        # the SQLite file underneath it. That surfaced as a tearDown error in an unrelated
+        # module's slot during a full run, which is a miserable thing to debug.
+        for thread in threading.enumerate():
+            if thread.name == "webhook-delivery":
+                thread.join(timeout=6.0)
 
     def test_delivery_health_is_recorded_so_a_silent_failure_is_visible(self):
         subscription = self.subscribe()

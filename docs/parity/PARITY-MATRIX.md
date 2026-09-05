@@ -19,8 +19,8 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 11 |
-| 🟡 partial | 5 |
+| ✅ present | 12 |
+| 🟡 partial | 4 |
 | ❌ absent | 5 |
 | ⛔ cut | 1 |
 
@@ -40,7 +40,7 @@ verified.
 | P08 | Child workflow by alias | ✅ present | `app/executor.py:777-792` — `_execute_subworkflow` resolves `config.alias` through `engine_config.workflow_aliases`, flat or environment-keyed by the parent's status | — | 3 | done | no |
 | P09 | DLQ / Kafka / exactly-once | 🟡 partial | idempotency: `app/idempotency.py` + `idempotency_records` with a (tenant, key) unique constraint; dead letter: a WAL decision that cannot re-insert is bounded by `DECISION_WAL_MAX_REPLAY_ATTEMPTS`, moved out of the boot path (never deleted), counted in `recover()`, logged at ERROR every boot, and requeued by `replay_dead_letter`; `tests/test_decision_wal_dead_letter.py` (14) | no broker — Redis pub/sub with DB polling, so no partition/consumer group/offset for exactly-once to be about | 8 | 6+ months for the Kafka half | no |
 | P10 | ClickHouse / OLAP store | 🟡 partial | `app/archiver.py` ClickHouseArchiver, driven by `app/scheduler.py:71-95`; round-trip verified against a **real ClickHouse container** at `tests/test_archive_sinks_live.py:37,91`, wired into CI as a service | stores archived **decisions**, not predictor values — that half is P20 | 4 | P20 | no |
-| P11 | Canary deployment with delays | 🟡 partial | `app/champion_challenger.py` — champion/challenger roles, ramp schedule, guardrails, significance test, promote/rollback/hold; gates promotion in `routers/experiments.py`; the ramp drives live traffic via `app/experiments.py` as of 2026-09-05 (`test_canary_ramp_assignment.py`, 14) | nothing acts on a rollback recommendation on its own — it blocks a manual promote, but no scheduler reverts traffic on a guardrail breach | 5 | ~1 week for automated rollback | no |
+| P11 | Canary deployment with delays | ✅ present | `app/champion_challenger.py` ramp + guardrails + promote/hold/rollback; the ramp drives live traffic via `app/experiments.py`; `scheduler.auto_rollback_experiments` halts a running experiment on a GUARDRAIL BREACH (not on merely losing), leader-gated, audited, off by default behind `EXPERIMENT_AUTO_ROLLBACK`; `test_canary_ramp_assignment.py` (14) + `test_experiment_auto_rollback.py` (12) | halts the experiment rather than reverting an already-promoted policy — a separate lifecycle | 5 | done | no |
 | P12 | Feature factory | ❌ absent | `0 hits in any .py/.ts/.tsx; app/backtest.py and app/analytics.py are the seeds` | — | 8 | multi-month | **yes** |
 | P13 | Monaco / embedded code editor | 🟡 partial | CodeMirror 6 at `apps/web/src/v3/editor/PythonCodeEditor.tsx` — Python highlighting themed from the app's tokens (both themes), plus RuleMind-aware completion from live state (`rulemind-completion.ts`: the source's `sample_payload` keys after `payload.`, other variables after `variables.`, the decorator); `test/rulemind-completion.test.ts` (19) + `e2e/rulemind-v3.spec.ts` types into it | no inline diagnostics (`@codemirror/lint` unwired); only the variables page, not the API console | 6 | ~1 week for diagnostics | no |
 | P14 | SQL editor | ⛔ cut | `no SQL datasource exists to edit against; 0 hits for postgres/mysql/jdbc/snowflake in connector code` | — | — | n/a | no |

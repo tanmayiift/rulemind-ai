@@ -657,7 +657,8 @@ GENERATED from the Python. Every fix mutation-checked.
 
 - [ ] **E1** P04 workflow step-through debugger
 - [ ] **E2** P05 modelset
-- [x] **E3** P11 canary — ramp now drives live traffic; automated rollback remains
+- [x] **E3** P11 canary — ramp drives live traffic, and a guardrail breach now halts the
+  experiment automatically (leader-gated, audited, opt-in)
 - [ ] **E4** DoD five each; regression gate
 
 ## F. Phase 5 - roadmap phase 6 (parallel)

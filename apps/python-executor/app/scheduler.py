@@ -191,6 +191,94 @@ def check_slos(storage: Storage) -> Dict[str, Any]:
     return {"checked": checked, "breached": breached}
 
 
+def auto_rollback_experiments(storage: Storage) -> Dict[str, Any]:
+    """Halt a running experiment whose challenger has breached its guardrails.
+
+    THE GAP THIS CLOSES. `champion_challenger.analyze_champion_challenger` has computed a
+    promote / hold / ROLLBACK recommendation for a while, and `routers/experiments.py` uses it --
+    but only to REFUSE a promotion a human asked for. Nothing acted on "rollback" on its own, so
+    a challenger that started rejecting everyone kept taking its share of live traffic until
+    somebody happened to open the analytics page. The row's e2eFlow is "promote at 5% canary ->
+    watch the metric -> AUTO-ROLLBACK on SLO breach"; the auto half was the missing word.
+
+    ONLY ON A GUARDRAIL BREACH, never on "the challenger is merely losing". A guardrail is an
+    explicit statement by the author that crossing this line is unacceptable -- a floor on
+    approval rate, a ceiling on rejects or latency. Underperforming on lift is a business
+    judgement and stays a human's call; `recommend_action` returns "rollback" for a negative lift
+    too, and acting on that would stop experiments for doing exactly what experiments are for.
+
+    Stopping means status -> "stopped", which `experiments.resolve_experiment_assignment` already
+    filters on: it selects `status == "running"`, so a stopped experiment stops receiving traffic
+    on the very next decision without any separate teardown. The champion serves 100% again
+    because it is what remains.
+
+    Leader-gated like every other job here: N replicas each halting the same experiment would
+    write the same row N times and emit N alerts.
+    """
+    if not _IS_LEADER:
+        return {"skipped": "not_leader"}
+    from .analytics import experiment_analytics
+
+    stopped: List[Dict[str, Any]] = []
+    checked = 0
+    for tenant in storage.list_tenants():
+        tenant_id = tenant.get("id")
+        if not tenant_id:
+            continue
+        try:
+            experiments = [e for e in storage.list_experiments(tenant_id=tenant_id)
+                           if e.get("status") == "running"]
+        except Exception:  # pragma: no cover - one tenant must not stop the sweep
+            logger.warning("could not list experiments for %s", tenant_id, exc_info=True)
+            continue
+        for experiment in experiments:
+            checked += 1
+            try:
+                analysis = experiment_analytics(storage, tenant_id, experiment["id"])
+            except Exception:  # pragma: no cover
+                logger.warning("could not analyse experiment %s", experiment.get("id"), exc_info=True)
+                continue
+            breached = [
+                row for row in (analysis.get("championChallenger") or {}).get("challengers", [])
+                if row.get("recommendation") == "rollback"
+                and (row.get("guardrails") or {}).get("breached")
+            ]
+            if not breached:
+                continue
+            reasons = sorted({reason for row in breached
+                              for reason in (row.get("guardrails") or {}).get("breaches", [])})
+            try:
+                storage.create_or_update_experiment(
+                    {**experiment, "id": experiment["id"], "status": "stopped"},
+                    tenant_id=tenant_id)
+            except Exception:  # pragma: no cover
+                logger.error("could not stop experiment %s", experiment.get("id"), exc_info=True)
+                continue
+            # Audited, not just logged: halting an experiment changes what live traffic sees, and
+            # an operator arriving later needs to know it happened, when, and on which guardrail.
+            # Audit events also feed the outbound webhook stream, so a subscriber can be told.
+            try:
+                storage.add_audit_event(
+                    {"tenant_id": tenant_id, "event_type": "experiment_promoted",
+                     "entity_type": "experiment", "entity_id": experiment["id"],
+                     "detail": "Auto-rolled back '{0}': {1}".format(
+                         experiment.get("name") or experiment["id"], "; ".join(reasons) or "guardrail breach"),
+                     "metadata": {"action": "auto_rollback", "breaches": reasons,
+                                  "challengers": [row.get("id") for row in breached]}},
+                    tenant_id=tenant_id)
+            except Exception:  # pragma: no cover - audit is best effort
+                pass
+            logger.error("auto-rolled back experiment %s (%s): %s",
+                         experiment["id"], tenant_id, "; ".join(reasons))
+            stopped.append({"tenant_id": tenant_id, "experiment_id": experiment["id"],
+                            "breaches": reasons})
+    return {"checked": checked, "stopped": stopped}
+
+
+async def _scheduled_auto_rollback(storage: Storage) -> Dict[str, Any]:
+    return await asyncio.to_thread(auto_rollback_experiments, storage)
+
+
 async def _scheduled_slo_check(storage: Storage) -> Dict[str, Any]:
     if not _IS_LEADER:
         return {"skipped": "not_leader"}
@@ -445,6 +533,13 @@ def init_scheduler(storage: Storage) -> None:
     scheduler.add_job(_scheduled_slo_check, "interval",
                       minutes=env.env_int("SLO_CHECK_INTERVAL_MINUTES", 15),
                       id="slo-check", args=[storage], replace_existing=True)
+    # Off by default. An automated halt is the right behaviour and a surprising one to inherit
+    # silently on upgrade -- a workspace mid-experiment would find it stopped by a job it never
+    # enabled. Opt in with EXPERIMENT_AUTO_ROLLBACK=1.
+    if env.env_bool("EXPERIMENT_AUTO_ROLLBACK", False):
+        scheduler.add_job(_scheduled_auto_rollback, "interval",
+                          minutes=env.env_int("EXPERIMENT_AUTO_ROLLBACK_MINUTES", 10),
+                          id="experiment-auto-rollback", args=[storage], replace_existing=True)
     scheduler.add_job(_scheduled_prune_saml_assertions, "interval",
                       hours=env.env_int("SAML_PRUNE_INTERVAL_HOURS", 6),
                       id="saml-assertion-prune", args=[storage], replace_existing=True)
