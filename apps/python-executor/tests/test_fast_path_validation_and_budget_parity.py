@@ -395,22 +395,34 @@ class EvaluationBudgetOnTheFastPathTest(_Base):
 
     def test_one_variable_cannot_overshoot_the_budget(self):
         """The clamp. Without it a variable started with 5ms of budget left still runs its full
-        timeout_ms, so the effective bound stays timeout_ms x variable_count."""
-        self.set_budget(120)
+        timeout_ms, so the effective bound stays timeout_ms x variable_count.
+
+        The budget and the per-variable sleep are sized so that MANY variables run before it
+        drains. The first version used 120ms and 50ms sleeps, which fits about two variables on a
+        fast lane and exactly one on a slow one -- and with one, `seen[-1]` and `seen[0]` are the
+        same element, so the shrink assertion compares 49 with 49 and fails. The Postgres lane
+        found that; the SQLite lane never would have. A test whose outcome depends on how fast
+        the database is, is testing the database.
+        """
+        self.set_budget(500)
         seen = []
 
         def record(code, payload, values, timeout_ms=2000, memory_mb=128):
             seen.append(timeout_ms)
-            time.sleep(0.05)
+            time.sleep(0.02)
             return {"value": 1, "error": None}
 
         with mock.patch.object(fast_decide_module, "execute_variable", side_effect=record):
             self.decide_http(bank_payload(), fast=True)
         self.assertTrue(seen, "no variable ran")
-        self.assertTrue(all(timeout <= 120 for timeout in seen),
+        self.assertTrue(all(timeout <= 500 for timeout in seen),
                         "a variable was given more timeout than the whole budget: {0}".format(seen))
+        self.assertGreater(len(seen), 1,
+                           "only one variable ran, so there is nothing to compare -- raise the "
+                           "budget or shorten the sleep rather than relaxing the assertion")
         self.assertLess(seen[-1], seen[0],
-                        "the per-variable timeout did not shrink as the budget drained")
+                        "the per-variable timeout did not shrink as the budget drained: "
+                        "{0}".format(seen))
 
     def test_it_stops_attempting_variables_once_the_budget_is_gone(self):
         """The clamp bounds how long each variable may take; the deadline check is what stops the
