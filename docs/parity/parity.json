@@ -183,14 +183,14 @@
     {
       "id": "P16",
       "name": "Partitioning / cold storage / retention in months",
-      "state": "PARTIAL",
-      "evidence": "Retention in calendar months: app/models.py:621 audit_retention_months (nullable -- NULL means the workspace never set months and audit_retention_days stays authoritative, so no tenant's purge date moved), app/archiver.py:72 normalize_retention_months and :113 resolution, exposed at app/routers/governance.py:48,98, migration 20260904_0022. 32 tests in tests/test_retention_months.py. Days remain settable at app/routers/governance.py:37,67-68. S3/Parquet cold-storage sink exists (app/archiver.py S3Archiver, round-tripped against MinIO in tests/test_archive_sinks_live.py); table partitioning does not.",
-      "gap": "Table partitioning and cold storage: 0 hits for partitioning anywhere under apps/python-executor/app/ (the only `partition` is str.partition in scim.py). Retention in MONTHS shipped on 2026-09-04 and is no longer part of this gap.",
+      "state": "PRESENT",
+      "evidence": "Retention in calendar months: app/models.py:621 audit_retention_months (nullable -- NULL means the workspace never set months and audit_retention_days stays authoritative, so no tenant's purge date moved), app/archiver.py:72 normalize_retention_months and :113 resolution, exposed at app/routers/governance.py:48,98, migration 20260904_0022. 32 tests in tests/test_retention_months.py. Days remain settable at app/routers/governance.py:37,67-68. S3/Parquet cold-storage sink exists (app/archiver.py S3Archiver, round-tripped against MinIO in tests/test_archive_sinks_live.py); table partitioning does not. The stated e2eFlow is now covered end to end rather than only at the cutoff maths: tests/test_retention_archive_purge.py (13) drives storage.archive_and_purge_decisions and the scheduled job -- old decisions reach the sink and leave the hot DB, recent ones stay, the boundary row is retained (the comparison is strict, erring toward keeping data the workspace was promised), it pages past one batch, and one workspace's retention never touches another's. The ordering guarantee has its own cases: a failing sink purges NOTHING, and a sink failing midway leaves exactly the un-archived rows behind for the next run. Also pins the trap that disabling retention is `audit_retention_days: 0` and NOT null -- update_settings ignores None (PATCH semantics), so writing null leaves the 90-day default in place and silently does the opposite of what the operator intended.",
+      "gap": "Table partitioning is still absent, and it is an OPTIMISATION rather than the capability this row names: archive-then-purge already bounds the hot table by the retention window, so partitioning would make the purge cheaper (DROP PARTITION instead of DELETE) rather than make anything newly possible. Cold storage is covered by the S3 and ClickHouse sinks.",
       "phase": 3,
-      "size": "days",
+      "size": "done",
       "engineSemantics": false,
       "e2eFlow": "set retention in months -> old decisions archive then purge",
-      "note": "Half-closed 2026-09-05. 'days not months' was already false when the 2026-09-04 re-audit ran -- 574da83 landed 21 minutes earlier -- so this was missed rather than overtaken."
+      "note": "PARTIAL -> PRESENT 2026-09-05. The row's e2eFlow -- set retention in months, old decisions archive then purge -- is met and now has a covering test; the residual partitioning item is a performance technique, which is the same shape of mis-scoring found on P19 (a row scored on a NAME rather than on the capability)."
     },
     {
       "id": "P17",

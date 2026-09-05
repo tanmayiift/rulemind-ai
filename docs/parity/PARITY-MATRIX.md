@@ -19,8 +19,8 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 12 |
-| 🟡 partial | 4 |
+| ✅ present | 13 |
+| 🟡 partial | 3 |
 | ❌ absent | 5 |
 | ⛔ cut | 1 |
 
@@ -45,7 +45,7 @@ verified.
 | P13 | Monaco / embedded code editor | 🟡 partial | CodeMirror 6 at `apps/web/src/v3/editor/PythonCodeEditor.tsx` — Python highlighting themed from the app's tokens (both themes), plus RuleMind-aware completion from live state (`rulemind-completion.ts`: the source's `sample_payload` keys after `payload.`, other variables after `variables.`, the decorator); `test/rulemind-completion.test.ts` (19) + `e2e/rulemind-v3.spec.ts` types into it | no inline diagnostics (`@codemirror/lint` unwired); only the variables page, not the API console | 6 | ~1 week for diagnostics | no |
 | P14 | SQL editor | ⛔ cut | `no SQL datasource exists to edit against; 0 hits for postgres/mysql/jdbc/snowflake in connector code` | — | — | n/a | no |
 | P15 | Journey as a first-class entity | ❌ absent | `no Journey model or table; only fixtures in app/experience_studio.py:292, demo-app/lib/journeys.dart` | — | 7 | 3-6 months | **yes** |
-| P16 | Partitioning / cold storage / retention in months | 🟡 partial | retention in **months** shipped: `app/models.py:621 audit_retention_months`, `app/archiver.py:72 normalize_retention_months`, migration `20260904_0022`, 32 tests; S3/Parquet cold storage round-tripped against MinIO at `tests/test_archive_sinks_live.py` | table **partitioning** — 0 hits anywhere under `app/` | 3 | days | no |
+| P16 | Partitioning / cold storage / retention in months | ✅ present | retention in calendar months (`archiver.normalize_retention_months`), archive-then-purge to the S3 / ClickHouse sink (`storage.archive_and_purge_decisions`), leader-gated scheduled job; `tests/test_retention_archive_purge.py` (13) covers the round trip, the ordering guarantee (a failing sink purges NOTHING), tenant scoping, batching, and the boundary row | table partitioning absent — an optimisation (DROP PARTITION vs DELETE), not the capability: archive-then-purge already bounds the hot table | 3 | done | no |
 | P17 | Excel functions (CUMIPMT, DAYS360, EDATE, EOMONTH) | ✅ present | `packages/rule-engine/src/excel-functions.ts:397 CUMIPMT, :686 DAYS360` (with IPMT/PPMT/CUMPRINC), checked against `packages/shared/excel-financial-date.spec.json` — 50 cases **generated from the Python** — by `test/excel-financial-date-parity.test.ts` | — | 3 | done | **yes** |
 | P18 | Rate limiting on resource APIs | ✅ present | `app/rate_limit.py` — `classify()` maps method+path to decision/read/write/ai/export/admin with whole-segment matching; `check_request()` enforces the class bucket then the tenant aggregate | class shares are per tenant/env, not per individual route | 3 | done | no |
 | P19 | Superflows | ✅ present | ships as **sub-workflow**: `executor.py` `workflow` step, resolved by raw id or per-tenant alias with cycle detection on the resolved id; the composing thing is a policy, so it has the dev→uat→prod lifecycle (`promote_policy` has no step-type restriction); `workflow-builder/page.tsx` lists "Sub-workflow" as a palette item; 4 test modules | — | 7 | done | no |

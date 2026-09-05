@@ -134,11 +134,15 @@ class _Base(unittest.TestCase):
             with mock.patch.object(webhook_dispatch.httpx, "AsyncClient", client):
                 self.audit(**audit_overrides)
                 receiver.arrived.wait(timeout)
-                # Threads are daemons; give the record_webhook_delivery write a moment to land.
-                for _ in range(50):
-                    if receiver.received:
-                        break
-                    time.sleep(0.02)
+                # JOIN, rather than sleeping until `received` is populated. The POST is recorded
+                # before record_webhook_delivery runs, so waiting on `received` returns while the
+                # health write is still in flight -- and a test that emits twice then gets the
+                # FIRST delivery's write landing after the second's, leaving consecutive_failures
+                # at 1 after a success. Joining makes the ordering deterministic instead of
+                # likely, and costs nothing because these deliveries are stubbed.
+                for thread in threading.enumerate():
+                    if thread.name == "webhook-delivery":
+                        thread.join(timeout=timeout + 2.0)
         return receiver.received
 
 
