@@ -689,7 +689,14 @@ GENERATED from the Python. Every fix mutation-checked.
 
 ## G. Phase 6 - roadmap phase 7 (sequential, a re-architecture)
 
-- [ ] **G1** P15 journey as a first-class entity - table, CRUD, web route, SDK across 5 engines
+- [x] **G1** P15 journey as a first-class entity — table, CRUD, lock/unlock/duplicate, web
+  route, and the SDK manifest serving what a workspace authored. The row's "3-6 months, not even
+  one shape to build a table from" was wrong: `experience_studio.py` defines the shape,
+  `/sdk/v1/experience-manifest` serves it, and the Flutter example already RAN it, so one of the
+  four e2e clauses was done before this started. Lock is deliberately NOT the lifecycle. Found a
+  live trap: journey ids are slugified titles, so a workspace naming one "Instant Personal Loan"
+  collides with a built-in demo id and inherited five demo scenarios whose payloads answer
+  screens it does not have.
 - [x] **G2** P19 superflows — re-audited, not built: the capability ships as
   **sub-workflows** (a `workflow` step resolved by id or per-tenant alias, cycle-guarded;
   the composing thing is a policy, so it already has the dev→uat→prod lifecycle). The

@@ -173,14 +173,14 @@
     {
       "id": "P15",
       "name": "Journey as a first-class entity",
-      "state": "ABSENT",
-      "evidence": "no Journey model or table in app/models.py; only fixtures in app/experience_studio.py:292, demo-app/lib/journeys.dart, qa/e2e-full/journey_expectations.json",
+      "state": "PRESENT",
+      "evidence": "`journeys` table (migration 20260905_0028) + app/models.py Journey: title, category, policy_id, an ORDERED `screens` JSON list, is_locked, is_active, status and a version that tracks CONTENT only. CRUD + lock/unlock/duplicate at /api/v1/journeys (app/routers/journeys.py). LOCK IS NOT THE LIFECYCLE: `status` is the dev/uat/prod promotion every authoring entity has, `is_locked` means 'people are filling this in, the screens must not move under them' -- so a locked journey still promotes and still duplicates, and duplication (unlocked, back in dev) is the intended way to change a live flow. The SDK half already existed and now serves what the workspace authored: app/routers/sdk.py passes active journeys into build_experience_manifest, which translates them into the camelCase shape packages/sdk-flutter/example/lib/state/app_state.dart already reads, falling back to the built-in demo flows for a workspace that has authored none. Web route at apps/web/app/journeys/page.tsx. tests/test_journeys.py (31), probed by tests/test_tenant_isolation_matrix.py, plus e2e/journeys.spec.ts.",
       "phase": 7,
-      "size": "3-6 months",
+      "size": "done",
       "engineSemantics": true,
       "e2eFlow": "create a journey -> lock it -> duplicate it -> run it from an SDK",
-      "note": "Largest single item: needs a table, CRUD, a web route AND an SDK surface across five engines.",
-      "gap": "No entity: a journey cannot be created, locked, duplicated or run. It exists only as fixtures in three places that do not share a definition (`experience_studio.py`, the Flutter demo app, and a QA expectations file), so there is not even one shape to build a table from. Largest item in the matrix \u2014 the roadmap puts it at a table, CRUD, a web route AND an SDK surface across five engines, which is why it gates on phases 3-6."
+      "note": "ABSENT (3-6 months, 'largest item in the matrix') -> PRESENT 2026-09-05. The row said a journey 'exists only as fixtures in three places that do not share a definition, so there is not even one shape to build a table from'. There was one shape: app/experience_studio.py defines it, /sdk/v1/experience-manifest serves it, and the Flutter example READS AND RUNS it -- so 'run it from an SDK', one of the row's four e2e clauses, already worked, and the rest needed a table rather than a re-architecture. Building it found a live trap: journey ids are slugified titles, so a workspace naming a journey 'Instant Personal Loan' gets the same id as a built-in demo and inherited five demo SCENARIOS whose prefilled payloads answer screens its journey does not have. Filtering scenarios by surviving journeyId looked careful and was exactly wrong; they are dropped wholesale once a workspace has its own journeys.",
+      "gap": "Screens are authored as a list of {id, type, title} with a free-form `fields` array; there is no per-field editor in the web UI yet, so a rich form is still authored as JSON. Journeys are not versioned as SNAPSHOTS -- `version` increments but old versions are not retained, so 'render exactly what this respondent saw' is not answerable after an edit; locking is the mitigation, not a substitute. And a journey carries no lifecycle promotion of its own beyond the status field: it is not part of the bundle `promote_policy` moves."
     },
     {
       "id": "P16",

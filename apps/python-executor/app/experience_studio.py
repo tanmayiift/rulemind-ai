@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def _text_field(field_id: str, label: str, *, hint: str = "", required: bool = False, keyboard: str = "text") -> Dict[str, Any]:
@@ -1063,9 +1063,56 @@ EXPERIENCE_MANIFEST_TEMPLATE: Dict[str, Any] = {
 }
 
 
-def build_experience_manifest(tenant_id: str, api_base_url: str, latest_bundle_version: int = 0) -> Dict[str, Any]:
+def _journey_to_manifest(journey: Dict[str, Any]) -> Dict[str, Any]:
+    """A stored journey in the shape the manifest has always used.
+
+    camelCase on purpose: `packages/sdk-flutter/example/lib/state/app_state.dart` reads
+    `item['policyId']` and `item['stepCount']` off the manifest, and the template has used those
+    keys since the mobile studio shipped. The storage layer speaks snake_case like every other
+    table, so the translation happens here rather than by making one table spell its columns
+    differently from all the others.
+    """
+    return {
+        "id": journey["id"],
+        "title": journey["title"],
+        "category": journey.get("category") or "",
+        "policyId": journey.get("policy_id") or "",
+        "stepCount": journey.get("step_count") or len(journey.get("screens") or []),
+        "primaryColor": journey.get("primary_color") or "#496FBE",
+        "screens": copy.deepcopy(journey.get("screens") or []),
+        # Not in the built-in template's journeys, and additive: a device that predates these
+        # keys ignores them, and one that knows about them can show a locked flow as locked.
+        "locked": bool(journey.get("is_locked")),
+        "version": journey.get("version", 1),
+        "status": journey.get("status", "dev"),
+    }
+
+
+def build_experience_manifest(tenant_id: str, api_base_url: str, latest_bundle_version: int = 0,
+                              journeys: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """The manifest a device syncs.
+
+    `journeys` REPLACES the built-in demo flows rather than extending them, but only when the
+    workspace has authored at least one. That fallback is the whole compatibility story: before
+    journeys were an entity this function returned a deep copy of one static template, so every
+    tenant saw the same three demos -- and the Flutter example, the QA suite and the screenshots
+    all depend on those still being there for a workspace that has authored nothing. A workspace
+    that HAS authored journeys does not want the demos mixed in with its own.
+    """
     manifest = copy.deepcopy(EXPERIENCE_MANIFEST_TEMPLATE)
     manifest["tenantId"] = tenant_id
     manifest["apiBaseUrl"] = api_base_url.rstrip("/")
     manifest["latestBundleVersion"] = latest_bundle_version
+    if journeys:
+        manifest["journeys"] = [_journey_to_manifest(j) for j in journeys]
+        # ALL demo scenarios go, not just the ones whose journeyId disappeared.
+        #
+        # A scenario is a "try this case" button carrying a prefilled payload shaped for a DEMO
+        # journey's screens; there is no API to author one. Filtering by surviving journeyId
+        # looks more careful and is worse: journey ids are slugified titles, so a workspace that
+        # names a journey "Instant Personal Loan" gets the id `instant_personal_loan` -- the same
+        # as a built-in demo -- and inherits five scenarios whose payloads answer screens its
+        # journey does not have. Observed on the first run of this code. If the workspace has its
+        # own journeys, none of the demo fixtures belong to them.
+        manifest["scenarios"] = []
     return manifest

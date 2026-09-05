@@ -236,6 +236,13 @@ class TenantIsolationMatrixTest(unittest.TestCase):
         made["model-sets"] = self._create("model-sets", {
             "id": "iso_set", "name": "iso_set",
             "members": [{"model_id": self._id_of(made["models"]), "label": "only"}]})
+        # Probed rather than excused with a coverage note: a journey is an ordinary tenant-owned
+        # CRUD collection, so the generic cross-tenant probe applies to it unchanged. Its
+        # lock/unlock/duplicate verbs are covered separately in tests/test_journeys.py, which
+        # asserts another workspace gets 404 on each.
+        made["journeys"] = self._create("journeys", {
+            "title": "iso_journey", "policy_id": policy["id"],
+            "screens": [{"id": "s1", "type": "form"}]})
         return made
 
     @staticmethod

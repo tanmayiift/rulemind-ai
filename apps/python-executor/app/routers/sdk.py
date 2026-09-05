@@ -63,7 +63,13 @@ router = APIRouter()
 def sdk_experience_manifest(request: Request) -> Dict[str, Any]:
     tenant_id = active_tenant_id(request)
     latest = main.storage.latest_bundle(tenant_id=tenant_id)
-    return build_experience_manifest(tenant_id, public_api_base_url(request), latest_bundle_version=int(latest["version"]) if latest else 0)
+    # Only ACTIVE journeys reach a device: `is_active=False` is how an author retires a flow
+    # without deleting the record the decisions already made under it point at.
+    journeys = main.storage.list_journeys(tenant_id=tenant_id, active_only=True)
+    return build_experience_manifest(
+        tenant_id, public_api_base_url(request),
+        latest_bundle_version=int(latest["version"]) if latest else 0,
+        journeys=journeys)
 
 
 @router.get("/sdk/v1/health")

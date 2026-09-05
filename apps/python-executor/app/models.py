@@ -761,6 +761,46 @@ class ModelSet(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="dev", nullable=False)
 
 
+class Journey(Base, TimestampMixin):
+    """An end-user-facing flow of screens that collects a payload and runs a policy (P15).
+
+    THE SHAPE IS NOT NEW. `app/experience_studio.py` has carried it since the mobile studio
+    shipped -- id, title, category, policyId, and an ordered list of typed screens -- it is served
+    at `/sdk/v1/experience-manifest`, and `packages/sdk-flutter/example` renders and RUNS it. What
+    was missing is that the manifest returns a deep copy of one static template, so every tenant
+    saw the same three demo journeys and no workspace could author its own. This table is that
+    template's shape, per tenant.
+
+    `screens` is a JSON column for the reason `ModelSet.members` is: it is an ORDERED list whose
+    order is the semantics (screen 2 follows screen 1), and a child table would need a position
+    column and an ordering join to say exactly that.
+
+    LOCKED is separate from `status`. Status is the dev/uat/prod lifecycle every authoring entity
+    has; `is_locked` is "this journey is in the field and its screens must not move under the
+    people filling them in". A locked journey can still be promoted, and can still be duplicated
+    -- duplication is the intended way to change one.
+    """
+
+    __tablename__ = "journeys"
+    __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_journeys_tenant_public"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    public_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The policy this journey's collected payload is decided by.
+    policy_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    primary_color: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # [{id, title, subtitle, type, fields: [...]}, ...] -- experience_studio's screen shape.
+    screens: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="dev", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
 class ModelEvaluation(Base):
     """A predictive-model evaluation run (Gini/AUC/KS/PR-AUC/calibration/PSI/…) against
     ground-truth labels, optionally tied to a hosted model. Persisted so results survive

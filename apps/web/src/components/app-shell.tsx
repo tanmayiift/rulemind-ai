@@ -48,6 +48,9 @@ const NAVIGATION: ReadonlyArray<{
       // decision, the dashboard counts them on its front page, and nothing linked to them.
       { href: "/policies" as Route, label: "Policies", icon: "policies" },
       { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
+      // In Build, not Operate: a journey is authored alongside the policy that decides it, and
+      // the screens ARE part of the decision's input contract.
+      { href: "/journeys" as Route, label: "Journeys", icon: "connectors" },
     ],
   },
   {
@@ -115,6 +118,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   // of the chrome a user trusts to tell them where they are.
   "/decision-explorer": { title: "Decision Explorer", subtitle: "Find any decision and see exactly why it was made — node by node, with the inputs it saw." },
   "/debugger": { title: "Step-through Debugger", subtitle: "Pause before a step, read what the policy knows there, then advance one step. Nothing is logged or billed." },
+  "/journeys": { title: "Journeys", subtitle: "The screens a customer fills in, and the policy that decides what they submit. Active ones ship to devices on the next sync." },
   // Alias routes: these render another page outright, so the header names what you are
   // actually looking at. They are deliberately NOT in the sidebar -- advertising
   // "Approvals" and opening Deploy would be a broken promise.

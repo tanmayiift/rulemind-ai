@@ -19,9 +19,9 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 18 |
+| ✅ present | 19 |
 | 🟡 partial | 1 |
-| ❌ absent | 2 |
+| ❌ absent | 1 |
 | ⛔ cut | 1 |
 
 `⛔ cut` means a deliberate decision not to build it — see the row for why.
@@ -44,7 +44,7 @@ verified.
 | P12 | Feature factory | ❌ absent | `0 hits in any .py/.ts/.tsx; app/backtest.py and app/analytics.py are the seeds` | — | 8 | multi-month | **yes** |
 | P13 | Monaco / embedded code editor | ✅ present | CodeMirror 6 with Python highlighting themed from the app's tokens, RuleMind-aware completion from live state, and inline diagnostics via `POST /api/v1/variables/lint` — which reuses `sandbox.validate_source`, so a marker IS the rule rather than a second implementation of it; 600ms debounce, never executes, a failed request shows nothing; `test_variable_lint.py` (10) + `rulemind-completion.test.ts` (19) | only the variables page; diagnostics are syntax + sandbox policy, no name resolution | 6 | done | no |
 | P14 | SQL editor | ⛔ cut | `no SQL datasource exists to edit against; 0 hits for postgres/mysql/jdbc/snowflake in connector code` | — | — | n/a | no |
-| P15 | Journey as a first-class entity | ❌ absent | `no Journey model or table; only fixtures in app/experience_studio.py:292, demo-app/lib/journeys.dart` | — | 7 | 3-6 months | **yes** |
+| P15 | Journey as a first-class entity | ✅ present | `journeys` table + CRUD and lock/unlock/duplicate at `/api/v1/journeys`; LOCK IS NOT THE LIFECYCLE — `status` is dev/uat/prod, `is_locked` means "people are filling this in, the screens must not move under them", so a locked journey still promotes and duplicating (unlocked, back in dev) is how you change a live flow; the SDK manifest now serves what the workspace authored, in the camelCase shape the Flutter example already read, falling back to the built-in demos when none are authored; `tests/test_journeys.py` (31) + `e2e/journeys.spec.ts` | no per-field screen editor (a rich form is authored as JSON); `version` increments but old versions are not retained, so "render what this respondent saw" is not answerable after an edit; a journey is not part of the bundle `promote_policy` moves | 7 | done | no |
 | P16 | Partitioning / cold storage / retention in months | ✅ present | retention in calendar months (`archiver.normalize_retention_months`), archive-then-purge to the S3 / ClickHouse sink (`storage.archive_and_purge_decisions`), leader-gated scheduled job; `tests/test_retention_archive_purge.py` (13) covers the round trip, the ordering guarantee (a failing sink purges NOTHING), tenant scoping, batching, and the boundary row | table partitioning absent — an optimisation (DROP PARTITION vs DELETE), not the capability: archive-then-purge already bounds the hot table | 3 | done | no |
 | P17 | Excel functions (CUMIPMT, DAYS360, EDATE, EOMONTH) | ✅ present | `packages/rule-engine/src/excel-functions.ts:397 CUMIPMT, :686 DAYS360` (with IPMT/PPMT/CUMPRINC), checked against `packages/shared/excel-financial-date.spec.json` — 50 cases **generated from the Python** — by `test/excel-financial-date-parity.test.ts` | — | 3 | done | **yes** |
 | P18 | Rate limiting on resource APIs | ✅ present | `app/rate_limit.py` — `classify()` maps method+path to decision/read/write/ai/export/admin with whole-segment matching; `check_request()` enforces the class bucket then the tenant aggregate | class shares are per tenant/env, not per individual route | 3 | done | no |

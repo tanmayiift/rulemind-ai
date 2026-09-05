@@ -77,6 +77,7 @@ from .models import (
     UsageRecord,
     Variable,
     ModelSet,
+    Journey,
     Predictor,
     PredictorValue,
     Webhook,
@@ -4023,6 +4024,110 @@ class Storage:
             "members": copy.deepcopy(model.members or []),
             "is_active": model.is_active,
             "status": model.status,
+            "created_at": serialize_datetime(model.created_at),
+            "updated_at": serialize_datetime(model.updated_at),
+        }
+
+    # ── journeys (P15) ────────────────────────────────────────────────────
+    def create_journey(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        with self.connect() as session:
+            model = Journey(
+                id=uuid4_str(),
+                tenant_id=resolved,
+                public_id=payload.get("public_id") or payload.get("id") or uuid4_str(),
+                title=payload["title"],
+                category=payload.get("category"),
+                description=payload.get("description"),
+                policy_id=payload.get("policy_id"),
+                primary_color=payload.get("primary_color"),
+                screens=copy.deepcopy(payload.get("screens") or []),
+                is_locked=bool(payload.get("is_locked", False)),
+                is_active=bool(payload.get("is_active", True)),
+                status=payload.get("status", "dev"),
+            )
+            session.add(model)
+            session.flush()
+            result = self._journey_to_dict(model)
+        self._audit_entity_change("journey", result["id"], "created", resolved)
+        return result
+
+    def update_journey(self, journey_id: str, patch: Dict[str, Any],
+                       tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(Journey).where(
+                Journey.tenant_id == resolved, Journey.public_id == journey_id))
+            if not model:
+                return None
+            content_changed = False
+            for field in ("title", "category", "description", "policy_id", "primary_color",
+                          "screens", "is_locked", "is_active", "status"):
+                if field in patch:
+                    setattr(model, field, copy.deepcopy(patch[field]))
+                    # The version tracks the CONTENT people fill in, so lock/unlock and the
+                    # dev->prod lifecycle do not bump it. A version that moves when nothing a
+                    # respondent sees has changed makes "which version did they answer?"
+                    # unanswerable, which is the only question the column exists for.
+                    if field in ("title", "category", "description", "policy_id",
+                                 "primary_color", "screens"):
+                        content_changed = True
+            if content_changed:
+                model.version = int(model.version or 1) + 1
+            session.flush()
+            result = self._journey_to_dict(model)
+        self._audit_entity_change("journey", journey_id, "updated", resolved,
+                                  version=result.get("version"))
+        return result
+
+    def delete_journey(self, journey_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(Journey).where(
+                Journey.tenant_id == resolved, Journey.public_id == journey_id))
+            if not model:
+                return False
+            session.delete(model)
+        self._audit_entity_change("journey", journey_id, "deleted", resolved)
+        return True
+
+    def get_journey(self, journey_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(Journey).where(
+                Journey.tenant_id == resolved, Journey.public_id == journey_id))
+            return self._journey_to_dict(model) if model else None
+
+    def list_journeys(self, tenant_id: Optional[str] = None,
+                      active_only: bool = False) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            query = select(Journey).where(Journey.tenant_id == resolved)
+            if active_only:
+                query = query.where(Journey.is_active.is_(True))
+            rows = session.scalars(query.order_by(desc(Journey.created_at))).all()
+            return [self._journey_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _journey_to_dict(model: "Journey") -> Dict[str, Any]:
+        return {
+            "id": model.public_id,
+            "row_id": model.id,
+            "tenant_id": model.tenant_id,
+            "title": model.title,
+            "category": model.category,
+            "description": model.description,
+            "policy_id": model.policy_id,
+            "primary_color": model.primary_color,
+            "screens": copy.deepcopy(model.screens or []),
+            # Kept in the payload because the mobile studio's journey cards render it, and
+            # deriving it client-side from `screens` would drift the moment a screen type stops
+            # counting as a step.
+            "step_count": len(model.screens or []),
+            "is_locked": model.is_locked,
+            "is_active": model.is_active,
+            "status": model.status,
+            "version": model.version,
             "created_at": serialize_datetime(model.created_at),
             "updated_at": serialize_datetime(model.updated_at),
         }

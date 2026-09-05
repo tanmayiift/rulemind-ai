@@ -83,6 +83,9 @@ Everything below was installed from official sources into `~/.local` without sud
 | 5.7 | **Import a 3-dimension pricing matrix** (parity P07): upload .csv/.xlsx → map columns to dimensions and outputs → import → the optimiser reports the sheet's uncovered ranges → the table evaluates | ✅ `tests/test_decision_table_import.py` (36) + `e2e/decision-table-import.spec.ts`; driven in-browser with a real 4-row sheet |
 | 5.8 | An unreadable cell refuses the import | ✅ every problem returned at once, each naming its row and column; nothing is created. A skipped cell is a WILDCARD, so a partial import would apply a row's price to every input |
 | 5.9 | Column types come from the data | ✅ and it is not cosmetic — with `field_type` defaulted to "string" the optimiser cannot order the column, every row reads "not_analyzable", and the gap analysis reports nothing at all |
+| 8.7 | **Journey lifecycle** (parity P15): create a journey → lock it → duplicate it → run it from an SDK | ✅ `tests/test_journeys.py` (31) + `e2e/journeys.spec.ts`; driven in-browser end to end |
+| 8.8 | Lock freezes screens without blocking promotion | ✅ a locked journey refuses content edits (409, naming duplication as the way forward) but still promotes to prod, and locking does not bump the version a respondent's answers are keyed to |
+| 8.9 | Authored journeys reach the device, demos fall back | ✅ the SDK manifest serves active journeys in the camelCase shape the Flutter example reads; a workspace with none authored still gets the built-in demo flows, and demo scenarios are dropped once it has its own (journey ids are slugified titles, so they can collide with a demo's) |
 
 ## 6. Case-wise history & audit — ⚠️→✅
 | # | Case | Result |
