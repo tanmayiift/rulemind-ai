@@ -355,7 +355,13 @@ def _run_decision_batch(policy: Dict[str, Any], payloads: List[Dict[str, Any]], 
         index, payload = item
         try:
             if use_fast:
-                d = fast_decide(main.storage, policy, payload or {}, tenant_id, log=False)
+                # seed_samples matches the executor branch below, which passes
+                # source="simulation" -- one of _SAMPLE_SEEDING_SOURCES. A backtest is an
+                # author surface replaying historical payloads, so an unsupplied source
+                # pre-fills from the sample there. On /decide it must not, and does not:
+                # fast_decide defaults seed_samples=False.
+                d = fast_decide(main.storage, policy, payload or {}, tenant_id, log=False,
+                                seed_samples=True)
                 return index, {"index": index, "result": {"policy_id": policy["id"], "outcome": d["outcome"], "latency_ms": d.get("latency_ms")}}
             ctx = asyncio.run(PolicyExecutor(main.storage).execute(
                 policy=policy, payload=payload or {}, tenant_id=tenant_id, source="simulation", simulate=True))

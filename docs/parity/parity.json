@@ -48,7 +48,8 @@
       "size": "~3 weeks",
       "engineSemantics": false,
       "e2eFlow": "open a failing execution -> step through it -> inspect per-step state",
-      "note": "Re-audit 2026-09-04 dropped 'already exist but are untested' -- the /sdk/v1 twins are covered by tests/test_sdk_runtime.py:177,232,333 and the /api/v1 resume by tests/test_rbac_and_tenant_failclosed.py:75. Still ABSENT: replay and a loop tracer are not step-through."
+      "note": "Re-audit 2026-09-04 dropped 'already exist but are untested' -- the /sdk/v1 twins are covered by tests/test_sdk_runtime.py:177,232,333 and the /api/v1 resume by tests/test_rbac_and_tenant_failclosed.py:75. Still ABSENT: replay and a loop tracer are not step-through.",
+      "gap": "No step-through: there is no way to pause a run at a step, inspect the context as it stood there, and advance one step. `ctx.trace` is post-hoc (what already happened) and `debug_loop` re-evaluates a single loop step in isolation — neither lets an operator walk a failing execution. Needs a paused-execution surface the UI can drive, and it is the phase-5 item the roadmap flags as having zero test coverage today."
     },
     {
       "id": "P05",
@@ -104,7 +105,8 @@
       "size": "6+ months",
       "engineSemantics": false,
       "e2eFlow": "kill a consumer mid-flight -> message lands in the DLQ -> redelivery does not double-log",
-      "note": "Phase 4 ships DLQ + Idempotency-Key on the existing bus, which delivers most of the buyer-visible value at a fraction of the cost."
+      "note": "Phase 4 ships DLQ + Idempotency-Key on the existing bus, which delivers most of the buyer-visible value at a fraction of the cost.",
+      "gap": "No broker: messaging is Redis pub/sub with a DB-polling fallback, so there is no partition, no consumer group and no offset to be exactly-once ABOUT. Concretely missing: a dead-letter destination for a message that fails repeatedly, an `Idempotency-Key` contract so a redelivery does not double-log a decision, and redelivery semantics on consumer death. The DLQ and idempotency halves are worth far more than Kafka itself and do not require it — that split is why the plan carries a P09-partial separate from this row."
     },
     {
       "id": "P10",
@@ -173,7 +175,8 @@
       "size": "3-6 months",
       "engineSemantics": true,
       "e2eFlow": "create a journey -> lock it -> duplicate it -> run it from an SDK",
-      "note": "Largest single item: needs a table, CRUD, a web route AND an SDK surface across five engines."
+      "note": "Largest single item: needs a table, CRUD, a web route AND an SDK surface across five engines.",
+      "gap": "No entity: a journey cannot be created, locked, duplicated or run. It exists only as fixtures in three places that do not share a definition (`experience_studio.py`, the Flutter demo app, and a QA expectations file), so there is not even one shape to build a table from. Largest item in the matrix — the roadmap puts it at a table, CRUD, a web route AND an SDK surface across five engines, which is why it gates on phases 3-6."
     },
     {
       "id": "P16",

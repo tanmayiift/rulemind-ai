@@ -452,7 +452,7 @@ class EvaluationBudgetOnTheFastPathTest(_Base):
         when it runs right up to the deadline and returns a value rather than timing out."""
         self.set_budget(120)
 
-        def eats_the_budget_and_returns_cleanly(bundle, payload, budget=None):
+        def eats_the_budget_and_returns_cleanly(bundle, payload, budget=None, seed_samples=False):
             time.sleep(0.2)
             return {}, {}, {}
 

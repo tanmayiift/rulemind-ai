@@ -115,13 +115,22 @@ class FastPathAccuracyTests(unittest.TestCase):
     def test_flat_field_overrides_sample_on_fast_path(self):
         # The scalable hot path (fast_decide) must apply the same field override.
         from app import fast_decide
+        # `schema_paths` and `seed_samples` are both required to reproduce a real bundle now.
+        # The override is driven by the source's DECLARED field set -- the same thing
+        # executor._payloads_by_source iterates -- rather than by whatever keys the sample
+        # happened to have; reading the sample made this silently depend on sample seeding, which
+        # production traffic no longer does (see tests/test_fast_path_sample_seeding_parity.py).
+        # The assertion below is unchanged: this is the fixture catching up to
+        # _build_serving_bundle, not the contract moving.
         bundle = {
             "connectors": {"loan": {"bureau_score": 756}},
+            "schema_paths": {"loan": ["bureau_score"]},
             "variables": [{"id": "loan_bureau_score", "source_id": "loan",
                            "code": "def run(payload, context):\n    return int(payload.get('bureau_score', 0))\n"}],
             "timeout_ms": 2000, "memory_mb": 128,
         }
-        values, _, _ = fast_decide._compute_variables(bundle, {"bureau_score": 590})
+        values, _, _ = fast_decide._compute_variables(
+            bundle, {"bureau_score": 590}, seed_samples=True)
         self.assertEqual(values["loan_bureau_score"], 590)  # not the sample 756
 
 

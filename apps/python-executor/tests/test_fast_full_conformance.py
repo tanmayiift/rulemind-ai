@@ -61,22 +61,54 @@ class FastFullConformanceTests(unittest.TestCase):
                                  "liveness_score": 95, "geo_flag": 0, "amount": 5000, "income": 50000})
         return payloads
 
-    def _full(self, payload):
+    def _full(self, payload, simulate=True, source="conformance"):
         ctx = asyncio.run(PolicyExecutor(self.storage).execute(
-            policy=self.policy, payload=payload, tenant_id=self.tenant_id, source="conformance", simulate=True))
+            policy=self.policy, payload=payload, tenant_id=self.tenant_id,
+            source=source, simulate=simulate))
         return ctx.outcome if ctx.outcome != "pending" else (self.policy.get("defaultOutcome") or "review")
+
+    def _compare(self, fast_kwargs, full_kwargs):
+        mismatches = []
+        for payload in self._payloads():
+            fast = fast_decide(self.storage, self.policy, payload, self.tenant_id,
+                               log=False, **fast_kwargs)["outcome"]
+            full = self._full(payload, **full_kwargs)
+            if fast != full:
+                mismatches.append((payload, fast, full))
+        return mismatches
 
     def test_policy_is_fast_servable(self):
         self.assertTrue(is_fast_servable(self.policy))
 
     def test_fast_and_full_agree_on_every_payload(self):
-        mismatches = []
-        for payload in self._payloads():
-            fast = fast_decide(self.storage, self.policy, payload, self.tenant_id, log=False)["outcome"]
-            full = self._full(payload)
-            if fast != full:
-                mismatches.append((payload, fast, full))
-        self.assertEqual(mismatches, [], "fast path diverged from the executor: {0}".format(mismatches[:5]))
+        """PRODUCTION semantics on both sides — the contract that actually ships.
+
+        This used to compare `fast_decide(...)` against an executor run with `simulate=True`, and
+        that is not the same decision. `execute()` sets `self._source = "simulation"` whenever
+        simulate is set, and "simulation" is in `_SAMPLE_SEEDING_SOURCES`, so the executor half
+        was pre-filling every unsupplied source from its `sample_payload` while `/decide` never
+        does. The comparison only held because the fast path ALSO seeded unconditionally — two
+        wrongs agreeing. Closing that divergence (see tests/test_fast_path_sample_seeding_parity.py)
+        made this test fail, which is the test doing its job: it had been pinning the pair, not
+        the production contract.
+
+        So both halves are now production: no simulate, and `source="api"`, which is what
+        routers/runtime.py passes on the executor branch of /decide.
+        """
+        mismatches = self._compare({}, {"simulate": False, "source": "api"})
+        self.assertEqual(mismatches, [],
+                         "fast path diverged from the executor on production traffic: "
+                         "{0}".format(mismatches[:5]))
+
+    def test_fast_and_full_agree_on_the_author_surfaces_too(self):
+        """The other pairing, kept rather than dropped. A backtest runs the executor with
+        simulate=True (hence source="simulation", hence seeding) on one branch and fast_decide on
+        the other, so those two have to agree as well — just about a different contract than the
+        test above. `seed_samples=True` is exactly what `_run_decision_batch` passes."""
+        mismatches = self._compare({"seed_samples": True}, {"simulate": True, "source": "conformance"})
+        self.assertEqual(mismatches, [],
+                         "fast path diverged from the executor on the simulation surface: "
+                         "{0}".format(mismatches[:5]))
 
     def test_fast_eligibility_is_the_single_authority(self):
         # Eligible when rules-only and no running experiment...

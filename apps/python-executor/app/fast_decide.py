@@ -210,12 +210,17 @@ def tenant_fetches_sources(storage: Any, tenant_id: str) -> bool:
     """Has this tenant switched decision-time source fetching on for any connector?
 
     If so the fast path must DECLINE the decision, exactly as it declines a policy containing an
-    IO step: this module retrieves nothing, and `_compute_variables` below builds every source
-    payload from `sample_payload`. Serving such a policy here would mean FAST_DECIDE=1 quietly
-    reverting the fail-closed contract the executor now enforces — the connector would be
-    configured to pull a real bureau report, and the decision would be made on the demo sample
-    instead, at HTTP 200. That is a performance flag acting as a correctness switch, which is
-    the precise shape of the bug `_IO_STEP_TYPES` was widened to fix.
+    IO step: this module retrieves nothing. A connector configured to pull a live bureau report
+    would contribute no data at all here, so every variable reading it would fail and the
+    decision would come back `review` — a policy that works through the executor answering
+    "cannot decide" purely because a performance flag was set.
+
+    (This paragraph used to say the decision would be made on the connector's `sample_payload`
+    "at HTTP 200", which was true when `_compute_variables` seeded every source unconditionally.
+    It no longer does on production traffic — see the seeding comment there — so the failure mode
+    moved from silently-wrong to loudly-unavailable. Still a reason to decline, and still a
+    performance flag acting as a correctness switch, but worth stating accurately: the earlier
+    version would send someone hunting for a fail-open that is now closed.)
 
     Declining rather than implementing: `fast_decide` is a synchronous function called from
     Starlette's threadpool and from a 32-way batch ThreadPoolExecutor, and a source fetch is an
@@ -403,6 +408,19 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         item["id"]: (item.get("sample_payload") or {})
         for item in storage.list_connectors(tenant_id=tenant_id)
     }
+    # A source's DECLARED field set, carried separately from its sample.
+    #
+    # The flat-field override below used to ask `if field in sample`, which reads a source's
+    # field set off whatever keys its sample_payload happened to have. That worked only because
+    # samples were seeded unconditionally, so switching production traffic off seeding (correctly)
+    # broke it -- an empty source has no keys, so {"bureau_score": 590} reached nothing. The
+    # executor never had that coupling: _payloads_by_source iterates
+    # `connector["schema_paths"]`, which is the declaration and does not depend on a sample
+    # existing. Same source of truth here now.
+    schema_paths = {
+        item["id"]: [str(field) for field in (item.get("schema_paths") or [])]
+        for item in storage.list_connectors(tenant_id=tenant_id)
+    }
     settings = storage.get_settings(tenant_id=tenant_id).get("engine_config", {})
     core_bundle = {"policy": policy, "rules": rules, "scorecards": scorecards,
                    "decision_tables": decision_tables, "variables": variables}
@@ -421,6 +439,7 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         "policy": policy,
         "variables": variables,
         "connectors": connectors,
+        "schema_paths": schema_paths,
         "core_bundle": core_bundle,
         "rust_bundle": rust_bundle,
         "timeout_ms": int(settings.get("timeout_ms", 2000)),
@@ -440,9 +459,29 @@ def _serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) -> Dic
 
 
 def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
-                       budget: Optional["_Budget"] = None) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, str]]:
+                       budget: Optional["_Budget"] = None,
+                       seed_samples: bool = False) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, str]]:
     connectors = bundle["connectors"]
-    payloads: Dict[str, Any] = {cid: dict(sample) for cid, sample in connectors.items()}
+    # SEEDING IS OFF BY DEFAULT, and that default is the whole point.
+    #
+    # This used to seed every source with its sample_payload unconditionally, which made
+    # FAST_DECIDE=1 decide differently from the executor on production traffic. The executor
+    # gates it -- `seed_samples = self._source in _SAMPLE_SEEDING_SOURCES` at
+    # executor._payloads_by_source -- with the comment saying exactly why: on production traffic
+    # an unsupplied field must STAY unsupplied, so the variable that reads it fails and the
+    # decision fails closed, rather than quietly evaluating against demo data.
+    #
+    # `api` is not in that set, so /decide through the executor left the source empty. /decide
+    # through the fast path filled it with an approving sample. Same policy, same payload,
+    # different decision, chosen by a performance flag -- the third instance of this exact shape
+    # after input validation and the evaluation budget, and the reason all three are worth
+    # calling a correctness bug rather than a gap.
+    #
+    # The author-driven surfaces still seed, and still match: _run_decision_batch passes True
+    # here and `source="simulation"` on its executor branch, which IS in _SAMPLE_SEEDING_SOURCES.
+    payloads: Dict[str, Any] = (
+        {cid: dict(sample) for cid, sample in connectors.items()} if seed_samples
+        else {cid: {} for cid in connectors})
     flat_fields: Dict[str, Any] = {}
     for key, value in payload.items():
         if key in connectors and isinstance(value, dict):
@@ -453,11 +492,16 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
     # variables instead of the source silently keeping its approving sample.
     # (A connector's sample keys are its field set here.) Mirrors the executor.
     if flat_fields:
-        for sample in payloads.values():
-            if isinstance(sample, dict):
-                for field, value in flat_fields.items():
-                    if field in sample:
-                        sample[field] = value
+        # Field-level override, driven by each source's DECLARED schema_paths -- the same source
+        # of truth executor._payloads_by_source uses. Asking `if field in sample` instead read the
+        # field set off the sample, which silently made this depend on seeding being on.
+        for connector_id, fields in (bundle.get("schema_paths") or {}).items():
+            target = payloads.get(connector_id)
+            if not isinstance(target, dict):
+                continue
+            for field in fields:
+                if field in flat_fields:
+                    target[field] = flat_fields[field]
     payloads["custom"] = dict(flat_fields) if flat_fields else dict(payload)
     values: Dict[str, Any] = {}
     errors: Dict[str, str] = {}
@@ -487,7 +531,9 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
     return values, payloads, errors
 
 
-def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], tenant_id: str, log: bool = True, user_id: Optional[str] = None) -> Dict[str, Any]:
+def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], tenant_id: str,
+                log: bool = True, user_id: Optional[str] = None,
+                seed_samples: bool = False) -> Dict[str, Any]:
     started = time.perf_counter()
     bundle = _serving_bundle(storage, tenant_id, policy)
     budget = _Budget(bundle["budget_ms"], started)
@@ -495,7 +541,8 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
     # after the work is not a guard, it is a report -- and the whole point is that the unchecked
     # keys were becoming None and quietly re-phrasing gates.
     validation_trace = _validate_input(storage, tenant_id, policy["id"], payload or {})
-    values, resolved_payload, variable_errors = _compute_variables(bundle, payload or {}, budget)
+    values, resolved_payload, variable_errors = _compute_variables(
+        bundle, payload or {}, budget, seed_samples=seed_samples)
     # Variable computation errors on the fast path are recorded as observable error events (not
     # silently dropped), so a decision made on a None-defaulted variable is alertable.
     if variable_errors:

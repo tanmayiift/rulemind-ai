@@ -621,6 +621,18 @@ GENERATED from the Python. Every fix mutation-checked.
 - [x] **C2** `request_mapping` / `response_mapping` actually read and applied
 - [x] **C3** Caching + per-source timeouts inside the evaluation budget
 - [x] **C4** DoD five + P01 parity row + `README.md:6` claim becomes true
+- [x] **C5** (found during C1-C4) **Third `FAST_DECIDE=1` correctness divergence**, same shape as
+  B1 and B2. `executor._payloads_by_source` gates sample seeding on `_SAMPLE_SEEDING_SOURCES`
+  ({test_console, simulation, loop_debug}) so that on production traffic an unsupplied source
+  stays empty and the decision fails closed. `fast_decide._compute_variables` seeded every source
+  from `sample_payload` unconditionally, so `/decide` with the flag on evaluated against demo
+  data — approving, by construction — where the executor failed closed. Seeding is now opt-in and
+  only `_run_decision_batch` asks for it, matching the `source="simulation"` it passes on its own
+  executor branch.
+  - A **second, older divergence** surfaced underneath it: the fast path's flat-field override
+    asked `if field in sample`, reading a source's field set off its sample, so it worked only
+    because seeding was on. The executor iterates `connector["schema_paths"]`. The bundle now
+    carries `schema_paths` and the fast path uses the same declaration.
 
 ## D. Phase 3 - roadmap phase 4 (parallel)
 
