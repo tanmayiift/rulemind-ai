@@ -1427,6 +1427,19 @@ def sync_sdk_review_task(request: SdkExecutionSyncRequest, tenant_id: str) -> Op
 
 @app.on_event("startup")
 async def startup() -> None:
+    # Outbound webhook subscriptions listen on the audit stream. Registered here rather than at
+    # import time so a test that swaps `storage` does not end up with a listener bound to a
+    # different one, and so the registration is visible in the startup path next to the other
+    # side effects it belongs with.
+    try:
+        from . import webhook_dispatch
+
+        from .storage import register_audit_listener, register_decision_listener
+
+        register_audit_listener(webhook_dispatch.on_audit_event)
+        register_decision_listener(webhook_dispatch.on_decision)
+    except Exception:  # pragma: no cover - a listener must never block startup
+        pass
     # Fail closed: refuse to serve in production with default/unset critical secrets.
     verify_production_secrets()
     # Durable decision outbox: replay any WAL entries a previous process appended but was killed
@@ -1884,6 +1897,7 @@ from .routers.platform import router as platform_router  # noqa: E402
 from .routers.sdk import router as sdk_router  # noqa: E402
 from .routers import runtime as _runtime  # noqa: E402
 from .routers.runtime import router as runtime_router  # noqa: E402
+from .routers.webhook_subscriptions import router as webhook_subscriptions_router  # noqa: E402
 from .routers.collab import router as collab_router  # noqa: E402
 from .routers.evaluations import router as evaluations_router  # noqa: E402
 # Re-exported on purpose: app/routers/operations.py reads main.trigger_webhook
@@ -1908,6 +1922,7 @@ app.include_router(models_router)
 app.include_router(platform_router)
 app.include_router(sdk_router)
 app.include_router(runtime_router)
+app.include_router(webhook_subscriptions_router)
 app.include_router(collab_router)
 app.include_router(evaluations_router)
 

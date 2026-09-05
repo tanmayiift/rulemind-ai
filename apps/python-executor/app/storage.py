@@ -77,6 +77,7 @@ from .models import (
     UsageRecord,
     Variable,
     Webhook,
+    WebhookSubscription,
     WorkflowExecution,
     WorkspaceMember,
     uuid4_str,
@@ -436,6 +437,63 @@ def mask_secret_values(value: Any) -> Any:
     if isinstance(value, list):
         return [mask_secret_values(item) for item in value]
     return value
+
+
+_AUDIT_LOG = logging.getLogger("rulemind.storage.audit_listeners")
+
+# ── audit listeners ────────────────────────────────────────────────────────
+# Storage does not import webhook_dispatch, and must not: that would make the persistence layer
+# depend on outbound HTTP, and this file is already the largest in the backend. The dependency is
+# inverted instead -- interested modules register here at startup, and storage only knows it holds
+# a list of callables.
+#
+# Every listener is best effort and isolated. A written audit event is a fact; a listener that
+# raises must not turn it into an exception for the caller who was merely recording a promotion.
+_AUDIT_LISTENERS: List[Any] = []
+
+
+def register_audit_listener(listener: Any) -> None:
+    """Call `listener(storage, event_dict)` after every audit event is durably written."""
+    if listener not in _AUDIT_LISTENERS:
+        _AUDIT_LISTENERS.append(listener)
+
+
+def clear_audit_listeners() -> None:
+    """Test hook. Listeners are process-global, so a suite that registers one must be able to
+    take it back off rather than leaking it into every later test in the same process."""
+    _AUDIT_LISTENERS.clear()
+
+
+_DECISION_LISTENERS: List[Any] = []
+
+
+def register_decision_listener(listener: Any) -> None:
+    """Call `listener(storage, decision_dict)` after every Decision row is written."""
+    if listener not in _DECISION_LISTENERS:
+        _DECISION_LISTENERS.append(listener)
+
+
+def clear_decision_listeners() -> None:
+    """Test hook, for the same reason as clear_audit_listeners."""
+    _DECISION_LISTENERS.clear()
+
+
+def _notify_decision_listeners(storage: Any, decision: Dict[str, Any]) -> None:
+    for listener in list(_DECISION_LISTENERS):
+        try:
+            listener(storage, decision)
+        except Exception:  # pragma: no cover - a listener must never break the decision
+            _AUDIT_LOG.warning("decision listener %r failed",
+                               getattr(listener, "__name__", listener), exc_info=True)
+
+
+def _notify_audit_listeners(storage: Any, event: Dict[str, Any]) -> None:
+    for listener in list(_AUDIT_LISTENERS):
+        try:
+            listener(storage, event)
+        except Exception:  # pragma: no cover - a listener must never break the write
+            _AUDIT_LOG.warning("audit listener %r failed",
+                               getattr(listener, "__name__", listener), exc_info=True)
 
 
 class Storage:
@@ -1712,6 +1770,14 @@ class Storage:
         # exception during the write skipped it entirely and the tenant was under-billed for a
         # decision they had already been served. Metering follows the row, not the happy path.
         self.record_usage(METRIC_DECISIONS, 1, tenant_id=resolved)
+        # Same argument as the metering directly above, and the same funnel: /decide has a fast
+        # path and an executor path, plus three other entry points, so a hook at any handler
+        # would miss whichever path was added last. Emitting from here is what stops outbound
+        # webhooks becoming the fourth FAST_DECIDE divergence of this cycle.
+        # The resolved tenant is passed in rather than read off `result`: _decision_to_dict does
+        # not carry tenant_id, so a listener reading it off the row silently got None and did
+        # nothing. Found by the end-to-end webhook test, not by inspection.
+        _notify_decision_listeners(self, {**result, "tenant_id": resolved})
         return result
 
     def add_decisions_batch(self, decisions: List[Dict[str, Any]], tenant_id: Optional[str] = None) -> Dict[str, Any]:
@@ -2542,7 +2608,9 @@ class Storage:
                     # any drift between the two shapes would show up as a false tamper report.
                     model.hash = compute_audit_hash(self._audit_event_to_dict(model))
                     session.flush()
-                    return self._audit_event_to_dict(model)
+                    written = self._audit_event_to_dict(model)
+                _notify_audit_listeners(self, written)
+                return written
             except IntegrityError:
                 if attempts >= 5:
                     raise
@@ -3871,6 +3939,128 @@ class Storage:
             "is_active": model.is_active,
             "secret_hash": decrypt_secret_text(model.secret_hash) if include_secret else ("••••••••" if model.secret_hash else None),
             "payload_mapping": copy.deepcopy(model.payload_mapping or {}),
+            "created_at": serialize_datetime(model.created_at),
+            "updated_at": serialize_datetime(model.updated_at),
+        }
+
+    # ── outbound webhook subscriptions (P03) ──────────────────────────────
+    def create_webhook_subscription(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        with self.connect() as session:
+            model = WebhookSubscription(
+                id=payload.get("id") or uuid4_str(),
+                tenant_id=resolved,
+                name=payload["name"],
+                url=payload["url"],
+                event_types=copy.deepcopy(payload.get("event_types") or []),
+                filters=copy.deepcopy(payload.get("filters") or []),
+                secret=encrypt_secret_text(payload["secret"]) if payload.get("secret") else None,
+                is_active=bool(payload.get("is_active", True)),
+                timeout_ms=payload.get("timeout_ms"),
+                retries=payload.get("retries"),
+            )
+            session.add(model)
+            session.flush()
+            return self._webhook_subscription_to_dict(model)
+
+    def update_webhook_subscription(self, subscription_id: str, patch: Dict[str, Any],
+                                    tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookSubscription, subscription_id)
+            # The tenant check is the whole isolation boundary for this entity: session.get is
+            # keyed by primary key alone, so without it any workspace could patch any other's
+            # subscription by id -- including pointing its URL somewhere else.
+            if not model or model.tenant_id != resolved:
+                return None
+            for field in ("name", "url", "event_types", "filters", "is_active", "timeout_ms", "retries"):
+                if field in patch:
+                    setattr(model, field, copy.deepcopy(patch[field]))
+            # `secret` is deliberately NOT patchable here. Rotating it is a separate, explicit
+            # action -- silently accepting one in a general PATCH is how a secret arrives from a
+            # client that already had it in plaintext.
+            session.flush()
+            return self._webhook_subscription_to_dict(model)
+
+    def delete_webhook_subscription(self, subscription_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookSubscription, subscription_id)
+            if not model or model.tenant_id != resolved:
+                return False
+            session.delete(model)
+            return True
+
+    def get_webhook_subscription(self, subscription_id: str, tenant_id: Optional[str] = None,
+                                 include_secret: bool = False) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookSubscription, subscription_id)
+            if not model or model.tenant_id != resolved:
+                return None
+            return self._webhook_subscription_to_dict(model, include_secret=include_secret)
+
+    def list_webhook_subscriptions(self, tenant_id: Optional[str] = None,
+                                   include_secret: bool = False) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(WebhookSubscription)
+                .where(WebhookSubscription.tenant_id == resolved)
+                .order_by(desc(WebhookSubscription.created_at))).all()
+            return [self._webhook_subscription_to_dict(r, include_secret=include_secret) for r in rows]
+
+    def subscriptions_for_event(self, tenant_id: str, event_type: str) -> List[Dict[str, Any]]:
+        """Active subscriptions in this tenant that name this event type.
+
+        Returned WITH secrets, because the only caller is the dispatcher and it has to sign. The
+        event-type filter is applied in SQL rather than in Python so a workspace with many
+        subscriptions does not decrypt every secret on every event.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(WebhookSubscription).where(
+                    WebhookSubscription.tenant_id == resolved,
+                    WebhookSubscription.is_active.is_(True))).all()
+            out = []
+            for row in rows:
+                if event_type in (row.event_types or []):
+                    out.append(self._webhook_subscription_to_dict(row, include_secret=True))
+            return out
+
+    def record_webhook_delivery(self, subscription_id: str, ok: bool, error: Optional[str] = None,
+                                tenant_id: Optional[str] = None) -> None:
+        """Last-known delivery state, so a subscriber that has been silently failing is visible
+        without trawling logs. Not a delivery log -- that would grow with event volume."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookSubscription, subscription_id)
+            if not model or model.tenant_id != resolved:
+                return
+            model.last_delivery_at = datetime.utcnow()
+            model.last_delivery_ok = bool(ok)
+            model.last_delivery_error = None if ok else (error or "")[:1000]
+            model.consecutive_failures = 0 if ok else int(model.consecutive_failures or 0) + 1
+
+    @staticmethod
+    def _webhook_subscription_to_dict(model: "WebhookSubscription", include_secret: bool = False) -> Dict[str, Any]:
+        return {
+            "id": model.id,
+            "tenant_id": model.tenant_id,
+            "name": model.name,
+            "url": model.url,
+            "event_types": copy.deepcopy(model.event_types or []),
+            "filters": copy.deepcopy(model.filters or []),
+            # Same contract as an API key: the plaintext is returned exactly once, at creation.
+            "secret": decrypt_secret_text(model.secret) if include_secret else ("••••••••" if model.secret else None),
+            "is_active": model.is_active,
+            "timeout_ms": model.timeout_ms,
+            "retries": model.retries,
+            "last_delivery_at": serialize_datetime(model.last_delivery_at),
+            "last_delivery_ok": model.last_delivery_ok,
+            "last_delivery_error": model.last_delivery_error,
+            "consecutive_failures": model.consecutive_failures,
             "created_at": serialize_datetime(model.created_at),
             "updated_at": serialize_datetime(model.updated_at),
         }

@@ -637,7 +637,9 @@ GENERATED from the Python. Every fix mutation-checked.
 ## D. Phase 3 - roadmap phase 4 (parallel)
 
 - [ ] **D1** P02 p12 / PKCS#12 outbound client certificates
-- [ ] **D2** P03 outbound webhooks: subscription model, event types, filters
+- [x] **D2** P03 outbound webhooks: subscription model, event types, filters — and
+  `manage_access` rather than `author`, because a subscription is standing egress
+  configuration, not a policy artifact
 - [ ] **D3** P20 predictor entity + values + reports
 - [x] **D4** P09-partial: DLQ on the decision WAL. `Idempotency-Key` already shipped in
   W7.x (`app/idempotency.py` + the `idempotency_records` table), so this was the DLQ half

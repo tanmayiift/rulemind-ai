@@ -92,7 +92,17 @@ class UnknownWriteFailsClosedTest(unittest.TestCase):
             # These are deliberately MANAGE_ACCESS.
             if path.startswith(("/api/v1/access", "/api/v1/settings", "/api/v1/branding",
                                 "/api/v1/reports/email-config", "/scim/v2", "/api/admin/v1",
-                                "/api/v1/auth", "/api/mobile/v1/auth", "/api/v1/models")):
+                                "/api/v1/auth", "/api/mobile/v1/auth", "/api/v1/models",
+                                # Outbound webhook subscriptions (P03). Deliberate, and NOT the
+                                # same class as the inbound /api/v1/webhooks entity beside it,
+                                # which is AUTHOR: a subscription is standing egress
+                                # configuration that sends this workspace's decision data to a
+                                # third party until someone removes it. A policy_maker can
+                                # already POST anywhere from an action step, so this is not
+                                # about reaching the network -- it is that the role documented
+                                # as "cannot manage access" should not be able to repoint the
+                                # workspace's event stream.
+                                "/api/v1/webhook-subscriptions")):
                 continue
             unclassified.append(path)
         self.assertEqual(unclassified, [],

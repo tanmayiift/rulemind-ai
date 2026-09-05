@@ -551,6 +551,40 @@ class Webhook(Base, TimestampMixin):
     payload_mapping: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
+class WebhookSubscription(Base, TimestampMixin):
+    """OUTBOUND. The inverse of `Webhook` above, which is inbound (an endpoint_path a partner
+    POSTs to in order to trigger a policy). This says: POST to `url` whenever an event of one of
+    `event_types`, matching every one of `filters`, happens in this workspace.
+
+    A separate table rather than a flag on `Webhook`: the two share no column that means the same
+    thing. `Webhook` has an endpoint_path and a policy_id (which policy a caller may trigger);
+    this has a url, an event selection and a signing secret (where WE send, and how the receiver
+    verifies us). Overloading one row would make every query on either say "and the other kind".
+    """
+
+    __tablename__ = "webhook_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    event_types: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    filters: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # Encrypted at rest with the same helper the inbound webhook secret uses, and returned in
+    # plaintext exactly once, at creation. Nullable so an unsigned subscription is expressible.
+    secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    timeout_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    retries: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Delivery health, so a subscriber that has been silently failing is visible without
+    # trawling logs. Not a delivery LOG -- that would grow with event volume; this is the
+    # last-known state of the one thing an operator asks about ("is it working?").
+    last_delivery_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_delivery_ok: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    last_delivery_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
 class CronSchedule(Base, TimestampMixin):
     __tablename__ = "cron_schedules"
 

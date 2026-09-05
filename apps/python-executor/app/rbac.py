@@ -61,6 +61,14 @@ ROLE_DESCRIPTIONS = {
 # specific prefixes are listed before their parents.
 _WRITE_PREFIX_CAPABILITY = [
     ("/api/v1/access", MANAGE_ACCESS),
+    # Listed BEFORE "/api/v1/webhooks" would match, and separately from it: the inbound webhook
+    # entity is an AUTHOR prefix (below), while a SUBSCRIPTION is standing egress configuration
+    # -- it sends this workspace's decision data to a third party, for every matching event,
+    # until someone removes it. That belongs with settings and branding. A policy_maker can
+    # already POST to any URL from an action step, so this is not about reaching the network; it
+    # is that the role documented as "cannot manage access" should not be able to point the
+    # workspace's event stream at a new destination.
+    ("/api/v1/webhook-subscriptions", MANAGE_ACCESS),
     ("/api/v1/settings", MANAGE_ACCESS),
     ("/api/v1/branding", MANAGE_ACCESS),
     ("/api/v1/reports/email-config", MANAGE_ACCESS),
