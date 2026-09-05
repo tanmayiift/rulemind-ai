@@ -125,6 +125,20 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
     [connectorMap, props.data.connectors, props.data.variables, selectedId, sourceId]
   );
 
+  // Diagnostics come from the SERVER, which reuses sandbox.validate_source -- the same function
+  // that decides whether the code may run. A browser-side Python parser plus a second copy of the
+  // import/attribute policy would drift from it, and a linter that disagrees with the runtime is
+  // worse than none.
+  const lintCode = React.useCallback(
+    async (code: string) => {
+      const response = await apiJson<{ ok: boolean; diagnostics: Array<{
+        message: string; line: number | null; column: number | null; severity: string;
+      }> }>(apiBaseUrl, "/api/v1/variables/lint", { method: "POST", body: JSON.stringify({ code }) }, apiKey);
+      return response.diagnostics ?? [];
+    },
+    [apiBaseUrl, apiKey]
+  );
+
   const beginDraft = React.useCallback(() => {
     if (!draftMode && selectedId) {
       setDraftMode(true);
@@ -582,6 +596,7 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
                 setCode(next);
               }}
               scope={completionScope}
+              lint={lintCode}
               testId="variable-code"
               ariaLabel="Python variable code"
               height={isMobile ? 320 : 420}

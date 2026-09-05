@@ -3497,6 +3497,17 @@
         "title": "VariableDraftTestRequest",
         "type": "object"
       },
+      "VariableLintRequest": {
+        "properties": {
+          "code": {
+            "default": "",
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "title": "VariableLintRequest",
+        "type": "object"
+      },
       "VariableUpsertRequest": {
         "properties": {
           "category": {
@@ -11799,6 +11810,46 @@
           }
         },
         "summary": "Variable Graph"
+      }
+    },
+    "/api/v1/variables/lint": {
+      "post": {
+        "description": "Diagnostics for the editor, WITHOUT running the code (P13).\n\nThe editor needs to say \"line 4: unexpected indent\" or \"line 7: Import not allowed: os\"\nbefore the author clicks Test. Doing that in the browser would mean a Python parser in\nJavaScript and a second copy of the sandbox policy -- two implementations that would drift\nfrom the ones that actually decide whether the code runs, and a linter that disagrees with\nthe runtime is worse than no linter, because the author learns to ignore it.\n\nSo this reuses `sandbox.validate_source`: the exact function the sandbox calls before\nexecuting anything. A diagnostic here is therefore not an approximation of the rule, it IS\nthe rule.\n\nIt does not EXECUTE. `test-draft` above already does that, in a real sandbox with a timeout\nand a memory cap; this is the cheap check that runs while someone is typing, so it must not\nspawn a process or touch a connector.",
+        "operationId": "lint_variable_draft_api_v1_variables_lint_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableLintRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Lint Variable Draft Api V1 Variables Lint Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Lint Variable Draft"
       }
     },
     "/api/v1/variables/test-draft": {

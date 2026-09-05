@@ -245,6 +245,10 @@ class VariableUpsertRequest(BaseModel):
     status: str = "dev"
 
 
+class VariableLintRequest(BaseModel):
+    code: str = ""
+
+
 class VariableDraftTestRequest(BaseModel):
     source_id: str
     code: str

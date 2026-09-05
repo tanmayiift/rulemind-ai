@@ -19,8 +19,8 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 14 |
-| 🟡 partial | 2 |
+| ✅ present | 15 |
+| 🟡 partial | 1 |
 | ❌ absent | 5 |
 | ⛔ cut | 1 |
 
@@ -42,7 +42,7 @@ verified.
 | P10 | ClickHouse / OLAP store | ✅ present | `ClickHouseArchiver` for archived decisions (covered by `test_archive_sinks_live.py`), plus predictor values fanned out to their own narrow table via a DEFAULTED `write_predictor_values` on the interface — so existing sinks are untouched; `ColdStoreFanOutTest` covers the fan-out, the no-sink no-op, and a dead sink costing neither the decision nor the hot copy | `S3Archiver` inherits the no-op, so S3 deployments archive decisions but not predictor values | 4 | done | no |
 | P11 | Canary deployment with delays | ✅ present | `app/champion_challenger.py` ramp + guardrails + promote/hold/rollback; the ramp drives live traffic via `app/experiments.py`; `scheduler.auto_rollback_experiments` halts a running experiment on a GUARDRAIL BREACH (not on merely losing), leader-gated, audited, off by default behind `EXPERIMENT_AUTO_ROLLBACK`; `test_canary_ramp_assignment.py` (14) + `test_experiment_auto_rollback.py` (12) | halts the experiment rather than reverting an already-promoted policy — a separate lifecycle | 5 | done | no |
 | P12 | Feature factory | ❌ absent | `0 hits in any .py/.ts/.tsx; app/backtest.py and app/analytics.py are the seeds` | — | 8 | multi-month | **yes** |
-| P13 | Monaco / embedded code editor | 🟡 partial | CodeMirror 6 at `apps/web/src/v3/editor/PythonCodeEditor.tsx` — Python highlighting themed from the app's tokens (both themes), plus RuleMind-aware completion from live state (`rulemind-completion.ts`: the source's `sample_payload` keys after `payload.`, other variables after `variables.`, the decorator); `test/rulemind-completion.test.ts` (19) + `e2e/rulemind-v3.spec.ts` types into it | no inline diagnostics (`@codemirror/lint` unwired); only the variables page, not the API console | 6 | ~1 week for diagnostics | no |
+| P13 | Monaco / embedded code editor | ✅ present | CodeMirror 6 with Python highlighting themed from the app's tokens, RuleMind-aware completion from live state, and inline diagnostics via `POST /api/v1/variables/lint` — which reuses `sandbox.validate_source`, so a marker IS the rule rather than a second implementation of it; 600ms debounce, never executes, a failed request shows nothing; `test_variable_lint.py` (10) + `rulemind-completion.test.ts` (19) | only the variables page; diagnostics are syntax + sandbox policy, no name resolution | 6 | done | no |
 | P14 | SQL editor | ⛔ cut | `no SQL datasource exists to edit against; 0 hits for postgres/mysql/jdbc/snowflake in connector code` | — | — | n/a | no |
 | P15 | Journey as a first-class entity | ❌ absent | `no Journey model or table; only fixtures in app/experience_studio.py:292, demo-app/lib/journeys.dart` | — | 7 | 3-6 months | **yes** |
 | P16 | Partitioning / cold storage / retention in months | ✅ present | retention in calendar months (`archiver.normalize_retention_months`), archive-then-purge to the S3 / ClickHouse sink (`storage.archive_and_purge_decisions`), leader-gated scheduled job; `tests/test_retention_archive_purge.py` (13) covers the round trip, the ordering guarantee (a failing sink purges NOTHING), tenant scoping, batching, and the boundary row | table partitioning absent — an optimisation (DROP PARTITION vs DELETE), not the capability: archive-then-purge already bounds the hot table | 3 | done | no |

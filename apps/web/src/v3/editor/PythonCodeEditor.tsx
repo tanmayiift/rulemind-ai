@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
+import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
 import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/language";
@@ -38,6 +39,23 @@ export interface PythonCodeEditorProps {
   testId?: string;
   ariaLabel?: string;
   height?: number;
+  /**
+   * Asks the SERVER whether this code would be accepted, and returns markers.
+   *
+   * Server-side on purpose: checking Python in the browser would need a parser in JavaScript AND
+   * a second copy of the sandbox's import/attribute policy, and a linter that disagrees with the
+   * runtime is worse than none -- the author learns to ignore it. The endpoint reuses
+   * `sandbox.validate_source`, the exact function the sandbox calls before executing anything.
+   *
+   * Optional: without it the editor keeps highlighting and completion and simply shows no
+   * markers, so an embedding that has no API to call is not broken by this.
+   */
+  lint?: (code: string) => Promise<Array<{
+    message: string;
+    line: number | null;
+    column: number | null;
+    severity: string;
+  }>>;
 }
 
 function highlightStyle(theme: ThemeTokens): HighlightStyle {
@@ -142,6 +160,10 @@ export function PythonCodeEditor(props: PythonCodeEditorProps) {
   scope.current = props.scope;
   const onChange = React.useRef(props.onChange);
   onChange.current = props.onChange;
+  // Same reason as `scope` above: captured in a ref so the mount-only editor always calls the
+  // CURRENT function rather than the one that existed when it was created.
+  const lintFn = React.useRef(props.lint);
+  lintFn.current = props.lint;
 
   const testId = props.testId;
   const ariaLabel = props.ariaLabel;
@@ -173,6 +195,50 @@ export function PythonCodeEditor(props: PythonCodeEditorProps) {
           EditorState.tabSize.of(4),
           closeBrackets(),
           autocompletion({ override: [completionSource], icons: false }),
+          lintGutter(),
+          // 600ms, not on every keystroke: each run is a network round trip, and a marker that
+          // appears mid-word while someone is still typing an identifier is noise rather than
+          // help. CodeMirror debounces on `delay`.
+          linter(
+            async (view): Promise<Diagnostic[]> => {
+              const ask = lintFn.current;
+              if (!ask) return [];
+              const code = view.state.doc.toString();
+              let found;
+              try {
+                found = await ask(code);
+              } catch {
+                // A failed lint request must never surface as an editor error. The author is
+                // typing; a red banner because the network blipped would be worse than silence.
+                return [];
+              }
+              return found.map((item) => {
+                // A diagnostic with no line is a sandbox POLICY violation -- validate_source
+                // raises on an AST walk without carrying the node position out. Marking line 1
+                // would point at the wrong line, so it spans the whole document instead and the
+                // message names the symbol.
+                if (item.line == null) {
+                  return {
+                    from: 0,
+                    to: view.state.doc.length,
+                    severity: "error" as const,
+                    message: item.message,
+                  };
+                }
+                const line = view.state.doc.line(
+                  Math.min(Math.max(item.line, 1), view.state.doc.lines)
+                );
+                const from = Math.min(line.from + Math.max((item.column ?? 1) - 1, 0), line.to);
+                return {
+                  from,
+                  to: line.to,
+                  severity: item.severity === "warning" ? ("warning" as const) : ("error" as const),
+                  message: item.message,
+                };
+              });
+            },
+            { delay: 600 }
+          ),
           keymap.of([...closeBracketsKeymap, ...completionKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
           EditorView.lineWrapping,
           // Playwright's `fill()` needs a real editing surface, and CodeMirror's is this

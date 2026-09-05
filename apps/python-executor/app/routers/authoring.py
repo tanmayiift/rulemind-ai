@@ -20,6 +20,7 @@ from ..main import (
     PromoteRequest,
     TestPayloadRequest,
     VariableDraftTestRequest,
+    VariableLintRequest,
     VariableUpsertRequest,
     active_tenant_id,
     connector_payload,
@@ -215,6 +216,60 @@ def test_variable(variable_id: str, request: TestPayloadRequest = Body(default=T
     if result["result"].get("error"):
         record_error("variables", "test", result["result"]["error"], "variable", variable_id, {"payload": request.payload})
     return result
+
+
+@router.post("/api/v1/variables/lint")
+def lint_variable_draft(request: VariableLintRequest) -> Dict[str, Any]:
+    """Diagnostics for the editor, WITHOUT running the code (P13).
+
+    The editor needs to say "line 4: unexpected indent" or "line 7: Import not allowed: os"
+    before the author clicks Test. Doing that in the browser would mean a Python parser in
+    JavaScript and a second copy of the sandbox policy -- two implementations that would drift
+    from the ones that actually decide whether the code runs, and a linter that disagrees with
+    the runtime is worse than no linter, because the author learns to ignore it.
+
+    So this reuses `sandbox.validate_source`: the exact function the sandbox calls before
+    executing anything. A diagnostic here is therefore not an approximation of the rule, it IS
+    the rule.
+
+    It does not EXECUTE. `test-draft` above already does that, in a real sandbox with a timeout
+    and a memory cap; this is the cheap check that runs while someone is typing, so it must not
+    spawn a process or touch a connector.
+    """
+    from ..sandbox import validate_source
+
+    code = request.code or ""
+    if not code.strip():
+        # A FAST PATH, not a correctness guard -- `ast.parse("")` succeeds, so removing this
+        # returns the same answer. It exists because an empty editor is the state every new
+        # variable starts in and the linter fires on a timer: this skips a parse and a cache
+        # write on the most common input. Stated plainly because a mutation removing it changes
+        # nothing observable, and a comment claiming otherwise would send someone hunting.
+        return {"ok": True, "diagnostics": []}
+    try:
+        validate_source(code)
+    except SyntaxError as bad:
+        # SyntaxError carries the position; ValueError (a policy violation) does not, so the two
+        # are reported differently rather than pretending to a precision only one of them has.
+        return {"ok": False, "diagnostics": [{
+            "severity": "error",
+            "message": bad.msg or "Syntax error",
+            "line": bad.lineno or 1,
+            "column": bad.offset or 1,
+            "kind": "syntax",
+        }]}
+    except ValueError as refused:
+        return {"ok": False, "diagnostics": [{
+            "severity": "error",
+            "message": str(refused),
+            # No line number: validate_source raises on an AST walk without carrying the node
+            # position out. Reporting line 1 would put the marker on the wrong line, which is
+            # worse than putting it on none -- the message names the symbol.
+            "line": None,
+            "column": None,
+            "kind": "policy",
+        }]}
+    return {"ok": True, "diagnostics": []}
 
 
 @router.post("/api/v1/variables/test-draft")
