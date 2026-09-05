@@ -639,7 +639,10 @@ GENERATED from the Python. Every fix mutation-checked.
 - [ ] **D1** P02 p12 / PKCS#12 outbound client certificates
 - [ ] **D2** P03 outbound webhooks: subscription model, event types, filters
 - [ ] **D3** P20 predictor entity + values + reports
-- [ ] **D4** P09-partial: DLQ + `Idempotency-Key` on the existing bus
+- [x] **D4** P09-partial: DLQ on the decision WAL. `Idempotency-Key` already shipped in
+  W7.x (`app/idempotency.py` + the `idempotency_records` table), so this was the DLQ half
+  only: a WAL decision that can never re-insert is now bounded and dead-lettered instead
+  of retried on every boot forever.
 - [ ] **D5** Migration chain serialized; DoD five each; regression gate
 
 ## E. Phase 4 - roadmap phase 5 (parallel)

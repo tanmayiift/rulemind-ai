@@ -1436,11 +1436,24 @@ async def startup() -> None:
 
         if decision_wal.enabled():
             result = decision_wal.recover(storage)
-            if result.get("replayed"):
-                import logging
+            import logging
 
-                logging.getLogger("rulemind.decision_wal").warning(
+            wal_log = logging.getLogger("rulemind.decision_wal")
+            if result.get("replayed"):
+                wal_log.warning(
                     "decision WAL recovery: replayed %s orphaned decision(s) %s", result["replayed"], result)
+            if result.get("dead_lettered"):
+                # ERROR, and logged on EVERY boot rather than only when something was replayed.
+                # A dead-lettered record is a decision that was returned to a caller and is not
+                # in the database, and unlike a quarantined one nothing will retry it -- it sits
+                # there until a human looks. Logging it only alongside a successful replay would
+                # mean the quiet boots, which is most of them, say nothing at all.
+                wal_log.error(
+                    "decision WAL: %s decision(s) in the dead letter and NOT in the database. "
+                    "They exhausted DECISION_WAL_MAX_REPLAY_ATTEMPTS; inspect with "
+                    "decision_wal.dead_letter_entries() and retry with "
+                    "decision_wal.replay_dead_letter(storage) once the cause is fixed.",
+                    result["dead_lettered"])
     except Exception:  # pragma: no cover - recovery must never block startup
         pass
     if not (is_local_dev() or env_bool("RULEMIND_RUN_API_SCHEDULER")):

@@ -20,8 +20,8 @@ verified.
 | state | count |
 |---|---|
 | ✅ present | 8 |
-| 🟡 partial | 6 |
-| ❌ absent | 7 |
+| 🟡 partial | 7 |
+| ❌ absent | 6 |
 | ⛔ cut | 1 |
 
 `⛔ cut` means a deliberate decision not to build it — see the row for why.
@@ -38,7 +38,7 @@ verified.
 | P06 | Nested-key input validation | ✅ present | `app/input_schema.py` validates against what connectors declare, reporting every issue with its full path incl. array indices; wired into `app/executor.py` AND `app/fast_decide.py`, both raising the same `InputValidationError`; `tests/test_nested_input_validation.py` (31) + `tests/test_fast_path_validation_and_budget_parity.py` assert the two paths agree | the model-predict path (`app/routers/models.py`) is still flat | 3 | days for the remaining model-predict path | no |
 | P07 | Matrix with dimensions + import | ❌ absent | `'matrix' is only a QA harness (apps/python-executor/simulation/scenario_matrix.py:1) and a backtest transition_matrix; closest analog is app/decision_tables.py:92` | — | 6 | ~4 weeks | **yes** |
 | P08 | Child workflow by alias | ✅ present | `app/executor.py:777-792` — `_execute_subworkflow` resolves `config.alias` through `engine_config.workflow_aliases`, flat or environment-keyed by the parent's status | — | 3 | done | no |
-| P09 | DLQ / Kafka / exactly-once | ❌ absent | `0 code hits for kafka/dlq/dead-letter; messaging is Redis pub/sub in app/decision_bus.py` | — | 8 | 6+ months | no |
+| P09 | DLQ / Kafka / exactly-once | 🟡 partial | idempotency: `app/idempotency.py` + `idempotency_records` with a (tenant, key) unique constraint; dead letter: a WAL decision that cannot re-insert is bounded by `DECISION_WAL_MAX_REPLAY_ATTEMPTS`, moved out of the boot path (never deleted), counted in `recover()`, logged at ERROR every boot, and requeued by `replay_dead_letter`; `tests/test_decision_wal_dead_letter.py` (14) | no broker — Redis pub/sub with DB polling, so no partition/consumer group/offset for exactly-once to be about | 8 | 6+ months for the Kafka half | no |
 | P10 | ClickHouse / OLAP store | 🟡 partial | `app/archiver.py` ClickHouseArchiver, driven by `app/scheduler.py:71-95`; round-trip verified against a **real ClickHouse container** at `tests/test_archive_sinks_live.py:37,91`, wired into CI as a service | stores archived **decisions**, not predictor values — that half is P20 | 4 | P20 | no |
 | P11 | Canary deployment with delays | 🟡 partial | `app/champion_challenger.py` — champion/challenger roles, ramp schedule, guardrails, significance test, promote/rollback/hold; gates promotion in `routers/experiments.py`; the ramp drives live traffic via `app/experiments.py` as of 2026-09-05 (`test_canary_ramp_assignment.py`, 14) | nothing acts on a rollback recommendation on its own — it blocks a manual promote, but no scheduler reverts traffic on a guardrail breach | 5 | ~1 week for automated rollback | no |
 | P12 | Feature factory | ❌ absent | `0 hits in any .py/.ts/.tsx; app/backtest.py and app/analytics.py are the seeds` | — | 8 | multi-month | **yes** |

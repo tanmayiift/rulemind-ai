@@ -73,6 +73,100 @@ _ephemeral_warned = False
 
 _FILE_PREFIX = "decision_wal_"
 _FILE_SUFFIX = ".jsonl"
+
+# ── dead letter ────────────────────────────────────────────────────────────
+# A replayed record that fails is KEPT and retried on the next boot, which is right for a
+# transient DB error and wrong for a permanently-bad one. Without a bound, a record that can
+# never insert -- a constraint violation, a schema the row predates -- is retried on every boot
+# for the life of the deployment, it makes every startup slower, and nothing tells anyone it is
+# there. The existing code comment even says such a record "stays inspectable on disk"; nothing
+# ever pointed an operator at the disk.
+#
+# After MAX_REPLAY_ATTEMPTS it moves to a dead-letter file instead: still on disk, still exactly
+# recoverable, but out of the boot path and counted where someone can see it. Deleting it was
+# never an option -- it is a decision that was returned to a caller.
+# NOT prefixed "decision_wal_": recover() collects candidates with
+# `f.startswith(_FILE_PREFIX) and f.endswith(_FILE_SUFFIX)`, so a dead-letter file named that way
+# is picked straight back up as a WAL file to replay -- which defeats the entire point and was
+# caught here by the test asserting a later boot does not retry it.
+_DEAD_LETTER_NAME = "dead_letter_decisions.jsonl"
+
+
+def _max_replay_attempts() -> int:
+    return max(1, env.env_int("DECISION_WAL_MAX_REPLAY_ATTEMPTS", 5))
+
+
+def _dead_letter_path() -> str:
+    return os.path.join(_dir(), _DEAD_LETTER_NAME)
+
+
+def _dead_letter(entries: List[Dict[str, Any]]) -> None:
+    """Append permanently-failing entries to the dead-letter file. Best effort: a dead-letter
+    write that fails must not take down startup, because the alternative is a boot loop on a
+    record that was already unusable."""
+    if not entries:
+        return
+    try:
+        with open(_dead_letter_path(), "a", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry, default=str) + "\n")
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:  # pragma: no cover
+                pass
+    except OSError:  # pragma: no cover - disk full / read-only mount
+        logger.error("could not write %d entries to the decision WAL dead-letter file",
+                     len(entries))
+
+
+def dead_letter_entries() -> List[Dict[str, Any]]:
+    """Every entry that exhausted its replay attempts. For an operator surface, not the boot
+    path -- nothing here is retried automatically."""
+    try:
+        with open(_dead_letter_path(), "r", encoding="utf-8") as fh:
+            return _read_entries(fh)
+    except OSError:
+        return []
+
+
+def replay_dead_letter(storage: Any) -> Dict[str, int]:
+    """Re-attempt every dead-lettered record, once, on demand.
+
+    This is the half that makes the dead letter a queue rather than a graveyard: the usual cause
+    is a bug or a missing migration that has since been fixed, and the fix should not require
+    hand-editing a JSONL file. Anything that still fails is written back, so a partial success
+    leaves exactly the unresolved records behind. Attempt counters are RESET on the way in --
+    the operator asking for this is asserting that the reason for the failure has changed.
+    """
+    entries = dead_letter_entries()
+    if not entries:
+        return {"attempted": 0, "replayed": 0, "still_failing": 0}
+    replayed = 0
+    still_failing: List[Dict[str, Any]] = []
+    present = _existing_ids(storage, [str(e.get("id")) for e in entries if e.get("id") is not None])
+    for entry in entries:
+        rid = str(entry.get("id")) if entry.get("id") is not None else None
+        if rid and rid in present:
+            replayed += 1  # already durable: resolved, just not by us
+            continue
+        try:
+            storage.add_decision(entry["record"], tenant_id=entry.get("tenant_id"))
+            replayed += 1
+        except Exception as exc:  # noqa: BLE001 - one bad record must not stop the rest
+            logger.warning("dead-letter replay failed for %s: %s", rid, exc)
+            entry.pop("replay_attempts", None)
+            still_failing.append(entry)
+    try:
+        if still_failing:
+            with open(_dead_letter_path(), "w", encoding="utf-8") as fh:
+                for entry in still_failing:
+                    fh.write(json.dumps(entry, default=str) + "\n")
+        else:
+            os.remove(_dead_letter_path())
+    except OSError:  # pragma: no cover
+        pass
+    return {"attempted": len(entries), "replayed": replayed, "still_failing": len(still_failing)}
 # A unique-per-process-instance suffix. The old ``decision_wal_<pid>.jsonl`` collided under
 # pid reuse: a new worker handed a dead worker's pid opened the dead worker's un-recovered
 # file in append mode and silently mixed the two.
@@ -281,6 +375,7 @@ def _recover_one(storage: Any, path: str) -> Optional[Tuple[int, int, int, int]]
         present = _existing_ids(storage, list(by_id.keys()))
         replayed = 0
         failed: List[Dict[str, Any]] = []
+        dead_lettered: List[Dict[str, Any]] = []
         for rid, entry in by_id.items():
             if rid in present:
                 continue
@@ -293,8 +388,22 @@ def _recover_one(storage: Any, path: str) -> Optional[Tuple[int, int, int, int]]
                 # constraint violation worth a human look — was destroyed by the very
                 # mechanism that existed to preserve it. Holding it in the file means the
                 # next boot retries it, and a permanently-bad record stays inspectable on disk.
-                logger.warning("decision WAL replay failed for %s (kept for retry): %s", rid, exc)
-                failed.append(entry)
+                attempts = int(entry.get("replay_attempts") or 0) + 1
+                entry["replay_attempts"] = attempts
+                if attempts >= _max_replay_attempts():
+                    # Out of the boot path, not deleted. See the _DEAD_LETTER_NAME block above.
+                    logger.error(
+                        "decision WAL replay failed for %s %d times; moving to the dead letter: %s",
+                        rid, attempts, exc)
+                    entry["dead_lettered_reason"] = str(exc)[:500]
+                    dead_lettered.append(entry)
+                else:
+                    logger.warning(
+                        "decision WAL replay failed for %s (attempt %d, kept for retry): %s",
+                        rid, attempts, exc)
+                    failed.append(entry)
+        if dead_lettered:
+            _dead_letter(dead_lettered)
         if failed:
             # Keep ONLY the unresolved records: everything else is durable in the DB, so
             # rewriting is compaction, and the file shrinks toward empty across boots.
@@ -305,7 +414,7 @@ def _recover_one(storage: Any, path: str) -> Optional[Tuple[int, int, int, int]]
                 os.remove(path)
             except OSError:  # pragma: no cover
                 pass
-        return len(entries), replayed, len(present), len(failed)
+        return len(entries), replayed, len(present), len(failed) + len(dead_lettered)
     finally:
         try:
             fh.close()  # releases the flock
@@ -320,10 +429,12 @@ def recover(storage: Any) -> Dict[str, int]:
     left by a dead worker is told apart from a file a live sibling is appending to. Files still
     owned by a live process are skipped entirely and counted in "skipped_locked".
 
-    Returns {"files", "scanned", "replayed", "already_durable", "quarantined", "skipped_locked"}.
+    Returns {"files", "scanned", "replayed", "already_durable", "quarantined", "skipped_locked",
+    "dead_lettered"} -- the last being the TOTAL sitting in the dead-letter file, not a delta,
+    since it persists across boots until someone acts on it.
     """
     empty = {"files": 0, "scanned": 0, "replayed": 0, "already_durable": 0,
-             "quarantined": 0, "skipped_locked": 0}
+             "quarantined": 0, "skipped_locked": 0, "dead_lettered": 0}
     if not enabled():
         return empty
     _warn_if_ephemeral()
@@ -359,7 +470,11 @@ def recover(storage: Any) -> Dict[str, int]:
         already += file_present
         quarantined += file_failed
     return {"files": len(candidates), "scanned": scanned, "replayed": replayed,
-            "already_durable": already, "quarantined": quarantined, "skipped_locked": skipped}
+            "already_durable": already, "quarantined": quarantined, "skipped_locked": skipped,
+            # Reported separately from `quarantined` (which counts everything still unresolved
+            # after this pass) because the two mean different things to an operator: quarantined
+            # will be retried next boot on its own, dead-lettered will not and needs a decision.
+            "dead_lettered": len(dead_letter_entries())}
 
 
 def _warn_if_ephemeral() -> None:

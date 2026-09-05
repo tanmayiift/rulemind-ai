@@ -99,14 +99,14 @@
     {
       "id": "P09",
       "name": "DLQ / Kafka / exactly-once",
-      "state": "ABSENT",
-      "evidence": "0 code hits for kafka/dlq/dead-letter outside PLAN.md and docs/parity/; messaging is Redis pub/sub in app/decision_bus.py with a DB-polling fallback",
+      "state": "PARTIAL",
+      "evidence": "The two halves worth having without a broker are both in place. IDEMPOTENCY: app/idempotency.py with an `idempotency_records` table and a (tenant_id, key) unique constraint, so a redelivery of the same request does not double-log a decision. DEAD LETTER: a decision the WAL cannot re-insert is retried up to DECISION_WAL_MAX_REPLAY_ATTEMPTS and then moved to a dead-letter file rather than retried on every boot forever -- never deleted, since a WAL record is a decision that was already returned to a caller and is not in the database. It is counted in recover()'s result, logged at ERROR on EVERY boot (not only when something was also replayed), and requeued on demand by decision_wal.replay_dead_letter, which resets the attempt budget and writes back exactly what still fails. tests/test_decision_wal_dead_letter.py (14).",
       "phase": 8,
-      "size": "6+ months",
+      "size": "6+ months for the Kafka half",
       "engineSemantics": false,
       "e2eFlow": "kill a consumer mid-flight -> message lands in the DLQ -> redelivery does not double-log",
-      "note": "Phase 4 ships DLQ + Idempotency-Key on the existing bus, which delivers most of the buyer-visible value at a fraction of the cost.",
-      "gap": "No broker: messaging is Redis pub/sub with a DB-polling fallback, so there is no partition, no consumer group and no offset to be exactly-once ABOUT. Concretely missing: a dead-letter destination for a message that fails repeatedly, an `Idempotency-Key` contract so a redelivery does not double-log a decision, and redelivery semantics on consumer death. The DLQ and idempotency halves are worth far more than Kafka itself and do not require it — that split is why the plan carries a P09-partial separate from this row."
+      "note": "ABSENT -> PARTIAL 2026-09-05. The row bundled three things of very different value and cost; the DLQ and idempotency halves are most of the buyer-visible benefit and needed no broker at all.",
+      "gap": "No broker, so no partition, no consumer group and no offset for exactly-once to be ABOUT: messaging is still Redis pub/sub with a DB-polling fallback (app/decision_bus.py). The dead letter covers the durable decision path (the WAL), not a consumer killed mid-flight on a topic, because there is no topic. That is the 6+ month half of this row and it is deliberately not started."
     },
     {
       "id": "P10",
