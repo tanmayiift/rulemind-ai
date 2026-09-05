@@ -19,9 +19,9 @@ verified.
 
 | state | count |
 |---|---|
-| ✅ present | 6 |
-| 🟡 partial | 5 |
-| ❌ absent | 10 |
+| ✅ present | 7 |
+| 🟡 partial | 7 |
+| ❌ absent | 7 |
 | ⛔ cut | 1 |
 
 `⛔ cut` means a deliberate decision not to build it — see the row for why.
@@ -40,15 +40,15 @@ verified.
 | P08 | Child workflow by alias | ✅ present | `app/executor.py:777-792` — `_execute_subworkflow` resolves `config.alias` through `engine_config.workflow_aliases`, flat or environment-keyed by the parent's status | — | 3 | done | no |
 | P09 | DLQ / Kafka / exactly-once | ❌ absent | `0 code hits for kafka/dlq/dead-letter; messaging is Redis pub/sub in app/decision_bus.py` | — | 8 | 6+ months | no |
 | P10 | ClickHouse / OLAP store | 🟡 partial | `app/archiver.py` ClickHouseArchiver, driven by `app/scheduler.py:71-95`; round-trip verified against a **real ClickHouse container** at `tests/test_archive_sinks_live.py:37,91`, wired into CI as a service | stores archived **decisions**, not predictor values — that half is P20 | 4 | P20 | no |
-| P11 | Canary deployment with delays | ❌ absent | `0 code hits for canary; app/champion_challenger.py:40 already has a day-indexed ramp` | — | 5 | 2-3 weeks | no |
+| P11 | Canary deployment with delays | 🟡 partial | `app/champion_challenger.py` — champion/challenger roles, ramp schedule, guardrails, significance test, promote/rollback/hold; gates promotion in `routers/experiments.py`; the ramp drives live traffic via `app/experiments.py` as of 2026-09-05 (`test_canary_ramp_assignment.py`, 14) | nothing acts on a rollback recommendation on its own — it blocks a manual promote, but no scheduler reverts traffic on a guardrail breach | 5 | ~1 week for automated rollback | no |
 | P12 | Feature factory | ❌ absent | `0 hits in any .py/.ts/.tsx; app/backtest.py and app/analytics.py are the seeds` | — | 8 | multi-month | **yes** |
-| P13 | Monaco / embedded code editor | ❌ absent | `0 hits for monaco/codemirror/ace; authoring is plain <textarea>, e.g. apps/web/app/api-console/page.tsx:275` | — | 6 | ~2 days syntax highlighting, ~2 weeks completion | no |
+| P13 | Monaco / embedded code editor | 🟡 partial | CodeMirror 6 at `apps/web/src/v3/editor/PythonCodeEditor.tsx` — Python highlighting themed from the app's tokens (both themes), plus RuleMind-aware completion from live state (`rulemind-completion.ts`: the source's `sample_payload` keys after `payload.`, other variables after `variables.`, the decorator); `test/rulemind-completion.test.ts` (19) + `e2e/rulemind-v3.spec.ts` types into it | no inline diagnostics (`@codemirror/lint` unwired); only the variables page, not the API console | 6 | ~1 week for diagnostics | no |
 | P14 | SQL editor | ⛔ cut | `no SQL datasource exists to edit against; 0 hits for postgres/mysql/jdbc/snowflake in connector code` | — | — | n/a | no |
 | P15 | Journey as a first-class entity | ❌ absent | `no Journey model or table; only fixtures in app/experience_studio.py:292, demo-app/lib/journeys.dart` | — | 7 | 3-6 months | **yes** |
 | P16 | Partitioning / cold storage / retention in months | 🟡 partial | retention in **months** shipped: `app/models.py:621 audit_retention_months`, `app/archiver.py:72 normalize_retention_months`, migration `20260904_0022`, 32 tests; S3/Parquet cold storage round-tripped against MinIO at `tests/test_archive_sinks_live.py` | table **partitioning** — 0 hits anywhere under `app/` | 3 | days | no |
 | P17 | Excel functions (CUMIPMT, DAYS360, EDATE, EOMONTH) | ✅ present | `packages/rule-engine/src/excel-functions.ts:397 CUMIPMT, :686 DAYS360` (with IPMT/PPMT/CUMPRINC), checked against `packages/shared/excel-financial-date.spec.json` — 50 cases **generated from the Python** — by `test/excel-financial-date-parity.test.ts` | — | 3 | done | **yes** |
 | P18 | Rate limiting on resource APIs | ✅ present | `app/rate_limit.py` — `classify()` maps method+path to decision/read/write/ai/export/admin with whole-segment matching; `check_request()` enforces the class bucket then the tenant aggregate | class shares are per tenant/env, not per individual route | 3 | done | no |
-| P19 | Superflows | ❌ absent | `0 hits repo-wide` | — | 7 | 3-6 months | no |
+| P19 | Superflows | ✅ present | ships as **sub-workflow**: `executor.py` `workflow` step, resolved by raw id or per-tenant alias with cycle detection on the resolved id; the composing thing is a policy, so it has the dev→uat→prod lifecycle (`promote_policy` has no step-type restriction); `workflow-builder/page.tsx` lists "Sub-workflow" as a palette item; 4 test modules | — | 7 | done | no |
 | P20 | Predictor entity + values + reports | 🟡 partial | `'predictor' is only a synonym for scorecard at app/ai.py:511,523-532, routed at app/routers/ai.py:239-258` | no table, no values store, no reports | 4 | ~3 weeks | no |
 | P21 | Evaluation timeouts + 504 handling | ✅ present | `EvaluationBudgetExceeded at app/executor.py:159, enforced at :449,486,502,866,958-987; 504 handler at app/main.py:105-121; tested at tests/test_evaluation_budget.py:71` | `app/routers/evaluations.py:70,87,106` runs model evaluation synchronously outside the executor and so outside the budget; the `app/fast_decide.py` gap is closed (same key, same default, checked between variables and once before the compiled core) | 3 | days for the remaining model-evaluation path | no |
 | P22 | Node-based workflow builder (branch / loop) | ✅ present | `apps/web/app/workflow-builder/page.tsx:31-45 PALETTE (13) matches the 13 types dispatched at app/executor.py:523-553; guarded by apps/web/test/workflow-builder-palette.test.ts` | a nested step list, not a free-form graph; no 'rule set' node | 7 | 3-6 months for the graph canvas | no |

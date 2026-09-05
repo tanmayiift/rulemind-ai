@@ -24,6 +24,8 @@ import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../
 import { useRuleMindStore } from "../../lib/store";
 import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
+import { PythonCodeEditor } from "../editor/PythonCodeEditor";
+import type { RuleMindCompletionScope } from "../editor/rulemind-completion";
 import type {
   AuditErrorRecord,
   BootstrapPayload,
@@ -74,7 +76,6 @@ import {
   StatusBadge,
   InlineInput,
   InlineSelect,
-  InlineTextarea,
   SectionHeader,
   InfoBanner,
   EmptyState,
@@ -108,6 +109,21 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
   const [busy, setBusy] = React.useState(false);
   const [graph, setGraph] = React.useState<VariableGraphResponse | null>(null);
   const [showGraph, setShowGraph] = React.useState(false);
+
+  // What the editor's completion knows about. Derived from live page state on purpose: change
+  // the source dropdown and the fields offered after `payload.` change with it.
+  const completionScope = React.useMemo<RuleMindCompletionScope>(
+    () => ({
+      samplePayload: connectorMap[sourceId]?.sample_payload ?? null,
+      // A variable cannot read its own value, so it is not offered under `variables`.
+      variables: props.data.variables
+        .filter((variable) => variable.id !== selectedId)
+        .map((variable) => ({ id: variable.id, name: variable.name, category: variable.category, description: variable.description })),
+      sourceId,
+      sourceIds: props.data.connectors.map((connector) => connector.id),
+    }),
+    [connectorMap, props.data.connectors, props.data.variables, selectedId, sourceId]
+  );
 
   const beginDraft = React.useCallback(() => {
     if (!draftMode && selectedId) {
@@ -559,16 +575,16 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
             <div style={{ fontSize: "var(--rm-fs-caption)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.dim, letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 6 }}>
               Python · {connectorMap[sourceId]?.name ?? sourceId}
             </div>
-            <InlineTextarea
-              code
+            <PythonCodeEditor
               value={code}
-              onChange={(event) => {
+              onChange={(next) => {
                 beginDraft();
-                setCode(event.target.value);
+                setCode(next);
               }}
-              rows={18}
-              data-testid="variable-code"
-              style={{ width: "100%", resize: "vertical" }}
+              scope={completionScope}
+              testId="variable-code"
+              ariaLabel="Python variable code"
+              height={isMobile ? 320 : 420}
             />
           </div>
 

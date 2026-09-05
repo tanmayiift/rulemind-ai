@@ -121,13 +121,14 @@
     {
       "id": "P11",
       "name": "Canary deployment with delays",
-      "state": "ABSENT",
-      "evidence": "0 code hits for canary outside PLAN.md and docs/parity/; app/champion_challenger.py:40 current_ramp_weight already has a day-indexed traffic ramp (schedule shape documented at :13)",
+      "state": "PARTIAL",
+      "evidence": "app/champion_challenger.py: explicit champion/challenger roles (identify_roles), a traffic ramp schedule (current_ramp_weight over ramp: [{day, weight}, ...]), guardrail metrics (evaluate_guardrails over minApprovalRate/maxRejectRate/maxAvgLatencyMs/maxApprovalRateDropPct), significance testing (two_proportion_pvalue) and an automated promote/rollback/hold recommendation. Surfaced through app/analytics.py, and it GATES promotion: app/routers/experiments.py refuses to promote a challenger the analysis does not recommend unless forced. The ramp drives live traffic as of 2026-09-05 -- app/experiments.py resolves each variant's current weight from the schedule and gives the champion the remainder -- covered by tests/test_champion_challenger.py and tests/test_canary_ramp_assignment.py (14).",
       "phase": 5,
-      "size": "2-3 weeks",
+      "size": "~1 week for automated rollback",
       "engineSemantics": false,
       "e2eFlow": "promote at 5% canary -> watch the metric -> auto-rollback on SLO breach",
-      "gap": "No canary: promotion is all-or-nothing through dev -> uat -> prod. 0 hits for canary/rollout percentage. The A/B experiment machinery (app/experiments.py) splits traffic but does not stage a promotion or auto-roll-back on a metric."
+      "gap": "Nothing ACTS on a \"rollback\" recommendation on its own. It blocks a manual promote; no scheduler halts an experiment or reverts traffic when a guardrail breaches, so the auto-rollback half of the e2eFlow still needs a human watching.",
+      "note": "Re-audited 2026-09-05, ABSENT -> PARTIAL, and the audit found a live bug rather than just mis-sizing. current_ramp_weight was called only from analytics.py, so assign_variant used the STATIC weight: a canary configured to ramp 10% -> 25% -> 50% served 10% forever while the dashboard rendered the schedule as though it were in effect. Fixed; see the commit for why ramping the challenger alone changes nothing without the champion taking the remainder."
     },
     {
       "id": "P12",
@@ -143,13 +144,14 @@
     {
       "id": "P13",
       "name": "Monaco / embedded code editor",
-      "state": "ABSENT",
-      "evidence": "0 hits for monaco/codemirror/ace-builds/react-ace in apps/web, packages/ or any package.json; all authoring is a plain <textarea>, e.g. apps/web/app/api-console/page.tsx:275, apps/web/app/decision-tables/page.tsx:321, apps/web/app/workflow-builder/page.tsx:482",
+      "state": "PARTIAL",
+      "evidence": "CodeMirror 6 editor at apps/web/src/v3/editor/PythonCodeEditor.tsx, replacing the plain textarea in apps/web/src/v3/pages/VariablesPage.tsx: Python syntax highlighting themed from the app's own tokens (light and dark), bracket closing, history, indent-with-tab, and RuleMind-AWARE completion built from live page state -- apps/web/src/v3/editor/rulemind-completion.ts offers the selected source's sample_payload keys after `payload.`, the workspace's other variables after `variables.`, and the @variable(source=...) decorator and its three parameters. Covered by test/rulemind-completion.test.ts (19 tests) and end-to-end by e2e/rulemind-v3.spec.ts, which types into the editor and reads back its theme.",
       "phase": 6,
-      "size": "~2 days syntax highlighting, ~2 weeks completion",
+      "size": "~1 week for diagnostics",
       "engineSemantics": false,
       "e2eFlow": "edit a Python variable with highlighting and RuleMind-aware completion",
-      "gap": "The variable editor is a plain textarea -- 0 hits for monaco/codemirror in apps/web/. No syntax highlighting, no completion, no inline diagnostics for the Python the sandbox will run."
+      "gap": "No inline diagnostics: nothing surfaces a syntax or name error before the variable is run against the sandbox (@codemirror/lint is not wired). The editor is also only on the variables page -- the API console and the other textareas are unchanged.",
+      "note": "CodeMirror 6, not Monaco, and the row's own gap text counted either. The dashboard deploys as a Render STATIC SITE and must be self-contained: @monaco-editor/react loads Monaco from a CDN at runtime by default, and self-hosting it under Next's static export needs bespoke worker plumbing. Monaco is also ~5MB against ~250KB for what is one editor on one page."
     },
     {
       "id": "P14",
@@ -211,13 +213,13 @@
     {
       "id": "P19",
       "name": "Superflows",
-      "state": "ABSENT",
-      "evidence": "0 hits repo-wide (case-insensitive) outside docs/parity/",
+      "state": "PRESENT",
+      "evidence": "Ships under the name SUB-WORKFLOW. app/executor.py handles a `workflow` step, resolving it by raw ref_id or by a per-tenant alias (_resolve_workflow_alias, registry in engine_config.workflow_aliases), loading the sub-policy scoped to the tenant and running its steps at depth+1, with cycle detection on the RESOLVED id so two aliases for one policy cannot smuggle A->B->A back in. The composing thing is itself a policy, so it carries the whole policy lifecycle: app/routers/policies.py promote_policy (dev/uat/prod) imposes no step-type restriction, and versioning and audit come with it. Exposed as a first-class builder primitive at apps/web/app/workflow-builder/page.tsx ({type: \"workflow\", label: \"Sub-workflow\"}). Covered by tests/test_workflow.py, test_workflow_alias.py, test_workflow_engine.py and test_workflow_loops.py.",
       "phase": 7,
-      "size": "3-6 months",
+      "size": "done",
       "engineSemantics": false,
       "e2eFlow": "compose workflows into a superflow with its own lifecycle",
-      "note": "May be a naming artifact of the other platform rather than a capability gap. Needs product definition before engineering."
+      "note": "Re-audited 2026-09-05, ABSENT -> PRESENT. The row was scored on a name: zero case-insensitive hits for \"superflow\". Its stated e2eFlow -- compose workflows into a superflow with its own lifecycle -- is met today. NOT marked CUT: CUT in this file means deliberately not built (P14 SQL editor, which has no underlying datasource). Here the capability ships; only the other platform's word for it is missing. This removed a 3-6 month phase-7 item that did not exist."
     },
     {
       "id": "P20",

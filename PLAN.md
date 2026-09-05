@@ -640,7 +640,7 @@ GENERATED from the Python. Every fix mutation-checked.
 ## F. Phase 5 - roadmap phase 6 (parallel)
 
 - [ ] **F1** P07 matrix entity with dimensions + import
-- [ ] **F2** P13 Monaco editor (highlighting, then completion)
+- [x] **F2** P13 editor — CodeMirror 6 (highlighting + RuleMind-aware completion); diagnostics remain
 - [ ] **F3** DoD five each; regression gate
 
 ## G. Phase 6 - roadmap phase 7 (sequential, a re-architecture)
