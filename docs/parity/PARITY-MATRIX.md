@@ -75,11 +75,13 @@ that it was a script nothing invoked, which is its own small parable about this 
   (`app/executor.py:159`), a real deadline checked in both the variable and step loops, and an
   app-level handler returning HTTP 504 (`app/main.py:114`) with a documented body. The old gap
   "no 504 anywhere" is now false. Two paths remain outside it and are recorded in the row.
-- **P10 stays 🟡 partial, but not for the reason the 2026-09-04 re-audit gave.** That audit
-  demoted it because nothing verified the round-trip. `b017dab` added one against a **real
-  ClickHouse container** (`tests/test_archive_sinks_live.py`), wired into CI as a service, so
-  that objection is answered. What remains is the row's other clause: it stores archived
-  *decisions*, not predictor values — and that half is P20's work, not this row's.
+- **P10 promoted to ✅ present, in two steps.** The 2026-09-04 re-audit demoted it because
+  nothing verified the round-trip; `b017dab` answered that against a **real ClickHouse
+  container** (`tests/test_archive_sinks_live.py`), wired into CI as a service. That left the
+  row's other clause — it archived *decisions*, not predictor values — which P20's cold-store
+  fan-out closed. This bullet and the row's `note` both went on saying "still partial" after the
+  state had already flipped, which is worth naming: a row that contradicts its own prose is
+  worse than one that is simply stale, because both halves read as authoritative.
 - **P17 promoted to ✅ present.** The 2026-09-04 re-audit ran about three hours before `81252e8`
   landed, so it recorded a gap that closed the same day. `CUMIPMT` and `DAYS360` (plus
   `IPMT`/`PPMT`/`CUMPRINC`) are now in the TypeScript engine, checked against a 50-case corpus

@@ -122,7 +122,7 @@
       "size": "done",
       "engineSemantics": false,
       "e2eFlow": "retention job archives decisions -> ClickHouse round-trip verified",
-      "note": "Still PARTIAL as of 2026-09-05, but for a different reason than the 2026-09-04 re-audit gave. That re-audit demoted it because 'nothing verifies the round-trip'; b017dab added a live ClickHouse round-trip, so that objection is answered. What remains is the predictor-values half, which is P20's work."
+      "note": "PARTIAL -> PRESENT 2026-09-05, in two steps, and the note lagged the second one. The 2026-09-04 re-audit demoted this row because nothing verified the round-trip; b017dab answered that with a live ClickHouse container (tests/test_archive_sinks_live.py, wired into CI as a service). What was then left was the row's other clause -- it archived decisions but not predictor values -- and P20's cold-store fan-out closed it. The note kept saying 'still PARTIAL' after the state had already flipped to PRESENT, which is the specific failure this file warns about: a row that argues with itself is worse than one that is merely out of date, because both halves look authoritative."
     },
     {
       "id": "P11",
