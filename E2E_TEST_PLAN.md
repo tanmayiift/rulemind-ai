@@ -18,7 +18,7 @@ Everything below was installed from official sources into `~/.local` without sud
 | 0.2 | Node 20.20.2 + pnpm 9.15.4 | ✅ |
 | 0.3 | `pip install -r requirements.txt` | ✅ (**F-01** fixed) |
 | 0.4 | xgboost / lightgbm loadable (libomp) | ✅ (**F-02** documented) |
-| 0.5 | Alembic migrations → head (16 revisions) | ✅ |
+| 0.5 | Alembic migrations → head (28 revisions) | ✅ |
 | 0.6 | API boots, `/health` responds | ✅ |
 | 0.7 | `.env` actually consumed | ✅ (**F-03** fixed) |
 | 0.8 | Web dashboard builds + serves (Next 14, :3000) | ✅ |
@@ -134,35 +134,42 @@ At concurrency 16, 222/400 requests returned **429** — the hardcoded 1 000 req
 
 ## 10. Regression baseline — re-run against merged `main` on **PostgreSQL 16**
 
-Refreshed **2026-09-05**. Every count in the previous version of this table was from the
-2026-08-27 pass and had roughly halved in accuracy since: Python read 733 against an actual
-1457, Vitest 157 against 443, Flutter 127 against 163. A stale baseline is worse than no
-baseline, because a real regression that lands between two passes reads as "the number went up
-anyway".
+Refreshed **2026-09-06**, every lane re-run on the same tree. The previous refresh was one day
+old and four of its nine numbers had already moved (Python 1457 -> 1892, Vitest 443 -> 462,
+Playwright 58 -> 68, migrations 24 -> 28), because the parity backlog closed in between. That is
+the point of dating the table rather than maintaining it: a stale baseline is worse than none,
+since a real regression landing between two passes reads as "the number went up anyway".
 
 | Suite | Result | Was (2026-08-27) |
 |---|---|---|
-| Python unittest — SQLite | ✅ **1457 passed**, 21 skipped, 0 failed | 733 |
-| Python unittest — **PostgreSQL** | ⬜ not re-run in this pass — see the note below | 733 |
-| Vitest (TS) | ✅ **443 passed** (15 files) | 157 |
-| Flutter SDK | ✅ **163 passed** | 127 |
-| Kotlin `rulemind-core` | ✅ **46 passed** | 20 (both modules) |
-| Kotlin `sample-app` | ✅ **4 passed** | — |
-| Rust `rulemind-core-rs` | ✅ **19 passed** (`--no-default-features`) | — |
-| Rust `rulemind-decide-service` | ✅ **10 passed** | — |
-| Playwright `e2e/` | ✅ **58 / 58** | ⚠️ 44 / 48 (#125) |
+| Python unittest — SQLite | ✅ **1892 passed**, 21 skipped, 0 failed | 1457 |
+| Python unittest — **PostgreSQL 16** | ✅ **1891 passed**, 21 skipped, 0 failed | not re-run |
+| Vitest (TS) | ✅ **462 passed** (16 files) | 443 |
+| Flutter SDK | ✅ **163 passed** | 163 |
+| Kotlin `rulemind-core` | ✅ **46 passed** | 46 |
+| Rust `rulemind-core-rs` | ✅ **19 passed** (`--no-default-features`) | 19 |
+| Rust `rulemind-decide-service` | ✅ **10 passed** | 10 |
+| Playwright `e2e/` | ✅ **68 / 68** (`RM_E2E_ALLOW_DESTRUCTIVE=1`) | 58 / 58 |
+| `smoke_compose.sh` | ✅ **14 / 14** | 14 / 14 |
+| `smoke_deployed.sh` | ✅ 21 passed, 3 skipped (no API key) | 21 / 21 |
 
-The Postgres lane is marked not-run rather than assumed. It is the same suite, but the two lanes
-diverge for real — `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` is required or 66 modules construct
-`Storage(path=…)` and silently re-run SQLite, which is exactly how a "Postgres pass" can be
-green without having tested Postgres. Reporting yesterday's number as today's would be the same
-mistake in a different place.
+The Postgres lane was actually run this time, with `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` — without
+it 66 modules construct `Storage(path=…)` and silently re-run SQLite, which is how a "Postgres
+pass" goes green without having touched Postgres. Two things about the numbers are worth stating
+rather than smoothing over: the lane runs **1891, one fewer than SQLite's 1892** (a SQLite-only
+case), and it takes **1110s against 590s** — that ~1.9x is the cost of the only lane that can
+catch a test whose result depends on how fast the database is.
 
-Playwright now runs 58, not 48: `e2e/authz.spec.ts` and `e2e/authz-boundaries.spec.ts` were added
-for #139, and five of those tests are gated behind `RM_E2E_ALLOW_DESTRUCTIVE=1` — set in CI, and
-required to reproduce 58/58, because without it the two tenant-boundary tests skip.
+The URL must be `postgresql://`, not `postgresql+psycopg://`: `requirements.txt` pins
+`psycopg2-binary`, so the psycopg-3 scheme fails *every module import* with
+`ModuleNotFoundError: No module named 'psycopg'` — 153 loader errors that look like a broken
+virtualenv rather than one wrong word.
 
-**24** Alembic migrations (not 16) — `apps/python-executor/alembic/versions/`.
+Playwright now runs **68**, not 58. Five tests are gated behind `RM_E2E_ALLOW_DESTRUCTIVE=1` (set
+in CI); without it the run is 63 passed + 5 skipped, which is still green and therefore easy to
+mistake for the full suite.
+
+**28** Alembic migrations (not 24) — `apps/python-executor/alembic/versions/`.
 
 PostgreSQL 16 is correct and unchanged: `docker-compose.yml`, the Helm chart, the k8s manifests
 and CI all pin `postgres:16`.

@@ -670,7 +670,7 @@ GENERATED from the Python. Every fix mutation-checked.
   hash (nothing increments the version column), compare and drift endpoints
 - [x] **E3** P11 canary — ramp drives live traffic, and a guardrail breach now halts the
   experiment automatically (leader-gated, audited, opt-in)
-- [ ] **E4** DoD five each; regression gate
+- [x] **E4** DoD five each; regression gate green on the same tree 2026-09-06: Python **1892** (SQLite) and **1891** (Postgres 16, schema-per-path), vitest 462, cargo 19 + 10, flutter 163, Kotlin 46, Playwright **68/68** with `RM_E2E_ALLOW_DESTRUCTIVE=1`, smoke_compose 14/14, smoke_deployed 21 passed / 3 skipped, plus check_parity, verify_chart, check_audit_ignores and `helm lint`.
 
 ## F. Phase 5 - roadmap phase 6 (parallel)
 
@@ -685,7 +685,7 @@ GENERATED from the Python. Every fix mutation-checked.
   data. Two inference tests passed for the wrong reason until a mutation refused to die.
 - [x] **F2** P13 editor — CodeMirror 6: highlighting, RuleMind-aware completion, and
   inline diagnostics served by the sandbox's own validate_source
-- [ ] **F3** DoD five each; regression gate
+- [x] **F3** DoD five each; same gate as E4 above — one run covers all three phases, since they share a tree.
 
 ## G. Phase 6 - roadmap phase 7 (sequential, a re-architecture)
 
@@ -701,11 +701,11 @@ GENERATED from the Python. Every fix mutation-checked.
   **sub-workflows** (a `workflow` step resolved by id or per-tenant alias, cycle-guarded;
   the composing thing is a policy, so it already has the dev→uat→prod lifecycle). The
   row had been scored on a NAME having zero hits. P19 ABSENT (3–6 months) → PRESENT.
-- [ ] **G3** DoD five each; regression gate
+- [x] **G3** DoD five each; same gate as E4 above.
 
 ## H. Phase 7 - roadmap phase 8
 
-- [ ] **H1** P09-full Kafka / exactly-once
+- [ ] **H1** P09-full Kafka / exactly-once — **deliberately not started.** The DLQ and idempotency halves shipped (P09 is PARTIAL, not ABSENT) and carry most of the buyer-visible value without a broker. What is left needs a broker to be about: there is no partition, consumer group or offset for exactly-once to mean anything against. 6+ months, and the plan's own rule is to build it against a paying customer.
 - [x] **H2** P12 feature factory — two of the three e2e clauses already worked (a variable
   receives the already-computed variables, so a DERIVED feature is an ordinary variable; and
   scorecards bin on variable_id). Backfill was the real gap, and it was hurting shipped P20 too:
