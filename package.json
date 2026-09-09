@@ -15,9 +15,9 @@
     "openapi": "pnpm --filter @rulemind/python-executor openapi"
   },
   "devDependencies": {
-    "@playwright/test": "^1.53.0",
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.10.5",
-    "tsx": "^4.19.2",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   }
