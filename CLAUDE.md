@@ -77,7 +77,7 @@ make test                 # python unittest + vitest
 pnpm test:e2e             # Playwright
 ```
 
-Tests: **4,608 across 11 lanes, all green** — 1920 Python SQLite + 1920 Python PostgreSQL 16,
+Tests: **4,624 across 11 lanes, all green** — 1928 Python SQLite + 1928 Python PostgreSQL 16,
 462 Vitest, 19 + 10 Rust, 163 Flutter, 68 Playwright, 46 Kotlin, plus the contract gates and
 `qa/`. **Do not hand-maintain these numbers here** — `make test-all` regenerates
 `TEST_RESULTS.md` from the runners' own output, and that file is the authority. The counts in

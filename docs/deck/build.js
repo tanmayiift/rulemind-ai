@@ -120,7 +120,7 @@ async function build() {
     });
 
   const stats = [
-    ["4,608", "tests, 11 lanes, all green"],
+    ["4,624", "tests, 11 lanes, all green"],
     ["5", "language engines, held to one corpus"],
     ["19.8 ms", "median decision, measured"],
     ["0", "phone-home, metering or licence calls"],
@@ -437,7 +437,7 @@ async function build() {
   titleSlide(s, "Proof you can re-run yourself", "EVIDENCE", false);
 
   const bigs = [
-    ["4,608", "tests across 11 lanes", "all green"],
+    ["4,624", "tests across 11 lanes", "all green"],
     ["21 / 22", "capability rows evidenced", "0 absent"],
     ["2", "database lanes", "SQLite + PostgreSQL 16"],
   ];
@@ -461,7 +461,7 @@ async function build() {
   s.addChart(pres.ChartType.bar, [{
     name: "Tests",
     labels: ["Python SQLite", "Python Postgres", "Vitest", "Flutter", "Playwright", "Kotlin", "Rust"],
-    values: [1920, 1920, 462, 163, 68, 46, 29],
+    values: [1928, 1928, 462, 163, 68, 46, 29],
   }], {
     x: M, y: 3.72, w: 7.15, h: 2.72,
     barDir: "bar", barGapWidthPct: 42,

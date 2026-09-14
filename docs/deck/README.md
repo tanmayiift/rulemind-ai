@@ -22,7 +22,7 @@ came to be wrong by 500+ tests. If you edit a slide, re-derive its number here t
 
 | Claim on a slide | Verified as | Source |
 |---|---|---|
-| 4,608 tests, 11 lanes, all green | generated report | `TEST_RESULTS.md` (from `make test-all`) |
+| 4,624 tests, 11 lanes, all green | generated report | `TEST_RESULTS.md` (from `make test-all`) |
 | 21 of 22 capability rows PRESENT, 0 absent | `PRESENT=21, CUT=1` | `docs/parity/parity.json` |
 | Five language engines | Python, TypeScript, Rust, Kotlin, Dart | `packages/`, `apps/python-executor` |
 | 600-condition rule, 135 cases, 1.6 MB | `conditionOrder`=600, `cases`=135, 1,681,435 bytes | `packages/shared/large-policy.spec.json` |
