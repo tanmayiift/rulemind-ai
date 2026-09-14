@@ -1798,6 +1798,21 @@ class Storage:
             session.add(decision)
             session.flush()
             result = self._decision_to_dict(decision)
+            # THE TRANSACTIONAL OUTBOX (parity P09), and the whole reason it is on this line
+            # rather than after the `with` block. The decision row and the outbox row commit
+            # TOGETHER or not at all, which is the only way to publish a decision to a broker
+            # without a window where one exists and the other does not. Outside the transaction
+            # this would be ordinary "write then publish" and would lose a message on any crash
+            # in between.
+            #
+            # Best-effort in the sense that a failure here must not lose the decision -- but
+            # note the asymmetry with decision_bus below: that one is fire-and-forget because
+            # the SSE feed is a live convenience, whereas an outbox row that fails to insert
+            # means this decision will never reach a consumer. It is logged loudly rather than
+            # swallowed silently.
+            from . import decision_outbox
+
+            decision_outbox.enqueue(session, resolved, result)
         # Best-effort real-time fan-out to the live SSE feed (no-op without Redis; never raises).
         from . import decision_bus
 

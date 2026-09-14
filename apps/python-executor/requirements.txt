@@ -23,6 +23,13 @@ signxml==4.5.1
 prometheus-client==0.21.1
 redis==5.2.1
 psycopg2-binary==2.9.9
+# Kafka client for the decision outbox relay and consumer (parity P09). confluent-kafka wraps
+# librdkafka, which is what gives access to the idempotent producer (enable.idempotence) and
+# manual offset commits the exactly-once path needs; the pure-Python clients expose neither
+# reliably. Import is LAZY everywhere it is used -- app/decision_outbox.py and
+# app/decision_consumer.py only reach for it when KAFKA_BOOTSTRAP_SERVERS is set -- so a
+# deployment without a broker neither needs the wheel at runtime nor pays its import cost.
+confluent-kafka==2.6.1
 
 # ML model hosting — required to unpickle and run uploaded models (advertised
 # feature + /models UI + policy "model" step). Without these the runtime cannot

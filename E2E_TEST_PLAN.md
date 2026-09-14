@@ -152,6 +152,7 @@ since a real regression landing between two passes reads as "the number went up 
 | Playwright `e2e/` | ✅ **68 / 68** (`RM_E2E_ALLOW_DESTRUCTIVE=1`) | 58 / 58 |
 | `smoke_compose.sh` | ✅ **14 / 14** | 14 / 14 |
 | `smoke_k8s.sh` (kind + Helm) | ✅ **16 / 16** | — (new) |
+| `tests/test_decision_outbox.py` (needs a broker) | ✅ **18 / 18** | — (new) |
 
 The Postgres lane was actually run this time, with `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` — without
 it 66 modules construct `Storage(path=…)` and silently re-run SQLite, which is how a "Postgres

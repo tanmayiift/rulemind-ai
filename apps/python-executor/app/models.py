@@ -354,6 +354,47 @@ class UsageRecord(Base):
     )
 
 
+class DecisionOutbox(Base):
+    """The transactional outbox: one row per decision that still has to reach the broker.
+
+    THE POINT IS THE TRANSACTION, not the table. A decision is written to Postgres and published
+    to Kafka, and those are two different systems -- so "write then publish" loses the message
+    whenever the process dies in between, and "publish then write" emits a decision that never
+    existed. Neither is recoverable after the fact, because nothing durable records the gap.
+
+    Writing this row in the SAME transaction as the Decision closes it: the row and the decision
+    commit together or neither does. A relay then moves committed rows to Kafka and marks them
+    sent, which is at-least-once by construction. Exactly-once comes from the consumer side
+    (idempotency_records keyed by the outbox id), not from pretending delivery is reliable.
+
+    Deliberately NOT reusing the existing decision WAL. decision_wal.py exists to survive a
+    database that is unreachable -- it is a file on local disk holding decisions already returned
+    to a caller. This is the opposite situation: the database is the thing that succeeded, and
+    the broker is what might not have. Different failure, different durability, different table.
+    """
+
+    __tablename__ = "decision_outbox"
+    __table_args__ = (
+        # The relay's only hot query is "oldest unsent rows first". Without this it is a
+        # sequential scan over a table that grows with every decision ever made.
+        Index("ix_decision_outbox_unsent", "sent_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    decision_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    # The Kafka partition key. Per-tenant, so one tenant's decisions keep their relative order
+    # (Kafka orders within a partition, never across) while different tenants parallelise.
+    partition_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    topic: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # NULL until the relay has an acknowledged produce. This is the whole state machine.
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class IdempotencyRecord(Base):
     """One remembered response for an Idempotency-Key, scoped to a tenant.
 

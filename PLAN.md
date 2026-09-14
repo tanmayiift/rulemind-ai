@@ -821,9 +821,9 @@ serially and races only the seeding.
 
 ### C. Performance: latency and footprint
 
-- [ ] **J12** Baseline FIRST — `bench.py` p50/p99, both k6 scripts, `docker stats`, image sizes
-- [ ] **J13** Instrument real query count per decision (documented as "8+N")
-- [ ] **J14** Fix the hotspots the measurements name, each with a before/after number
+- [x] **J12** Baseline FIRST — `bench.py` p50/p99, both k6 scripts, `docker stats`, image sizes — baseline captured on a quiet stack: p50 29.03ms / p99 70.01ms at conc=1, and throughput barely moving (32.9 -> 72.5 rps for 16x load) — a serialization signature, not work
+- [x] **J13** Instrument real query count per decision (documented as "8+N") — **6** queries per warm decision, not the '8+N' the comments guess. The catalog cache already serves connectors/variables/settings. The real waste is 55 sandbox calls for a policy that reads 6 variables
+- [x] **J14** Fix the hotspots the measurements name, each with a before/after number — measured `COMPUTE_ONLY_USED_VARS=1` at **48.7% faster** (32.70 -> 16.78ms p50, 55 -> 6 variables) — then found it **breaks 16 tests**, so it is documented as unsafe rather than recommended. See `docs/PERFORMANCE.md`
 - [x] **J15** Web image is **2.54 GB** (`COPY . .`) — multi-stage build, target under 500 MB — **2.54 GB -> 232 MB (-91%)** via a 3-stage build on Next `output: "standalone"`. Verified serving, not just small: `/` and a deep link 200, referenced CSS+JS both resolve 200, uid 10001, smoke_compose 14/14
 - [ ] **J16** Trim API image; check whether the ML stack can import lazily
 - [ ] **J17** Re-run baseline, publish before/after in `docs/PERFORMANCE.md`. Parity corpus must
@@ -834,15 +834,38 @@ serially and races only the seeding.
 The roadmap's 6+ month row. Phased so each step ships independently; P09 only moves to PRESENT
 at J24.
 
-- [ ] **J18** Kafka in KRaft mode in compose (behind a profile) and in the Helm chart
-- [ ] **J19** Transactional outbox in Postgres — decision write + outbox row in one transaction
-- [ ] **J20** Relay outbox → Kafka, idempotent producer, per-tenant partition key, leader-gated
-- [ ] **J21** Consumer group with manual offset commits tied to the DB transaction; dedupe via
+- [x] **J18** Kafka in KRaft mode in compose (behind a profile) and in the Helm chart — Kafka KRaft (no ZooKeeper) under the `kafka` compose profile; healthy in ~15s
+- [x] **J19** Transactional outbox in Postgres — decision write + outbox row in one transaction — `decision_outbox` table + migration `20260914_0029`; the row is inserted in the SAME session as the Decision, which is the entire guarantee
+- [x] **J20** Relay outbox → Kafka, idempotent producer, per-tenant partition key, leader-gated — relay with `enable.idempotence`+`acks=all`, stamping `sent_at` only on a clean delivery report after `flush()`; leader-gated on the scheduler
+- [x] **J21** Consumer group with manual offset commits tied to the DB transaction; dedupe via — consumer group with `enable.auto.commit=false`, offsets committed after the handler, dedupe by atomically claiming the event id in `idempotency_records`
   the existing `idempotency.py` `(tenant_id, key)` constraint
-- [ ] **J22** Wire `decision_wal.replay_dead_letter` so a poison message DLQs instead of blocking
-- [ ] **J23** The e2eFlow as a real test: kill a consumer mid-flight → DLQ → redelivery does not
+- [x] **J22** Wire `decision_wal.replay_dead_letter` so a poison message DLQs instead of blocking — poison messages go to a dead-letter topic **and their offset is committed**, so one bad event cannot block its partition
+- [x] **J23** The e2eFlow as a real test: kill a consumer mid-flight → DLQ → redelivery does not — `tests/test_decision_outbox.py` — 18 tests, 5 against a real broker, including the row's own e2eFlow. Five mutations checked; one initially SURVIVED (see below)
   double-log. Plus the DoD five and a mutation check per guard
-- [ ] **J24** P09 → PRESENT with honest evidence; SSE fan-out stays on Redis
+- [x] **J24** P09 → PRESENT with honest evidence; SSE fan-out stays on Redis — P09 PARTIAL -> PRESENT. Parity is now **PRESENT=21, CUT=1, ABSENT=0, PARTIAL=0**
+
+**Four things the P09 work turned up that are worth keeping:**
+
+1. **P09 was greenfield, not a migration, and that is why it took a session rather than the
+   roadmap's 6+ months.** The estimate assumed `decision_bus.py` would move onto a broker. It
+   would not have: that file is 113 lines of best-effort Redis pub/sub for the dashboard's SSE
+   feed, one producer, one consumer, with a docstring saying publishing "is best-effort and
+   never allowed to affect the decision write path". A live view is not delivery.
+   `decision_log.py:19` had already named the real gap — "the durable-outbox follow-up".
+2. **A mutation SURVIVED the first pass.** Stamping every outbox row sent regardless of the
+   delivery report — the at-most-once bug — passed all 17 tests, because on a healthy broker
+   nothing is ever rejected so "stamped after the ack" and "stamped always" are
+   indistinguishable. They differ only during an outage, which is exactly when it matters.
+   `test_a_rejected_row_is_NOT_stamped_sent` forces a produce failure against a dead port; the
+   mutation now dies.
+3. **`event_payload` read `tenant_id` off the decision dict, where it does not exist.**
+   `storage._decision_to_dict` has no `tenant_id` key, so every published event carried
+   `"tenant_id": None` — and the consumer dead-letters a message with no tenant, so the entire
+   stream would have gone to the DLQ. Caught by the PII test asserting the field is *present*,
+   which a happy-path test would never look at.
+4. **`app/scheduler.py` uses `logger`, not `LOGGER`.** The new relay job referenced `LOGGER`, so
+   it would have raised NameError — but only on the broker-failure path, i.e. only during an
+   outage, on the code whose job is to handle one.
 
 ### E. GitHub: test results, Dependabot, doc truth-up
 

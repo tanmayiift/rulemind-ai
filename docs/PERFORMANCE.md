@@ -45,14 +45,86 @@ served). `scripts/smoke_compose.sh` is 14/14 with the new image.
 
 ## Decision latency
 
-Not yet measured in this pass. The tooling exists and is the next step:
+Baseline, `policy_pl_underwriting` through `POST /api/v1/decide` on the compose stack, with the
+Kubernetes cluster torn down and the stray test containers stopped:
 
 ```bash
-make up                                   # stack on :8080
-RM_LABEL=baseline python3 qa/e2e-full/bench.py     # p50/p99 + fast-vs-slow parity
-k6 run test/load/evaluate.k6.js
-k6 run test/load/saturation.k6.js
+RM_BASE=http://127.0.0.1:8080 RM_POLICY=policy_pl_underwriting \
+  RM_LABEL=baseline python3 qa/e2e-full/bench.py
 ```
 
-Nothing is claimed here until those have run on a quiet machine. A latency number taken while a
-1,900-test suite and a Kubernetes cluster share the CPU measures the machine, not the engine.
+| Concurrency | p50 | p95 | p99 | throughput |
+|---:|---:|---:|---:|---:|
+| 1 | 29.03 ms | 35.85 ms | 70.01 ms | 32.9 rps |
+| 4 | 95.77 ms | 117.98 ms | 142.65 ms | 40.8 rps |
+| 16 | 213.92 ms | 283.27 ms | 304.94 ms | 72.5 rps |
+
+Latency rises almost linearly with concurrency while throughput barely moves — 32.9 to 72.5 rps
+for a 16x increase in offered load. That is the signature of a serialization point, not of work.
+
+### Where the time goes
+
+Measured, because the codebase's own comments guess at "8+N queries per decision" and the guess
+is wrong:
+
+| | measured |
+|---|---|
+| SQL queries per warm decision | **6** (1 INSERT decisions, 1 UPDATE, 4 SELECT) |
+| Sandbox calls per decision | **55** |
+| Time inside the sandbox | 11.6 ms of 31.5 ms — **37% of wall clock** |
+| Variables the policy actually reads | **6** |
+
+The query count is not the problem; the shared catalog cache already serves connectors,
+variables and settings. **The problem is that a decision computes all 55 of the tenant's
+variables when the policy reads 6.**
+
+### The flag that fixes it, and why it is off
+
+`executor.py` already has `COMPUTE_ONLY_USED_VARS=1`, which restricts computation to the
+variables the policy transitively uses. It is opt-in, and the comment says why: the surplus
+variables are recorded in the decision's `computed_variables` and are "available for
+audit/downstream".
+
+Measured in-process, 40 iterations per arm, **alternating** so machine drift hits both equally
+(the first attempt at this via HTTP gave contradictory numbers across concurrency levels — that
+was noise, and is why the A/B moved in-process):
+
+| | p50 | p95 | variables computed |
+|---|---:|---:|---:|
+| default (all variables) | 32.70 ms | 40.87 ms | 55 |
+| `COMPUTE_ONLY_USED_VARS=1` | **16.78 ms** | **27.32 ms** | **6** |
+
+**48.7% faster at p50, and 89% less sandbox work**, with an identical outcome on every one of
+the 80 runs.
+
+### Do not enable it yet — it is measurably faster and currently incorrect
+
+The next step after measuring a win is checking whether it is safe, and this one is not. The
+full suite with `COMPUTE_ONLY_USED_VARS=1`:
+
+```
+Ran 1895 tests ... FAILED (failures=6, errors=10, skipped=21)
+```
+
+Sixteen tests break, almost all in `test_connector_fetch`, and they fail the same way:
+
+```
+KeyError: 'p01_score'   (tests/test_connector_fetch.py:413)
+```
+
+The variable was never computed. `_needed_variable_ids` walks rule conditions and scorecard
+bins, so it finds variables a policy *reads through a rule* — but a variable whose data arrives
+via a **connector step** is not reachable that way, and the analysis drops it. Enabling the flag
+therefore skips variables the decision genuinely depends on. That is the same class of bug this
+codebase has already been bitten by three times: **a performance flag that changes correctness**
+(`FAST_DECIDE` skipping input validation, then the evaluation budget, then sample seeding).
+
+So: the 48.7% is real, the mechanism is right, and the reachability analysis is incomplete. The
+work is to teach `_needed_variable_ids` about connector-supplied variables and re-run the suite —
+not to flip a default that fails 16 tests. Recorded here rather than quietly left in the
+backlog, because a measured-but-unsafe win is easy to mistake for a free one.
+
+There is a second, smaller tradeoff even once that is fixed: the decision record shrinks from 55
+computed variables to 6. Nothing about the *decision* changes, but anything reading
+`computed_variables` for a variable the policy did not use will find it missing. That is a
+product decision about the audit surface, not a performance one.

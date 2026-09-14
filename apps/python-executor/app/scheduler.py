@@ -445,6 +445,26 @@ def deliver_report_result(storage: Storage, tenant_id: str, report: Dict[str, An
     return delivery
 
 
+def _scheduled_relay_outbox(storage: Storage) -> None:
+    """Move committed outbox rows to Kafka. One pass; the interval drives the loop.
+
+    Swallows its exceptions on purpose: a broker outage must not kill the scheduler thread and
+    take every other job with it. Nothing is lost by returning early — the rows stay unsent and
+    the next tick retries them, which is the entire reason the outbox is durable.
+    """
+    if not is_leader():
+        return
+    try:
+        from . import decision_outbox
+
+        result = decision_outbox.relay_once(storage)
+        if result.get("failed"):
+            logger.warning("decision outbox relay: %s sent, %s failed",
+                           result.get("sent"), result.get("failed"))
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.exception("decision outbox relay pass failed")
+
+
 async def retry_outbox(storage: Storage, max_attempts: int = 5) -> Dict[str, Any]:
     """Leader-gated: drain the durable email outbox. Each pending message is retried
     until it sends or hits max_attempts (then marked failed for operator attention)."""
@@ -527,6 +547,16 @@ def init_scheduler(storage: Storage) -> None:
     scheduler.add_job(_scheduled_review_timeouts, "interval", minutes=5, id="review-timeouts", args=[storage], replace_existing=True)
     scheduler.add_job(retry_outbox, "interval", seconds=env.env_int("OUTBOX_RETRY_SECONDS", 60),
                       id="email-outbox-retry", args=[storage], replace_existing=True)
+    # The decision outbox relay (parity P09). LEADER-GATED, and that is not optional: Kafka
+    # orders within a partition and the outbox is keyed per tenant, so two replicas relaying the
+    # same rows concurrently would interleave one tenant's decisions out of order — the single
+    # ordering guarantee the partition key exists to provide.
+    #
+    # Registered unconditionally but a no-op without KAFKA_BOOTSTRAP_SERVERS (see
+    # decision_outbox.relay_once), matching how every other optional dependency degrades here.
+    scheduler.add_job(_scheduled_relay_outbox, "interval",
+                      seconds=env.env_int("DECISION_OUTBOX_RELAY_SECONDS", 5),
+                      id="decision-outbox-relay", args=[storage], replace_existing=True)
     scheduler.add_job(_scheduled_archive_decisions, "interval",
                       hours=env.env_int("DECISION_ARCHIVE_INTERVAL_HOURS", 24),
                       id="decision-archive", args=[storage], replace_existing=True)
