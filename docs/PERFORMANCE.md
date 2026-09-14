@@ -293,3 +293,47 @@ There is a second, smaller tradeoff even once that is fixed: the decision record
 computed variables to 6. Nothing about the *decision* changes, but anything reading
 `computed_variables` for a variable the policy did not use will find it missing. That is a
 product decision about the audit surface, not a performance one.
+
+## The disk that matters is Docker's, not the host's
+
+A full run filled Docker's disk and broke the kind cluster with `No space left on device` —
+while the host reported **650 GB free**. Both numbers were true; only one was relevant, and the
+irrelevant one was the one being checked.
+
+This machine runs **Colima**, whose VM disk is a **fixed allocation**:
+
+```yaml
+# ~/.colima/default/colima.yaml
+disk: 30          # GiB — a hard ceiling, not a share of the host's 650 GB
+```
+
+Inside the VM, `/dev/vdb1` is 29.4 G and that is the entire budget for images, containers,
+volumes and build cache. Docker Desktop behaves identically for the same reason. So `df` on the
+host answers a question nobody asked — and answering it confidently is worse than not checking,
+because it reads as an all-clear.
+
+**The failure is badly disguised.** The disk fills while a kind node is starting Postgres, and
+what surfaces is an `initdb` crash inside the node. Nothing in that message mentions disk, so the
+next hour goes into the database.
+
+`scripts/lib/docker_disk.sh` now holds the check, sourced by `k8s_up.sh` (fails fast) and
+`run_all_tests.sh` (warns, since most lanes need no container). It reads free space **from inside
+the VM** when there is one, which is the only place the number is real.
+
+`k8s_up.sh` was also the heaviest consumer in the repo, and it costs roughly **double** the image
+size per run: it rebuilds both images *and* `kind load`s them into the node container, so each run
+writes two copies. It now prunes dangling layers — but **only after a successful run**. After a
+failure those layers are the evidence you inspect to find out why the build broke; pruning them
+turns a diagnosable failure into a mystery.
+
+```bash
+docker system df                 # the daemon's own accounting — the number to trust
+docker image prune -f            # dangling layers only
+colima stop && colima start --disk 60   # or just give the VM more room
+```
+
+To check the disk directly:
+
+```bash
+colima ssh -- df -h /var/lib/docker
+```

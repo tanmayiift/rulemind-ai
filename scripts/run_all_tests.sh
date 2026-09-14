@@ -95,6 +95,19 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
+# Docker disk pre-flight, for the lanes that need a container.
+#
+# The number that matters is the DOCKER VM's free space, not the host's. A run filled it while
+# the host had 650GB free, and what surfaced was a Postgres crash inside a container -- nothing
+# mentioned disk, so the next hour went into the database. This refuses up front instead. It
+# only warns rather than exiting, because most lanes (rust, flutter, kotlin, web) need no
+# container at all and should still run on a full Docker disk.
+# shellcheck source=lib/docker_disk.sh
+. "$(dirname "$0")/lib/docker_disk.sh"
+case "$LANES" in
+  *python-pg*|*e2e*|*contracts*) require_docker_disk 4 "the container-backed lanes" || true ;;
+esac
+
 : > "$SUMMARY"
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$1"; }

@@ -24,6 +24,16 @@ for bin in kind kubectl helm docker; do
   command -v "$bin" >/dev/null 2>&1 || die "$bin is not installed (brew install kind kubectl helm)"
 done
 
+# shellcheck source=lib/docker_disk.sh
+. "$(dirname "$0")/lib/docker_disk.sh"
+
+say "0/5  disk"
+# This script is the heaviest consumer of Docker's disk in the repo, and it costs roughly DOUBLE
+# the image size: it rebuilds both images AND `kind load`s them into the node container, so each
+# run writes two copies. On a fixed 30GiB VM allocation that adds up in a handful of runs, and the
+# failure surfaces as a Postgres initdb crash inside a kind node rather than as a disk error.
+require_docker_disk 8 "a kind cluster with both images" || exit 1
+
 say "1/5  cluster"
 if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
   ok "kind cluster '$CLUSTER' already exists"
@@ -86,6 +96,12 @@ done
 # Written, not echoed: the smoke script needs the key and nothing should paste it into a terminal
 # transcript. .runtime/ is gitignored.
 mkdir -p .runtime && umask 077 && printf 'RULEMIND_K8S_API_KEY=%s\n' "$DEV_API_KEY" > .runtime/k8s-key.env
+
+# Only now, with everything rolled out. Every `die` above exits before this line, deliberately:
+# after a failure the dangling layers are the evidence you inspect to find out why the build or
+# the install broke, and pruning them turns a diagnosable failure into a mystery.
+say "cleanup"
+prune_dangling_images
 printf '\n\033[32mUp.\033[0m namespace=%s release=%s\n' "$NS" "$RELEASE"
 printf '  verify:      scripts/smoke_k8s.sh\n'
 printf '  dashboard:   kubectl -n %s port-forward svc/%s-web 3000:3000\n' "$NS" "$RELEASE"
