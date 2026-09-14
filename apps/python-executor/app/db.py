@@ -216,7 +216,46 @@ def engine_for(path: Optional[str] = None, force_sqlite: bool = False) -> Engine
     if schema:
         _bind_test_schema(engine, schema)
     _engine_cache[cache_key] = engine
+    _evict_engines_over_cap()
     return engine
+
+
+# Bound on the engine cache. A SERVER never reaches this: it uses a handful of URLs for the
+# process lifetime, so the cap is inert there and nothing is ever evicted. A TEST SUITE mints a
+# new key per `Storage(path=<fresh tempdir>)`, and each one holds SQLite file handles open
+# against a directory the test then deletes.
+#
+# `dispose_engine()` exists for exactly this and its own docstring says "NOTHING EVER EVICTS" --
+# but only 13 of 151 test modules call it, so the leak stayed. It surfaced as
+# `sqlite3.OperationalError: unable to open database file` on a RANDOM test in an unrelated
+# module, about one per ~1900-test run. Three consecutive runs failed on three different tests
+# (test_connector_fetch twice, test_connector_fetch_refuted once) -- which is what a shared
+# resource running out looks like, not a broken test.
+#
+# 64 sits far above any real deployment's URL count and far below the hundreds a full suite
+# accumulates, so it bounds the suite without changing server behaviour.
+_ENGINE_CACHE_MAX = 64
+
+
+def _evict_engines_over_cap() -> None:
+    """Dispose the oldest engines once the cache exceeds its bound.
+
+    dict preserves insertion order, so this is FIFO -- the engine least recently CREATED, which
+    in a test suite is the one whose tempdir is most likely already deleted.
+    """
+    while len(_engine_cache) > _ENGINE_CACHE_MAX:
+        oldest = next(iter(_engine_cache))
+        # Drop the session factory too: it holds a reference to the same engine, so evicting
+        # only the engine would leave a live factory handing out connections from a pool
+        # nothing can reach. Same reasoning as dispose_engine().
+        _session_factory_cache.pop(oldest, None)
+        stale = _engine_cache.pop(oldest, None)
+        if stale is None:
+            continue
+        try:
+            stale.dispose()
+        except Exception:  # pragma: no cover - eviction must never break its caller
+            pass
 
 
 def _bind_test_schema(engine: Engine, schema: str) -> None:

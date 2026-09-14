@@ -66,7 +66,17 @@ not real. `uptime` showed a load average of **17.45** with four processes at ~97
 - three orphaned sandbox pool workers, reparented to launchd after their test runs exited, each
   spinning at ~97%
 - **a uvicorn started on 2026-08-29 — from a previous session, still listening on :8091 — whose
-  sandbox worker has been burning a full core for over two weeks**
+  sandbox worker had been burning a full core for over two weeks**
+
+Both are now dealt with. The stray uvicorn was killed, and a sweep found **159 orphaned sandbox
+workers in total**, dating back to 2026-08-26 — every one reparented to launchd. `sandbox.py`
+gained a `shutdown_pool()` wired into the FastAPI shutdown event, so a graceful stop reaps its
+child *processes* the way `decision_log` already reaped its threads.
+
+To be precise about what that does and does not fix: it closes the clean-exit path. It cannot
+close SIGKILL, where no handler runs at all — for that the only real answer is a PID namespace,
+which is to say a container, which is what production already is. This was a developer-host leak
+that ~1,900 tests and a containerised CI structurally could not see.
 
 One INSERT cannot cost 24 ms, which is what made the number suspect enough to check. The rule
 this file opens with exists for exactly this: a latency number taken on a loaded machine measures

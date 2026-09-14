@@ -1496,6 +1496,17 @@ async def shutdown() -> None:
         decision_log.shutdown()
     except Exception:  # pragma: no cover - best effort
         pass
+    # Reap the sandbox's worker PROCESSES. decision_log above is a thread pool and dies with the
+    # interpreter; these are spawned children that outlive their parent unless something kills
+    # them. On this developer machine that had left 159 orphans over three weeks, one of them
+    # spinning at 99% CPU since 2026-08-29. A container's PID namespace makes this impossible in
+    # production -- it is a host-only leak, and this is where it gets closed.
+    try:
+        from . import sandbox
+
+        sandbox.shutdown_pool()
+    except Exception:  # pragma: no cover - best effort
+        pass
     # Relinquish scheduler leadership on graceful shutdown so a surviving replica
     # takes over immediately instead of waiting for the lease to expire.
     try:

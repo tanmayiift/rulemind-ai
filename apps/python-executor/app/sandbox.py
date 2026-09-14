@@ -216,6 +216,43 @@ def probe() -> Dict[str, Any]:
     return {"status": "ok", "mode": mode, "detail": detail}
 
 
+def shutdown_pool() -> None:
+    """Terminate the sandbox's worker processes. Wired into FastAPI's shutdown event.
+
+    WHY THIS IS NEEDED AT ALL. Unlike decision_log's THREAD pool, this one spawns child
+    PROCESSES, and a child process outlives its parent unless something reaps it.
+    ProcessPoolExecutor registers its own atexit handler, but that only runs on a clean
+    interpreter exit -- not when the parent is SIGKILLed, and not when a dev server or a test
+    run is interrupted.
+
+    The symptom, measured 2026-09-14: **159 orphaned sandbox workers** on this machine, dating
+    back three weeks, all reparented to launchd. Mostly harmless at 32KB each -- but one of them
+    had been spinning at 99% CPU since 2026-08-29, which is a full core burned continuously, and
+    it corrupted a performance baseline badly enough to look like an 83% regression.
+
+    IN A CONTAINER THIS CANNOT HAPPEN and that is worth stating, so nobody reads this as a
+    production leak: the PID namespace reaps every child when the container dies, whatever the
+    signal. This matters on a developer's host, where there is no such boundary.
+
+    Best-effort by design: a shutdown path that raises is worse than one that leaks.
+    """
+    global _pool
+    with _pool_lock:
+        pool = _pool
+        _pool = None
+    if pool is None:
+        return
+    for process in list(getattr(pool, "_processes", {}).values()):
+        try:
+            process.terminate()
+        except Exception:  # pragma: no cover - best-effort kill
+            pass
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:  # pragma: no cover
+        pass
+
+
 def _recycle_pool(pool: ProcessPoolExecutor) -> None:
     """Terminate a pool's workers and drop it so the next call builds a fresh one.
 
