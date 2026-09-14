@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.main as app_main  # noqa: E402
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 LINT = "/api/v1/variables/lint"
 GOOD = '@variable(source="bank")\ndef v(payload, variables, apis):\n    return 1\n'
@@ -40,8 +40,8 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig = app_main.storage
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "lint.db"))
-        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.key = app_main.storage.default_api_key or ""
         os.environ.pop("AUTH_MODE", None)
@@ -52,8 +52,8 @@ class _Base(unittest.TestCase):
             app_main.storage.engine.dispose()
         except Exception:  # pragma: no cover
             pass
+        preserve_storage_global(self)
         app_main.storage = self._orig
-        restore_storage_after(self)
         self.tempdir.cleanup()
 
     def lint(self, code, key=None):

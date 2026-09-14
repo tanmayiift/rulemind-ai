@@ -31,7 +31,7 @@ import app.main as app_main  # noqa: E402
 from app.core.engine import decide as core_decide  # noqa: E402
 from app.executor import PolicyExecutor  # noqa: E402
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 def _table():
@@ -50,8 +50,8 @@ def _table():
 class DecisionTableFastPathTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "fp.db"))
-        restore_storage_after(self)
         self.storage = app_main.storage
         self.tenant = self.storage.default_tenant_id
         self.client = TestClient(app_main.app)
@@ -114,8 +114,8 @@ def _score_branch(item_name="app"):
 class ParallelLoopTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "loop.db"))
-        restore_storage_after(self)
         self.tenant = app_main.storage.default_tenant_id
         self.executor = PolicyExecutor(app_main.storage)
 

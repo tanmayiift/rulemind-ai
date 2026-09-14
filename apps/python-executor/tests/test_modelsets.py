@@ -35,7 +35,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import app.main as app_main  # noqa: E402
 from app import modelsets  # noqa: E402
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 BASE = "/api/v1/model-sets"
 
@@ -57,8 +57,8 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig = app_main.storage
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "sets.db"))
-        restore_storage_after(self)
         self.storage = app_main.storage
         self.client = TestClient(app_main.app)
         self.tenant = self.storage.default_tenant_id
@@ -71,8 +71,8 @@ class _Base(unittest.TestCase):
             self.storage.engine.dispose()
         except Exception:  # pragma: no cover
             pass
+        preserve_storage_global(self)
         app_main.storage = self._orig
-        restore_storage_after(self)
         self.tempdir.cleanup()
 
     def as_(self, key=None):

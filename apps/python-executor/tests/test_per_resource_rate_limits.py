@@ -53,7 +53,7 @@ import app.main as app_main  # noqa: E402
 import app.runtime as runtime  # noqa: E402
 from app import rate_limit  # noqa: E402
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 class _Isolated(unittest.TestCase):
@@ -451,8 +451,8 @@ class MiddlewareIntegrationTests(_Isolated):
     def setUp(self):
         super().setUp()
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "perclass.db"))
-        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
         policies = self.client.get("/api/v1/policies", headers=self.headers)

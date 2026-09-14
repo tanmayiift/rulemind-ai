@@ -24,7 +24,7 @@ os.environ.setdefault("RULEMIND_ADMIN_JWT_SECRET", "rulemind-test-admin-secret")
 import app.ai as ai
 import app.main as app_main
 from app.storage import Storage
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 _RULE_JSON = json.dumps({
     "name": "Bureau gate",
@@ -36,8 +36,8 @@ _RULE_JSON = json.dumps({
 class AITests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ai.db"))
-        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
         self.calls = {"n": 0}

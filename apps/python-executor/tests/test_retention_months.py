@@ -73,7 +73,7 @@ from app.archiver import (  # noqa: E402
 from app.models import Base, Decision  # noqa: E402
 from app.scheduler import archive_old_decisions  # noqa: E402
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -229,8 +229,8 @@ class RetentionApiTests(unittest.TestCase):
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "retention-api.db"))
-        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.tenant = app_main.storage.default_tenant_id
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}

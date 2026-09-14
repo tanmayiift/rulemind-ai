@@ -38,7 +38,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.main as app_main  # noqa: E402
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 class DecisionSubjectHistoryTest(unittest.TestCase):
@@ -120,8 +120,8 @@ class DecideEndpointSubjectTest(unittest.TestCase):
     def setUp(self):
         os.environ["RULEMIND_SEED_DEMO"] = "1"
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "decide.db"))
-        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.tenant = app_main.storage.default_tenant_id
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}

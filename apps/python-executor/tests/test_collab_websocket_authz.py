@@ -34,14 +34,14 @@ import app.main as app_main  # noqa: E402
 import app.routers.collab as collab_router  # noqa: E402
 from app.collab_hub import CollabHub  # noqa: E402
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 class WebSocketAuthTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ws.db"))
-        restore_storage_after(self)
         self._orig_hub = collab_router.hub
         collab_router.hub = CollabHub()
         self.hub = collab_router.hub
@@ -122,8 +122,8 @@ class WebSocketAuthTest(unittest.TestCase):
 class TenantScopingTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ws2.db"))
-        restore_storage_after(self)
         self._orig_hub = collab_router.hub
         collab_router.hub = CollabHub()
         self.hub = collab_router.hub
@@ -188,8 +188,8 @@ class WriteAuthorizationTest(unittest.TestCase):
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ws3.db"))
-        restore_storage_after(self)
         self._orig_hub = collab_router.hub
         collab_router.hub = CollabHub()
         self.hub = collab_router.hub

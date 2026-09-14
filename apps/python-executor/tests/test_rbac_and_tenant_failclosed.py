@@ -34,7 +34,7 @@ from app.rbac import (  # noqa: E402
     AUTHOR, DECIDE, MANAGE_ACCESS, ROLE_CAPABILITIES, required_capability,
 )
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 class UnknownWriteFailsClosedTest(unittest.TestCase):
@@ -114,8 +114,8 @@ class UnknownWriteFailsClosedTest(unittest.TestCase):
 class TenantResolutionTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "tenant.db"))
-        restore_storage_after(self)
         self._prev_auth = os.environ.get("AUTH_MODE")
         os.environ.pop("AUTH_MODE", None)
 

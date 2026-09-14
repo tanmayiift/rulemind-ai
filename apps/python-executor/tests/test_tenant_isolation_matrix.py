@@ -48,7 +48,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.main as app_main  # noqa: E402
 from app.storage import Storage  # noqa: E402
-from tests._storage_global import restore_storage_after  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 class _Predictor:
@@ -172,8 +172,8 @@ class TenantIsolationMatrixTest(unittest.TestCase):
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "iso.db"))
-        restore_storage_after(self)
         self.client = TestClient(app_main.app)
 
         self.a_tenant = app_main.storage.default_tenant_id
@@ -392,8 +392,8 @@ class ScimIsolationTest(unittest.TestCase):
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "scim.db"))
-        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.a_tenant = app_main.storage.default_tenant_id
         self.a = {"x-api-key": app_main.storage.default_api_key or ""}

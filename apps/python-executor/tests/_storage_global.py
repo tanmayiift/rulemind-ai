@@ -17,10 +17,15 @@ WORSE (no cap ~1 error, FIFO 3, LRU 4, removed 8) and broke something else: FIFO
 oldest engine, which is `app_main.storage`'s, so it disposed the shared engine out from under
 live tests. Sweeping stale temp dirs helped (8 -> 1) but treats a symptom.
 
-USAGE — one line, immediately after the assignment:
+USAGE — one line, immediately BEFORE the assignment:
 
+    preserve_storage_global(self)
     app_main.storage = Storage(path=os.path.join(self.tempdir.name, "x.db"))
-    restore_storage_after(self)
+
+**Before, not after.** It captures whatever the global is when it is called; calling it after the
+assignment captures the test's own new Storage and restores that — a no-op that looks like a fix.
+(Written the wrong way round once. The isolated runs still passed, because the module under test
+never reads a global it did not set: only the NEXT module does.)
 
 `addCleanup` rather than tearDown, deliberately. Cleanups run AFTER tearDown, so the module's own
 teardown still runs against THIS test's storage — an earlier fix put the restore at the top of
@@ -31,11 +36,14 @@ from __future__ import annotations
 
 import app.main as app_main
 
-__all__ = ["restore_storage_after"]
+__all__ = ["preserve_storage_global"]
 
 
-def restore_storage_after(test_case) -> None:
-    """Put back whatever `app_main.storage` was when this is called, once the test ends."""
+def preserve_storage_global(test_case) -> None:
+    """Capture `app_main.storage` NOW, and put it back when this test ends.
+
+    Call it BEFORE replacing the global -- see the module docstring.
+    """
     previous = app_main.storage
 
     def _restore() -> None:
