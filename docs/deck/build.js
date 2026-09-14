@@ -746,7 +746,7 @@ async function build() {
     "Not an immutable audit log — tamper-evident, which is a detection guarantee",
     "Not hosted CI today; the evidence is a committed, regenerable test report",
     "Apache 2.0 licensed, but the repository is not public yet",
-    "A latency optimisation measured at 48% is held back until it is proven correct",
+    "A 76-93% optimisation ships OFF by default — it shrinks what the decision record stores",
   ];
   s.addText(notyet.map((t, i) => ({
     text: t, options: { bullet: true, breakLine: i < notyet.length - 1 },
@@ -764,9 +764,15 @@ async function build() {
     });
   s.addNotes(
     "This slide wins deals with technical buyers. Every item on the right is a real, current " +
-    "limitation taken from the repository's own notes — not a softened version. If asked about " +
-    "the 48% optimisation: it is a flag that makes decisions faster but is not yet proven to " +
-    "produce identical results, so it stays off."
+    "limitation taken from the repository's own notes — not a softened version.\n\n" +
+    "On the optimisation: COMPUTE_ONLY_USED_VARS computes only the variables a policy can " +
+    "actually reach — 92.8% less work on the serving path, 76.0% on the full path, measured " +
+    "in-process with alternating arms. It IS proven correct: both decision paths produce " +
+    "identical outcomes and identical computed-variable sets, mutation-checked in both " +
+    "directions, with the full 1,928-test suite green twice with it on. It stays off by default " +
+    "for one reason, and it is not correctness: it shrinks the recorded variable set from the " +
+    "whole catalog to what the policy read. That is a change to YOUR audit surface, so it is " +
+    "your decision to make, not a default we impose."
   );
   footer(s, 10, false);
 }
