@@ -46,6 +46,7 @@ from app.executor import PolicyExecutor, _SAMPLE_SEEDING_SOURCES  # noqa: E402
 
 SOURCE_ID = "seedsrc"
 VARIABLE_ID = "seed_score"
+RULE_ID = "seed_rule"
 SAMPLE_SCORE = 999          # the demo value: approving, and must never decide production traffic
 VARIABLE_CODE = (
     '@variable(source="{0}")\n'
@@ -66,9 +67,29 @@ class _Base(unittest.TestCase):
             {"id": VARIABLE_ID, "name": "score", "category": "risk", "source_id": SOURCE_ID,
              "code": VARIABLE_CODE, "status": "prod"},
             tenant_id=self.tenant_id)
+        # A rule that READS seed_score, in front of the outcome step.
+        #
+        # The policy used to be a bare outcome step -- it referenced no variable at all, yet
+        # every test below asserts on variables["seed_score"]. That only worked because the
+        # tenant's entire catalog was computed regardless of what the policy read: under
+        # COMPUTE_ONLY_USED_VARS=1 both paths correctly compute nothing and every test dies on
+        # KeyError. The fixture was measuring the catalog, not seeding.
+        #
+        # Both branches approve, so the rule cannot change the outcome these tests saw before;
+        # its only job is to make seed_score genuinely reachable, which is the precondition the
+        # assertions always assumed.
+        self.storage.create_rule(
+            {"id": RULE_ID, "name": "Seed Gate", "nodes": [],
+             "tree": {"type": "group", "id": "root", "logic": "AND",
+                      "children": [{"type": "condition", "id": "c1", "variable": VARIABLE_ID,
+                                    "operator": ">=", "value": 0}],
+                      "onPass": "approve", "onFail": "approve"},
+             "rule_format": "v1", "status": "prod"},
+            tenant_id=self.tenant_id)
         self.policy = {
             "id": "seed_policy", "name": "Seed", "status": "prod",
-            "steps": [{"id": "s1", "type": "outcome", "ref_id": "approve"}],
+            "steps": [{"id": "s0", "type": "rule", "ref_id": RULE_ID, "label": "Seed Gate"},
+                      {"id": "s1", "type": "outcome", "ref_id": "approve"}],
             "defaultOutcome": "review",
         }
         fast_decide.invalidate(self.tenant_id)

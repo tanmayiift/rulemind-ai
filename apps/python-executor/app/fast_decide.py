@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from . import env, input_schema
+from . import variable_reachability
 from .core import decide as core_decide
 # Imported (not redeclared) so the exception the fast path raises is the SAME CLASS the
 # executor raises: main.py dispatches its 504 on `@app.exception_handler(EvaluationBudgetExceeded)`
@@ -347,9 +348,9 @@ def tenant_secrets(storage: Any, tenant_id: str, connectors: Dict[str, Any]) -> 
 # ── Evaluation budget ──────────────────────────────────────────────────────────────
 # The Tier 1.3 wall-clock bound was executor-only: this module had no deadline of any kind, so
 # FAST_DECIDE=1 removed the bound on a decision entirely. The bound matters MORE here, not less
-# — the fast path computes the tenant's whole variable catalog with no COMPUTE_ONLY_USED_VARS
-# filter, and the seeded demo tenant is 55 variables at the 2000ms per-variable timeout, i.e.
-# 110 seconds of one Starlette threadpool thread for a single request.
+# — with COMPUTE_ONLY_USED_VARS off (the default) the fast path computes the tenant's whole
+# variable catalog, and the seeded demo tenant is 55 variables at the 2000ms per-variable
+# timeout, i.e. 110 seconds of one Starlette threadpool thread for a single request.
 #
 # Same engine_config key, same default, same clamping, same exception as PolicyExecutor.
 
@@ -422,6 +423,11 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         for item in storage.list_connectors(tenant_id=tenant_id)
     }
     settings = storage.get_settings(tenant_id=tenant_id).get("engine_config", {})
+    # core_bundle["variables"] is the FULL catalog and stays that way even when the compute
+    # loop is filtered. The core reads it as a LOOKUP (labels, field types for trace), not as
+    # a work list, and PolicyExecutor does the same -- its `variable_lookup` comes from the
+    # unfiltered catalog while only _compute_variables honours needed_ids. Filtering here
+    # would change trace labels on the fast path only: divergence, in the opposite direction.
     core_bundle = {"policy": policy, "rules": rules, "scorecards": scorecards,
                    "decision_tables": decision_tables, "variables": variables}
 
@@ -435,6 +441,29 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         except Exception:  # pragma: no cover - defensive
             rust_bundle = None
 
+    # Which variables this policy can actually reach -- the SAME analysis the executor runs
+    # (app/variable_reachability.py owns it; a second copy here is precisely the drift that
+    # makes a performance flag change the outcome).
+    #
+    # Computed at BUILD time and cached, applied PER REQUEST. The flag is read per request
+    # and the parity tests flip it mid-process with mock.patch.dict, so baking the flag's
+    # answer into a cached bundle would make it sticky per cache entry -- the first request
+    # after a rebuild would decide the mode for every later one. The SET does not depend on
+    # the flag, only on the policy, so caching the set and gating on the flag at use time is
+    # both correct and free.
+    #
+    # Cache-safe because _serving_bundle is keyed per policy (f"{tenant_id}:{policy['id']}"),
+    # so this set can never be read by a different policy.
+    #
+    # get_policy is wired: the serving bundle holds only THIS policy, so a sub-workflow step
+    # would otherwise be opaque here while the executor walked into it -- a divergence in the
+    # analysis meant to prevent divergence.
+    needed = variable_reachability.needed_variable_ids(
+        policy, rules, scorecards, decision_tables,
+        {v["id"]: v for v in variables},
+        lambda ref: storage.get_policy(ref, tenant_id=tenant_id),
+    )
+
     return {
         "policy": policy,
         "variables": variables,
@@ -442,6 +471,7 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         "schema_paths": schema_paths,
         "core_bundle": core_bundle,
         "rust_bundle": rust_bundle,
+        "needed_variable_ids": needed,
         "timeout_ms": int(settings.get("timeout_ms", 2000)),
         "memory_mb": int(settings.get("memory_mb", 128)),
         "budget_ms": _budget_ms(settings),
@@ -506,7 +536,18 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
     values: Dict[str, Any] = {}
     errors: Dict[str, str] = {}
     timeout_ms = bundle["timeout_ms"]
+    # Per-request, never baked into the cached bundle -- see the note in _build_serving_bundle.
+    # `.get`, not `[...]`, because "needed_variable_ids" is an OPTIONAL bundle key: tests and
+    # callers hand-roll serving bundles (test_simulation_accuracy builds one with five keys),
+    # and a missing key has to mean "compute everything", which is the unfiltered default.
+    needed_ids = bundle.get("needed_variable_ids") if variable_reachability.compute_only_used_vars() else None
+
     for variable in bundle["variables"]:
+        # Skip BEFORE the budget check, exactly as PolicyExecutor._compute_variables does --
+        # a variable that is never computed must not consume budget either, or the two paths
+        # would abandon the run at different points for the same policy.
+        if needed_ids is not None and variable["id"] not in needed_ids:
+            continue
         # Two-part enforcement, mirroring PolicyExecutor._compute_variables. The check abandons
         # the run between variables; the clamp stops the NEXT variable from overshooting the
         # budget on its own -- without it a 2000ms variable started with 5ms of budget left

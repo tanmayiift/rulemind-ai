@@ -122,6 +122,64 @@ BANK_POLICY_WITH_SCORECARD = {
 }
 
 
+# A policy that genuinely REACHES many variables, for the budget tests.
+#
+# They used to run BANK_POLICY, which reads exactly one variable (bank_balance), and drained the
+# budget only because the demo tenant's whole 55-variable catalog was computed regardless of what
+# the policy read. That made them measure a default, not the budget: under
+# COMPUTE_ONLY_USED_VARS=1 the catalog is correctly filtered to one variable, the budget never
+# drains, and every budget assertion goes trivially true -- 504s become 200s and
+# "did the per-variable timeout shrink" compares one element with itself.
+#
+# So the reachable set is made explicit: BUDGET_VARIABLE_COUNT variables, all named by one rule,
+# so the loop has real work to do whichever way the flag is set and the tests measure the guard
+# they are named after.
+BUDGET_VARIABLE_COUNT = 20
+
+BUDGET_VARIABLES = [
+    {
+        "id": "budget_var_{0:02d}".format(index),
+        "name": "Budget Var {0:02d}".format(index),
+        "category": "Bank",
+        "source_id": "bank",
+        "description": "Slow-variable fixture for the evaluation budget tests",
+        "code": (
+            '@variable(source="bank")\n'
+            "def budget_var_{0:02d}(payload, variables, apis):\n"
+            "    return 1\n"
+        ).format(index),
+        "status": "prod",
+    }
+    for index in range(BUDGET_VARIABLE_COUNT)
+]
+
+BUDGET_RULE = {
+    "id": "rule_budget",
+    "name": "Budget Gate",
+    "nodes": [],
+    "tree": {
+        "type": "group", "id": "root", "logic": "AND",
+        "children": [
+            {"type": "condition", "id": "c{0:02d}".format(index),
+             "variable": "budget_var_{0:02d}".format(index), "operator": ">=", "value": 0}
+            for index in range(BUDGET_VARIABLE_COUNT)
+        ],
+        "onPass": "approve",
+        "onFail": "reject",
+    },
+    "rule_format": "v1",
+    "expression": "IF (all budget vars >= 0) -> APPROVE ELSE -> REJECT",
+    "status": "prod",
+}
+
+BUDGET_POLICY = {
+    "id": "pol_budget_fast",
+    "name": "Budget Policy (fast-servable, many variables)",
+    "defaultOutcome": "review",
+    "steps": [{"id": "s1", "type": "rule", "ref_id": "rule_budget", "label": "Budget Gate"}],
+}
+
+
 def bank_payload(**overrides):
     """A COMPLETE bank source payload, so the only issue is the one the test introduced.
 
@@ -359,7 +417,35 @@ class OffByDefaultTest(_Base):
 
 
 class EvaluationBudgetOnTheFastPathTest(_Base):
-    """The 504 contract, which had no reach into this module at all."""
+    """The 504 contract, which had no reach into this module at all.
+
+    Runs BUDGET_POLICY, not BANK_POLICY: the budget can only be measured by a policy that
+    reaches enough variables to drain it. See BUDGET_VARIABLE_COUNT for why the old fixture
+    measured the unfiltered catalog instead of the guard.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for variable in BUDGET_VARIABLES:
+            app_main.storage.create_variable(dict(variable), tenant_id=self.tenant)
+        app_main.storage.create_rule(dict(BUDGET_RULE), tenant_id=self.tenant)
+        app_main.storage.create_policy(dict(BUDGET_POLICY), tenant_id=self.tenant)
+        # decide_fast_direct and decide_slow_direct both read self.policy.
+        self.policy = app_main.storage.get_policy("pol_budget_fast", tenant_id=self.tenant)
+        fast_decide_module.invalidate()
+
+    def decide_http(self, payload, fast, policy_id="pol_budget_fast"):
+        return super().decide_http(payload, fast, policy_id=policy_id)
+
+    def test_the_budget_policy_reaches_every_budget_variable(self):
+        """The fixture's own guard. If the policy stopped reaching these variables the tests
+        below would drain no budget and pass for the wrong reason -- which is exactly how the
+        previous fixture failed."""
+        self.assertTrue(fast_path_eligible(app_main.storage, self.policy, self.tenant))
+        bundle = fast_decide_module._serving_bundle(app_main.storage, self.tenant, self.policy)
+        reachable = bundle["needed_variable_ids"]
+        for variable in BUDGET_VARIABLES:
+            self.assertIn(variable["id"], reachable)
 
     def _slow_variable(self, seconds):
         """Genuinely blocks, so the clamp is measured rather than assumed."""
@@ -456,8 +542,11 @@ class EvaluationBudgetOnTheFastPathTest(_Base):
             time.sleep(0.03)  # deliberately ignores timeout_ms, as the inline fallback does
             return {"value": 1, "error": None}
 
-        total = len(app_main.storage.list_variables(tenant_id=self.tenant))
-        self.assertGreater(total, 10, "the demo tenant should have many variables")
+        # The denominator is what this POLICY reaches, not the tenant's whole catalog -- under
+        # COMPUTE_ONLY_USED_VARS the catalog is not the workload, and comparing against it would
+        # make the assertion pass without the budget doing anything.
+        total = BUDGET_VARIABLE_COUNT
+        self.assertGreater(total, 10, "the budget fixture needs many variables to drain it")
         with mock.patch.object(fast_decide_module, "execute_variable",
                                side_effect=ignores_its_timeout):
             response = self.decide_http(bank_payload(), fast=True)

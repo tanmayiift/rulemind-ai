@@ -25,9 +25,11 @@ positive costs one sandbox call; a false negative changes the decision.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Dict, Optional, Set
 
-__all__ = ["needed_variable_ids", "collect_condition_variable_ids", "collect_step_variable_ids"]
+__all__ = ["needed_variable_ids", "collect_condition_variable_ids", "collect_step_variable_ids",
+           "compute_only_used_vars"]
 
 
 def collect_condition_variable_ids(node: Any, out: Set[str]) -> None:
@@ -194,3 +196,18 @@ def needed_variable_ids(
             if other != vid and other not in needed and other in code:
                 stack.append(other)
     return needed
+
+
+def compute_only_used_vars() -> bool:
+    """Is COMPUTE_ONLY_USED_VARS on?
+
+    ONE reader, because both decision paths ask this question and two different answers to
+    "is the flag on" is its own divergence -- the executor would filter while the serving
+    path computed the whole catalog, or the reverse, for the same request.
+
+    Strict `== "1"`, not `env.env_bool`, deliberately: FAST_DECIDE is read the same way
+    (routers/runtime.py), these two flags are siblings, and a looser read could silently
+    turn the flag ON for a deployment that set it to something env_bool considers truthy.
+    For a flag that changes which variables get computed, failing closed is the safe side.
+    """
+    return os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1"
