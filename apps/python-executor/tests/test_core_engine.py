@@ -195,6 +195,36 @@ class CoreEngineTests(unittest.TestCase):
         self.assertEqual(out["outcome"], "review")
         self.assertFalse(out["input_valid"])
 
+    def test_empty_variables_does_not_fall_back_to_payload(self):
+        """An explicit empty variables map must NOT make the payload the feature map.
+
+        `dict(context.get("variables") or payload or {})` treated `{}` as absent,
+        so a caller that computed zero variables silently decided on raw payload
+        keys. That is a fail-open: it promotes unvalidated caller input into the
+        position of authored, typed variables. Under COMPUTE_ONLY_USED_VARS a
+        policy that reads no variables produces exactly that empty map, so this
+        is reachable, not theoretical.
+        """
+        payload = {"annual_income": 80000, "risk_flag": False}
+        result = decide(
+            sample_bundle(),
+            payload,
+            {"variables": {}, "strict_validation": False},
+        )
+        # With the payload leaking in, rule_income sees annual_income=80000 and
+        # the policy approves. With no variables it cannot, and rejects.
+        self.assertEqual(result["outcome"], "reject")
+        self.assertEqual(result["variables"], {})
+
+    def test_absent_variables_key_still_uses_payload(self):
+        """The legacy contract stays: no "variables" key at all means payload-as-features."""
+        payload = {"annual_income": 80000, "risk_flag": False}
+        self.assertEqual(decide(sample_bundle(), payload)["outcome"], "approve")
+        self.assertEqual(
+            decide(sample_bundle(), payload, {"strict_validation": False})["outcome"],
+            "approve",
+        )
+
     def test_validate_input_helper(self):
         schema = {"fields": {"pan": {"type": "string", "pattern": r"^[A-Z]{5}[0-9]{4}[A-Z]$"}}}
         self.assertEqual(validate_input({"pan": "ABCDE1234F"}, schema), [])

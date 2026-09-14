@@ -217,7 +217,19 @@ def decide(
 
     # Variables: use pre-computed values from context, else treat the payload
     # itself as the resolved feature map (the common decisioning case).
-    variables: Dict[str, Any] = dict(context.get("variables") or payload or {})
+    #
+    # Presence, not truthiness. `context["variables"] == {}` means "the caller
+    # computed the variables and there were none" -- it must NOT fall back to
+    # the payload. Under COMPUTE_ONLY_USED_VARS a policy that reads no
+    # variables legitimately produces an empty map, and an `or payload` there
+    # would silently start deciding on raw payload keys: a fail-open that
+    # turns unvalidated caller input into the feature map. Only an absent key
+    # (the bare `decide(bundle, payload)` form) takes the payload.
+    ctx_variables = context.get("variables")
+    if ctx_variables is None:
+        variables: Dict[str, Any] = dict(payload or {})
+    else:
+        variables = dict(ctx_variables)
     variable_lookup = _as_map(bundle.get("variables"))
 
     result = DecisionResult(policy_id=policy_id, outcome="pending", variables=variables)
