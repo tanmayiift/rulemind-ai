@@ -886,6 +886,17 @@ against the repo rather than memory, after being asked "everything done?":
    dead-letter path is audited: a processed event already has its Decision row, and auditing
    every one would double the audit table to record success. RBAC is genuinely **N/A** — P09
    adds no HTTP surface, which the OpenAPI gate confirms.
+Two further things were found while closing those, and both are recorded because they were my
+own mistakes:
+
+- **The engine-cache cap (37252f1) was wrong and is reverted.** It did not fix the SQLite flake
+  (no cap ~1 error, FIFO 3, LRU 4, removed 8) and introduced a bug: FIFO evicts the oldest
+  engine, which is `app_main.storage`'s, so it disposed the shared engine out from under live
+  tests. The real cause is **leftover temp dirs from interrupted runs** — 73 of them gave 8
+  errors, clearing them gave 1 — and `scripts/run_all_tests.sh` now sweeps them.
+- **I reported that cap as a fix on a single clean sample.** One green run is not evidence when
+  the thing being measured is intermittent.
+
 4. **J25 (machine-readable output)** — `flutter test --machine` and `cargo test --format json`
    were never added. Both now are; the Flutter lane counts from its JSON (163) since the prose
    line it used to parse is no longer printed.
