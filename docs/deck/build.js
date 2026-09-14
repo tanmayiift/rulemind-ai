@@ -383,8 +383,8 @@ async function build() {
     fontFace: BODY_FONT, fontSize: 10.5, bold: true, charSpacing: 2, color: ACCENT,
   });
   const corpus = [
-    ["600", "conditions in a single generated rule"],
-    ["135", "input cases run through all five"],
+    ["90", "operator cases — through all five engines"],
+    ["600", "conditions in one generated stress rule"],
     ["1.6 MB", "of expected outputs, generated not typed"],
   ];
   corpus.forEach(([b, l], i) => {
@@ -405,7 +405,8 @@ async function build() {
 
   s.addText(
     "Why it matters to you: the score your branch app shows offline is the score your server " +
-    "recorded. No “the mobile engine rounds differently” incident, because that incident fails CI.",
+    "recorded. No “the mobile engine rounds differently” incident, because that incident fails " +
+    "the build.",
     {
       x: M, y: 6.30, w: 11.9, h: 0.45, isTextBox: true, margin: 0,
       fontFace: BODY_FONT, fontSize: 12.5, color: MUTED_L, lineSpacing: 18,
@@ -413,7 +414,13 @@ async function build() {
   s.addNotes(
     "This is the technical differentiator and the hardest thing in the product. Most vendors " +
     "have one engine and an SDK that approximates it. Divergence between them is the classic " +
-    "source of disputed decisions."
+    "source of disputed decisions.\n\n" +
+    "BE PRECISE IF PRESSED — the corpora do not all cover all five. The OPERATOR contract (12 " +
+    "operators, 90 cases) is the one that runs through all five engines. The 600-condition " +
+    "stress rule x 135 cases runs through Python, Rust, Kotlin and Dart — not TypeScript, whose " +
+    "job is browser preview. Scorecards (173 cases) run through Python, TypeScript, Kotlin and " +
+    "Dart. Say 'every engine is held to a shared generated corpus', which is true, rather than " +
+    "'every corpus runs on every engine', which is not."
   );
   footer(s, 5, true);
 }

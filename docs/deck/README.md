@@ -26,6 +26,7 @@ came to be wrong by 500+ tests. If you edit a slide, re-derive its number here t
 | 21 of 22 capability rows PRESENT, 0 absent | `PRESENT=21, CUT=1` | `docs/parity/parity.json` |
 | Five language engines | Python, TypeScript, Rust, Kotlin, Dart | `packages/`, `apps/python-executor` |
 | 600-condition rule, 135 cases, 1.6 MB | `conditionOrder`=600, `cases`=135, 1,681,435 bytes | `packages/shared/large-policy.spec.json` |
+| 90 operator cases, 12 operators, all five engines | corpus counts + the five test files that load it | `packages/shared/operators.spec.json` |
 | 19.78 ms median decision | p50 **at concurrency 1** | `docs/PERFORMANCE.md` latency table |
 | 117.5 rps | throughput **at concurrency 16** | same table |
 | 232 Excel functions | `len(EXCEL_FUNCTIONS)` at runtime | `app/excel_functions.py` |
@@ -58,6 +59,8 @@ anyway and it is better that we said it first.
 | "open source" | "Apache 2.0 licensed" | True today. The repository is not public yet — see `docs/PRE-PUBLICATION-AUDIT.md`. |
 | the 48.7% `COMPUTE_ONLY_USED_VARS` win | nothing, or "roadmap" | Measured, but the flag is off by default. |
 | the README's "thousands/s" table | the measured numbers | That table is sizing guidance, not a measurement. |
+| "135 cases run through all five engines" | "90 operator cases run through all five; the 600-condition stress rule runs through four" | **The corpora do not all cover all five engines.** Verified by which test files load each spec: operators → Python, TypeScript, Rust, Kotlin, Dart (**five**); large-policy → Python, Rust, Kotlin, Dart (**no TypeScript**); scorecards → Python, TypeScript, Kotlin, Dart (**no Rust**); decision-tables → Python, Kotlin, Dart. "Every engine is held to a shared generated corpus" is true; "every corpus runs on every engine" is not. |
+| "that incident fails CI" | "fails the build" | CI does not run for this repo — the same deck says so on slide 10. |
 | "no data leaving your network" | "no telemetry, no metering, no licence check — the only outbound calls are the ones you configure" | Connectors call the data sources the customer configures (the point of a bureau integration) and the AI features call the provider whose key they supplied. The headline contradicted the same slide's own fine print. What is true is that **we** receive nothing. |
 | "every decision records its policy version" | "records its inputs, computed variables, every rule result and the full step trace" | **`bundle_hash` is NULL for API decisions** — the model's own comment says so, and nothing on the `/decide` path sets it; it is populated only for on-device decisions. A server decision stores what *happened*, not which version produced it. The honest line is also the stronger one: a stored trace beats a pointer to configuration that may have moved since. Version pinning on server decisions is a roadmap item. |
 | invented role names ("author", "approver", "service") | the real five: **owner, admin, policy_maker, reviewer, viewer** | Slide 8 had the COUNT right and three of the five NAMES invented. A buyer who opens `rbac.py` finds different words than the deck used — and "the deck made up our role names" is a worse first impression than any missing feature. Names come from `ROLE_CAPABILITIES`, not from memory. |
