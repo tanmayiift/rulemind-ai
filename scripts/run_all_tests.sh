@@ -181,6 +181,39 @@ if has python-pg; then
   # Storage(path=...) and silently fall back to SQLite, so the "Postgres lane" re-runs SQLite.
   # The URL must be postgresql:// -- requirements pins psycopg2, and the +psycopg scheme fails
   # every module import with ModuleNotFoundError, which reads like a broken virtualenv.
+  # Drop schemas left by EARLIER runs before starting.
+  #
+  # RULEMIND_TEST_PG_SCHEMA_PER_PATH gives each test path its own Postgres SCHEMA -- the
+  # equivalent of its own SQLite file -- and nothing ever drops them. They accumulate across
+  # runs until the volume fills, and the failure is spectacular and unrelated-looking:
+  # `psycopg2.errors.DiskFull: could not create file`, cascading into 430 errors across modules
+  # that have nothing to do with each other.
+  #
+  # Measured 2026-09-14: **1,569 stale schemas, 3.5 GB** after a day of repeated runs, which is
+  # what took the Postgres lane down. Exactly the same shape as the stale temp dirs above, in a
+  # different store.
+  #
+  # Safe because the name is ours and deterministic (db.test_schema_for -> `rmtest_<sha>`), and
+  # because the lane recreates whatever it needs on the next run.
+  _PGURL="${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}"
+  dropped=$("$VENV" - "$_PGURL" <<'PYDROP' 2>/dev/null || echo 0
+import sys
+from sqlalchemy import create_engine, text
+try:
+    e = create_engine(sys.argv[1], isolation_level="AUTOCOMMIT")
+    with e.connect() as c:
+        names = [r[0] for r in c.execute(text(
+            "SELECT schema_name FROM information_schema.schemata "
+            "WHERE schema_name LIKE 'rmtest\\_%' ESCAPE '\\'"))]
+        for n in names:
+            c.execute(text('DROP SCHEMA IF EXISTS "%s" CASCADE' % n))
+    print(len(names))
+except Exception:
+    print(0)
+PYDROP
+)
+  [ "${dropped:-0}" -gt 0 ] && printf '  dropped %s stale rmtest_ schema(s) from earlier runs\n' "$dropped"
+
   if (cd "$ROOT/apps/python-executor" && RULEMIND_TEST_PG_SCHEMA_PER_PATH=1 \
         DATABASE_URL="${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}" \
         "$VENV" -c "import sqlalchemy,os;sqlalchemy.create_engine(os.environ['DATABASE_URL']).connect()" >/dev/null 2>&1); then

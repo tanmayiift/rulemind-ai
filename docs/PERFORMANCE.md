@@ -43,39 +43,55 @@ Verified beyond the size number: the container serves `/` and a deep link at 200
 10001, and the CSS and JS the HTML references both resolve 200 (referenced is not the same as
 served). `scripts/smoke_compose.sh` is 14/14 with the new image.
 
-## A flake that was the environment, not the code
+## A flake that was shared state, not the code under test
 
-Worth recording next to the benchmark story, because it is the same mistake in a different
-place: a measurement degraded by machine state, diagnosed as a code problem.
+Worth recording beside the benchmark story, because it is the same mistake twice: a failure
+blamed on the thing in front of me rather than on what was shared.
 
-`sqlite3.OperationalError: unable to open database file` started hitting a RANDOM test in an
-unrelated module — never the test that caused it. Three consecutive runs failed on three
-different tests, each of which passed cleanly alone. I capped `db._engine_cache` at 64 to fix it.
-Measured across full runs on the same tree:
+`sqlite3.OperationalError: unable to open database file` hit a RANDOM test in an unrelated
+module — never the test that caused it, and always a module that passed cleanly alone.
 
-| | errors per run |
-|---|---:|
-| no cap (before) | ~1, intermittent |
-| cap, FIFO eviction | 3 |
-| cap, LRU eviction | 4 |
-| cap removed again | 8 |
-| **stale temp dirs cleared, no cap** | **1** |
+**Root cause:** 51 of 65 test modules did `app_main.storage = Storage(path=<tempdir>)` in setUp
+and never restored it. When their tempdir was cleaned, the global still pointed at a deleted
+directory, so the *next* module to read `app_main.storage` failed. Every symptom follows from
+that: the victim is whoever reads the global next, and which test that is depends on discovery
+order.
 
-The cap was never the variable. The actual cause is **leftover temp directories accumulating
-across runs** — 73 of them by that point — until SQLite cannot open new files. Clearing them took
-the same tree from 8 errors to 1.
+Fixed in 38 modules (capture in setUp, restore + dispose at the end of tearDown). Three
+consecutive full runs went from 1–8 errors to **zero**.
 
-And they were not leaked by the fixtures: only 10 of 112 temp-dir fixtures pass
-`ignore_cleanup_errors=True`, and all 10 dispose their engine first. They came from runs I
-**interrupted** — killed suites, timed-out jobs — where no teardown runs at all. So the fix
-belongs in `scripts/run_all_tests.sh`, which now sweeps stale ones before starting, and not in
-112 test modules.
+**Two attempts before that were wrong, and are reverted:**
 
-The cap also introduced a bug of its own: FIFO evicts the oldest engine, which is
-`app_main.storage`'s — created at import, used by most of the suite — so past 64 entries it
-disposed the shared engine out from under live tests. LRU fixed that specific case and still did
-not fix the flake. The general lesson is in `dispose_engine`'s docstring now: **the cache cannot
-know what is still referenced, so every eviction policy is a guess.**
+| Attempt | Result |
+|---|---|
+| Cap `db._engine_cache` at 64 | **worse** — no cap ~1 error, FIFO 3, LRU 4, removed 8 |
+| Sweep stale temp dirs | helped (8 → 1) but treated a symptom |
+
+The cap also broke something on its own: FIFO evicts the oldest engine, which is
+`app_main.storage`'s — created at import and used by most of the suite — so it disposed the
+shared engine out from under live tests, producing the exact error it was meant to prevent. And
+I reported it as fixed on a *single* clean sample, which is not evidence for an intermittent
+failure.
+
+The lesson, now also in `dispose_engine`'s docstring: **a test that only fails in company is a
+shared resource running out. Find what is shared, not what the failing test does.**
+
+### The same shape again, in Postgres
+
+That lesson paid off within the hour. The Postgres lane then died with
+`psycopg2.errors.DiskFull: could not create file`, cascading into **430 errors** across modules
+with nothing to do with each other.
+
+`RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` gives each test path its own Postgres SCHEMA — the
+equivalent of its own SQLite file — and **nothing ever drops them**. After a day of repeated
+runs: **1,569 stale schemas, 3.5 GB**, until the volume filled.
+
+Identical shape to the temp dirs: a per-test resource that is created and never reclaimed, whose
+exhaustion surfaces far from the test that created it. `scripts/run_all_tests.sh` now drops
+stale `rmtest_*` schemas before the lane starts — safe because the name is ours and
+deterministic (`db.test_schema_for` → `rmtest_<sha>`), and the lane recreates what it needs.
+
+Result: 1920 tests, **OK**, zero DiskFull.
 
 ## What the P09 outbox costs
 
