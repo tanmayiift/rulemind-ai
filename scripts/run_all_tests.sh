@@ -65,11 +65,26 @@ SUMMARY="$OUT/summary.tsv"
 # directories and anything else using the system temp dir are left alone.
 _TMP="$(python3 -c 'import tempfile;print(tempfile.gettempdir())' 2>/dev/null || echo /tmp)"
 if [ -n "$_TMP" ] && [ -d "$_TMP" ]; then
-  stale=$(find "$_TMP" -maxdepth 1 -type d -name 'tmp*' -mtime +0 2>/dev/null | wc -l | tr -d ' ')
-  if [ "${stale:-0}" -gt 0 ]; then
-    printf '  clearing %s stale temp dir(s) left by earlier runs\n' "$stale"
-    find "$_TMP" -maxdepth 1 -type d -name 'tmp*' -mtime +0 -exec rm -rf {} + 2>/dev/null
-  fi
+  # TWO conditions, and both are needed to make this safe AND effective:
+  #
+  #   -mmin +90   older than 90 minutes. A full run takes ~30, and the lock above guarantees no
+  #               other run of THIS script, so anything this old is not in use by us. `-mtime +0`
+  #               (older than a DAY) was the first attempt and was useless: the accumulation that
+  #               breaks a run happens WITHIN a session, so it swept nothing and the flake stayed.
+  #
+  #   contains a *.db / *.sqlite* file
+  #               this is the per-user temp dir, shared with every other app the user runs, so
+  #               matching Python's generic `tmpXXXXXXXX` pattern alone would delete other
+  #               programs' scratch space. A SQLite file inside attributes it to this project's
+  #               fixtures with high confidence; nothing else here writes one.
+  swept=0
+  for d in "$_TMP"/tmp*; do
+    [ -d "$d" ] || continue
+    [ -n "$(find "$d" -maxdepth 0 -mmin +90 2>/dev/null)" ] || continue
+    [ -n "$(find "$d" -maxdepth 2 \( -name '*.db' -o -name '*.sqlite*' \) -print -quit 2>/dev/null)" ] || continue
+    rm -rf "$d" 2>/dev/null && swept=$((swept+1))
+  done
+  [ "$swept" -gt 0 ] && printf '  swept %s stale test temp dir(s) from earlier runs\n' "$swept"
 fi
 
 LOCK="$OUT/.run.lock"
