@@ -743,7 +743,7 @@ GENERATED from the Python. Every fix mutation-checked.
   would be noise, not coverage. Entries are prose explaining WHY, matching the existing
   convention, rather than a `git log` dump.
 - [ ] **I5** Vercel GitHub App access revoked (needs the user's 2FA)
-- [ ] **I6** CI: one commit without `[skip ci]` once the Actions quota resets
+- [ ] **I6** CI: one commit without `[skip ci]` — **tried 2026-09-14 (`8043957`); still blocked.** That push created ZERO runs; Dependabot's commits created runs that executed `steps: 0`. Needs minutes, not a code change.
 
 ## J. Local-only, optimise, close P09 — 2026-09-14
 
@@ -923,7 +923,23 @@ GitHub App can still read the repo. Revoking it needs a GitHub sudo-mode re-auth
 your 2FA, so it is yours to do:
 GitHub → Settings → Applications → Installed GitHub Apps → Vercel → Revoke.
 
-**3. GitHub Actions minutes are exhausted (I6).** Every recent run failed in 3–12 seconds with
-**zero steps executed** — a quota refusal, not a test failure and not `[skip ci]`. Until the
-quota resets, local runs are the only signal, and this plan says so rather than implying CI
-coverage it does not have. When it resets, one commit without `[skip ci]` closes it.
+**3. GitHub Actions minutes are exhausted (I6). RE-TESTED 2026-09-14 — still blocked.**
+
+This was a week-old claim, so it was checked rather than repeated. Commit `8043957` was landed
+**without** `[skip ci]` specifically to find out. The result, from the API rather than from the
+UI:
+
+- **Zero workflow runs were created for that commit at all** (`actions/runs?head_sha=8043957`
+  → `total_count: 0`), even though `sdk-verify.yml` triggers on push to `main`.
+- Runs that *were* created — for Dependabot's rebase commits — finished in **3–4 seconds** with
+  `steps: 0`. A job that executes zero steps has not failed a test; it has not run one.
+
+So the blocker stands, and it is worse than "runs fail": pushes no longer produce runs. Local
+runs remain the only signal, and `TEST_RESULTS.md` (10 lanes, 4,526 tests, generated from the
+runners' own output) is what stands in for CI until minutes are available again.
+
+**What unblocks it:** more Actions minutes — either waiting for the monthly reset or raising the
+spending limit at
+`github.com/settings/billing`. Once a run genuinely executes, `.github/workflows/test-report.yml`
+publishes a job summary, and the 20 open Dependabot PRs can be judged on a real result instead of
+a red X that only means "out of minutes".
