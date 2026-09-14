@@ -1,0 +1,116 @@
+# Alertmanager routing for the rules in alerts.yml.
+#
+# WHY THIS EXISTS. The alert rules define what is worth waking someone for. Without this, nothing
+# carries them to a human — Prometheus evaluates, marks an alert firing, draws it red on a page
+# nobody is looking at, and that is the end of it. "We have alerts" and "we get alerted" are
+# different claims, and only the second one is worth anything at 3am.
+#
+# ---------------------------------------------------------------------------------------------
+# THIS SHIPS WITH NO REAL DESTINATION, ON PURPOSE.
+#
+# The default receiver is a black hole. A config with someone's Slack webhook committed to it is
+# a leaked credential; a config that silently drops alerts while looking configured is worse than
+# no config at all. So it fails LOUD instead: `make observability` starts Alertmanager, alerts
+# route to `null`, and this comment is the only documentation of why nothing arrived.
+#
+# TO MAKE IT REAL: uncomment ONE receiver block at the bottom, put the real credential in it,
+# and change `receiver: "null"` (in `route:` AND in the critical sub-route) to that receiver's
+# name.
+#
+# NOT via an environment variable — Alertmanager does not expand them in this file. It validates
+# `api_url` as a literal URL, so `${SOMETHING}` fails the config outright with
+# `unsupported scheme ""` rather than waiting to be filled in. Verified with
+# `amtool check-config`, not assumed.
+#
+# Keep the credential out of git: mount this file from a Kubernetes secret, or template it at
+# deploy time.
+# ---------------------------------------------------------------------------------------------
+
+global:
+  resolve_timeout: 5m
+  # smtp_smarthost: 'smtp.example.com:587'
+  # smtp_from: 'rulemind-alerts@example.com'
+  # smtp_auth_username: ''
+  # smtp_auth_password: ''
+
+route:
+  # Group by alertname AND severity so a latency warning and a latency critical do not collapse
+  # into one notification — they have different runbook entries and different urgency.
+  group_by: ["alertname", "severity"]
+  # Wait a little before the first notification so a burst of related alerts arrives as one
+  # message rather than five. 30s is short enough that a real outage still pages promptly.
+  group_wait: 30s
+  group_interval: 5m
+  # Do not re-notify for 4 hours. Shorter than this and a long incident becomes its own denial
+  # of service on the on-call person's attention.
+  repeat_interval: 4h
+  receiver: "null"
+
+  routes:
+    # Critical goes to the paging destination and repeats faster: these are the two that mean
+    # decisions are not being served at all.
+    - matchers:
+        - severity = "critical"
+      receiver: "null"
+      group_wait: 10s
+      repeat_interval: 1h
+
+inhibit_rules:
+  # If the API is down, every other rule about it is a consequence, not new information.
+  # Without this a single outage pages five times and the signal is buried in its own noise.
+  - source_matchers:
+      - alertname = "RuleMindApiDown"
+    target_matchers:
+      - severity =~ "warning|critical"
+    equal: ["instance"]
+
+  # A latency critical implies the warning. Send one.
+  - source_matchers:
+      - alertname = "RuleMindDecisionLatencyCritical"
+    target_matchers:
+      - alertname = "RuleMindDecisionLatencyHigh"
+    equal: ["source"]
+
+receivers:
+  # The black hole. Replace `receiver: "null"` above once a real destination exists.
+  - name: "null"
+
+  # The three destinations below are COMMENTED rather than left with placeholder credentials.
+  #
+  # Alertmanager does not expand environment variables in this file — it validates `api_url` as a
+  # literal URL — so `${RULEMIND_ALERT_SLACK_WEBHOOK}` does not "wait for an env var", it fails
+  # the config outright with `unsupported scheme ""`. (Found by running `amtool check-config`
+  # rather than by shipping it and wondering why Alertmanager would not start.)
+  #
+  # So: uncomment ONE block, paste the real credential, and change `receiver: "null"` above.
+  # Keep the credential out of git — mount this file from a secret, or template it at deploy.
+
+  # - name: "slack"
+  #   slack_configs:
+  #     - api_url: "https://hooks.slack.com/services/REPLACE/ME"
+  #       channel: "#rulemind-alerts"
+  #       send_resolved: true
+  #       title: '{{ .CommonLabels.severity | toUpper }} — {{ .CommonLabels.alertname }}'
+  #       # The runbook link is the point. An alert that says what broke without saying what to
+  #       # do costs the reader the same five minutes every time it fires.
+  #       text: >-
+  #         {{ range .Alerts }}{{ .Annotations.summary }}
+  #         {{ .Annotations.description }}
+  #         Runbook: {{ .Annotations.runbook }}
+  #         {{ end }}
+
+  # - name: "pagerduty"
+  #   pagerduty_configs:
+  #     - routing_key: "REPLACE_ME"
+  #       send_resolved: true
+  #       description: '{{ .CommonLabels.alertname }} — {{ .CommonLabels.severity }}'
+  #       details:
+  #         summary: '{{ .CommonAnnotations.summary }}'
+  #         runbook: '{{ .CommonAnnotations.runbook }}'
+
+  # - name: "email"
+  #   email_configs:
+  #     - to: "oncall@example.com"
+  #       send_resolved: true
+  #       headers:
+  #         Subject: '[{{ .CommonLabels.severity }}] {{ .CommonLabels.alertname }}'
