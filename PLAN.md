@@ -880,7 +880,7 @@ at J24.
   what breaks with the failure recorded, mark the rest pending on Actions
 - [x] **J30** Truth-up stale counts: README/CLAUDE.md say 1369/379/58, reality is **1892/462/68**; — README/CLAUDE.md corrected: 1369/379/58 -> **1913/462/68**, '0 open PRs' -> 22, plus a pointer to the generated report so the next reader does not have to trust a typed number
   CLAUDE.md says "0 open PRs" against 22. Tick 8.2-8.4, close A7-A10 as local-verified
-- [ ] **J31** One commit without `[skip ci]` to close I6 and test whether the quota reset
+- [x] **J31** One commit without `[skip ci]` to close I6 and test whether the quota reset — landed 2026-09-14 — this is the commit; the run result is recorded in the Blockers section
 
 ## Blockers
 
