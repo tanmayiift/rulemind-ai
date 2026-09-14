@@ -227,7 +227,52 @@ PYDROP
 )
   [ "${dropped:-0}" -gt 0 ] && printf '  dropped %s stale rmtest_ schema(s) from earlier runs\n' "$dropped"
 
-  if (cd "$ROOT/apps/python-executor" && RULEMIND_TEST_PG_SCHEMA_PER_PATH=1 \
+  # THE PUBLIC SCHEMA MUST NOT HOLD APP DATA WRITTEN UNDER A DIFFERENT ENCRYPTION KEY.
+  #
+  # The compose Postgres is shared: `make up` and the PG test lane use the same database. If you
+  # run the stack against it -- load testing, a manual /decide, seeding demo data -- the app
+  # writes connector configs into the PUBLIC schema encrypted with RULEMIND_CONFIG_KEY from
+  # .env (the DEV key). The test lane then runs with the TEST key, and every test that touches
+  # the default schema dies on `cryptography.fernet.InvalidToken`.
+  #
+  # That is exactly what happened on 2026-09-15: a load-test run seeded 53 connectors under the
+  # dev key and the next PG lane failed 6 tests across 3 modules. The traceback says InvalidToken
+  # and points at storage.decrypt_config_payload -- it reads like a crypto or a migration bug,
+  # and nothing in it mentions "you seeded this database with a different key". Hence this check.
+  _pg_contaminated=$("$VENV" - <<'PYCHK' 2>/dev/null
+import os, sys
+os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
+url = os.environ.get("RULEMIND_TEST_PG_URL",
+                     "postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind")
+try:
+    import sqlalchemy
+    from cryptography.fernet import Fernet, InvalidToken  # noqa: F401
+    sys.path.insert(0, "apps/python-executor")
+    from app.storage import crypto
+    eng = sqlalchemy.create_engine(url)
+    with eng.connect() as conn:
+        rows = conn.exec_driver_sql(
+            "select encrypted_config from connectors where encrypted_config is not null limit 5").fetchall()
+    for (value,) in rows:
+        if not value:
+            continue
+        try:
+            crypto().decrypt(str(value).encode("utf-8"))
+        except Exception:
+            print(len(rows)); break
+except Exception:
+    pass
+PYCHK
+)
+  if [ -n "${_pg_contaminated:-}" ]; then
+    printf '  \033[31mfail\033[0m  the Postgres public schema holds app data encrypted with a DIFFERENT key\n'
+    printf '        Something ran the APP against this database (make up, a load test, seeding).\n'
+    printf '        The app uses RULEMIND_CONFIG_KEY from .env; this lane uses the test key, so\n'
+    printf '        every test touching the default schema will die on InvalidToken.\n'
+    printf '        Reset it:  docker compose exec -T db psql -U rulemind -d rulemind \\\n'
+    printf '                     -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"\n'
+    record python-pg "Python — PostgreSQL" "skipped" "—" "0s"
+  elif (cd "$ROOT/apps/python-executor" && RULEMIND_TEST_PG_SCHEMA_PER_PATH=1 \
         DATABASE_URL="${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}" \
         "$VENV" -c "import sqlalchemy,os;sqlalchemy.create_engine(os.environ['DATABASE_URL']).connect()" >/dev/null 2>&1); then
     run_lane python-pg "Python — PostgreSQL" bash -c \
