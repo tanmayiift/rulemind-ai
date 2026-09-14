@@ -128,12 +128,32 @@ RM_BASE=http://127.0.0.1:8080 RM_POLICY=policy_pl_underwriting \
 
 | Concurrency | p50 | p95 | p99 | throughput |
 |---:|---:|---:|---:|---:|
-| 1 | 29.03 ms | 35.85 ms | 70.01 ms | 32.9 rps |
-| 4 | 95.77 ms | 117.98 ms | 142.65 ms | 40.8 rps |
-| 16 | 213.92 ms | 283.27 ms | 304.94 ms | 72.5 rps |
+| 1 | **19.78 ms** | 21.50 ms | 34.13 ms | **49.2 rps** |
+| 4 | **35.48 ms** | 45.57 ms | 83.72 ms | **103.1 rps** |
+| 16 | **134.66 ms** | 178.46 ms | 223.02 ms | **117.5 rps** |
 
-Latency rises almost linearly with concurrency while throughput barely moves — 32.9 to 72.5 rps
-for a 16x increase in offered load. That is the signature of a serialization point, not of work.
+### This table replaces an earlier one that was wrong
+
+The first version of this baseline read 29.03 / 95.77 / 213.92 ms with 32.9 / 40.8 / 72.5 rps. It
+was measured on a machine carrying **159 orphaned sandbox workers**, one of which had been
+spinning at 99% CPU since 2026-08-29. Clearing them and re-measuring on a quiet host:
+
+| Concurrency | p50 then | p50 now | throughput then | now |
+|---:|---:|---:|---:|---:|
+| 1 | 29.03 ms | 19.78 ms | 32.9 rps | 49.2 rps |
+| 4 | 95.77 ms | 35.48 ms | 40.8 rps | 103.1 rps |
+| 16 | 213.92 ms | 134.66 ms | 72.5 rps | 117.5 rps |
+
+**Nothing in the engine changed between those two runs.** This is not an optimisation and must
+not be read as one — it is the difference between measuring the product and measuring a machine
+with a stuck process on it. Recorded in full because the wrong table looked entirely plausible,
+and the conclusion drawn from it was also wrong: it read as "latency rises linearly while
+throughput barely moves, the signature of a serialization point". On a quiet host throughput
+actually scales 49 → 103 → 118 rps, which is a system approaching CPU saturation, not one
+serializing on a lock.
+
+The residual flattening between concurrency 4 and 16 is real: two uvicorn workers and
+`SANDBOX_POOL_SIZE` bound how many variable evaluations can run at once.
 
 ### Where the time goes
 
