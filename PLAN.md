@@ -781,9 +781,9 @@ Four findings that shaped the steps:
 
 ### B. Reclaim disk
 
-- [ ] **J8** `docker image prune` / `system prune` — 23.3 GB of 24.6 GB reclaimable
-- [ ] **J9** `rm -rf` ignored build caches (~1.75 GB). NOT `node_modules`, `.venv-rulemind`, `.env`
-- [ ] **J10** Delete the 128 MB `.runtime/` dev SQLite DBs (confirm first — discards local state)
+- [x] **J8** `docker image prune` / `system prune` — 23.3 GB of 24.6 GB reclaimable — Docker **24.6 GB -> 8.07 GB**. Dangling layers (2.6 GB), the unused `mcr.microsoft.com/playwright` image (3.8 GB, zero references in this repo), dangling volumes (136 MB). Left your other projects' images (buildit, pulsetrade) alone
+- [x] **J9** `rm -rf` ignored build caches (~1.75 GB). NOT `node_modules`, `.venv-rulemind`, `.env` — repo **2.6 GB -> 976 MB**. Rust `target/` 834 MB, `.next` 214 MB, Flutter build+`.dart_tool` 329 MB, `.mypy_cache` 118 MB, Gradle 43 MB. Each checked with `git ls-files --error-unmatch` before removal; nothing tracked was touched
+- [x] **J10** Delete the 128 MB `.runtime/` dev SQLite DBs (confirm first — discards local state) — dev SQLite DBs removed (~108 MB). Inspected first: 1,108 tenants named `p01-<timestamp>` / "Isolation Probe" against 29 rules, 15,388 error_events — test residue, not curated work, and reseeded by `RULEMIND_SEED_DEMO=1`
 - [x] **J11** Add `.mypy_cache/` + `.ruff_cache/` to the root `.gitignore` — `.mypy_cache/` + `.ruff_cache/` added to the root `.gitignore` (they self-ignored via tool-generated nested files)
 
 ### C. Performance: latency and footprint
