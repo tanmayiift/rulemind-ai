@@ -61,6 +61,16 @@ env:
   adminPassword: ""        # REQUIRED: initial admin password
   devApiKey: ""            # REQUIRED: seeded tenant's API key (rm_live_...)
 
+  # OPTIONAL, and the chart deliberately does not ship a broker. Same reasoning as the database:
+  # a chart that bundles its own Kafka invites someone to run that Kafka in production, where it
+  # would have no replication, no retention policy and no operator.
+  #
+  # Leave this blank and the decision outbox still records every event in Postgres, in the same
+  # transaction as the decision -- you lose DELIVERY, never data (app/decision_outbox.py). Set it
+  # and the leader-gated relay starts publishing. Point it at whatever broker you already run;
+  # `docker compose --profile kafka up -d kafka` is the local equivalent.
+  kafkaBootstrapServers: ""   # e.g. kafka.svc.cluster.local:9092
+
   # Was set in NO deployment artifact. app/security_config.py checks RULEMIND_ENV
   # first; with it unset (and NODE_ENV unset) the fail-closed default-secret check
   # takes its "warn and SKIP" branch, so a cluster would happily boot on the

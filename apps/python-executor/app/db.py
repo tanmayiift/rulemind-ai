@@ -98,6 +98,17 @@ def dispose_engine(url: str, schema: Optional[str] = None) -> bool:
 
     Exposed rather than left to tests to reach into `_engine_cache`, so the disposal happens
     through the pool's own `dispose()` instead of dropping a reference and hoping.
+
+    A CAP ON THE CACHE WAS TRIED AND REVERTED (2026-09-14). Evicting the oldest entry once the
+    cache passed 64 looked like the obvious fix for the leak described above. It made the suite
+    WORSE, not better: ~1 flaky failure per run became 3-4. The reason is that "oldest" and
+    "unused" are different things -- module-level storages are created early and used late, so
+    eviction disposed engines that live Storage objects still held, producing the same
+    `unable to open database file` the cap was meant to prevent. Switching FIFO to LRU helped
+    and did not fix it, because an engine can be idle for hundreds of tests and still be needed.
+    The cache has no way to know what is still referenced, so any eviction policy is a guess.
+    Disposal at a point that DOES know -- a test's own teardown, right here -- is the only
+    correct answer, and the remaining work is to call it from the ~138 modules that do not.
     """
     cache_key = "{0}#{1}".format(url, schema) if schema else url
     # The session factory holds a reference to the same engine, so dropping only the engine
@@ -216,46 +227,7 @@ def engine_for(path: Optional[str] = None, force_sqlite: bool = False) -> Engine
     if schema:
         _bind_test_schema(engine, schema)
     _engine_cache[cache_key] = engine
-    _evict_engines_over_cap()
     return engine
-
-
-# Bound on the engine cache. A SERVER never reaches this: it uses a handful of URLs for the
-# process lifetime, so the cap is inert there and nothing is ever evicted. A TEST SUITE mints a
-# new key per `Storage(path=<fresh tempdir>)`, and each one holds SQLite file handles open
-# against a directory the test then deletes.
-#
-# `dispose_engine()` exists for exactly this and its own docstring says "NOTHING EVER EVICTS" --
-# but only 13 of 151 test modules call it, so the leak stayed. It surfaced as
-# `sqlite3.OperationalError: unable to open database file` on a RANDOM test in an unrelated
-# module, about one per ~1900-test run. Three consecutive runs failed on three different tests
-# (test_connector_fetch twice, test_connector_fetch_refuted once) -- which is what a shared
-# resource running out looks like, not a broken test.
-#
-# 64 sits far above any real deployment's URL count and far below the hundreds a full suite
-# accumulates, so it bounds the suite without changing server behaviour.
-_ENGINE_CACHE_MAX = 64
-
-
-def _evict_engines_over_cap() -> None:
-    """Dispose the oldest engines once the cache exceeds its bound.
-
-    dict preserves insertion order, so this is FIFO -- the engine least recently CREATED, which
-    in a test suite is the one whose tempdir is most likely already deleted.
-    """
-    while len(_engine_cache) > _ENGINE_CACHE_MAX:
-        oldest = next(iter(_engine_cache))
-        # Drop the session factory too: it holds a reference to the same engine, so evicting
-        # only the engine would leave a live factory handing out connections from a pool
-        # nothing can reach. Same reasoning as dispose_engine().
-        _session_factory_cache.pop(oldest, None)
-        stale = _engine_cache.pop(oldest, None)
-        if stale is None:
-            continue
-        try:
-            stale.dispose()
-        except Exception:  # pragma: no cover - eviction must never break its caller
-            pass
 
 
 def _bind_test_schema(engine: Engine, schema: str) -> None:

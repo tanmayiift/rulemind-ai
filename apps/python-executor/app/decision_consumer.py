@@ -108,6 +108,8 @@ def handle_message(storage: Any, raw: bytes, handler: Optional[Callable] = None)
         envelope = json.loads(raw.decode("utf-8"))
     except Exception:  # noqa: BLE001 - unparseable IS the dead-letter case
         LOGGER.warning("decision event is not valid JSON; dead-lettering")
+        # No tenant to scope the audit to -- an unparseable body has no fields at all. Logged
+        # above and parked below; there is nothing truthful to write to a tenant's audit trail.
         return "dead-letter"
 
     event_id = envelope.get("event_id")
@@ -124,8 +126,10 @@ def handle_message(storage: Any, raw: bytes, handler: Optional[Callable] = None)
     if handler is not None:
         try:
             handler(envelope)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             LOGGER.exception("decision event handler failed for %s; dead-lettering", event_id)
+            _audit_dead_letter(storage, tenant_id, event_id,
+                               "handler raised {0}".format(type(exc).__name__))
             return "dead-letter"
     return "processed"
 
@@ -176,6 +180,33 @@ def consume_once(storage: Any, max_messages: int = 100, timeout: float = 1.0,
     finally:
         consumer.close()
     return stats
+
+
+def _audit_dead_letter(storage: Any, tenant_id: Optional[str], event_id: Optional[str],
+                       reason: str) -> None:
+    """Record that an event was parked, with the actor.
+
+    THE ACTOR HERE IS THE SYSTEM, NOT A PERSON, and that is the point rather than a gap. Every
+    other audited action in this codebase carries `actor_api_key_id` / `actor_role` from the
+    authenticated request; a consumer runs on the scheduler with no request and no caller. Naming
+    it `system:decision-consumer` says so explicitly instead of writing a null and leaving a
+    reader to guess whether the actor was lost or never existed.
+
+    Dead-lettering is the one consumer outcome worth auditing. A processed event already has its
+    Decision row, and a duplicate is the pipeline working as designed -- but a parked event means
+    a decision exists in the database that no downstream consumer will ever hear about, and
+    nothing else in the system records that divergence.
+    """
+    try:
+        storage.add_audit_event(
+            {"tenant_id": tenant_id, "event_type": "decision_event_dead_lettered",
+             "entity_type": "decision_event", "entity_id": event_id or "unknown",
+             "detail": "Decision event parked in the dead-letter topic: {0}.".format(reason),
+             "metadata": {"actor_api_key_id": None, "actor_role": "system:decision-consumer",
+                          "reason": reason, "dlq_topic": dead_letter_topic()}},
+            tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001 - audit is best effort; it must not block the DLQ write
+        LOGGER.exception("could not audit the dead-lettered event %s", event_id)
 
 
 def _to_dead_letter(raw: bytes) -> None:

@@ -32,6 +32,13 @@ data:
   # configured limit is then multiplied by the worker count and shared across no pods at all,
   # which is the opposite of what an operator setting a limit intends. Omitting the key is the
   # honest way to say "not configured".
+  {{- if .Values.env.kafkaBootstrapServers }}
+  # Rendered ONLY when set, for the same reason as REDIS_URL above: decision_outbox.enabled()
+  # tests `bool(os.getenv("KAFKA_BOOTSTRAP_SERVERS"))`, so a blank value is a set-but-empty env
+  # var that reads as configured-and-broken rather than not-configured. Omitting the key lets
+  # the outbox degrade the way it is designed to -- rows accumulate unsent, nothing is lost.
+  KAFKA_BOOTSTRAP_SERVERS: {{ .Values.env.kafkaBootstrapServers | quote }}
+  {{- end }}
   {{- if .Values.env.redisUrl }}
   REDIS_URL: {{ .Values.env.redisUrl | quote }}
   {{- end }}

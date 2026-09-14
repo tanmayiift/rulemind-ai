@@ -867,6 +867,29 @@ at J24.
    it would have raised NameError — but only on the broker-failure path, i.e. only during an
    outage, on the code whose job is to handle one.
 
+**Plan audit 2026-09-14 — four steps were not actually complete when first reported.** Checked
+against the repo rather than memory, after being asked "everything done?":
+
+1. **J14 (fix the hotspots)** — the hotspot was measured and documented but NOT fixed.
+   `_needed_variable_ids` now walks connector steps via `_collect_connector_sources` (nested
+   ones included), taking `COMPUTE_ONLY_USED_VARS=1` from **16 failures to 7**. It is still
+   unsafe: decision-table inputs and loop-nested steps are the remaining blind spots, both named
+   in `docs/PERFORMANCE.md`. The flag stays off. A partially correct reachability analysis is
+   worse than none — it makes the flag look safe while still skipping a variable.
+2. **J18 (Kafka in compose AND the Helm chart)** — only compose was done. The chart now has
+   `env.kafkaBootstrapServers`, rendered into the ConfigMap **only when set**, matching how
+   `REDIS_URL` degrades: unset means the outbox records every event and simply does not deliver.
+   Verified by rendering with and without.
+3. **J23 (the DoD five)** — the audit event was missing. `decision_event_dead_lettered` is now
+   written when an event is parked, with `actor_role: system:decision-consumer` stated
+   explicitly rather than a null, because a consumer has no authenticated caller. Only the
+   dead-letter path is audited: a processed event already has its Decision row, and auditing
+   every one would double the audit table to record success. RBAC is genuinely **N/A** — P09
+   adds no HTTP surface, which the OpenAPI gate confirms.
+4. **J25 (machine-readable output)** — `flutter test --machine` and `cargo test --format json`
+   were never added. Both now are; the Flutter lane counts from its JSON (163) since the prose
+   line it used to parse is no longer printed.
+
 ### E. GitHub: test results, Dependabot, doc truth-up
 
 - [x] **J25** Make runners emit machine-readable output. Only Gradle emits JUnit XML today and it — JUnit XML everywhere: `unittest-xml-reporting` for Python, vitest `junit`, Playwright `junit`+`html`. The Playwright one also fixes a real hole — `sdk-verify.yml` uploads `playwright-report/`, which could **never exist** because no `reporter:` was configured and CI defaults to `dot`

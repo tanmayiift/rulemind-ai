@@ -183,6 +183,45 @@ class DedupeIsTheDatabase(_Base):
 
         self.assertEqual(decision_consumer.handle_message(self.storage, raw, handler=boom), "dead-letter")
 
+    def test_a_dead_lettered_event_is_audited_with_an_actor(self):
+        """DoD item 3, and the one consumer outcome that deserves an audit row.
+
+        A processed event already has its Decision row; a duplicate is the pipeline behaving as
+        designed. A PARKED event is different: a decision exists in the database that no
+        downstream consumer will ever hear about, and nothing else records that divergence.
+
+        The actor is `system:decision-consumer`, written explicitly rather than left null. A
+        consumer runs on the scheduler with no request and no caller, so there is no
+        authenticated actor to record — and a null would leave a reader unable to tell whether
+        the actor was lost or never existed.
+        """
+        raw = json.dumps({"event_id": str(uuid.uuid4()), "tenant_id": self.tenant,
+                          "decision_id": "d1", "payload": {}}).encode()
+
+        def boom(_envelope):
+            raise RuntimeError("downstream is down")
+
+        self.assertEqual(decision_consumer.handle_message(self.storage, raw, handler=boom),
+                         "dead-letter")
+
+        events = [e for e in self.storage.list_audit_events(tenant_id=self.tenant)
+                  if e.get("event_type") == "decision_event_dead_lettered"]
+        self.assertTrue(events, "parking an event wrote no audit row")
+        metadata = events[0].get("metadata") or {}
+        self.assertEqual(metadata.get("actor_role"), "system:decision-consumer")
+        self.assertIn("RuntimeError", str(metadata.get("reason")),
+                      "the audit row does not say WHY it was parked")
+
+    def test_a_successfully_processed_event_is_NOT_audited(self):
+        """The counterweight. Auditing every consumed event would write one audit row per
+        decision — doubling the audit table to record that the pipeline worked."""
+        raw = json.dumps({"event_id": str(uuid.uuid4()), "tenant_id": self.tenant,
+                          "decision_id": "d1", "payload": {}}).encode()
+        self.assertEqual(decision_consumer.handle_message(self.storage, raw), "processed")
+        events = [e for e in self.storage.list_audit_events(tenant_id=self.tenant)
+                  if e.get("event_type") == "decision_event_dead_lettered"]
+        self.assertEqual(events, [], "a healthy event was audited as dead-lettered")
+
     def test_the_dedupe_key_cannot_collide_with_an_api_idempotency_key(self):
         """Consumer events and caller-supplied Idempotency-Key values share one column. A caller
         who sends the header `Idempotency-Key: <some event id>` must not be able to suppress a

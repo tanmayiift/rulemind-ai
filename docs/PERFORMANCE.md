@@ -212,10 +212,33 @@ therefore skips variables the decision genuinely depends on. That is the same cl
 codebase has already been bitten by three times: **a performance flag that changes correctness**
 (`FAST_DECIDE` skipping input validation, then the evaluation budget, then sample seeding).
 
-So: the 48.7% is real, the mechanism is right, and the reachability analysis is incomplete. The
-work is to teach `_needed_variable_ids` about connector-supplied variables and re-run the suite —
-not to flip a default that fails 16 tests. Recorded here rather than quietly left in the
-backlog, because a measured-but-unsafe win is easy to mistake for a free one.
+**Partially fixed 2026-09-14, and still not safe.** `_needed_variable_ids` now walks connector
+steps too — via `_collect_connector_sources`, so nested ones inside a branch or loop are found,
+which a first attempt at a flat top-level loop missed. That took the failures from **16 to 7**.
+
+The seven that remain are the same bug in other step types. `_needed_variable_ids` walks rule
+conditions, scorecard bins and now connector sources; it still cannot see a variable referenced
+by a **decision table** input (`inputs[].variable_id`) or reached inside a **loop** step's nested
+`config.steps`. The surviving failures name exactly those:
+
+```
+test_decision_tables.test_decision_table_runs_inside_a_policy
+test_fastpath_dt_parallel.test_fast_and_heavy_paths_agree
+test_workflow_loops.test_loop_inside_policy
+test_fast_path_sample_seeding_parity  (x2)
+...
+```
+
+So the flag stays **off**, and this is deliberately not finished in a hurry. Completing it means
+a reachability analysis over every step type that can reach a variable, each with its own
+lookup — and a *partially* correct analysis is worse than none, because it makes the flag look
+safer than it is while still silently skipping a variable the decision depends on. That is the
+FAST_DECIDE failure mode exactly: this repo has already fixed three bugs where a performance
+flag changed correctness, and the way to avoid a fourth is not to ship a reachability walk that
+covers most step types.
+
+What is safe to conclude: the mechanism is right, the win is ~48.7%, the connector half is done
+and tested, and the remaining work is bounded and named.
 
 There is a second, smaller tradeoff even once that is fixed: the decision record shrinks from 55
 computed variables to 6. Nothing about the *decision* changes, but anything reading

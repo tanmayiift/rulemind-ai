@@ -543,6 +543,7 @@ class PolicyExecutor:
         Over-inclusive by design (a substring match on variable code counts as a
         dependency) so we never skip a variable a computation relies on.
         """
+        by_id = {v["id"]: v for v in self._catalog_for(tenant_id)["variables"]}
         direct: set = set()
         for step in policy.get("steps", []):
             ref_id = str(step.get("ref_id") or step.get("ref") or "")
@@ -554,7 +555,32 @@ class PolicyExecutor:
                 for factor in scorecards[ref_id].get("bins", []):
                     if factor.get("variable_id"):
                         direct.add(str(factor["variable_id"]))
-        by_id = {v["id"]: v for v in self._catalog_for(tenant_id)["variables"]}
+        # A CONNECTOR STEP NAMES A SOURCE, NOT A VARIABLE, and that asymmetry is what made
+        # COMPUTE_ONLY_USED_VARS unusable. The loop above finds variables the policy READS
+        # through a rule condition or a scorecard bin; it cannot see a variable whose data
+        # arrives because a connector step fetched its source. Those were dropped, so
+        # `_compute_variables` never ran them and `ctx.variables` had no key at all — 16 tests
+        # failed with KeyError, every one in test_connector_fetch.
+        #
+        # Same shape as the three FAST_DECIDE bugs: a PERFORMANCE FLAG CHANGING CORRECTNESS. The
+        # flag is only safe once this exists.
+        #
+        # `_collect_connector_sources` rather than a loop over `policy["steps"]`, and that is
+        # load-bearing: a first attempt walked only the top level and still failed the NESTED
+        # case. A conditional pull — "only hit the bureau when amount > X" — is exactly why a
+        # connector step sits inside a branch, so nested is the common shape. That helper already
+        # handles branches, loops and sub-workflows with a cycle guard, and its docstring
+        # documents the same fail-open being re-introduced by an incomplete walk.
+        connector_sources: set = set()
+        self._collect_connector_sources(policy.get("steps", []) or [], connector_sources,
+                                        tenant_id, set())
+        if connector_sources:
+            # source -> variables; `_sources_in_use` does the reverse. Over-inclusive to match
+            # this method's docstring: computing a variable nothing reads costs one sandbox call,
+            # while skipping one the decision depends on changes the outcome.
+            for vid, variable in by_id.items():
+                if str(variable.get("source_id") or "") in connector_sources:
+                    direct.add(vid)
         needed: set = set()
         stack = list(direct)
         while stack:

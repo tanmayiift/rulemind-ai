@@ -72,7 +72,22 @@ count_tests() {
     e2e)
       n=$(grep -oE "[0-9]+ passed" "$log" | grep -oE "[0-9]+" | tail -1) ;;
     flutter)
-      n=$(grep -oE "\+[0-9]+: All tests passed" "$log" | grep -oE "[0-9]+" | tail -1) ;;
+      # From the machine JSON: the lane's own log is now stderr only, so the "+N: All tests
+      # passed" line it used to parse is not there any more.
+      n=$(python3 -c "
+import json,sys
+try:
+    ids=set()
+    for line in open('$OUT/flutter-machine.json'):
+        try: e=json.loads(line)
+        except Exception: continue
+        # Not every line is an object: flutter --machine interleaves arrays, and an
+        # unguarded .get() dies with AttributeError on the first one.
+        if isinstance(e, dict) and e.get('type')=='testDone' and not e.get('hidden'):
+            ids.add(e.get('testID'))
+    print(len(ids))
+except Exception: print('')
+" 2>/dev/null) ;;
     kotlin)
       # Gradle prints nothing useful on success, so read its JUnit XML -- the one machine-readable
       # output this repo always had. awk rather than a grep|paste|bc pipeline: that version
@@ -138,10 +153,23 @@ if has python-pg; then
 fi
 
 has web    && run_lane web "Vitest (TypeScript)" npx vitest run
-has rust   && run_lane rust "Rust — rulemind-core-rs" bash -c "cd '$ROOT/packages/rulemind-core-rs' && cargo test --no-default-features"
-has rust   && run_lane rust-decide "Rust — decide-service" bash -c "cd '$ROOT/packages/rulemind-decide-service' && cargo test"
+# `cargo test` twice: once normally so the log is readable, and once with the JSON formatter
+# into a file. The JSON form needs -Zunstable-options on stable, so it is best-effort -- a
+# toolchain that rejects it must not fail the lane, since the human run already passed.
+has rust   && run_lane rust "Rust — rulemind-core-rs" bash -c \
+  "cd '$ROOT/packages/rulemind-core-rs' && cargo test --no-default-features \
+   && (cargo test --no-default-features -- --format json -Z unstable-options \
+        > '$OUT/rust-core.json' 2>/dev/null || true)"
+has rust   && run_lane rust-decide "Rust — decide-service" bash -c \
+  "cd '$ROOT/packages/rulemind-decide-service' && cargo test \
+   && (cargo test -- --format json -Z unstable-options > '$OUT/rust-decide.json' 2>/dev/null || true)"
+# --reporter json alongside the human output: `flutter test` otherwise emits prose only, and the
+# machine form is what lets a report count and attribute failures rather than grep for a word.
+# Written to a file rather than stdout, because --reporter json REPLACES the console output and a
+# lane whose log is a single JSON blob is unreadable when it fails.
 has flutter && command -v flutter >/dev/null 2>&1 \
-  && run_lane flutter "Flutter SDK" bash -c "cd '$ROOT/packages/sdk-flutter' && flutter test"
+  && run_lane flutter "Flutter SDK" bash -c \
+    "cd '$ROOT/packages/sdk-flutter' && flutter test --machine > '$OUT/flutter-machine.json' 2> '$OUT/flutter-stderr.log'; rc=\$?; tail -40 '$OUT/flutter-stderr.log' >&2; exit \$rc"
 # `cleanTest test`, not plain `test`. Gradle's up-to-date check skips a test task whose inputs
 # have not changed and still reports BUILD SUCCESSFUL -- so the lane recorded "pass" having
 # executed nothing at all, which is the one thing a test report must never do. cleanTest scopes
