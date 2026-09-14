@@ -730,6 +730,87 @@ GENERATED from the Python. Every fix mutation-checked.
 - [ ] **I5** Vercel GitHub App access revoked (needs the user's 2FA)
 - [ ] **I6** CI: one commit without `[skip ci]` once the Actions quota resets
 
+## J. Local-only, optimise, close P09 — 2026-09-14
+
+The Render deployment is moving to paid tiers, so the hosted footprint goes. Verified before
+planning: **the Render API is already dead** (`/health` answers nothing; only the free static
+dashboard still serves), so `smoke_deployed.sh` — 21/21 on 2026-09-06 — would fail today, and
+A7-A10 were blocked on a key for a service that no longer runs.
+
+Four findings that shaped the steps:
+
+1. **`decision_bus.py` is not a durable bus.** 113 lines of best-effort Redis pub/sub for the
+   dashboard SSE feed, one producer (`storage.add_decision`), one consumer
+   (`routers/runtime.py:717`), and a docstring saying publishing "is best-effort and never
+   allowed to affect the decision write path." P09's e2eFlow describes a durable path that does
+   not exist yet, so **P09 is greenfield, not a migration**. `decision_log.py:19` already names
+   the gap: "the durable-outbox follow-up".
+2. **No APK/AAB exists anywhere** — not on disk, and `git log --diff-filter=A` says none was
+   ever committed. The space is 1.75 GB of ignored build caches plus **23.3 GB of reclaimable
+   Docker layers**.
+3. **`render-start.sh` is `COPY`'d and `chmod`'d** at `apps/python-executor/Dockerfile:24,28`.
+   Deleting the file without editing both lines fails the image build.
+4. **The QA harness already defaults to `127.0.0.1:8080`**, so A7-A10 retarget to local compose
+   with no code change.
+
+### A. Local-only: strip paid hosting, make k8s real
+
+- [ ] **J1** Delete `render.yaml`, `scripts/smoke_deployed.sh`, `.env.deployed.example`; drop the
+  dangling `.gitignore:4-6` comment
+- [ ] **J2** Delete `render-start.sh` AND `Dockerfile:24,28`; rebuild to prove the build passes
+- [ ] **J3** Drop the dead `isStaticExport` branch from `apps/web/next.config.js`
+- [ ] **J4** Purge the hosted narrative from README/PLAN/CHANGELOG/E2E_TEST_PLAN + stale comments
+- [ ] **J5** `make k8s-up` / `k8s-down`: kind cluster, load local images, `helm install`
+- [ ] **J6** `scripts/smoke_k8s.sh` — first time the chart is proven, not just linted
+- [ ] **J7** Rewrite README Deployment as compose + kind, both free
+
+### B. Reclaim disk
+
+- [ ] **J8** `docker image prune` / `system prune` — 23.3 GB of 24.6 GB reclaimable
+- [ ] **J9** `rm -rf` ignored build caches (~1.75 GB). NOT `node_modules`, `.venv-rulemind`, `.env`
+- [ ] **J10** Delete the 128 MB `.runtime/` dev SQLite DBs (confirm first — discards local state)
+- [ ] **J11** Add `.mypy_cache/` + `.ruff_cache/` to the root `.gitignore`
+
+### C. Performance: latency and footprint
+
+- [ ] **J12** Baseline FIRST — `bench.py` p50/p99, both k6 scripts, `docker stats`, image sizes
+- [ ] **J13** Instrument real query count per decision (documented as "8+N")
+- [ ] **J14** Fix the hotspots the measurements name, each with a before/after number
+- [ ] **J15** Web image is **2.54 GB** (`COPY . .`) — multi-stage build, target under 500 MB
+- [ ] **J16** Trim API image; check whether the ML stack can import lazily
+- [ ] **J17** Re-run baseline, publish before/after in `docs/PERFORMANCE.md`. Parity corpus must
+  not regress — accuracy is not traded for speed
+
+### D. P09 — durable delivery and exactly-once on Kafka (KRaft)
+
+The roadmap's 6+ month row. Phased so each step ships independently; P09 only moves to PRESENT
+at J24.
+
+- [ ] **J18** Kafka in KRaft mode in compose (behind a profile) and in the Helm chart
+- [ ] **J19** Transactional outbox in Postgres — decision write + outbox row in one transaction
+- [ ] **J20** Relay outbox → Kafka, idempotent producer, per-tenant partition key, leader-gated
+- [ ] **J21** Consumer group with manual offset commits tied to the DB transaction; dedupe via
+  the existing `idempotency.py` `(tenant_id, key)` constraint
+- [ ] **J22** Wire `decision_wal.replay_dead_letter` so a poison message DLQs instead of blocking
+- [ ] **J23** The e2eFlow as a real test: kill a consumer mid-flight → DLQ → redelivery does not
+  double-log. Plus the DoD five and a mutation check per guard
+- [ ] **J24** P09 → PRESENT with honest evidence; SSE fan-out stays on Redis
+
+### E. GitHub: test results, Dependabot, doc truth-up
+
+- [ ] **J25** Make runners emit machine-readable output. Only Gradle emits JUnit XML today and it
+  is discarded; `playwright-report/` is in an artifact path but can never exist (no `reporter:`)
+- [ ] **J26** `scripts/run_all_tests.sh` → collects XML/JSON, generates formatted `TEST_RESULTS.md`.
+  Must encode `PYTHON_BIN=<venv>` and `cargo test --no-default-features`
+- [ ] **J27** Commit the generated `TEST_RESULTS.md` — the quota-proof half
+- [ ] **J28** `.github/workflows/test-report.yml` writing `$GITHUB_STEP_SUMMARY` (zero occurrences
+  repo-wide today) + README badge + `timeout-minutes` on every job in all five workflows
+- [ ] **J29** 22 Dependabot PRs: apply locally, run the affected lane, merge what passes, close
+  what breaks with the failure recorded, mark the rest pending on Actions
+- [ ] **J30** Truth-up stale counts: README/CLAUDE.md say 1369/379/58, reality is **1892/462/68**;
+  CLAUDE.md says "0 open PRs" against 22. Tick 8.2-8.4, close A7-A10 as local-verified
+- [ ] **J31** One commit without `[skip ci]` to close I6 and test whether the quota reset
+
 ## Blockers
 
 ### RESOLVED 2026-09-03 — the #127 half of this was wrong
