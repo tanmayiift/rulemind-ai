@@ -622,8 +622,9 @@ async function build() {
   titleSlide(s, "It runs inside your perimeter", "DEPLOYMENT", true);
 
   s.addText(
-    "No vendor cloud, no data leaving your network, no per-decision metering. Two supported " +
-    "paths, each with a committed smoke test that proves the install rather than describing it.",
+    "No vendor cloud, no telemetry, no per-decision metering. The only outbound calls are the " +
+    "ones you configure. Two supported paths, each with a committed smoke test that proves the " +
+    "install rather than describing it.",
     {
       x: M, y: 1.82, w: 9.5, h: 0.7, isTextBox: true, margin: 0,
       fontFace: BODY_FONT, fontSize: 14, color: MUTED_L, lineSpacing: 20,
@@ -679,7 +680,13 @@ async function build() {
   });
   s.addNotes(
     "For a regulated buyer this slide often outranks the feature slides. Apache 2.0 licensed is " +
-    "accurate; the repository is not public today, so do not say 'open source' as a present fact."
+    "accurate; the repository is not public today, so do not say 'open source' as a present " +
+    "fact.\n\n" +
+    "Do NOT say 'no data leaves your network' — connectors call the data sources the customer " +
+    "configures, which is the entire point of a bureau integration, and the AI features call " +
+    "the provider whose key they supplied. What is true is that WE receive nothing: no " +
+    "telemetry, no metering, no licence check. Every outbound call is one they chose, and the " +
+    "bottom row of this slide says how those are guarded."
   );
   footer(s, 9, true);
 }
