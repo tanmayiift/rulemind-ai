@@ -564,8 +564,8 @@ async function build() {
       "We say tamper-evident, not immutable — an operator with database write access could " +
       "recompute the chain. Detection, honestly described."],
     ["FiUsers", "Five roles, checked per endpoint",
-      "Viewer, author, approver, admin and service, enforced at the API rather than in the UI, " +
-      "and tested as a matrix rather than a single happy path."],
+      "Owner, admin, policy_maker, reviewer and viewer — enforced at the API by capability, not " +
+      "hidden in the UI, and tested as a matrix rather than a single happy path."],
     ["FiLayers", "Tenant isolation as a test, not a promise",
       "Every stored object carries a tenant, and cross-tenant reads are a standing negative test " +
       "on each capability — the case that must fail."],

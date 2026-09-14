@@ -36,6 +36,8 @@ came to be wrong by 500+ tests. If you edit a slide, re-derive its number here t
 | 281 API endpoints | `@app`/`@router` route decorators | `apps/python-executor/app/` |
 | 232 MB dashboard image, from 2.54 GB | before/after build | `docs/PERFORMANCE.md` |
 | 14-check and 16-check smoke tests | the scripts' own counts | `scripts/smoke_compose.sh`, `scripts/smoke_k8s.sh` |
+| Five roles: owner, admin, policy_maker, reviewer, viewer | `ROLE_CAPABILITIES` | `app/rbac.py:39` |
+| Backup restores, audit chain intact | drill run 2026-09-14: 41 tables / 165 rows | `apps/python-executor/scripts/backup_verify.py` |
 
 **19.78 ms and 117.5 rps are different rows of the same table.** Never combine them into
 "19.78 ms at 117.5 rps" — that reads as a throughput-at-latency claim the benchmark does not
@@ -56,6 +58,7 @@ anyway and it is better that we said it first.
 | "open source" | "Apache 2.0 licensed" | True today. The repository is not public yet — see `docs/PRE-PUBLICATION-AUDIT.md`. |
 | the 48.7% `COMPUTE_ONLY_USED_VARS` win | nothing, or "roadmap" | Measured, but the flag is off by default. |
 | the README's "thousands/s" table | the measured numbers | That table is sizing guidance, not a measurement. |
+| invented role names ("author", "approver", "service") | the real five: **owner, admin, policy_maker, reviewer, viewer** | Slide 8 had the COUNT right and three of the five NAMES invented. A buyer who opens `rbac.py` finds different words than the deck used — and "the deck made up our role names" is a worse first impression than any missing feature. Names come from `ROLE_CAPABILITIES`, not from memory. |
 | "0 external dependencies at runtime" | "0 phone-home, metering or licence calls" | **It needs PostgreSQL and Redis.** An architect reads "external dependencies" as "services this requires" and finds two. What is actually true — and is the thing enterprise buyers care about — is that nothing calls a vendor: no telemetry, no per-decision metering, no licence server. Checked by grepping every hardcoded outbound host in the backend; the only hits are opt-in sample connectors (`postcodes.io`, `er-api.com`), a CSP header, and a SCIM schema URI. |
 
 ## QA
