@@ -328,10 +328,51 @@ subset on both paths, since an empty set is a subset of anything and would prove
 Mutation-checked in both directions separately: disabling the fast path's filter fails 3 named
 tests, making the executor ignore the flag fails 2.
 
-There is a second, smaller tradeoff even once that is fixed: the decision record shrinks from 55
-computed variables to 6. Nothing about the *decision* changes, but anything reading
-`computed_variables` for a variable the policy did not use will find it missing. That is a
-product decision about the audit surface, not a performance one.
+### The measured win, and whether to default it on
+
+Re-measured 2026-09-14 on a quiet machine (0 orphaned workers), in-process, 40 iterations per
+arm, **alternating** so drift hits both equally. Three repeats agreed to within 0.2 points:
+
+| Path | flag off | flag on | |
+|---|---:|---:|---:|
+| `fast_decide` | 7.3 ms (55 vars) | **0.53 ms (4 vars)** | **−92.8%** |
+| `PolicyExecutor` | 9.2 ms (55 vars) | **2.21 ms (4 vars)** | **−76.0%** |
+
+Both paths compute **the same 4 variables** — which is the point, and what the previous version
+of this flag got wrong.
+
+These are in-process figures for the variable-computation phase with a warm sandbox, so they are
+much smaller than the 19.78 ms end-to-end HTTP p50 above. **Do not quote them as request
+latency.** They measure the thing the flag changes, which is why the A/B is done here rather
+than over HTTP.
+
+*(A benchmark gotcha worth recording: `sandbox.py` spawns workers, and `spawn` RE-IMPORTS the
+main module. Without an `if __name__ == "__main__":` guard the whole benchmark runs again inside
+each worker and the timings interleave two runs — the first numbers off this script were 0.45 ms
+and 7.16 ms for the same arm.)*
+
+**Verdict: safe to enable per deployment. Not safe to flip the default.** Two reasons, and
+neither is about correctness any more:
+
+1. **It changes the audit surface.** The decision record shrinks from 55 computed variables to
+   4. Nothing about the *decision* changes, but anything reading `computed_variables` for a
+   variable the policy did not use will find it missing. Flipping the default would silently
+   change what is recorded for every existing tenant — a product decision, not a performance
+   one, and not one to make in a release note.
+2. **The string-expression arm of the walk is heuristic.** A loop's `over` and a branch's
+   condition name variables as *text*, so they are matched by substring. That is deliberately
+   over-inclusive, and a false positive only costs one sandbox call — but it is pattern
+   matching, not parsing, and a variable named at runtime rather than literally would not be
+   found. Fine as an opt-in a deployment measures; not something to turn on for everyone
+   silently.
+
+The earlier objection — that two budget tests went trivially true under the flag — **no longer
+applies**. Those fixtures were measuring the unfiltered catalog rather than the budget, and both
+were fixed rather than skipped.
+
+**Evidence for the verdict:** the full Python suite, 1928 tests, run twice consecutively with
+`COMPUTE_ONLY_USED_VARS=1` — **OK both times, zero failures, zero errors.** That had never been
+true before.
 
 ## The disk that matters is Docker's, not the host's
 
