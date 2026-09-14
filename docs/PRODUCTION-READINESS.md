@@ -130,12 +130,31 @@ a guess written down confidently.
 The rules define what is worth waking someone for. **Alertmanager is not deployed**, so nothing
 routes them to a human. No on-call rotation, no severity ladder, no comms template.
 
-### 5. Dependency posture
+### 5. A known Next.js vulnerability is pinned, and Dependabot has not flagged it
 
-20 open Dependabot PRs, none verifiable in CI. 2 open issues, including #123: the AI generation
-endpoints have never been validated against a real provider key.
+The web dev server prints, on every start:
 
-### 6. Still needs the account owner
+> `WARN deprecated next@14.2.34: This version has a security vulnerability. Please upgrade to a
+> patched version. See https://nextjs.org/blog/security-update-2025-12-11`
+
+**None of the 20 Dependabot PRs is a Next.js upgrade.** This is the most concrete security item
+on the list and it needs a deliberate upgrade with the e2e lane run against it.
+
+### 6. Dependency posture — triaged 2026-09-15
+
+All 20 PRs verified locally, since no CI can run on them. **5 merged, 3 rejected, 2 blocked on a
+toolchain bump, 5 unverifiable without Actions, 5 needing a Dependabot rebase.** Full reasoning
+per PR in `docs/DEPENDABOT-TRIAGE.md`.
+
+The three rejections each passed their own lane first, which is the point worth carrying:
+numpy 2.5.3 cannot install on Python 3.11 (and a harness bug of mine hid that), TypeScript 7
+type-checks clean but breaks `next dev` under Next 14, and Playwright 1.63's Chromium blocks the
+localhost WebSocket a security test depends on.
+
+2 open issues remain, including #123: the AI generation endpoints have never been validated
+against a real provider key.
+
+### 7. Still needs the account owner
 
 - **Render services are live and may be billing.** Re-confirmed: 32.6 s cold, then 0.15 s warm.
   `scripts/render_teardown.sh` does it in one command once `RENDER_API_KEY` is exported. No
