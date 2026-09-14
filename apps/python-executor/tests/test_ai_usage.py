@@ -26,6 +26,7 @@ os.environ.pop("AUTH_MODE", None)
 import app.ai as ai  # noqa: E402
 import app.main as app_main  # noqa: E402
 from app.storage import Storage  # noqa: E402
+from tests._storage_global import restore_storage_after  # noqa: E402
 
 _RULE_JSON = json.dumps({
     "name": "Bureau gate",
@@ -65,6 +66,7 @@ class AIUsageApiTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "usage.db"))
+        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
 

@@ -33,6 +33,7 @@ from app import predictors as predictors_module  # noqa: E402
 from app import storage as storage_module  # noqa: E402
 from app.models import PredictorValue  # noqa: E402
 from app.storage import Storage  # noqa: E402
+from tests._storage_global import restore_storage_after  # noqa: E402
 
 BASE = "/api/v1/predictors"
 
@@ -48,6 +49,7 @@ class _Base(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self._orig = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "pred.db"))
+        restore_storage_after(self)
         self.storage = app_main.storage
         self.client = TestClient(app_main.app)
         self.tenant = self.storage.default_tenant_id
@@ -68,6 +70,7 @@ class _Base(unittest.TestCase):
         except Exception:  # pragma: no cover - teardown must not fail the test
             pass
         app_main.storage = self._orig
+        restore_storage_after(self)
         self.tempdir.cleanup()
 
     def as_(self, key):

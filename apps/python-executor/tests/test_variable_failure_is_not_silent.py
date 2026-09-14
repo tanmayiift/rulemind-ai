@@ -42,6 +42,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.main as app_main  # noqa: E402
 from app.storage import Storage  # noqa: E402
+from tests._storage_global import restore_storage_after  # noqa: E402
 
 TIMEOUT = {"value": None, "error": "Variable execution timed out."}
 
@@ -50,6 +51,7 @@ class VariableFailureTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "varfail.db"))
+        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.tenant = app_main.storage.default_tenant_id
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
@@ -167,6 +169,7 @@ class FailOpenDirectionTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "failopen.db"))
+        restore_storage_after(self)
         self.tenant = app_main.storage.default_tenant_id
         app_main.storage.create_rule(dict(self.FRAUD_RULE), tenant_id=self.tenant)
         app_main.storage.create_variable(
@@ -228,6 +231,7 @@ class FastPathParityTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "parity.db"))
+        restore_storage_after(self)
         self.tenant = app_main.storage.default_tenant_id
         app_main.storage.create_rule(dict(FailOpenDirectionTest.FRAUD_RULE), tenant_id=self.tenant)
         app_main.storage.create_variable(

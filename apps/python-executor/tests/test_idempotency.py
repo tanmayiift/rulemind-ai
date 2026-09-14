@@ -35,6 +35,7 @@ import app.main as app_main  # noqa: E402
 from app import idempotency  # noqa: E402
 from app.models import IdempotencyRecord  # noqa: E402
 from app.storage import Storage  # noqa: E402
+from tests._storage_global import restore_storage_after  # noqa: E402
 
 
 class IdempotencyUnitTest(unittest.TestCase):
@@ -117,6 +118,7 @@ class IdempotencyEndToEndTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "e2e.db"))
+        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
 

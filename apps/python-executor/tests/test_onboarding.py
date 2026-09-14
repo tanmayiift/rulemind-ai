@@ -24,12 +24,14 @@ os.environ.pop("AUTH_MODE", None)  # apikey mode so issued keys resolve to their
 
 import app.main as app_main
 from app.storage import Storage
+from tests._storage_global import restore_storage_after  # noqa: E402
 
 
 class OnboardingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "onboard.db"))
+        restore_storage_after(self)
         self.client = TestClient(app_main.app)
 
     def tearDown(self) -> None:
@@ -111,6 +113,7 @@ class CleanInstallActivationTests(unittest.TestCase):
         self._prev = os.environ.get("RULEMIND_SEED_DEMO")
         os.environ["RULEMIND_SEED_DEMO"] = "0"  # simulate a fresh clone
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "clean.db"))
+        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
 

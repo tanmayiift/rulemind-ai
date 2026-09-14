@@ -31,6 +31,7 @@ os.environ.pop("AUTH_MODE", None)
 import app.main as app_main  # noqa: E402
 from app.executor import PolicyExecutor  # noqa: E402
 from app.storage import Storage  # noqa: E402
+from tests._storage_global import restore_storage_after  # noqa: E402
 
 
 # A branch that rejects low scores, approves otherwise — keyed on the loop item.
@@ -45,6 +46,7 @@ class LoopExecutorUnitTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "loop.db"))
+        restore_storage_after(self)
         self.executor = PolicyExecutor(app_main.storage)
         self.tenant = app_main.storage.default_tenant_id or "default"
 
@@ -101,6 +103,7 @@ class LoopApiTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "loopapi.db"))
+        restore_storage_after(self)
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
 

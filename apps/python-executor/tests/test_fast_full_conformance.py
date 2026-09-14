@@ -25,6 +25,7 @@ import app.main as app_main  # noqa: E402
 from app.executor import PolicyExecutor  # noqa: E402
 from app.fast_decide import fast_decide, fast_path_eligible, is_fast_servable  # noqa: E402
 from app.storage import Storage  # noqa: E402
+from tests._storage_global import restore_storage_after  # noqa: E402
 
 
 class FastFullConformanceTests(unittest.TestCase):
@@ -39,6 +40,7 @@ class FastFullConformanceTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "conformance.db"))
+        restore_storage_after(self)
         self.storage = app_main.storage
         self.tenant_id = self.storage.default_tenant_id
         # Build a rules-only (fast-servable) policy from seeded loan rules + an outcome step.
