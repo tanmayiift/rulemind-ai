@@ -22,6 +22,7 @@ concurrency:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     outputs:
       mobile: ${{ steps.filter.outputs.mobile }}
       web: ${{ steps.filter.outputs.web }}
@@ -128,6 +129,7 @@ jobs:
   # that can fail for a reason a reviewer can act on in seconds.
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -236,6 +238,7 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -265,6 +268,7 @@ jobs:
 
   repo-validation:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     # CI has only ever run SQLite; every Postgres pass in E2E_TEST_PLAN.md was
     # manual. A service container costs ~10s to become healthy and no extra
     # runner, so the suite can be run against the engine production actually
@@ -483,6 +487,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -562,6 +567,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       ANDROID_SAMPLE_KEYSTORE_BASE64: ${{ secrets.ANDROID_SAMPLE_KEYSTORE_BASE64 }}
       ANDROID_SAMPLE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_SAMPLE_KEYSTORE_PASSWORD }}
@@ -648,6 +654,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -741,6 +748,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.emulator == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -810,6 +818,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.emulator == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 

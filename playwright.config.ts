@@ -85,6 +85,16 @@ export default defineConfig({
   // check rather than running against the wrong thing" -- which was true of the outcome and wrong
   // about the order: TARGETS_LOCAL_API stays true in that case, so the backend entry runs its
   // `rm -f` and only THEN fails the readiness poll. The local database was already gone.
+  // Reporters. There was NO `reporter:` key at all, so CI fell back to Playwright's default --
+  // `dot` when process.env.CI is set. That had a concrete consequence: sdk-verify.yml uploads
+  // `playwright-report` as an artifact, and that directory could never exist, because the html
+  // reporter never ran. A green run published nothing and a red one published half of what the
+  // step claimed.
+  reporter: process.env.CI || process.env.RULEMIND_TEST_REPORT
+    ? [["list"], ["junit", { outputFile: "test-results/playwright-junit.xml" }],
+       ["html", { outputFolder: "playwright-report", open: "never" }]]
+    : [["list"]],
+
   webServer: TARGETS_LOCAL_API ? [
     {
       // Quoted: a checkout path containing a space otherwise splits into argv.

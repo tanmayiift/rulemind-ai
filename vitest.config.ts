@@ -3,7 +3,14 @@ import { resolve } from "node:path";
 
 export default defineConfig({
   test: {
-    include: ["test/**/*.test.ts"]
+    include: ["test/**/*.test.ts"],
+    // JUnit alongside the default console output, so a run is both readable live and parseable
+    // afterwards. scripts/run_all_tests.sh collects these into TEST_RESULTS.md; before this the
+    // only machine-readable output anywhere in the repo was Gradle's, and nothing consumed it.
+    reporters: process.env.CI || process.env.RULEMIND_TEST_REPORT
+      ? ["default", "junit"]
+      : ["default"],
+    outputFile: { junit: "test-results/vitest-junit.xml" }
   },
   resolve: {
     alias: {

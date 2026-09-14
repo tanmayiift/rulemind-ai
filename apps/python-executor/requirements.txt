@@ -31,6 +31,13 @@ psycopg2-binary==2.9.9
 # deployment without a broker neither needs the wheel at runtime nor pays its import cost.
 confluent-kafka==2.6.1
 
+# JUnit XML for the Python suite. `python -m unittest` emits plain text only, so the largest
+# suite in the repo (1900+ tests) produced nothing a report could read -- Gradle's XML was the
+# only machine-readable output anywhere, and nothing consumed it. Used by
+# scripts/run_all_tests.sh via `python -m xmlrunner discover`; the normal `python -m unittest`
+# path is unchanged, so this is additive rather than a new way to run tests.
+unittest-xml-reporting==3.2.0
+
 # ML model hosting — required to unpickle and run uploaded models (advertised
 # feature + /models UI + policy "model" step). Without these the runtime cannot
 # deserialize real models. Full stack (sklearn + boosted trees); adds ~400MB.

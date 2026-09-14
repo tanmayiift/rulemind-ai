@@ -869,16 +869,16 @@ at J24.
 
 ### E. GitHub: test results, Dependabot, doc truth-up
 
-- [ ] **J25** Make runners emit machine-readable output. Only Gradle emits JUnit XML today and it
+- [x] **J25** Make runners emit machine-readable output. Only Gradle emits JUnit XML today and it — JUnit XML everywhere: `unittest-xml-reporting` for Python, vitest `junit`, Playwright `junit`+`html`. The Playwright one also fixes a real hole — `sdk-verify.yml` uploads `playwright-report/`, which could **never exist** because no `reporter:` was configured and CI defaults to `dot`
   is discarded; `playwright-report/` is in an artifact path but can never exist (no `reporter:`)
-- [ ] **J26** `scripts/run_all_tests.sh` → collects XML/JSON, generates formatted `TEST_RESULTS.md`.
+- [x] **J26** `scripts/run_all_tests.sh` → collects XML/JSON, generates formatted `TEST_RESULTS.md`. — `scripts/run_all_tests.sh` + `scripts/render_test_report.py`. Counting is per-runner, not a guessing cascade — the first version reported Rust as **0 tests** because cargo's empty doctest target prints a final `test result: ok. 0 passed` and `tail -1` took it
   Must encode `PYTHON_BIN=<venv>` and `cargo test --no-default-features`
 - [ ] **J27** Commit the generated `TEST_RESULTS.md` — the quota-proof half
-- [ ] **J28** `.github/workflows/test-report.yml` writing `$GITHUB_STEP_SUMMARY` (zero occurrences
+- [x] **J28** `.github/workflows/test-report.yml` writing `$GITHUB_STEP_SUMMARY` (zero occurrences — `.github/workflows/test-report.yml` writing `$GITHUB_STEP_SUMMARY` (**zero occurrences repo-wide** before this), artifacts uploaded `if: always()` rather than failure-only, plus `timeout-minutes` on **all 18 jobs across 6 workflows** — none had one
   repo-wide today) + README badge + `timeout-minutes` on every job in all five workflows
-- [ ] **J29** 22 Dependabot PRs: apply locally, run the affected lane, merge what passes, close
+- [x] **J29** 22 Dependabot PRs: apply locally, run the affected lane, merge what passes, close — 2 PRs landed and closed with evidence (#144 pyo3, #168 wasm-bindgen); the other 20 annotated with status + `@dependabot rebase`. **Every one is 7-116 commits behind main** — #144's branch carried 6 Rust tests where main has 19, so merging it would have deleted the conformance suite
   what breaks with the failure recorded, mark the rest pending on Actions
-- [ ] **J30** Truth-up stale counts: README/CLAUDE.md say 1369/379/58, reality is **1892/462/68**;
+- [x] **J30** Truth-up stale counts: README/CLAUDE.md say 1369/379/58, reality is **1892/462/68**; — README/CLAUDE.md corrected: 1369/379/58 -> **1913/462/68**, '0 open PRs' -> 22, plus a pointer to the generated report so the next reader does not have to trust a typed number
   CLAUDE.md says "0 open PRs" against 22. Tick 8.2-8.4, close A7-A10 as local-verified
 - [ ] **J31** One commit without `[skip ci]` to close I6 and test whether the quota reset
 

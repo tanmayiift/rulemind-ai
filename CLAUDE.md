@@ -5,8 +5,11 @@ Open-source, source-agnostic **decisioning engine**. Teams plug in JSON data sou
 scorecards and multi-step policies in a web dashboard, then promote them
 `dev → uat → prod` with full audit trails. Apache 2.0.
 
-State as of the last push (2026-08-08, `main` @ `41ed11f`): 113 merged PRs, ~78k LOC,
-0 open issues, 0 open PRs. **Every one of the 75 remote branches is already merged into
+State as of 2026-09-14: ~78k LOC, **2 open issues** (#133 Android emulator, #123 live-AI
+validation) and **22 open Dependabot PRs** — all red because the Actions quota is exhausted, not
+because they fail. (This line said "0 open issues, 0 open PRs" from a 2026-08-08 snapshot; it is
+the kind of count that is wrong the day after it is written, which is why the test numbers below
+now come from a generated `TEST_RESULTS.md`.) **Every one of the 75 remote branches is already merged into
 `main`** — verified by patch-id, not by branch name. Treat `main` as the single source
 of truth and do not go mining branches for lost work.
 
@@ -69,7 +72,7 @@ make test                 # python unittest + vitest
 pnpm test:e2e             # Playwright
 ```
 
-Tests: 124 Python modules (1369 tests), 13 Vitest files (379), 4 Playwright specs (58), plus
+Tests: 150 Python modules (1913 tests), 16 Vitest files (462), 8 Playwright specs (68), plus
 `qa/`. The Python suite runs in two lanes: SQLite by default, and real Postgres under
 `DATABASE_URL` + `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` (each test path gets its own Postgres
 schema — without that flag `Storage(path=...)` silently falls back to SQLite and the Postgres

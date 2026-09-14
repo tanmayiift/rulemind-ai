@@ -1,5 +1,5 @@
 ## RuleMind — common developer + ops commands.
-.PHONY: help up down observability observability-down logs test k8s-up k8s-down k8s-smoke smoke
+.PHONY: help up down observability observability-down logs test test-all k8s-up k8s-down k8s-smoke smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -30,6 +30,9 @@ k8s-smoke: ## Verify the kind deployment end to end
 
 k8s-down: ## Delete the local kind cluster
 	kind delete cluster --name $${RULEMIND_KIND_CLUSTER:-rulemind}
+
+test-all: ## Run EVERY lane and regenerate TEST_RESULTS.md
+	bash scripts/run_all_tests.sh
 
 test: ## Run the Python + web test suites
 	cd apps/python-executor && python -m unittest discover -s tests -p 'test_*.py'
