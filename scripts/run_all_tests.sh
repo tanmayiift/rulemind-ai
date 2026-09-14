@@ -34,7 +34,11 @@ export RULEMIND_CONFIG_KEY="${RULEMIND_CONFIG_KEY:-rulemind-test-key}"
 export MODEL_POOL_SIZE="${MODEL_POOL_SIZE:-1}"
 export SANDBOX_POOL_SIZE="${SANDBOX_POOL_SIZE:-2}"
 
-LANES="${*:-python python-pg web rust flutter kotlin contracts}"
+# e2e IS in the default set. It was briefly opt-in out of caution about port conflicts, but
+# Playwright binds 8100/3100 while compose binds 8080/3000 -- they do not collide, and a test
+# report that silently omits the 68 browser tests is the kind of partial-coverage claim this
+# script exists to prevent. It adds ~30s.
+LANES="${*:-python python-pg web rust flutter kotlin e2e contracts}"
 SUMMARY="$OUT/summary.tsv"
 
 # Refuse to run concurrently with another invocation. Both would write the same summary and the
@@ -87,10 +91,13 @@ run_lane() {
   say "$label"
   local start; start=$(date +%s)
   local log="$OUT/$name.log"
+  # Declared BEFORE the branch, not inside it. `local status=...` within an if/else is not
+  # reliably visible afterwards, and under `set -u` the next reference aborts the whole script
+  # with "status: unbound variable" -- which killed a 40-minute run AFTER the Python lane had
+  # already passed, losing every later lane.
+  local status="FAIL"
   if "$@" > "$log" 2>&1; then
-    local status="pass"
-  else
-    local status="FAIL"
+    status="pass"
   fi
   local dur=$(( $(date +%s) - start ))
   # Counted from the runner's own output, never hardcoded -- a typed-once number is how
@@ -139,11 +146,10 @@ has flutter && command -v flutter >/dev/null 2>&1 \
 # have not changed and still reports BUILD SUCCESSFUL -- so the lane recorded "pass" having
 # executed nothing at all, which is the one thing a test report must never do. cleanTest scopes
 # the invalidation to the test task rather than --rerun-tasks rebuilding the world.
-# Playwright is OPT-IN (`scripts/run_all_tests.sh e2e`), not part of the default set: it boots a
-# FastAPI server and a Next dev server, so it is the one lane that cannot run alongside anything
-# holding ports 8100/3100. PYTHON_BIN is not optional -- the webServer block shells out to
-# `python3`, which on a machine with a newer Homebrew Python fails with "No module named uvicorn"
-# before a single test runs.
+# Playwright boots its own FastAPI and Next dev servers on 8100/3100, so this lane is the one
+# that cannot run alongside anything already holding those ports. PYTHON_BIN is not optional --
+# the webServer block shells out to `python3`, which on a machine with a newer Homebrew Python
+# fails with "No module named uvicorn" before a single test runs.
 has e2e && run_lane e2e "Playwright (e2e)" bash -c \
   "cd '$ROOT' && PYTHON_BIN='$VENV' RM_E2E_ALLOW_DESTRUCTIVE=1 npx playwright test"
 
