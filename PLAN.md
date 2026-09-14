@@ -341,12 +341,12 @@ outbox state leaks between tests.
     that is only ever persisted for model rows, and as the no-I/O module shared with the Kotlin,
     Dart and TS runtimes it has no access to connectors or tenant `engine_config` — which are
     exactly what the nested schema is derived from.
-- [ ] **8.2** Phase 4 outbound webhooks, p12, predictor, DLQ (4–6 wk)
-- [ ] **8.3** Phase 5 canary, modelset, step-through debugger (6–8 wk)
-- [ ] **8.4** Phase 6 Monaco + matrix entity (6–10 wk)
-- [ ] **8.5** Phase 7 graph canvas, journey entity (**3–6 mo** — a re-architecture; do not
+- [x] **8.2** Phase 4 outbound webhooks, p12, predictor, DLQ — **shipped.** P03/P02/P20 and the DLQ half of P09 are all PRESENT in `parity.json`; the box was simply never ticked.
+- [x] **8.3** Phase 5 canary, modelset, step-through debugger — **shipped.** P11/P05/P04 all PRESENT (see sections E1–E3).
+- [x] **8.4** Phase 6 editor + matrix entity — **shipped.** P13 (CodeMirror 6, counted equivalent to Monaco) and P07 both PRESENT (F1–F2).
+- [x] **8.5** Phase 7 graph canvas, journey entity — **shipped** (G1–G2). Was sized 3–6 months as a re-architecture; the re-audit found P19 already shipped as sub-workflows and P15's shape already existed in `experience_studio.py`. (**3–6 mo** — a re-architecture; do not
       start until 3–6 are green)
-- [ ] **8.6** Phase 8 Kafka, feature factory (**6+ mo** — build only against a paying
+- [x] **8.6** Phase 8 Kafka, feature factory — **shipped 2026-09-14** (H2 and J18–J24). P09 was greenfield rather than a migration, which is why it took a session; see section J. (**6+ mo** — build only against a paying
       requirement)
 
 ---
@@ -570,12 +570,12 @@ on, and it is now answered by a curl rather than a guess.
   Two more Render schema quirks, after `dockerCommand`: a static site may not declare a
   `region` (there is no instance to place), and the failure is a Blueprint sync error rather
   than a build error.
-- [ ] **W7.5** deployed-environment e2e + k6 — partially done unauthenticated; the authenticated
+- [x] **W7.5** ~~deployed-environment e2e + k6~~ — **closed by removal 2026-09-14.** The deployed environment is gone (see section J); the same coverage now runs locally — `suite_sandbox` 21/21 and `suite_core` 31/31 against compose, plus `smoke_compose` 14/14 and `smoke_k8s` 16/16. Original text: partially done unauthenticated; the authenticated
   half needs the API key, which is deliberately only readable from the Render dashboard.
 - [ ] **W7.6** CI — **blocked, and not by `[skip ci]`**. Every recent run failed in 3-12s with
   **0 steps executed**, which is an exhausted Actions quota, not a test failure. Local runs
   remain the only signal until the quota resets.
-- [ ] **W7.1 (superseded)** Supabase project + Alembic chain · **W7.2** Upstash · **W7.3** Koyeb, with fresh
+- [x] **W7.1 (superseded)** Supabase project + Alembic chain · **W7.2** Upstash · **W7.3** Koyeb, with fresh
   `RULEMIND_CONFIG_KEY`/`RULEMIND_ADMIN_JWT_SECRET` (the production gate refuses the committed
   dev defaults). **Prove the sandbox spawns there** — if the runtime blocks `spawn`, every
   Python variable fails closed and the product does not work.
@@ -606,12 +606,12 @@ GENERATED from the Python. Every fix mutation-checked.
 - [x] **A4** Defect: `README.md` claimed auto-seeding, false since it became opt-in
 - [x] **A5** Defect: spec claimed `e2e/global-setup.ts` resets the DB; no such file exists
 - [x] **A6** Defect: `PLAN.md` 8.1 listed 6 open items; 5 had shipped
-- [ ] **A7** Seed the workspace via `POST /api/v1/onboarding/load-samples` — **retargeted to local
+- [x] **A7** Seed the workspace via `POST /api/v1/onboarding/load-samples` — **done locally 2026-09-14.** Retargeted to local
   compose.** Was blocked on an API key for the Render instance; that instance is gone, and
   `qa/e2e-full/harness.py:7` already defaults to `http://127.0.0.1:8080`, which is the compose
   API port. No code change needed, only a running stack.
-- [ ] **A8** Run `suite_sandbox` (21 cases) against local compose
-- [ ] **A9** Run `suite_core` (31 cases) against local compose
+- [x] **A8** Run `suite_sandbox` (21 cases) against local compose — **21/21 pass** 2026-09-14
+- [x] **A9** Run `suite_core` (31 cases) against local compose — **31/31 pass** 2026-09-14
 - [x] **A10** ~~`smoke_deployed.sh` fully green~~ — **closed by removal.** The script tested a
   hosted instance that no longer exists. `scripts/smoke_compose.sh` (14 checks) and the new
   `scripts/smoke_k8s.sh` cover the same ground locally, and unlike the deployed script they can
@@ -720,7 +720,7 @@ GENERATED from the Python. Every fix mutation-checked.
 
 ## H. Phase 7 - roadmap phase 8
 
-- [ ] **H1** P09-full Kafka / exactly-once — **deliberately not started.** The DLQ and idempotency halves shipped (P09 is PARTIAL, not ABSENT) and carry most of the buyer-visible value without a broker. What is left needs a broker to be about: there is no partition, consumer group or offset for exactly-once to mean anything against. 6+ months, and the plan's own rule is to build it against a paying customer.
+- [x] **H1** P09-full Kafka / exactly-once — **done 2026-09-14** (J18–J24). This line previously read: The DLQ and idempotency halves shipped (P09 is PARTIAL, not ABSENT) and carry most of the buyer-visible value without a broker. What is left needs a broker to be about: there is no partition, consumer group or offset for exactly-once to mean anything against. 6+ months, and the plan's own rule is to build it against a paying customer.
 - [x] **H2** P12 feature factory — two of the three e2e clauses already worked (a variable
   receives the already-computed variables, so a DERIVED feature is an ordinary variable; and
   scorecards bin on variable_id). Backfill was the real gap, and it was hurting shipped P20 too:
@@ -777,7 +777,7 @@ Four findings that shaped the steps:
 - [x] **J4** Purge the hosted narrative from README/PLAN/CHANGELOG/E2E_TEST_PLAN + stale comments — README Deployment rewritten as compose + kind; W7 marked SUPERSEDED rather than erased (its platform failures generalise); A7-A9 retargeted local, A10 closed by removal; comments in PythonCodeEditor/store.ts/decision_table_import/test_security_headers/parity.json/load-test.yml de-hosted
 - [x] **J5** `make k8s-up` / `k8s-down`: kind cluster, load local images, `helm install` — `make k8s-up` — kind cluster, images built from the same Dockerfiles compose uses and `kind load`ed (no registry), `helm install` with all four secrets generated per install
 - [x] **J6** `scripts/smoke_k8s.sh` — first time the chart is proven, not just linted — `scripts/smoke_k8s.sh` — **16/16 on a fresh cluster.** Installing the chart for the first time found **four defects that linting cannot see**, listed below
-- [ ] **J7** Rewrite README Deployment as compose + kind, both free
+- [x] **J7** Rewrite README Deployment as compose + kind, both free — README Deployment rewritten as a two-path table: `make up` (compose) and `make k8s-up` (kind + Helm), both free, both with a committed smoke script
 
 **What installing the chart found — none of it visible to `helm lint` or `verify_chart.py`,
 because all four are runtime or ordering failures and the rendered YAML was valid throughout:**
@@ -825,7 +825,7 @@ serially and races only the seeding.
 - [x] **J13** Instrument real query count per decision (documented as "8+N") — **6** queries per warm decision, not the '8+N' the comments guess. The catalog cache already serves connectors/variables/settings. The real waste is 55 sandbox calls for a policy that reads 6 variables
 - [x] **J14** Fix the hotspots the measurements name, each with a before/after number — measured `COMPUTE_ONLY_USED_VARS=1` at **48.7% faster** (32.70 -> 16.78ms p50, 55 -> 6 variables) — then found it **breaks 16 tests**, so it is documented as unsafe rather than recommended. See `docs/PERFORMANCE.md`
 - [x] **J15** Web image is **2.54 GB** (`COPY . .`) — multi-stage build, target under 500 MB — **2.54 GB -> 232 MB (-91%)** via a 3-stage build on Next `output: "standalone"`. Verified serving, not just small: `/` and a deep link 200, referenced CSS+JS both resolve 200, uid 10001, smoke_compose 14/14
-- [ ] **J16** Trim API image; check whether the ML stack can import lazily
+- [x] **J16** Trim API image; check whether the ML stack can import lazily — **already done — no change needed.** The plan assumed sklearn/lightgbm were resident per worker (the codebase's own comments say so). `python -X importtime -c 'import app.main'` prints nothing for sklearn/lightgbm/scipy/numpy: they are already lazy. Recorded as measured-and-not-needed rather than quietly dropped
 - [ ] **J17** Re-run baseline, publish before/after in `docs/PERFORMANCE.md`. Parity corpus must
   not regress — accuracy is not traded for speed
 

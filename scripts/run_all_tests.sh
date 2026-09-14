@@ -68,9 +68,13 @@ count_tests() {
     flutter)
       n=$(grep -oE "\+[0-9]+: All tests passed" "$log" | grep -oE "[0-9]+" | tail -1) ;;
     kotlin)
-      # Gradle prints nothing useful on success; read its JUnit XML, which it always writes.
+      # Gradle prints nothing useful on success, so read its JUnit XML -- the one machine-readable
+      # output this repo always had. awk rather than a grep|paste|bc pipeline: that version
+      # returned empty inside the script while working fine on the command line, and a count that
+      # silently degrades to "?" is worse than one that fails loudly.
       n=$(find "$ROOT/packages/sdk-android/rulemind-core/build/test-results" -name "*.xml" 2>/dev/null \
-            | xargs grep -ho 'tests="[0-9]*"' 2>/dev/null | grep -oE "[0-9]+" | paste -sd+ - | bc 2>/dev/null) ;;
+            -exec awk 'match($0, /tests="[0-9]+"/) { s += substr($0, RSTART+7, RLENGTH-8) } END { print s }' {} + \
+            2>/dev/null | awk '{ t += $1 } END { print t }') ;;
   esac
   [ -z "$n" ] && n="?"
   printf '%s' "$n"
@@ -129,7 +133,11 @@ has rust   && run_lane rust "Rust — rulemind-core-rs" bash -c "cd '$ROOT/packa
 has rust   && run_lane rust-decide "Rust — decide-service" bash -c "cd '$ROOT/packages/rulemind-decide-service' && cargo test"
 has flutter && command -v flutter >/dev/null 2>&1 \
   && run_lane flutter "Flutter SDK" bash -c "cd '$ROOT/packages/sdk-flutter' && flutter test"
-has kotlin && run_lane kotlin "Kotlin — rulemind-core" bash -c "cd '$ROOT/packages/sdk-android' && ./gradlew :rulemind-core:test --console=plain"
+# `cleanTest test`, not plain `test`. Gradle's up-to-date check skips a test task whose inputs
+# have not changed and still reports BUILD SUCCESSFUL -- so the lane recorded "pass" having
+# executed nothing at all, which is the one thing a test report must never do. cleanTest scopes
+# the invalidation to the test task rather than --rerun-tasks rebuilding the world.
+has kotlin && run_lane kotlin "Kotlin — rulemind-core" bash -c "cd '$ROOT/packages/sdk-android' && ./gradlew :rulemind-core:cleanTest :rulemind-core:test --console=plain"
 
 if has contracts; then
   say "Contract gates"

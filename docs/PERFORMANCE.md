@@ -43,6 +43,39 @@ Verified beyond the size number: the container serves `/` and a deep link at 200
 10001, and the CSS and JS the HTML references both resolve 200 (referenced is not the same as
 served). `scripts/smoke_compose.sh` is 14/14 with the new image.
 
+## Runtime memory
+
+`docker stats --no-stream`, compose stack idle after a benchmark run:
+
+| Service | Resident |
+|---|---:|
+| api (2 uvicorn workers) | 388 MiB |
+| postgres | 490 MiB |
+| kafka (KRaft, `kafka` profile) | 564 MiB |
+| redis | 3.6 MiB |
+
+Kafka is the largest single consumer, which is why it sits behind a compose profile rather than
+in the default `make up`.
+
+### The API's ML stack is already lazy — a planned optimisation that was not needed
+
+The plan for this pass assumed sklearn/lightgbm were imported at startup and resident per uvicorn
+worker, on the strength of comments in the codebase saying so (`decision_table_import.py:10`
+describes "a resident sklearn/lightgbm stack"). Measured instead of trusted:
+
+```bash
+python -X importtime -c "import app.main" 2>&1 | grep -E "sklearn|lightgbm|scipy|numpy"
+```
+
+That prints **nothing**. None of the four loads when the API is imported; they are already
+deferred to the code paths that need them. So there was no win here to take, and the honest
+outcome of this item is "already done", not a change.
+
+What remains in the 923 MB API image is the *wheels on disk* — a 545 MB `pip install` layer —
+not resident memory. Those wheels are needed whenever a model feature is used, so a multi-stage
+split would move them rather than remove them. That is a real but much smaller lever than the
+web image was, and it is not taken here.
+
 ## Decision latency
 
 Baseline, `policy_pl_underwriting` through `POST /api/v1/decide` on the compose stack, with the
