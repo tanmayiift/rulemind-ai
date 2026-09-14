@@ -374,6 +374,59 @@ were fixed rather than skipped.
 `COMPUTE_ONLY_USED_VARS=1` — **OK both times, zero failures, zero errors.** That had never been
 true before.
 
+## Where it saturates, and how it behaves past that
+
+`qa/loadtest.py` — ramp to find the knee, then soak at it. Run against compose on this laptop
+(2 uvicorn workers, Colima VM, 4 CPU), rate limiting **disabled** so the measurement is of the
+engine rather than of the limiter:
+
+| Concurrency | rps | p50 | p95 | p99 | max | 5xx | shed | hung |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 32.8 | 24.8 ms | 51.6 ms | 56.6 ms | 121 ms | 0 | 0 | 0 |
+| 4 | 59.7 | 64.3 ms | 102.8 ms | 137.6 ms | 471 ms | 0 | 0 | 0 |
+| 8 | 78.1 | 94.6 ms | 164.8 ms | 199.4 ms | 208 ms | 0 | 0 | 0 |
+| **16** | **93.5** | 166.7 ms | 212.2 ms | 226.0 ms | 236 ms | 0 | 0 | 0 |
+| 32 | 87.3 | 388.7 ms | 547.1 ms | 592.3 ms | 606 ms | 0 | 0 | 0 |
+| 64 | 82.1 | 669.5 ms | 1401.0 ms | 1462.8 ms | 1553 ms | 0 | 0 | 0 |
+
+**The knee is concurrency ~16 at ~94 rps.** Past it throughput stops rising and *slightly
+falls* while latency climbs roughly linearly — the signature of saturation, not of a lock. Two
+uvicorn workers and `SANDBOX_POOL_SIZE` are what bound it.
+
+**It degrades rather than collapsing.** At 4x past the knee: 0 server errors, 0 timeouts, and a
+max of 1.55 s. Slower and still correct is the behaviour you want; the alternative is a queue
+that grows until something falls over.
+
+**Soak: 40 s at the knee, 10 windows, zero errors, no drift.** p50 held between 331 and 503 ms
+and throughput between 65 and 88 rps. Nothing leaked — which is the thing a burst test cannot
+tell you and the reason the soak exists.
+
+### Shedding is not failing
+
+With rate limiting **on** (the default: 1000 rpm per tenant on the `decision` budget), sustained
+overload produces exactly what it should:
+
+```
+{"error":"Rate limit exceeded",
+ "detail":"Limit is 1000 requests/minute on the 'decision' budget for this tenant. Retry in 1s."}
+```
+
+A clear refusal with a retry hint, in ~44 ms, instead of a queue. **The first run of the load
+script counted those 429s as errors** and reported "152 errors per window" for a system that was
+behaving perfectly. The script now classifies 429 and the 504 evaluation-budget response as
+*shed*, separately from real failures — conflating them makes a correctly-shedding service look
+broken and a genuinely broken one look merely busy.
+
+### One observation that did not reproduce
+
+The first ramp recorded a **120,007 ms** max at concurrency 64 — a client-timeout-length hang.
+Re-tested twice: with the limiter off, max was 1.55 s; with it on, 1280 requests at concurrency
+64 all returned 200 with a max of 4.1 s. **It has not reproduced and I do not have a complete
+explanation.** It occurred on the one run whose rate-limit bucket was already drained by prior
+traffic, so the limiter path is the place to look if it recurs. Recorded rather than dropped,
+because an unexplained 2-minute request is worth knowing about even once — and recorded as
+*unexplained* rather than dressed up as diagnosed.
+
 ## The disk that matters is Docker's, not the host's
 
 A full run filled Docker's disk and broke the kind cluster with `No space left on device` —
