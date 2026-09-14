@@ -775,9 +775,42 @@ Four findings that shaped the steps:
 - [x] **J2** Delete `render-start.sh` AND `Dockerfile:24,28`; rebuild to prove the build passes — `render-start.sh` deleted with `Dockerfile:24,28`; image rebuilt clean (`Successfully built`) before committing
 - [x] **J3** Drop the dead `isStaticExport` branch from `apps/web/next.config.js` — `isStaticExport` branch removed; `apps/web/out/` dropped from `.gitignore` and disk
 - [x] **J4** Purge the hosted narrative from README/PLAN/CHANGELOG/E2E_TEST_PLAN + stale comments — README Deployment rewritten as compose + kind; W7 marked SUPERSEDED rather than erased (its platform failures generalise); A7-A9 retargeted local, A10 closed by removal; comments in PythonCodeEditor/store.ts/decision_table_import/test_security_headers/parity.json/load-test.yml de-hosted
-- [ ] **J5** `make k8s-up` / `k8s-down`: kind cluster, load local images, `helm install`
-- [ ] **J6** `scripts/smoke_k8s.sh` — first time the chart is proven, not just linted
+- [x] **J5** `make k8s-up` / `k8s-down`: kind cluster, load local images, `helm install` — `make k8s-up` — kind cluster, images built from the same Dockerfiles compose uses and `kind load`ed (no registry), `helm install` with all four secrets generated per install
+- [x] **J6** `scripts/smoke_k8s.sh` — first time the chart is proven, not just linted — `scripts/smoke_k8s.sh` — **16/16 on a fresh cluster.** Installing the chart for the first time found **four defects that linting cannot see**, listed below
 - [ ] **J7** Rewrite README Deployment as compose + kind, both free
+
+**What installing the chart found — none of it visible to `helm lint` or `verify_chart.py`,
+because all four are runtime or ordering failures and the rendered YAML was valid throughout:**
+
+1. **The chart was un-installable as shipped.** `configmap.yaml` sets `RULEMIND_ENV=production`,
+   which arms `security_config.PRODUCTION_SECRET_CHECKS` — a fail-closed gate over **four**
+   secrets. The chart supplied values for two. `RULEMIND_ADMIN_PASSWORD` and
+   `RULEMIND_DEV_API_KEY` had no key in `values.yaml` at all, so the API pod raised
+   `InsecureProductionConfigError` and CrashLoopBackOff'd. Fixed by adding both.
+2. **Helm hook ordering made a fresh install impossible.** `job-migrate.yaml` is a
+   `pre-install,pre-upgrade` hook doing `envFrom: configMapRef: rulemind-config`, but the
+   ConfigMap and Secret were plain manifests — and Helm applies hooks *before* regular
+   manifests. Result: `Error: configmap "rulemind-config" not found`, 26 times, until the
+   install timed out. Fixed by annotating both as hooks at weight `-10` (ahead of the Job's
+   `-5`), with `before-hook-creation` rather than `hook-succeeded` so the Deployments still
+   have their config after the hooks finish.
+3. **A concurrent-boot race in seeding — a product bug, not a chart bug.** Every replica runs
+   `Storage.seed_if_empty()` at startup against one shared database, and it is check-then-insert
+   with nothing in between. The api and worker pods boot together, both saw an empty table, both
+   inserted, and the loser died on
+   `duplicate key value violates unique constraint "ix_api_keys_lookup_hash"`. The chart's
+   production defaults are api=3 + worker=2, so a real first install races **five** ways.
+   ~1900 tests never saw it because the suite is one process against SQLite. Fixed with a
+   bounded retry, covered by `tests/test_seed_concurrency.py` (4 tests), and both mutations
+   checked — removing the retry fails the loser test, making it unbounded hangs the bounded one.
+4. **`make help` could not show these targets.** Its grep was `^[a-zA-Z_-]+:`, which excludes
+   digits, so every `k8s-*` target was invisible in the one place that lists them.
+
+The schema-creation race is NOT in that list, and deliberately: `_create_schema` already takes a
+Postgres advisory lock and swallows a lost race, and its docstring describes this exact
+worker-startup crash. Four threads hitting it on SQLite does fail, but SQLite is single-process
+by definition — that is a test artifact, so the thread test constructs its Storage objects
+serially and races only the seeding.
 
 ### B. Reclaim disk
 

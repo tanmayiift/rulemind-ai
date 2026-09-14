@@ -54,6 +54,12 @@ env:
   redisUrl: ""             # REQUIRED: redis://host:6379/0
   configKey: ""            # REQUIRED: Fernet encryption key for config secrets
   adminJwtSecret: ""       # REQUIRED: JWT signing secret for admin sessions
+  # Also REQUIRED, and previously absent from this file entirely. rulemindEnv below is
+  # `production`, which arms security_config.PRODUCTION_SECRET_CHECKS over four secrets --
+  # these two included. Without them the API pod refuses to boot, correctly, on the committed
+  # defaults. Set all four or the chart does not run.
+  adminPassword: ""        # REQUIRED: initial admin password
+  devApiKey: ""            # REQUIRED: seeded tenant's API key (rm_live_...)
 
   # Was set in NO deployment artifact. app/security_config.py checks RULEMIND_ENV
   # first; with it unset (and NODE_ENV unset) the fail-closed default-secret check

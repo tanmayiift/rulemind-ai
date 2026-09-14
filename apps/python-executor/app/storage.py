@@ -629,6 +629,34 @@ class Storage:
         )
 
     def seed_if_empty(self) -> None:
+        """Seed the default tenant, API key and admin — safely when several processes do it at once.
+
+        EVERY REPLICA RUNS THIS AT BOOT, against one shared database. The body below is
+        check-then-insert with nothing between the check and the insert, so two processes
+        starting together both see an empty table and both insert. One wins; the other gets
+
+            IntegrityError: duplicate key value violates unique constraint
+            "ix_api_keys_lookup_hash"
+
+        and, because this runs during startup, the process dies. Found on a local kind cluster
+        where the api and worker pods boot simultaneously (the worker CrashLoopBackOff'd once);
+        the chart's own production defaults are api=3 + worker=2, so a real install races five
+        ways on first boot. SQLite hid it completely — one process, one file.
+
+        The retry is the fix rather than a lock: losing the race means the winner has already
+        written exactly the rows this process wanted, so re-reading gets the same result a
+        successful seed would have. Retrying once is enough — the second pass takes the
+        `if existing` branch, which is why this is not a retry loop.
+        """
+        try:
+            self._seed_if_empty_once()
+        except IntegrityError:
+            # The winner committed between our SELECT and our INSERT. Its rows are the rows we
+            # were about to write, so re-reading is the whole recovery.
+            LOGGER.info("seed_if_empty lost a concurrent seed race; re-reading the winner's rows")
+            self._seed_if_empty_once()
+
+    def _seed_if_empty_once(self) -> None:
         with self.connect() as session:
             tenant = self._seed_default_tenant(session)
             self._seed_default_api_key(session, tenant)
