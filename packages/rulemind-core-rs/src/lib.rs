@@ -654,7 +654,11 @@ mod python {
         if let Ok(s) = obj.extract::<String>() {
             return Value::String(s);
         }
-        if let Ok(dict) = obj.downcast::<PyDict>() {
+        // `cast`, not `downcast`: pyo3 0.24 renamed it on Bound<PyAny>. Dependabot's bump
+        // (#144) changed only Cargo.toml and Cargo.lock, so the crate did not compile with the
+        // `python` feature at all -- and nothing noticed, because the feature is off by default
+        // and `cargo test --no-default-features` never builds this path.
+        if let Ok(dict) = obj.cast::<PyDict>() {
             let mut map = serde_json::Map::new();
             for (key, value) in dict.iter() {
                 let k = key
@@ -664,7 +668,7 @@ mod python {
             }
             return Value::Object(map);
         }
-        if let Ok(list) = obj.downcast::<PyList>() {
+        if let Ok(list) = obj.cast::<PyList>() {
             return Value::Array(list.iter().map(|item| py_to_value(&item)).collect());
         }
         Value::Null
