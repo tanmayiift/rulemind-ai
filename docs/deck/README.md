@@ -1,8 +1,18 @@
 # The pitch deck, and where every number on it came from
 
 `RuleMind-AI.pptx` — 11 slides, enterprise buyers (risk, credit and fraud leads at lenders,
-fintechs and insurers). Regenerate with `node build.js`; check it with
-`python geomqa.py RuleMind-AI.pptx`.
+fintechs and insurers).
+
+```bash
+npm install pptxgenjs react react-dom react-icons sharp   # not vendored; ~10 packages
+node build.js                                             # rewrites RuleMind-AI.pptx
+python geomqa.py RuleMind-AI.pptx                         # geometry check
+```
+
+**`node build.js` fails silently-ish without those packages** — it prints a MODULE_NOT_FOUND
+stack and leaves the previous `.pptx` in place, so a geometry check run afterwards happily
+passes **on the stale file**. If you change the generator, confirm the `.pptx` mtime moved
+before trusting any QA that follows.
 
 ## Why the sources are written down
 
@@ -46,6 +56,7 @@ anyway and it is better that we said it first.
 | "open source" | "Apache 2.0 licensed" | True today. The repository is not public yet — see `docs/PRE-PUBLICATION-AUDIT.md`. |
 | the 48.7% `COMPUTE_ONLY_USED_VARS` win | nothing, or "roadmap" | Measured, but the flag is off by default. |
 | the README's "thousands/s" table | the measured numbers | That table is sizing guidance, not a measurement. |
+| "0 external dependencies at runtime" | "0 phone-home, metering or licence calls" | **It needs PostgreSQL and Redis.** An architect reads "external dependencies" as "services this requires" and finds two. What is actually true — and is the thing enterprise buyers care about — is that nothing calls a vendor: no telemetry, no per-decision metering, no licence server. Checked by grepping every hardcoded outbound host in the backend; the only hits are opt-in sample connectors (`postcodes.io`, `er-api.com`), a CSP header, and a SCIM schema URI. |
 
 ## QA
 

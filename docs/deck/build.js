@@ -123,7 +123,7 @@ async function build() {
     ["4,608", "tests, 11 lanes, all green"],
     ["5", "language engines, held to one corpus"],
     ["19.8 ms", "median decision, measured"],
-    ["0", "external dependencies at runtime"],
+    ["0", "phone-home, metering or licence calls"],
   ];
   stats.forEach(([big, small], i) => {
     const x = M + i * 3.0;
