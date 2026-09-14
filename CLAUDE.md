@@ -47,10 +47,10 @@ carried stale test counts; corrected 2026-09-03.
 
 ### Backend internals — `apps/python-executor/app/`
 
-`main.py` (1629 lines) wires 18 routers in `app/routers/` (ai, authoring, collab,
-evaluations, experiments, governance, identity, insights, models, onboarding, operations,
-platform, policies, reports, rules, runtime, sdk). `storage.py` is a 3515-line persistence
-monolith — the largest single file and the usual merge-conflict hotspot. Migrations are
+`main.py` (1972 lines) wires **23 routers** in `app/routers/` (ai, authoring, collab, debugger,
+evaluations, experiments, governance, identity, insights, journeys, models, modelsets,
+onboarding, operations, platform, policies, predictors, reports, rules, runtime, scim, sdk,
+webhook_subscriptions). `storage.py` is a **4979-line** persistence monolith — the largest single file and the usual merge-conflict hotspot. Migrations are
 Alembic under `apps/python-executor/alembic/`, run on container start via `entrypoint.sh`.
 
 ### Five engines, one semantics contract
@@ -77,8 +77,11 @@ make test                 # python unittest + vitest
 pnpm test:e2e             # Playwright
 ```
 
-Tests: 150 Python modules (1913 tests), 16 Vitest files (462), 8 Playwright specs (68), plus
-`qa/`. The Python suite runs in two lanes: SQLite by default, and real Postgres under
+Tests: **4,608 across 11 lanes, all green** — 1920 Python SQLite + 1920 Python PostgreSQL 16,
+462 Vitest, 19 + 10 Rust, 163 Flutter, 68 Playwright, 46 Kotlin, plus the contract gates and
+`qa/`. **Do not hand-maintain these numbers here** — `make test-all` regenerates
+`TEST_RESULTS.md` from the runners' own output, and that file is the authority. The counts in
+this file were wrong by 500+ tests before that script existed. The Python suite runs in two lanes: SQLite by default, and real Postgres under
 `DATABASE_URL` + `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` (each test path gets its own Postgres
 schema — without that flag `Storage(path=...)` silently falls back to SQLite and the Postgres
 lane is a near-no-op).
@@ -112,7 +115,9 @@ claimed it still advertised "the full environment-variable list" — that was it
 
 ## AI layer (`app/ai.py`)
 
-BYO-key, dual-provider (Anthropic + OpenAI). Default is `claude-sonnet-5`. Three
+BYO-key, **three providers** (Anthropic + OpenAI + Gemini — `SUPPORTED_PROVIDERS` at
+`ai.py:24`, all three with a `_call_*` and a `_fetch_live_models_*`; this note said
+"dual-provider" until 2026-09-14). Default is `claude-sonnet-5`. Three
 model-list staleness bugs were **fixed on 2026-08-20**; described here so the shape of the
 problem is recognisable if the lists drift again:
 
