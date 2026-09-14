@@ -143,6 +143,25 @@ def _enforce_quota() -> None:
         })
 
 
+def _record_decision_metrics(outcome: str, source: str, latency_ms: Optional[float]) -> None:
+    """Emit the Prometheus decision metrics for ONE served decision.
+
+    WHY A HELPER FOR TWO LINES. /decide has two return paths (fast path and executor) and this
+    is exactly the shape of thing that gets added to one and forgotten on the other -- which is
+    how it came to be missing from BOTH while /sdk/v1/decide had it, so `/metrics` reported
+    nothing for the endpoint the product is actually about. One function, called on every path.
+
+    Never allowed to affect the decision. A metrics backend problem must not turn a served
+    decision into a 500 -- the same stance decision_bus.py takes on its publish.
+    """
+    try:
+        main.DECISIONS_TOTAL.labels(outcome=str(outcome), source=source).inc()
+        if latency_ms is not None:
+            main.DECISION_LATENCY.labels(source=source).observe(max(float(latency_ms), 1.0) / 1000.0)
+    except Exception:  # pragma: no cover - observability must never break the hot path
+        pass
+
+
 @router.post("/api/v1/decide")
 def decide(request: DecideRequest) -> Dict[str, Any]:
     """Run a policy decision.
@@ -166,12 +185,14 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
 
         if fast_path_eligible(main.storage, policy, active_tenant_id()):
             decision = fast_decide(main.storage, policy, request.payload or {}, active_tenant_id(), user_id=request.user_id)
+            _record_decision_metrics(decision["outcome"], "api_fast", decision.get("latency_ms"))
             if decision["outcome"] == "reject":
                 record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {})
             return decision
     # source="api" so the executor logs this as a production decision (exactly one
     # Decision row); the fast path above logs source="api_fast", also once.
     outcome = test_policy_entity(policy, request.payload, source="api", user_id=request.user_id)
+    _record_decision_metrics(outcome["result"]["outcome"], "api", outcome.get("latency_ms"))
     if outcome["result"]["outcome"] == "reject":
         record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {"trace": outcome["result"].get("trace", [])})
     return {
