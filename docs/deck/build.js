@@ -330,8 +330,13 @@ async function build() {
       fontFace: BODY_FONT, fontSize: 13.5, italic: true, bold: true, color: ACCENT,
     });
   s.addNotes(
-    "The closing line is the point of the slide. Every capability here is authored, not deployed, " +
-    "and every one leaves an audit trail naming who did it."
+    "The closing line is the point of the slide. Every capability here is authored, not " +
+    "deployed, and every one leaves an audit trail naming who did it.\n\n" +
+    "'With approvals' means real two-person control: promotion to production is REFUSED if the " +
+    "same member promoted it to UAT (main.py promote_entity). The actor on the ledger is the " +
+    "AUTHENTICATED principal, not a client-supplied label, which is what makes that check worth " +
+    "anything. One nuance if asked: dual control is per-workspace and OFF by default " +
+    "(engine_config.require_dual_control) — it is a control you switch on, not one we impose."
   );
   footer(s, 4, false);
 }
