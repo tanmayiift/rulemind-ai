@@ -218,7 +218,7 @@ async function build() {
     ["FiCode",     "Compute",  "Python variables in a sandbox, or 232 Excel functions if the author thinks in spreadsheets."],
     ["FiSliders",  "Author",   "Rules, scorecards and decision tables, click-built. 13 step types compose into a policy."],
     ["FiZap",      "Decide",   "One /decide call returns the outcome, the score, and the step-by-step trace behind it."],
-    ["FiShield",   "Account",  "Every decision written with its policy version, inputs and reasoning. Tamper-evident chain."],
+    ["FiShield",   "Account",  "Every decision stores its inputs, computed variables, every rule result and the full step trace."],
   ];
 
   const cw = 2.24, gap = 0.19;
@@ -270,7 +270,14 @@ async function build() {
   });
   s.addNotes(
     "The pipeline is the product in one line. Emphasise step 1: source-agnostic means we do not " +
-    "sell you a bureau integration — you bring whatever you already pay for."
+    "sell you a bureau integration — you bring whatever you already pay for.\n\n" +
+    "On step 5, say REASONING, not 'policy version'. A server-side decision records what " +
+    "actually happened — the payload, the variables computed, every rule result, the scorecard " +
+    "breakdown and the step trace — but it does NOT pin a policy version (bundle_hash is null " +
+    "for API decisions; it is populated only for on-device ones). That is the honest answer and " +
+    "it is also the better one: a stored trace is stronger evidence than a pointer to " +
+    "configuration that may have changed since. If a buyer asks specifically for version " +
+    "pinning on server decisions, it is a roadmap item, not a shipped one."
   );
   footer(s, 3, false);
 }
