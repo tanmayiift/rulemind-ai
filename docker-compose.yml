@@ -235,6 +235,9 @@ services:
     profiles: ["observability"]
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The rules file prometheus.yml references; without this mount Prometheus starts and
+      # silently evaluates nothing, which looks identical to "no alerts are firing".
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
       - "${RULEMIND_PROM_PORT:-9090}:9090"
 
