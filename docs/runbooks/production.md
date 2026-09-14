@@ -150,7 +150,22 @@ That last check is the one worth the most: a dump that silently drops or reorder
 produces a restore that looks healthy by row count and whose tamper-evidence is broken — and a
 compliance story that only holds on the primary is not a compliance story.
 
-Last drill: **2026-09-15, 41 tables / 165 rows, clean.**
+**`pg_dump`/`pg_restore` are NOT in the API image.** Checked, not assumed — the deployed
+application container cannot run this procedure. Run it from a container that has the Postgres
+client tools (the `db` container does: `pg_dump (PostgreSQL) 16.15`), from a dedicated backup
+job, or from an admin host with `postgresql-client` installed. A backup procedure you first
+discover you cannot run during an incident is the failure this whole section exists to prevent,
+so it is written down here rather than left to be found.
+
+Drills run 2026-09-15, both lanes:
+
+| Lane | Result |
+|---|---|
+| SQLite | 41 tables / 165 rows, chain verified, clean |
+| **PostgreSQL 16** | 103 MB dump · **42 tables → 42** · decisions **11,801 → 11,801** · audit_events 1 → 1 · **audit chain verifies in the restored copy** |
+
+The Postgres drill is the one that matters — it is the path production actually takes, and it
+exercises `pg_dump -Fc` / `pg_restore` rather than a file copy.
 
 ---
 
