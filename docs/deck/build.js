@@ -523,7 +523,7 @@ async function build() {
   const right = [
     ["19.78 ms", "median decision, end to end over HTTP", ACCENT],
     ["232 MB", "dashboard container, down from 2.54 GB", APPROVE],
-    ["~350 MB", "API container resident, two workers", ACCENT],
+    ["388 MiB", "API resident, two uvicorn workers", ACCENT],
   ];
   right.forEach(([b, l, c], i) => {
     const y = 2.0 + i * 1.04;

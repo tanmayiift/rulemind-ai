@@ -36,6 +36,7 @@ came to be wrong by 500+ tests. If you edit a slide, re-derive its number here t
 | 41 tables | unique `__tablename__` | `apps/python-executor/app/` |
 | 281 API endpoints | `@app`/`@router` route decorators | `apps/python-executor/app/` |
 | 232 MB dashboard image, from 2.54 GB | before/after build | `docs/PERFORMANCE.md` |
+| 388 MiB API resident, two uvicorn workers | `docker stats --no-stream`, compose idle | `docs/PERFORMANCE.md` runtime-memory table |
 | 14-check and 16-check smoke tests | the scripts' own counts | `scripts/smoke_compose.sh`, `scripts/smoke_k8s.sh` |
 | Five roles: owner, admin, policy_maker, reviewer, viewer | `ROLE_CAPABILITIES` | `app/rbac.py:39` |
 | Backup restores, audit chain intact | drill run 2026-09-14: 41 tables / 165 rows | `apps/python-executor/scripts/backup_verify.py` |
