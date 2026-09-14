@@ -22,7 +22,7 @@ import type { ThemeTokens } from "../theme";
 import { rulemindCompletions, type RuleMindCompletionScope } from "./rulemind-completion";
 
 // CodeMirror 6, not Monaco, and the reason is the deployment target rather than taste.
-// The dashboard ships as a Render STATIC SITE (NEXT_OUTPUT=export, see next.config.js), so
+// The dashboard is a pure client SPA with no server-side rendering step, so
 // every byte it runs has to be in the bundle: `@monaco-editor/react` pulls Monaco from
 // jsDelivr at run time by default, and self-hosting it under a static export means hand-rolled
 // worker plumbing that `output: "export"` does not emit for you. Monaco is also ~5MB against

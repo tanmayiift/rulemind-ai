@@ -15,7 +15,7 @@ import { setBearerToken } from "./api";
  *
  * A deployment injects `window.__RULEMIND_CONFIG__` (a one-line script tag, or a rewrite that
  * serves it) and that wins. Build-time env is kept as the second choice because it is correct
- * on platforms that build per environment -- Vercel sets project env vars before `next build`.
+ * on platforms that build per environment -- a build sets project env vars before `next build`.
  * The localhost fallback is for `pnpm dev` only.
  */
 declare global {

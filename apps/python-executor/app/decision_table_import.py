@@ -8,7 +8,7 @@ cells instead:
      SheetJS to turn an uploaded workbook into decision payloads. A second parser, in a second
      language, for the same file format, is a second set of quirks to reconcile.
   2. Memory. The deployed API runs on 512MB with a resident sklearn/lightgbm stack (see
-     `render-start.sh`); openpyxl holds a workbook in memory and a 20MB sheet is not a small ask.
+     `the compose `migrate` service`); openpyxl holds a workbook in memory and a 20MB sheet is not a small ask.
   3. Attack surface. OOXML is a zip of XML. Handing an untrusted upload to a Python XML parser on
      the API process is a decompression-bomb and XXE surface that a list of JSON rows is not.
 

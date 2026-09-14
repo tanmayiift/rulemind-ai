@@ -1,7 +1,7 @@
 """Response headers a browser needs, and not publishing the API's own map to strangers.
 
 Both found by probing the LIVE deployment rather than by reading code. The only header coming
-back from https://rulemind-api.onrender.com was `x-request-id` — no nosniff, no frame-ancestors,
+back from the deployed instance was `x-request-id` — no nosniff, no frame-ancestors,
 no HSTS, no referrer policy — and `/docs`, `/redoc` and `/openapi.json` all answered 200 to an
 unauthenticated request, publishing the complete endpoint map and every schema.
 

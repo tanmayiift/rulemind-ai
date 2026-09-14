@@ -1,10 +1,9 @@
 .DS_Store
 .env
 .env.local
-# Credentials for talking to the DEPLOYED instance (scripts/smoke_deployed.sh,
-# the remote qa/e2e-full runs). Holds a live API key -- never committed, never echoed.
-.env.deployed
 .turbo
+.mypy_cache/
+.ruff_cache/
 .next
 dist
 coverage
@@ -57,5 +56,3 @@ apps/python-executor/data/
 qa/results/mobile-e2e-backend.log
 qa/results/mobile-e2e-backend.pid
 
-# Next.js static export target (NEXT_OUTPUT=export). Built by Render, never committed.
-apps/web/out/

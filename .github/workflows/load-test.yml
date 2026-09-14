@@ -70,7 +70,7 @@ jobs:
 
       # test/load/saturation.k6.js had never been executed by any workflow. It answers a
       # different question from evaluate.k6.js: not "is p95 acceptable at 50 VUs" but "where
-      # does this fall over, and does it shed load or collapse". That is the number the Koyeb
+      # does this fall over, and does it shed load or collapse". That is the number the the deployed instance
       # sizing depends on. Same runner, same server, so it is nearly free to add here -- and
       # this workflow is workflow_dispatch only, so it costs nothing per PR.
       - name: Run k6 saturation sweep

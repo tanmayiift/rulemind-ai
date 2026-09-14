@@ -26,13 +26,15 @@ from the commit's conventional-commit scope — scopes drift (`fix(ops)`, `fix(s
 
 ### Changed
 
-- **CodeMirror, not Monaco**, and the parity row counts them as equivalent. The dashboard deploys
-  as a static site and must be self-contained: `@monaco-editor/react` pulls Monaco from a CDN at
-  run time by default, and self-hosting it under `output: "export"` means hand-rolled worker
-  plumbing. Monaco is also ~5MB against ~250KB, for one editor on one page.
-- The dashboard is deployed as a **Render static site**, not Vercel. It is a pure client SPA — no
-  API routes, no dynamic segments, no middleware — so it exports to files, and a static site is
-  free and does not spin down.
+- **CodeMirror, not Monaco**, and the parity row counts them as equivalent. The dashboard must be
+  self-contained: `@monaco-editor/react` pulls Monaco from a CDN at run time by default, so the
+  editor stops working on any network that cannot reach it. Monaco is also ~5MB against ~250KB,
+  for one editor on one page.
+- **The hosted deployment is gone; everything runs on local Docker.** The free tiers moved to
+  paid, so `render.yaml`, `render-start.sh`, `scripts/smoke_deployed.sh` and the
+  `NEXT_OUTPUT=export` branch in `next.config.js` were all removed — that flag was set in exactly
+  one place, and with that place gone the branch was unreachable config. `make up` (compose) and
+  `make k8s-up` (kind + Helm) are the two supported paths.
 
 ### Fixed
 

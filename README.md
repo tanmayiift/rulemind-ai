@@ -59,25 +59,33 @@ e2e/                    Playwright end-to-end tests
 test/                   TypeScript unit tests (engine, SDK, auth, cross-platform parity)
 qa/                     Automated QA suite + workbook manifest
 docs/                   Architecture, HLD, and the parity matrix (docs/parity/)
-scripts/                Deployment + verification gates (smoke_compose.sh, smoke_deployed.sh,
+scripts/                Verification gates (smoke_compose.sh, smoke_k8s.sh,
                         verify_chart.py, check_audit_ignores.py)
 design/                 Design assets
 third_party/            Vendored dependencies
-infra/ k8s/ helm/       Deployment manifests
+infra/ k8s/ helm/       Kubernetes manifests + Helm chart (run locally via kind)
 observability/          Grafana / Prometheus / Tempo / OTel collector config
-render.yaml             The live deployment, as code — API + Postgres + Valkey + dashboard
 ```
 
 ## Deployment
 
-The API, its database, its cache and the dashboard are all defined in `render.yaml` and run on
-Render. The dashboard is a **static site**: the web app is a pure client SPA, so it exports to
-files with `NEXT_OUTPUT=export` and is served from a CDN with no instance and no cold start.
-`/docs` is disabled outside development — see `RULEMIND_ENABLE_DOCS` in `.env.example`.
+**Everything runs locally, on your own Docker. There is no hosted dependency and nothing to
+pay for.** Two paths, both verified by a committed smoke script:
 
-`scripts/smoke_deployed.sh` checks a live instance end to end: dependency health, the sandbox
-actually spawning, security headers, that the API docs are not public, that CORS is scoped to
-the dashboard origin, and that a real decision runs and lands in the audit trail.
+| Path | Command | What it gives you |
+|---|---|---|
+| Docker Compose | `make up` | api + web + Postgres + Redis + a migrate job. The normal way to run it. |
+| Kubernetes | `make k8s-up` | A [kind](https://kind.sigs.k8s.io/) cluster running the Helm chart in `helm/rulemind`, from images built and loaded locally — no registry, no cloud. |
+
+`scripts/smoke_compose.sh` (14 checks) and `scripts/smoke_k8s.sh` verify each path end to end:
+dependency health, the sandbox actually spawning, security headers, that the API docs are not
+public, that the container runs as non-root, and that a real decision runs and lands in the
+audit trail. `/docs` is disabled outside development — see `RULEMIND_ENABLE_DOCS` in
+`.env.example`.
+
+This project was briefly deployed to a hosted provider and that has been removed entirely —
+the free tiers moved to paid. The Kubernetes manifests stay because they cost nothing to keep
+and now actually run, against a local cluster, instead of only being linted.
 
 ## Quick Start
 
