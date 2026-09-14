@@ -747,10 +747,18 @@ GENERATED from the Python. Every fix mutation-checked.
 
 ## J. Local-only, optimise, close P09 — 2026-09-14
 
-The Render deployment is moving to paid tiers, so the hosted footprint goes. Verified before
-planning: **the Render API is already dead** (`/health` answers nothing; only the free static
-dashboard still serves), so `smoke_deployed.sh` — 21/21 on 2026-09-06 — would fail today, and
-A7-A10 were blocked on a key for a service that no longer runs.
+The Render deployment is moving to paid tiers, so the hosted footprint goes.
+
+**CORRECTION (2026-09-14, later the same day). This section originally said "the Render API is
+already dead". That was WRONG, and the error matters.** The claim came from a single 30-second
+`curl` that timed out — which is exactly what a sleeping free-tier service looks like on its
+first request. Re-probed three times in a row: **HTTP 200 in 16.2 s (cold), then 0.16 s, then
+0.16 s.** Both the API and the dashboard are **live**. Deleting `render.yaml` deleted the
+CONFIG, not the SERVICES: they kept running the whole time, and may still be billing.
+
+A false "it is already gone" is the most expensive kind of wrong here — it is precisely what
+leaves something running and unnoticed. `scripts/render_teardown.sh` now deletes every resource
+via the Render API given a token, and it re-probes afterwards rather than trusting a timeout.
 
 Four findings that shaped the steps:
 
@@ -961,7 +969,15 @@ GitHub App can still read the repo. Revoking it needs a GitHub sudo-mode re-auth
 your 2FA, so it is yours to do:
 GitHub → Settings → Applications → Installed GitHub Apps → Vercel → Revoke.
 
-**3. GitHub Actions minutes are exhausted (I6). RE-TESTED 2026-09-14 — still blocked.**
+**3. GitHub Actions will not start jobs (I6). RE-TESTED 2026-09-14 — still blocked, and the
+diagnosis was wrong.**
+
+**CORRECTION: this is a BILLING BLOCK, not an exhausted quota.** GitHub's own annotation on
+every failed job says so verbatim: *"The job was not started because recent account payments
+have failed or your spending limit needs to be increased."* That changes what fixes it — jobs
+are assigned no runner and execute `steps: 0`, so **consumption is already ~0** and trimming
+workflows or waiting for a monthly reset saves nothing. The heading below is kept for the
+evidence it records; the word "exhausted" in it was mine and was wrong.
 
 This was a week-old claim, so it was checked rather than repeated. Commit `8043957` was landed
 **without** `[skip ci]` specifically to find out. The result, from the API rather than from the
@@ -976,8 +992,11 @@ So the blocker stands, and it is worse than "runs fail": pushes no longer produc
 runs remain the only signal, and `TEST_RESULTS.md` (10 lanes, 4,526 tests, generated from the
 runners' own output) is what stands in for CI until minutes are available again.
 
-**What unblocks it:** more Actions minutes — either waiting for the monthly reset or raising the
-spending limit at
-`github.com/settings/billing`. Once a run genuinely executes, `.github/workflows/test-report.yml`
+**What unblocks it:** settling the billing block at `github.com/settings/billing` — *or*, at
+no cost, **making the repo public**: public repositories get unlimited free GitHub-hosted
+Actions minutes, and the repo already ships an Apache 2.0 LICENSE and a README that calls itself
+open-source. That switch is the user's to flip, not mine. A **self-hosted runner** is the third
+option and is free even on a private repo; it should be wired to `workflow_dispatch` only, never
+`pull_request`, because 22 open Dependabot PRs means running bot-authored dependency code. Once a run genuinely executes, `.github/workflows/test-report.yml`
 publishes a job summary, and the 20 open Dependabot PRs can be judged on a real result instead of
 a red X that only means "out of minutes".

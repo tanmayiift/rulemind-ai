@@ -6,8 +6,13 @@ scorecards and multi-step policies in a web dashboard, then promote them
 `dev → uat → prod` with full audit trails. Apache 2.0.
 
 State as of 2026-09-14: ~78k LOC, **2 open issues** (#133 Android emulator, #123 live-AI
-validation) and **22 open Dependabot PRs** — all red because the Actions quota is exhausted, not
-because they fail. (This line said "0 open issues, 0 open PRs" from a 2026-08-08 snapshot; it is
+validation) and **22 open Dependabot PRs** — all red because Actions will not start a job for this repo,
+not because they fail. The cause is a **billing block, not a consumed quota**: GitHub's own
+annotation on every failed job reads *"The job was not started because recent account payments
+have failed or your spending limit needs to be increased."* Jobs are assigned no runner and
+execute `steps: 0`, so **consumption is already ~0** — trimming workflows would save nothing.
+The fix is either settling billing or making the repo public (public repos get unlimited free
+GitHub-hosted minutes). (This line said "0 open issues, 0 open PRs" from a 2026-08-08 snapshot; it is
 the kind of count that is wrong the day after it is written, which is why the test numbers below
 now come from a generated `TEST_RESULTS.md`.) **Every one of the 75 remote branches is already merged into
 `main`** — verified by patch-id, not by branch name. Treat `main` as the single source

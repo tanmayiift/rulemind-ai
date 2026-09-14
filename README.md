@@ -5,9 +5,11 @@
 [![Tests](https://img.shields.io/badge/tests-see_TEST__RESULTS.md-5b5bd6.svg)](TEST_RESULTS.md)
 
 <!-- The tests badge points at the committed, GENERATED report rather than at a CI status
-     endpoint. That is deliberate and honest: GitHub Actions is currently refusing to run for
-     this repo (every run fails in seconds with zero steps executed — an exhausted quota), so a
-     workflow-status badge would show a red X that says nothing about the code. TEST_RESULTS.md
+     endpoint. That is deliberate and honest: GitHub Actions is currently refusing to START a
+     job for this repo — every run fails in seconds with zero steps executed and no runner
+     assigned, because of a billing block ("recent account payments have failed or your spending
+     limit needs to be increased"), not because any test fails and not because minutes ran out.
+     A workflow-status badge would show a red X that says nothing about the code. TEST_RESULTS.md
      is produced by scripts/run_all_tests.sh from the runners' own output and can be regenerated
      by anyone who clones this. Swap this for a real workflow badge once CI executes again. -->
 

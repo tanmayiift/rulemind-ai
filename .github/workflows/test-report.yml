@@ -1,9 +1,12 @@
 # Publish test results to the run page — the cheapest reporting this repo can have.
 #
-# CONTEXT. Actions has been refusing to run for this repo's entire recent history: every run
-# fails in 3-12 seconds with ZERO steps executed, which is an exhausted quota rather than a test
-# failure. So this workflow is written to be useful the day the quota returns and to cost nothing
-# before then. It is `workflow_dispatch` plus a path filter, NOT push-on-everything.
+# CONTEXT. Actions has been refusing to START jobs for this repo's entire recent history: every
+# run fails in 3-12 seconds with ZERO steps executed and no runner assigned. That is a BILLING
+# BLOCK, not an exhausted quota and not a test failure -- GitHub's annotation on each failed job
+# reads "The job was not started because recent account payments have failed or your spending
+# limit needs to be increased". Consumption is already ~0, so trimming workflows saves nothing.
+# So this workflow is written to be useful the day jobs can start and to cost nothing before
+# then. It is `workflow_dispatch` plus a path filter, NOT push-on-everything.
 #
 # It reuses scripts/run_all_tests.sh -- the same script that generates the committed
 # TEST_RESULTS.md -- so the numbers on GitHub and the numbers in the repo come from one code
