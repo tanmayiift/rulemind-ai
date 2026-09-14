@@ -83,6 +83,7 @@ pay for.** Two paths, both verified by a committed smoke script:
 | Path | Command | What it gives you |
 |---|---|---|
 | Docker Compose | `make up` | api + web + Postgres + Redis + a migrate job. The normal way to run it. |
+| + durable delivery | `docker compose --profile kafka up -d kafka` | Kafka in KRaft mode (no ZooKeeper) for the decision outbox. Behind a profile because it is the heaviest container in the stack (~560 MB) and the decision path works without it. |
 | Kubernetes | `make k8s-up` | A [kind](https://kind.sigs.k8s.io/) cluster running the Helm chart in `helm/rulemind`, from images built and loaded locally — no registry, no cloud. |
 
 `scripts/smoke_compose.sh` (14 checks) and `scripts/smoke_k8s.sh` verify each path end to end:
@@ -264,6 +265,15 @@ See `.env.example` for the full list.
 - **Kubernetes** — a Helm chart ships in `helm/rulemind/` (Deployments for web/api/worker, Service, Ingress, ConfigMap, Secret, migrate Job, HPA + PDB on the api). `helm install rulemind ./helm/rulemind -f my-values.yaml`.
 - **Scaling** — the decision path is **stateless**; run N api replicas behind the Ingress with the HPA on RPS/latency. For maximum throughput enable `FAST_DECIDE=1` (cached-bundle core) and, at the edge, the WASM core (`packages/rulemind-core-rs`, `./build-wasm.sh`).
 - **Secrets** — set `RULEMIND_CONFIG_KEY` (config-at-rest encryption), `RULEMIND_ADMIN_JWT_SECRET`, `RULEMIND_ADMIN_PASSWORD`, `POSTGRES_PASSWORD` (see the Docker Compose block for `openssl rand` examples). Connector credentials are Fernet-encrypted at rest.
+- **Durable decision delivery** — every decision writes a row to a **transactional outbox** in
+  the same database transaction, so a decision and its event commit together or neither does. A
+  leader-gated relay moves committed rows to Kafka with an idempotent producer, and the consumer
+  deduplicates on the event id, which makes processing effectively-once. A message that cannot be
+  handled goes to a dead-letter topic **and its offset is committed**, so one poison event cannot
+  block its partition. Turn it on with `docker compose --profile kafka up -d kafka` and set
+  `KAFKA_BOOTSTRAP_SERVERS`; without it the outbox still records every event, so you lose delivery
+  and never data.
+
 - **Observability** — Prometheus metrics are always at `/metrics`. For traces + dashboards in **one command**, run **`make observability`**: it turns tracing on (sets the OTLP endpoint) and brings up **Grafana** (`:3001`), **Prometheus** (`:9090`), **Tempo**, and the OTel collector with a pre-provisioned dashboard. (Equivalent to `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up`.) See [`observability/README.md`](observability/README.md).
 
 ### ⚡ Throughput & scaling (what to expect)

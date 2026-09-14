@@ -43,6 +43,36 @@ Verified beyond the size number: the container serves `/` and a deep link at 200
 10001, and the CSS and JS the HTML references both resolve 200 (referenced is not the same as
 served). `scripts/smoke_compose.sh` is 14/14 with the new image.
 
+## What the P09 outbox costs
+
+Every decision now writes an outbox row inside its own transaction. That is not free, so it is
+measured rather than waved at:
+
+| | p50 |
+|---|---:|
+| `add_decision` without the outbox | 0.445 ms |
+| `add_decision` with the outbox | 0.543 ms |
+| **cost** | **+0.098 ms (+22% of `add_decision`)** |
+
++22% sounds alarming and is the wrong denominator. `add_decision` is 0.445 ms of a ~29 ms
+decision, so the outbox adds **+0.3% end to end** — the price of never losing a decision event,
+paid once per decision.
+
+### A benchmark that lied, and why it is written down
+
+An end-to-end re-run first reported p50 rising 29 ms → 53 ms, an apparent 83% regression. It was
+not real. `uptime` showed a load average of **17.45** with four processes at ~97% CPU:
+
+- three orphaned sandbox pool workers, reparented to launchd after their test runs exited, each
+  spinning at ~97%
+- **a uvicorn started on 2026-08-29 — from a previous session, still listening on :8091 — whose
+  sandbox worker has been burning a full core for over two weeks**
+
+One INSERT cannot cost 24 ms, which is what made the number suspect enough to check. The rule
+this file opens with exists for exactly this: a latency number taken on a loaded machine measures
+the machine. The measurement above avoids the problem entirely by timing the thing that changed,
+in-process, alternating between arms so drift hits both equally.
+
 ## Runtime memory
 
 `docker stats --no-stream`, compose stack idle after a benchmark run:

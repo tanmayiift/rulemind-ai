@@ -826,7 +826,7 @@ serially and races only the seeding.
 - [x] **J14** Fix the hotspots the measurements name, each with a before/after number — measured `COMPUTE_ONLY_USED_VARS=1` at **48.7% faster** (32.70 -> 16.78ms p50, 55 -> 6 variables) — then found it **breaks 16 tests**, so it is documented as unsafe rather than recommended. See `docs/PERFORMANCE.md`
 - [x] **J15** Web image is **2.54 GB** (`COPY . .`) — multi-stage build, target under 500 MB — **2.54 GB -> 232 MB (-91%)** via a 3-stage build on Next `output: "standalone"`. Verified serving, not just small: `/` and a deep link 200, referenced CSS+JS both resolve 200, uid 10001, smoke_compose 14/14
 - [x] **J16** Trim API image; check whether the ML stack can import lazily — **already done — no change needed.** The plan assumed sklearn/lightgbm were resident per worker (the codebase's own comments say so). `python -X importtime -c 'import app.main'` prints nothing for sklearn/lightgbm/scipy/numpy: they are already lazy. Recorded as measured-and-not-needed rather than quietly dropped
-- [ ] **J17** Re-run baseline, publish before/after in `docs/PERFORMANCE.md`. Parity corpus must
+- [x] **J17** Re-run baseline, publish before/after in `docs/PERFORMANCE.md`. Parity corpus must — outbox cost measured directly: **+0.098 ms/decision (+0.3% end to end)**. An end-to-end re-run first showed 29 -> 53 ms, which was **machine noise** — load average 17.45 from orphaned sandbox workers plus a uvicorn from 2026-08-29 still burning a core. One INSERT cannot cost 24 ms, which is what made it worth checking
   not regress — accuracy is not traded for speed
 
 ### D. P09 — durable delivery and exactly-once on Kafka (KRaft)
@@ -873,7 +873,7 @@ at J24.
   is discarded; `playwright-report/` is in an artifact path but can never exist (no `reporter:`)
 - [x] **J26** `scripts/run_all_tests.sh` → collects XML/JSON, generates formatted `TEST_RESULTS.md`. — `scripts/run_all_tests.sh` + `scripts/render_test_report.py`. Counting is per-runner, not a guessing cascade — the first version reported Rust as **0 tests** because cargo's empty doctest target prints a final `test result: ok. 0 passed` and `tail -1` took it
   Must encode `PYTHON_BIN=<venv>` and `cargo test --no-default-features`
-- [ ] **J27** Commit the generated `TEST_RESULTS.md` — the quota-proof half
+- [x] **J27** Commit the generated `TEST_RESULTS.md` — the quota-proof half — `TEST_RESULTS.md` committed — **10 lanes green, 4,526 tests**, every number read from the runners
 - [x] **J28** `.github/workflows/test-report.yml` writing `$GITHUB_STEP_SUMMARY` (zero occurrences — `.github/workflows/test-report.yml` writing `$GITHUB_STEP_SUMMARY` (**zero occurrences repo-wide** before this), artifacts uploaded `if: always()` rather than failure-only, plus `timeout-minutes` on **all 18 jobs across 6 workflows** — none had one
   repo-wide today) + README badge + `timeout-minutes` on every job in all five workflows
 - [x] **J29** 22 Dependabot PRs: apply locally, run the affected lane, merge what passes, close — 2 PRs landed and closed with evidence (#144 pyo3, #168 wasm-bindgen); the other 20 annotated with status + `@dependabot rebase`. **Every one is 7-116 commits behind main** — #144's branch carried 6 Rust tests where main has 19, so merging it would have deleted the conformance suite
