@@ -278,16 +278,55 @@ Three shapes had to be learned the hard way, each found by a test rather than by
 | `inputs` is a map | it is a **list**; `decision_tables._input_index` normalises it, so that is reused |
 | conditions are `{type: condition}` nodes | a loop's `over` and a branch's condition are plain **strings** |
 
-**The remaining 3 failures are one cause, and it is the important one:** with the flag on the
-executor correctly computes nothing for a policy that reads no variables, while `fast_decide`
-still computes the whole bundle — so the fast and slow paths **disagree**. That is precisely the
+**The remaining 3 failures were one cause, and it was the important one:** with the flag on the
+executor correctly computed nothing for a policy that reads no variables, while `fast_decide`
+still computed the whole bundle — so the fast and slow paths **disagreed**. That is precisely the
 FAST_DECIDE divergence class this repo has already fixed three times (input validation, the
 evaluation budget, sample seeding).
 
-So the flag stays **off**, and closing it means teaching `fast_decide` the same restriction —
-a change to the hottest, most-bitten path in the codebase, which is not something to do at the
-end of a long session to enable an opt-in flag. What changed is that the remaining work is now
-**one well-defined item** instead of an open-ended "the analysis is incomplete".
+### Closed 2026-09-14 — the fast path now runs the same analysis
+
+The walk moved out of `PolicyExecutor` into `app/variable_reachability.py` and **both paths call
+the one implementation**. A second copy in `fast_decide` would have been that same bug
+pre-written.
+
+Three things had to be right, and each would have been a defect on its own:
+
+- **The reachable set is computed at bundle build and applied per request.** The flag is read per
+  request and the parity tests flip it mid-process, so baking the flag's answer into a cached
+  bundle would make it sticky per cache entry — flipping the flag would appear to do nothing
+  until the cache expired. The set depends on the policy, not the flag, so caching it is free.
+- **`core_bundle["variables"]` stays the full catalog.** The core reads it as a lookup for trace
+  labels, not a work list, and the executor's `variable_lookup` is unfiltered too. Filtering it
+  would have changed fast-path traces only: divergence in the other direction.
+- **One reader for the flag.** The executor used `os.getenv(...) == "1"` and `env.env_bool` also
+  accepts `true/yes/on`. Two answers to "is the flag on" is its own divergence, so both paths now
+  call `variable_reachability.compute_only_used_vars()`.
+
+**A fail-open had to be closed first.** `core/engine.py` did
+`dict(context.get("variables") or payload or {})` — truthiness, so an **empty** variables map
+fell back to **the raw payload as the feature map**. Unreachable while the fast path always
+computed the whole catalog; reachable the moment it filters, because a policy that reads no
+variables produces exactly that empty map. The fix for the divergence would have introduced a
+fail-open in the exact shape this codebase keeps fixing. Presence now decides, not truthiness.
+
+**Two test fixtures were measuring the unfiltered catalog rather than the guard they name**, and
+both were fixed rather than skipped — the earlier note below predicted one of them:
+
+- The **budget** tests ran a policy that reads ONE variable and drained the budget only because
+  all 55 were computed anyway. Under the flag the budget never drains: 504s become 200s and
+  "did the per-variable timeout shrink" compares one element with itself. They now run a policy
+  that genuinely reaches 20 variables, with a fixture guard asserting it does.
+- The **sample-seeding** tests used a bare `outcome` step — zero variables — yet asserted on
+  `variables["seed_score"]`. Both paths correctly compute nothing and `KeyError`. A rule that
+  reads the variable now sits in front; both its branches approve, so the outcome is unchanged.
+
+Agreement is **proven, not asserted**: `test_compute_only_used_vars_parity.py` runs both paths
+over every fast-servable step type, flag on and off, asserting identical outcomes **and**
+identical computed-variable keys — plus that the flag actually filters (a non-empty strict
+subset on both paths, since an empty set is a subset of anything and would prove the reverse).
+Mutation-checked in both directions separately: disabling the fast path's filter fails 3 named
+tests, making the executor ignore the flag fails 2.
 
 There is a second, smaller tradeoff even once that is fixed: the decision record shrinks from 55
 computed variables to 6. Nothing about the *decision* changes, but anything reading

@@ -743,7 +743,7 @@ GENERATED from the Python. Every fix mutation-checked.
   would be noise, not coverage. Entries are prose explaining WHY, matching the existing
   convention, rather than a `git log` dump.
 - [ ] **I5** Vercel GitHub App access revoked (needs the user's 2FA)
-- [ ] **I6** CI: one commit without `[skip ci]` — **tried 2026-09-14 (`8043957`); still blocked.** That push created ZERO runs; Dependabot's commits created runs that executed `steps: 0`. Needs minutes, not a code change.
+- [ ] **I6** CI: one commit without `[skip ci]` — **tried 2026-09-14 (`8043957`); still blocked.** That push created ZERO runs; Dependabot's commits created runs that executed `steps: 0`. **Needs the BILLING BLOCK cleared (or the repo made public), not minutes** — GitHub's annotation on every failed job says payments failed / spending limit; jobs get no runner, so consumption is already ~0.
 
 ## J. Local-only, optimise, close P09 — 2026-09-14
 
@@ -1000,3 +1000,82 @@ option and is free even on a private repo; it should be wired to `workflow_dispa
 `pull_request`, because 22 open Dependabot PRs means running bot-authored dependency code. Once a run genuinely executes, `.github/workflows/test-report.yml`
 publishes a job summary, and the 20 open Dependabot PRs can be judged on a real result instead of
 a red X that only means "out of minutes".
+
+
+## K. Round 2 — close J14, correct two wrong claims, ship a deck — 2026-09-14
+
+### K. J14 — `fast_decide` now agrees with the executor
+
+- [x] **K0** Closed the fail-open in `core/engine.py` FIRST. `dict(context.get("variables") or
+  payload or {})` tested truthiness, so an **empty** variables map fell back to the raw payload as
+  the feature map — unvalidated caller input standing in for authored, typed variables. It was
+  unreachable only because the fast path always computed the whole catalog, and the fix for the
+  divergence would have made it reachable. Presence now decides. Mutation-checked: restoring the
+  old expression fails `test_empty_variables_does_not_fall_back_to_payload` with
+  `'approve' != 'reject'`. `backtest`, `whatif` and the governance replay all pass
+  `computed_variables or {}` and were exposed to it too.
+- [x] **K1/K2** Walk extracted to `app/variable_reachability.py`; the executor's methods are thin
+  adapters. **One implementation, both paths** — a second copy in `fast_decide` is exactly the
+  drift the module exists to prevent.
+- [x] **K3/K4** Applied on the fast path. Set computed at bundle build, applied per request (the
+  flag is read per request and the parity tests flip it mid-process, so a baked-in answer would be
+  sticky per cache entry). `core_bundle["variables"]` stays the full catalog, matching the
+  executor's unfiltered `variable_lookup`. `needed_variable_ids` is an **optional** bundle key and
+  `_compute_variables`' signature is unchanged, so hand-rolled test bundles still work.
+- [x] **K5** One reader for the flag, strict `== "1"` like its sibling `FAST_DECIDE`.
+- [x] **K6** Two fixtures were measuring the unfiltered catalog rather than the guard they name,
+  and both were fixed rather than skipped: the budget tests now run a policy that reaches 20
+  variables (with a guard asserting it does), and the seeding tests got a rule that actually reads
+  `seed_score`.
+- [x] **K7/K8** `test_compute_only_used_vars_parity.py` runs both paths over every fast-servable
+  step type, flag on and off, asserting identical outcomes **and** identical computed-variable
+  keys — plus that the flag actually filters (a **non-empty** strict subset; an empty set is a
+  subset of anything and would prove the reverse). That non-empty check caught a real fixture bug
+  while being written. Mutation-checked in both directions separately: fast path ignores the
+  filter → 3 named tests fail; executor ignores the flag → 2.
+- [x] **K9** Full suite green with `COMPUTE_ONLY_USED_VARS=1`, which had never been true.
+
+### L. Docker disk — the premise was inverted
+
+- [x] **L1/L2** `scripts/lib/docker_disk.sh`: reads free space **from inside the VM**, fails fast
+  in `k8s_up.sh`, warns in `run_all_tests.sh` (most lanes need no container). `k8s_up.sh` prunes
+  dangling layers **only after a successful run** — after a failure those layers are the evidence.
+- [x] **L3** Documented in `docs/PERFORMANCE.md`. **Host free space is not the number that
+  matters**: this machine runs Colima with a hard 30 GiB VM allocation, so the host's 650 GB never
+  participated. The last report got this wrong, and a confident irrelevant observation reads as an
+  all-clear.
+
+### M. Two of my earlier claims were wrong
+
+- [x] **M1/M3c** **Render is LIVE, not dead.** "The API is already dead" came from ONE 30 s curl
+  that timed out — exactly what a sleeping free-tier service looks like. Re-probed: 200 in 16.2 s
+  cold, then 0.16 s, then 0.16 s. Corrected here and in the prose.
+- [x] **M2a** `docs/PRE-PUBLICATION-AUDIT.md` — full history scanned, not just the tree. `.env`,
+  `.env.local` and `.env.deployed` have **zero** add-commits in any branch; no provider-key pattern
+  matches anywhere in history. The committed dev defaults are real values but fail closed in
+  production.
+- [x] **M2b** Repo description said **"Orchestrator"**; now describes the product.
+- [x] **M2c** **Actions is a BILLING BLOCK, not an exhausted quota.** Corrected in `CLAUDE.md`,
+  `README.md`, `test-report.yml` and here. It changes the fix: consumption is already ~0, so
+  trimming workflows saves nothing.
+- [x] **M3b** `scripts/render_teardown.sh` — deletes every service, database and key-value store
+  the moment a token is exported. Token read from the environment, never written to a file, never
+  in argv, never echoed. Re-probes afterwards rather than trusting a timeout.
+- [x] **M4** Vercel confirmed to need the user: `gh api /user/installations` returns 403 with an
+  **empty** `X-Accepted-Oauth-Scopes`, so no scope grants it and `gh auth refresh` cannot help.
+
+### N. Pitch deck
+
+- [x] **N1/N2/N3** `docs/deck/RuleMind-AI.pptx` — 11 slides for enterprise buyers, with
+  `docs/deck/README.md` mapping every figure to where it was verified and carrying the explicit
+  do-not-claim list. Slide 10 states those limits on the slide.
+- [x] **N4** `CLAUDE.md` drift fixed: 18 routers → 23, `storage.py` 3515 → 4979 lines, `main.py`
+  1629 → 1972, AI "dual-provider" → three (Gemini is fully implemented), and the test counts now
+  point at the generated `TEST_RESULTS.md` instead of carrying their own copy.
+
+### Also fixed: the last of the shared-global leak
+
+25 test modules still assigned `app_main.storage` without restoring it — the cause of the
+`unable to open database file` "flake", which always lands on whoever reads the global next
+rather than on the module that leaked it. `tests/_storage_global.py` now holds one helper, called
+via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak now.**
