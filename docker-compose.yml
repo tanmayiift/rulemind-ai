@@ -21,6 +21,26 @@ services:
       retries: 6
       start_period: 20s
 
+  # One-shot schema migration. apps/python-executor/entrypoint.sh no longer runs
+  # `alembic upgrade head` (it swallowed failures and every replica raced it), so
+  # migrations happen exactly once, here, before api or worker start. The
+  # Kubernetes equivalent is the pre-install/pre-upgrade Helm hook Job in
+  # helm/rulemind/templates/job-migrate.yaml.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/python-executor/Dockerfile
+    command: ["python3", "-m", "alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://rulemind:${POSTGRES_PASSWORD:-rulemind}@db:5432/rulemind
+      RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
+      RULEMIND_ADMIN_JWT_SECRET: ${RULEMIND_ADMIN_JWT_SECRET:-rulemind-admin-dev-secret}
+      RULEMIND_ENV: ${RULEMIND_ENV:-development}
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
     build:
       context: .
@@ -31,9 +51,26 @@ services:
       DATABASE_URL: postgresql://rulemind:${POSTGRES_PASSWORD:-rulemind}@db:5432/rulemind
       RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
       RULEMIND_ADMIN_JWT_SECRET: ${RULEMIND_ADMIN_JWT_SECRET:-rulemind-admin-dev-secret}
+      # RULEMIND_ENV was set in NO deployment artifact, so app/security_config.py
+      # took its "warn and SKIP the default-secret check" branch everywhere. It is
+      # explicit here — and deliberately `development`, not `production`: this
+      # compose file runs on the committed dev secrets above, and RULEMIND_ENV=
+      # production would (correctly) refuse to boot on them. helm and k8s set
+      # production. Override with RULEMIND_ENV=production once you supply real
+      # secrets.
+      RULEMIND_ENV: ${RULEMIND_ENV:-development}
+      # Empty by default: a compose stack must not seed demo policies into what someone may be
+      # treating as a real environment. Declared here so it CAN be turned on from the outside --
+      # scripts/smoke_compose.sh sets it, because its end-to-end check needs a policy to decide
+      # against and there is otherwise nothing in the database.
+      RULEMIND_SEED_DEMO: ${RULEMIND_SEED_DEMO:-}
       REDIS_URL: redis://redis:6379/0
       PYTHON_SANDBOX_TIMEOUT: 2000
       PYTHON_SANDBOX_MEMORY: 128
+      # Explicit, and small: app/db.py defaults to 20+20 PER uvicorn worker
+      # process. See the connection-budget arithmetic in helm/rulemind/values.yaml.
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
       CORS_ORIGINS: ${RULEMIND_WEB_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       # Empty by default = tracing off. Set to http://otel-collector:4317 with the
       # observability profile to emit traces. Metrics are always on at /metrics.
@@ -44,6 +81,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"]
       interval: 10s
@@ -54,20 +93,31 @@ services:
     build:
       context: .
       dockerfile: apps/python-executor/Dockerfile
-    # Skip the migration entrypoint — the api runs migrations once; the worker just
-    # needs the schema to be current (it retries until the api has migrated).
-    entrypoint: ["python3"]
-    command: ["-m", "app.worker"]
+    # No entrypoint override any more: the entrypoint is a plain `exec "$@"` wrapper
+    # now that migrations moved to the `migrate` service, so there is nothing to
+    # skip. (This service is built from the API Dockerfile — there is no separate
+    # worker image, which is also why helm's image.worker defaults to the api repo.)
+    command: ["python3", "-m", "app.worker"]
     environment:
       DATABASE_URL: postgresql://rulemind:${POSTGRES_PASSWORD:-rulemind}@db:5432/rulemind
       RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
       RULEMIND_ADMIN_JWT_SECRET: ${RULEMIND_ADMIN_JWT_SECRET:-rulemind-admin-dev-secret}
+      RULEMIND_ENV: ${RULEMIND_ENV:-development}
+      # Empty by default: a compose stack must not seed demo policies into what someone may be
+      # treating as a real environment. Declared here so it CAN be turned on from the outside --
+      # scripts/smoke_compose.sh sets it, because its end-to-end check needs a policy to decide
+      # against and there is otherwise nothing in the database.
+      RULEMIND_SEED_DEMO: ${RULEMIND_SEED_DEMO:-}
       REDIS_URL: redis://redis:6379/0
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python3", "-c", "import os, sys, time; path = '/tmp/rulemind-worker.ready'; sys.exit(0 if os.path.exists(path) and time.time() - os.path.getmtime(path) < 90 else 1)"]
       interval: 10s
@@ -104,6 +154,60 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
+  # Kafka, KRaft mode — starts only with:  docker compose --profile kafka up
+  #
+  # KRaft, so there is no ZooKeeper: one container is the whole broker, acting as both
+  # controller and broker. The old three-container Kafka+ZK topology is not worth its RAM on a
+  # laptop, and ZooKeeper is removed in Kafka 4.
+  #
+  # Behind a profile because the decision path must keep working without it. app/decision_bus.py
+  # already establishes that pattern for Redis -- publish is a no-op and the SSE feed falls back
+  # to DB polling -- and the durable outbox relay follows it: the outbox row is committed in the
+  # same transaction as the decision whether or not a broker is listening, so turning Kafka off
+  # loses delivery, never data.
+  #
+  # Single broker, so replication factors are all 1. That is the one thing here that is a local
+  # concession rather than a design: exactly-once across a partition needs the transaction state
+  # log replicated in production (min.insync.replicas > 1), and with one broker it cannot be.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.9.0
+    profiles: ["kafka"]
+    ports:
+      - "${RULEMIND_KAFKA_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,EXTERNAL://:9092
+      # Two advertised listeners on purpose: containers on this network reach the broker at
+      # kafka:19092, while anything on the host reaches it at localhost:9092. A single listener
+      # cannot satisfy both -- the broker hands its advertised address back to the client after
+      # the initial connect, so a host client told "kafka:19092" fails DNS on the second hop.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,EXTERNAL://localhost:${RULEMIND_KAFKA_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # All 1 because there is one broker. Left at the 3-replica defaults the broker refuses to
+      # create its own internal topics and never finishes starting.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: ${RULEMIND_KAFKA_CLUSTER_ID:-rulemind-local-cluster-0}
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      # A broker that answers the API is ready; a TCP port check passes several seconds earlier,
+      # while the controller is still electing, and a producer connecting in that window fails.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
   # Observability stack — starts only with:  docker compose --profile observability up
   # Grafana at http://localhost:3001 (admin/admin). Prometheus scrapes /metrics;
   # Tempo receives OTLP traces via the collector. Pre-provisioned datasources +
@@ -131,6 +235,9 @@ services:
     profiles: ["observability"]
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The rules file prometheus.yml references; without this mount Prometheus starts and
+      # silently evaluates nothing, which looks identical to "no alerts are firing".
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
       - "${RULEMIND_PROM_PORT:-9090}:9090"
 
@@ -152,6 +259,7 @@ services:
       - tempo
 
 volumes:
+  kafkadata:
   pgdata:
   redisdata:
   tempodata:

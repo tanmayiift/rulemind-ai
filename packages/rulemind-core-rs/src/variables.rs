@@ -10,13 +10,8 @@ fn numeric(value: &Value) -> f64 {
     match value {
         Value::Number(n) => n.as_f64().unwrap_or(0.0),
         Value::String(s) => s.trim().parse::<f64>().unwrap_or(0.0),
-        Value::Bool(b) => {
-            if *b {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        Value::Bool(true) => 1.0,
+        Value::Bool(false) => 0.0,
         _ => 0.0,
     }
 }
@@ -39,7 +34,7 @@ fn as_list(value: &Value) -> Vec<Value> {
 
 /// Resolve a dotted path with optional `[index]` segments (supports negative indices),
 /// tolerating a leading `$.`.
-fn resolve_path<'a>(root: &'a Value, raw_path: &str) -> Option<Value> {
+fn resolve_path(root: &Value, raw_path: &str) -> Option<Value> {
     let path = raw_path.strip_prefix("$.").unwrap_or(raw_path);
     if path.is_empty() {
         return Some(root.clone());
@@ -249,7 +244,7 @@ pub fn evaluate_variable(variable: &Value, payload: &Value, variables: &Value) -
                 if let Some(t) = target {
                     let left = numeric(&resolve_operand(ins.get("left").and_then(Value::as_str), &registers, Value::Null));
                     let right_fallback = get(ins, "right")
-                        .and_then(|v| if v.is_string() { None } else { Some(v) })
+                        .filter(|v| !v.is_string())
                         .or_else(|| get(ins, "value"))
                         .or_else(|| get(ins, "default"))
                         .unwrap_or(Value::Null);

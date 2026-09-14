@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import (JSON, BigInteger, Boolean, Date, DateTime, Float, Index, Integer,
+                        LargeBinary, String, Text, UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -233,11 +234,21 @@ class Decision(Base):
     # mint the same id). The primary key is a server-generated id; dedupe of on-device decisions is
     # by (tenant_id, client_id), so an at-least-once retry never double-counts and one tenant's id can
     # never collide with another's. client_id is NULL for server/API decisions (many NULLs allowed).
+    #
+    # That last sentence was the contract and the /decide path broke it: it wrote the request's
+    # `userId` into client_id so case-wise history had something to filter on. A userId is a SUBJECT
+    # identifier, not an idempotency key -- it repeats on every re-decision of the same customer --
+    # so the second decision for any customer hit this constraint and was silently dropped (the
+    # write is async, so the caller already had a 200 and a decision_id that never existed).
+    # user_id below is the subject; client_id stays the device idempotency key.
     __table_args__ = (UniqueConstraint("tenant_id", "client_id", name="uq_decisions_tenant_client"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
     tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     client_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    # The decision SUBJECT (/decide's `userId`). Deliberately NOT unique -- "every decision for
+    # this customer" is the whole point of case-wise history.
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     policy_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     payload_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     payload_preview: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
@@ -289,8 +300,191 @@ class AuditEvent(Base):
     detail: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[Optional[dict]] = mapped_column("metadata_json", JSON, nullable=True)
     user_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    ip_address: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # 512, not 128: this column holds a Fernet token when AUDIT_ENCRYPT_AT_REST is on, and an
+    # encrypted IPv6 address lands around 140 characters. SQLite does not enforce declared
+    # widths, so the old 128 would have failed only on Postgres, only on IPv6, in production.
+    ip_address: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    # --- tamper-evident chain (see app/audit_chain.py) ---
+    # All three are NULLABLE on purpose. Rows written before the chain existed keep NULLs and are
+    # reported as `pre_chain` -- explicitly NOT verified. Backfilling them with computed hashes
+    # would make forged-looking history verify clean, which is worse than admitting the gap.
+    seq: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    prev_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        # Two concurrent writers computing the same next seq collide here rather than forking
+        # the chain -- the loser retries. NULL seqs (legacy rows) are distinct under SQL NULL
+        # semantics on both SQLite and Postgres, so this does not constrain them.
+        UniqueConstraint("tenant_id", "seq", name="uq_audit_events_tenant_seq"),
+    )
+
+
+class UsageRecord(Base):
+    """Metered usage, bucketed per tenant per UTC day per metric.
+
+    DAILY buckets, not monthly. A monthly counter cannot answer "show me the trend", cannot
+    prorate a mid-month plan change, and cannot be recomputed if a period boundary was wrong --
+    and a month is just a SUM over days, so nothing is lost by storing the finer grain.
+
+    Contrast with the pre-existing AI counters, which live in `Tenant.config["ai_usage"]` as
+    lifetime totals with no time dimension. Those cannot be invoiced from: there is no way to
+    ask what a workspace used in August. This table is the billable record; that blob stays as
+    a convenience display.
+    """
+
+    __tablename__ = "usage_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    # Stored as a DATE, not a timestamp: the bucket IS the day, and a time component would let
+    # two writers create two rows for the same day and silently split the count.
+    day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        # The upsert target. Without this a concurrent increment inserts a second row for the
+        # same bucket and the tenant is under-billed -- the failure mode that silently loses
+        # revenue rather than loudly erroring.
+        UniqueConstraint("tenant_id", "day", "metric", name="uq_usage_tenant_day_metric"),
+    )
+
+
+class DecisionOutbox(Base):
+    """The transactional outbox: one row per decision that still has to reach the broker.
+
+    THE POINT IS THE TRANSACTION, not the table. A decision is written to Postgres and published
+    to Kafka, and those are two different systems -- so "write then publish" loses the message
+    whenever the process dies in between, and "publish then write" emits a decision that never
+    existed. Neither is recoverable after the fact, because nothing durable records the gap.
+
+    Writing this row in the SAME transaction as the Decision closes it: the row and the decision
+    commit together or neither does. A relay then moves committed rows to Kafka and marks them
+    sent, which is at-least-once by construction. Exactly-once comes from the consumer side
+    (idempotency_records keyed by the outbox id), not from pretending delivery is reliable.
+
+    Deliberately NOT reusing the existing decision WAL. decision_wal.py exists to survive a
+    database that is unreachable -- it is a file on local disk holding decisions already returned
+    to a caller. This is the opposite situation: the database is the thing that succeeded, and
+    the broker is what might not have. Different failure, different durability, different table.
+    """
+
+    __tablename__ = "decision_outbox"
+    __table_args__ = (
+        # The relay's only hot query is "oldest unsent rows first". Without this it is a
+        # sequential scan over a table that grows with every decision ever made.
+        Index("ix_decision_outbox_unsent", "sent_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    decision_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    # The Kafka partition key. Per-tenant, so one tenant's decisions keep their relative order
+    # (Kafka orders within a partition, never across) while different tenants parallelise.
+    partition_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    topic: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # NULL until the relay has an acknowledged produce. This is the whole state machine.
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class IdempotencyRecord(Base):
+    """One remembered response for an Idempotency-Key, scoped to a tenant.
+
+    Keyed per TENANT, not globally: two customers picking the same uuid must not collide, and a
+    globally unique key would let one tenant probe another's key space.
+
+    `request_hash` is what makes this safe rather than merely convenient. Replaying a key with a
+    DIFFERENT body is a client bug -- usually a key generated once and reused across distinct
+    operations -- and returning the first response for it would silently drop the second write.
+    The hash turns that into a loud 422 instead.
+    """
+
+    __tablename__ = "idempotency_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # NULL while the first request is still running -- that is how a concurrent duplicate is
+    # detected and answered 409 rather than being allowed to execute the write a second time.
+    status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        # The claim. Two concurrent requests with one key race to INSERT here; exactly one wins
+        # and executes, the loser gets 409. Without this both would execute the write.
+        UniqueConstraint("tenant_id", "key", name="uq_idempotency_tenant_key"),
+    )
+
+
+class LoginAttempt(Base):
+    """Failed-credential counters that survive a restart and are shared across replicas.
+
+    The counter had two tiers: Redis when configured, and a per-PROCESS dict otherwise. The
+    fallback is what most deployments actually run on, and it is not a lockout:
+
+      * restart the pod and the counter is gone, so an attacker who trips the limit just waits
+        for the next deploy, crash or scale event and resumes from zero;
+      * run two replicas and each keeps its own count, so N replicas mean N times the attempts
+        before anyone is locked out -- and a round-robin load balancer hands the attacker that
+        multiplier for free.
+
+    Neither is visible from the outside: the endpoint returns 429 exactly as it should, right up
+    until it silently doesn't. The database is the one store every replica already shares and
+    that outlives a process, so it is the correct fallback; Redis stays the fast path.
+
+    Keyed by the same salted digest as the Redis bucket (`middleware._login_bucket`), so the two
+    tiers agree on identity and neither stores an email address. No tenant_id: the platform-admin
+    account has no tenant, and the key already carries the scope.
+    """
+
+    __tablename__ = "login_attempts"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Set once on the FIRST failure and never refreshed. Extending the window on every attempt
+    # would let an attacker hold a victim's account locked indefinitely just by continuing to
+    # guess -- the same rule the Redis tier applies with its one-shot EXPIRE.
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
+class SamlAssertionSeen(Base):
+    """One consumed SAML assertion id, so it cannot be replayed (T3.5).
+
+    SAML has no built-in replay defence: an assertion is a signed bearer token, and the signature
+    stays valid for as long as the IdP's certificate does. Without this table, an attacker who
+    captured one POST to the ACS endpoint -- from a proxy log, a shared browser, an intercepted
+    redirect -- could replay it indefinitely and log in as that user forever.
+
+    Keyed per tenant, matching IdempotencyRecord's reasoning: two IdPs can legitimately mint the
+    same assertion ID, and a global key would let one workspace probe another's.
+
+    `not_on_or_after` is stored so consumed rows can be pruned once the assertion could no longer
+    be accepted anyway -- the table would otherwise grow forever.
+    """
+
+    __tablename__ = "saml_assertions_seen"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    assertion_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    not_on_or_after: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        # The claim: two concurrent POSTs of the same assertion race to INSERT, exactly one wins.
+        # Without this a replay is only "usually" caught.
+        UniqueConstraint("tenant_id", "assertion_id", name="uq_saml_assertion_tenant_id"),
+    )
 
 
 class ErrorEvent(Base):
@@ -399,6 +593,88 @@ class Webhook(Base, TimestampMixin):
     payload_mapping: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
+class Predictor(Base, TimestampMixin):
+    """A named number a decision already produces, tracked over time (P20).
+
+    It POINTS at a value rather than computing one -- see app/predictors.py for why -- so the
+    columns are a pointer (source_type + source_id) plus a baseline window, not a definition.
+    """
+
+    __tablename__ = "predictors"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_predictors_tenant_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    # How many days back the baseline window reaches, and how many days the current window
+    # covers. Stored per predictor rather than passed per request so that two people asking "is
+    # it drifting?" get the same answer -- a drift number is only comparable against its own
+    # history if the windows are fixed.
+    baseline_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    current_days: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
+    bins: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+
+
+class PredictorValue(Base):
+    """One observation. Deliberately narrow and unencrypted: a score with no identifiers beside
+    it is not personal data, and this table is read in bulk for a distribution -- decrypting a
+    field per row would make a 30-day window a per-request cost rather than a query."""
+
+    __tablename__ = "predictor_values"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    predictor_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    decision_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        # The only query this table serves: one predictor's values in a time window, for one
+        # tenant. A composite index in that order is what keeps a 30-day baseline from becoming a
+        # full scan as the table grows with decision volume.
+        Index("ix_predictor_values_lookup", "tenant_id", "predictor_id", "created_at"),
+    )
+
+
+class WebhookSubscription(Base, TimestampMixin):
+    """OUTBOUND. The inverse of `Webhook` above, which is inbound (an endpoint_path a partner
+    POSTs to in order to trigger a policy). This says: POST to `url` whenever an event of one of
+    `event_types`, matching every one of `filters`, happens in this workspace.
+
+    A separate table rather than a flag on `Webhook`: the two share no column that means the same
+    thing. `Webhook` has an endpoint_path and a policy_id (which policy a caller may trigger);
+    this has a url, an event selection and a signing secret (where WE send, and how the receiver
+    verifies us). Overloading one row would make every query on either say "and the other kind".
+    """
+
+    __tablename__ = "webhook_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    event_types: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    filters: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # Encrypted at rest with the same helper the inbound webhook secret uses, and returned in
+    # plaintext exactly once, at creation. Nullable so an unsigned subscription is expressible.
+    secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    timeout_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    retries: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Delivery health, so a subscriber that has been silently failing is visible without
+    # trawling logs. Not a delivery LOG -- that would grow with event volume; this is the
+    # last-known state of the one thing an operator asks about ("is it working?").
+    last_delivery_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_delivery_ok: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    last_delivery_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
 class CronSchedule(Base, TimestampMixin):
     __tablename__ = "cron_schedules"
 
@@ -456,6 +732,17 @@ class Setting(Base):
     engine_config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     source_defaults: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     audit_retention_days: Mapped[int] = mapped_column(Integer, default=90, nullable=False)
+    # Retention in CALENDAR months — the unit contracts and regulators are actually written in
+    # ("retain decisions for 7 years", "purge PII after 24 months"). Days is a lossy encoding of
+    # that: 7 years is 2557 days from today, not the 2555 a hand conversion produces.
+    #
+    # NULL means "this workspace never set months", and audit_retention_days stays authoritative
+    # — that is how every pre-existing tenant keeps the window it already had. Non-NULL wins over
+    # days, and audit_retention_days is then maintained as a mirror so the readers that still
+    # speak days (the /settings GET, workspace export, the experience-studio form, the web
+    # dashboard) stay approximately right. `archiver.retention_cutoff` is the one authority on
+    # which of the two applies; nothing should re-derive that precedence itself.
+    audit_retention_months: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     theme_mode: Mapped[str] = mapped_column(String(16), default="light", nullable=False)
     # Admin-only, config-driven white-label branding (accent/CTA colour, background,
     # sidebar, brand name/logo, hidden nav items). Empty values fall back to theme defaults.
@@ -491,6 +778,68 @@ class HostedModel(Base):
     last_test_result: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class ModelSet(Base, TimestampMixin):
+    """A versioned group of hosted models with a routing rule (P05).
+
+    Members live in a JSON column rather than a second table because they are an ORDERED list
+    whose order is the routing semantics -- first match wins. A child table would need an explicit
+    position column and an ordering join to reproduce exactly that, for a list bounded at 20.
+    """
+
+    __tablename__ = "model_sets"
+    __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_model_sets_tenant_public"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    public_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # [{model_id, label, condition, pinned_version}, ...] -- see app/modelsets.py.
+    members: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="dev", nullable=False)
+
+
+class Journey(Base, TimestampMixin):
+    """An end-user-facing flow of screens that collects a payload and runs a policy (P15).
+
+    THE SHAPE IS NOT NEW. `app/experience_studio.py` has carried it since the mobile studio
+    shipped -- id, title, category, policyId, and an ordered list of typed screens -- it is served
+    at `/sdk/v1/experience-manifest`, and `packages/sdk-flutter/example` renders and RUNS it. What
+    was missing is that the manifest returns a deep copy of one static template, so every tenant
+    saw the same three demo journeys and no workspace could author its own. This table is that
+    template's shape, per tenant.
+
+    `screens` is a JSON column for the reason `ModelSet.members` is: it is an ORDERED list whose
+    order is the semantics (screen 2 follows screen 1), and a child table would need a position
+    column and an ordering join to say exactly that.
+
+    LOCKED is separate from `status`. Status is the dev/uat/prod lifecycle every authoring entity
+    has; `is_locked` is "this journey is in the field and its screens must not move under the
+    people filling them in". A locked journey can still be promoted, and can still be duplicated
+    -- duplication is the intended way to change one.
+    """
+
+    __tablename__ = "journeys"
+    __table_args__ = (UniqueConstraint("tenant_id", "public_id", name="uq_journeys_tenant_public"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    public_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The policy this journey's collected payload is decided by.
+    policy_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    primary_color: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # [{id, title, subtitle, type, fields: [...]}, ...] -- experience_studio's screen shape.
+    screens: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="dev", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
 class ModelEvaluation(Base):

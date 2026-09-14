@@ -16,5 +16,25 @@ packages/rulemind-core-rs/pkg
 .git
 .runtime
 **/.runtime
+
+# `.venv` alone did NOT match this repo's actual virtualenv, which is
+# `.venv-rulemind` (~511MB). Both images build with `context: .`, so that whole
+# tree was tarred and shipped to the Docker daemon on every single build.
 .venv
+.venv*
+**/.venv
+**/.venv*
+venv
+**/venv
+
+# SECRETS. apps/web/Dockerfile does `COPY . .`, and a real `.env` with live
+# credentials exists at the repo root — it was being baked into the web image,
+# which then gets pushed to a registry. `.env.example` is deliberately kept.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
 **/coverage

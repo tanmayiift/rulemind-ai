@@ -1,7 +1,7 @@
 {
   "name": "@rulemind/python-executor",
   "private": true,
-  "version": "3.0.0",
+  "version": "4.0.0",
   "scripts": {
     "build": "python3 -m compileall -q app && echo python-build-ok",
     "dev": "python3 -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8080",

@@ -26,6 +26,7 @@ os.environ.pop("AUTH_MODE", None)
 import app.ai as ai  # noqa: E402
 import app.main as app_main  # noqa: E402
 from app.storage import Storage  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 _RULE_JSON = json.dumps({
     "name": "Bureau gate",
@@ -64,11 +65,12 @@ class EstimateCostTests(unittest.TestCase):
 class AIUsageApiTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "usage.db"))
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
 
-        async def fake(api_key, model, system, user, max_tokens, temperature):
+        async def fake(api_key, model, system, user, max_tokens, temperature, **kwargs):
             return _RULE_JSON, {"input_tokens": 1000, "output_tokens": 500}
         self._orig = dict(ai._PROVIDERS)
         ai._PROVIDERS["anthropic"] = fake

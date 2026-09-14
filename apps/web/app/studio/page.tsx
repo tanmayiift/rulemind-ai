@@ -11,7 +11,7 @@ import { THEMES, type ThemeTokens } from "../../src/v3/theme";
 // in place; scorecards / decision tables are referenced with a quick-open).
 
 type Step = { id: string; type: string; ref_id?: string; label?: string; outcome?: string; config?: Record<string, unknown>; [k: string]: unknown };
-type Policy = { id: string; name: string; steps?: Step[]; defaultOutcome?: string };
+type Policy = { id: string; name: string; steps?: Step[]; defaultOutcome?: string; status?: string };
 type Ref = { id: string; name?: string; label?: string };
 type Variable = { id: string; name?: string };
 type Mece = { valid?: boolean; message?: string; issues?: unknown[]; overlaps?: unknown[]; gaps?: unknown[] };
@@ -116,7 +116,17 @@ export default function BuildStudioPage() {
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", paddingBottom: 12, borderBottom: `1px solid ${theme.border}` }}>
         <select value={policyId} onChange={(e) => selectPolicy(e.target.value)} style={sel(theme)}>
           <option value="">— new policy —</option>
-          {policies.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {/* Each option names its environment. Studio deliberately lists policies from EVERY
+              environment -- it is the canvas you assemble on, and hiding a PROD policy here would
+              make it uneditable -- but the Policies page filters to the active environment, so
+              without this label the two pages silently disagree about what exists. Saying
+              "(PROD)" turns editing a live policy from a DEV context into a visible choice
+              rather than an accident. */}
+          {policies.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}{p.status ? " (" + String(p.status).toUpperCase() + ")" : ""}
+            </option>
+          ))}
         </select>
         <button onClick={newPolicy} style={ghost(theme)}>+ New</button>
         <input value={name} onChange={(e) => { setName(e.target.value); setDirty(true); }} placeholder="Policy name" style={{ ...inp(theme), flex: 1, minWidth: 180 }} />

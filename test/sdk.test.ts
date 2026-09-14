@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuleEngineClient } from "../packages/sdk-js/src";
 
+// Overridable so this suite can run against a workspace other than the local dev seed.
+const API_KEY = process.env.RULEMIND_DEV_API_KEY ?? "rm_live_devlocaltenantkey000000000000";
+
 describe("RuleEngineClient", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -26,7 +29,7 @@ describe("RuleEngineClient", () => {
 
     const client = new RuleEngineClient({
       baseUrl: "http://localhost:8080",
-      apiKey: "rm_live_devlocaltenantkey000000000000",
+      apiKey: API_KEY,
       sdkVersion: "4.1.0",
       timeoutMs: 5000
     });
@@ -47,7 +50,7 @@ describe("RuleEngineClient", () => {
         method: "POST",
         headers: expect.objectContaining({
           "content-type": "application/json",
-          "x-api-key": "rm_live_devlocaltenantkey000000000000"
+          "x-api-key": API_KEY
         }),
         body: JSON.stringify({
           policyId: "policy_pl_underwriting",
@@ -101,7 +104,7 @@ describe("RuleEngineClient", () => {
 
     const client = new RuleEngineClient({
       baseUrl: "http://localhost:8080",
-      apiKey: "rm_live_devlocaltenantkey000000000000",
+      apiKey: API_KEY,
       sdkVersion: "4.1.0"
     });
 
@@ -116,7 +119,7 @@ describe("RuleEngineClient", () => {
       expect.objectContaining({
         method: "GET",
         headers: expect.objectContaining({
-          "x-api-key": "rm_live_devlocaltenantkey000000000000",
+          "x-api-key": API_KEY,
           "x-sdk-version": "4.1.0",
           "x-bundle-version": "12",
           "x-client-public-key": "public-key"

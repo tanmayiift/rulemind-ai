@@ -176,7 +176,13 @@ named function (any name except the reserved `variable`), e.g. `def score(payloa
 
 ---
 
-## 8. Full environment-variable reference
+## 8. Environment variables you are most likely to need
+
+**This is a selection, not the reference.** It covers 24 of the ~97 variables the backend reads;
+`.env.example` is the authority and is generated from the code that actually reads each value
+(`os.environ` / `os.getenv` under `apps/python-executor/app/`) plus `docker-compose.yml`. This
+section used to be titled "Full environment-variable reference", which is how an operator ends
+up deploying without `RULEMIND_CONFIG_KEY` set — it was not in the list.
 
 | Var | Default | Area |
 |---|---|---|

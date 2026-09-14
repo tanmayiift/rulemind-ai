@@ -292,7 +292,9 @@ function parseDateValue(val: unknown): number {
 function extractConditionConstraint(node: RuleNode): FieldConstraint | null {
   const config = node.config ?? {};
   const field = config.field as string | undefined;
-  const fieldType = (config.fieldType as FieldType) ?? "string";
+  // Lowercased for the same reason as evaluator.ts: a declared "Date"/"Boolean" must take the
+  // typed branch, or MECE analysis reasons about a different type than the evaluator uses.
+  const fieldType = (String(config.fieldType ?? "string").toLowerCase() as FieldType);
   const operator = (config.operator as Operator) ?? "==";
 
   if (!field) return null;
@@ -994,7 +996,7 @@ export function analyzeMECE(rules: MECERuleInput[]): MECEAnalysisResult {
         }
 
         if (constraint.valueSet) {
-          if (constraint.fieldType === "boolean") {
+          if (String(constraint.fieldType ?? "").toLowerCase() === "boolean") {
             const existing = booleanFieldValues.get(constraint.field) ?? new Set();
             if (constraint.valueSet.included) {
               for (const v of constraint.valueSet.included) existing.add(v);

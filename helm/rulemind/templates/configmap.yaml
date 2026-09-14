@@ -2,6 +2,68 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: rulemind-config
+  annotations:
+    # A HOOK, and it has to be, because templates/job-migrate.yaml is one.
+    #
+    # Helm applies hooks BEFORE the regular manifests of a release. The migrate Job is a
+    # pre-install/pre-upgrade hook that does `envFrom: configMapRef: rulemind-config`, so on a
+    # fresh install it started, looked for this ConfigMap, and got
+    # `Error: configmap "rulemind-config" not found` -- 26 times, CreateContainerConfigError,
+    # until the install timed out. The chart was un-installable from empty.
+    #
+    # `helm lint` and scripts/verify_chart.py both passed the whole time: the YAML is valid and
+    # the rendered contract holds. Only ORDERING was wrong, and ordering does not exist until
+    # something applies the manifests. Found by installing the chart on a local kind cluster.
+    #
+    # hook-weight -10 sorts this ahead of the Job's -5 (lower runs first). The delete policy is
+    # before-hook-creation, NOT hook-succeeded: the Deployments reference this same object after
+    # the hooks finish, so deleting it on success would take the API's configuration with it.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
 data:
-  DATABASE_URL: {{ .Values.env.databaseUrl | quote }}
+  # DATABASE_URL moved OUT of here and into the Secret. It carries the Postgres
+  # password, and a ConfigMap is world-readable to anything with get on the
+  # namespace and is dumped verbatim by `kubectl describe`/`helm get values`.
+  # k8s/rulemind.yaml already had it as a Secret; the two now agree.
+  # Rendered ONLY when set. A blank `REDIS_URL: ""` is a set-but-blank env var, not an unset
+  # one -- and app/runtime.py does `os.getenv("REDIS_URL")` then `if not url: unavailable`.
+  # So a blank value silently drops rate limiting to the per-worker in-process fallback: the
+  # configured limit is then multiplied by the worker count and shared across no pods at all,
+  # which is the opposite of what an operator setting a limit intends. Omitting the key is the
+  # honest way to say "not configured".
+  {{- if .Values.env.kafkaBootstrapServers }}
+  # Rendered ONLY when set, for the same reason as REDIS_URL above: decision_outbox.enabled()
+  # tests `bool(os.getenv("KAFKA_BOOTSTRAP_SERVERS"))`, so a blank value is a set-but-empty env
+  # var that reads as configured-and-broken rather than not-configured. Omitting the key lets
+  # the outbox degrade the way it is designed to -- rows accumulate unsent, nothing is lost.
+  KAFKA_BOOTSTRAP_SERVERS: {{ .Values.env.kafkaBootstrapServers | quote }}
+  {{- end }}
+  {{- if .Values.env.redisUrl }}
   REDIS_URL: {{ .Values.env.redisUrl | quote }}
+  {{- end }}
+
+  # See values.yaml `env.rulemindEnv`: without this, app/security_config.py logs a
+  # warning and SKIPS the default-secret check, so a cluster running on the
+  # committed dev keys starts up perfectly happily.
+  RULEMIND_ENV: {{ .Values.env.rulemindEnv | quote }}
+
+  # Without this the pre-auth signup/admin/login budgets key on the ingress's IP rather than
+  # the caller's, collapsing every client into one shared bucket. See values.yaml.
+  RULEMIND_TRUSTED_PROXY_HOPS: {{ .Values.env.trustedProxyHops | quote }}
+
+  # Prometheus multiprocess mmap dir. The API runs multiple uvicorn workers, so without this a
+  # scrape reports whichever worker answered it -- counters appear to move backwards and rate()
+  # is meaningless. Must be an emptyDir: per-pod, shared by that pod's workers, and gone on
+  # restart. entrypoint.sh wipes it once in the master before the fork.
+  PROMETHEUS_MULTIPROC_DIR: /tmp/prom-multiproc
+
+  # Was never rendered at all, so the API fell back to the localhost default in
+  # app/main.py and rejected every browser request from the real ingress host.
+  CORS_ORIGINS: {{ include "rulemind.corsOrigins" . | quote }}
+
+  # Connection budget — see the arithmetic block in values.yaml before changing.
+  DB_POOL_SIZE: {{ .Values.db.poolSize | quote }}
+  DB_MAX_OVERFLOW: {{ .Values.db.maxOverflow | quote }}
+  DB_POOL_RECYCLE: {{ .Values.db.poolRecycle | quote }}
+  DB_POOL_TIMEOUT: {{ .Values.db.poolTimeout | quote }}

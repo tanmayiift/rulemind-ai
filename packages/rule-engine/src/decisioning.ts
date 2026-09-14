@@ -11,24 +11,52 @@ import type {
 } from "@rulemind/shared";
 import { evaluateRule } from "./evaluator";
 import { EXCEL_FUNCTIONS } from "./excel-functions";
+import { evaluateFormulaSafely } from "./safe-formula";
 
 /**
  * Evaluate a simple Excel-style formula string with given context variables.
  */
 function evaluateFormula(formula: string, context: Record<string, unknown>): unknown {
+  // Was `new Function(...)` — real JavaScript eval on an author-supplied string. Verified
+  // exploitable: a scorecard formula of
+  //   ((globalThis.__PWNED__ = 'arbitrary JS ran'), 1)
+  // executed. This engine runs in the dashboard, so that is arbitrary JS in the browser of
+  // anyone who opens or tests that scorecard — stored XSS in a product whose policy authors are
+  // explicitly untrusted. Same hazard removed from the Python engine in app/safe_formula.py;
+  // Kotlin and Dart have their own bounded evaluators. This is the TypeScript arm.
   try {
-    const fnNames = Object.keys(EXCEL_FUNCTIONS);
-    const fnValues = Object.values(EXCEL_FUNCTIONS);
-    const ctxNames = Object.keys(context);
-    const ctxValues = Object.values(context);
-    const fn = new Function(...fnNames, ...ctxNames, `return (${formula});`);
-    return fn(...fnValues, ...ctxValues);
+    return evaluateFormulaSafely(formula, context, EXCEL_FUNCTIONS as never);
   } catch {
     return 0;
   }
 }
 
+/**
+ * @deprecated Evaluates the LEGACY `{ factors[], bands[] }` scorecard shape, which nothing in
+ * this product produces. Use {@link evaluateServerScorecard} for the shape the server actually
+ * stores (`{ base_score, max_score, bins[] }`) — that is what Python's `evaluate_scorecard`,
+ * the Rust core and the Kotlin and Dart SDKs all implement, and it is validated against the
+ * shared 166-case corpus.
+ *
+ * This function is kept because it is public API of `@rulemind/rule-engine` and removing it
+ * would break any external consumer on the old shape. It is exported alongside the working one
+ * under the more obvious name, though, so a caller reaching for "the scorecard function" picks
+ * this one — and on real data it used to die with
+ * `TypeError: Cannot read properties of undefined (reading 'reduce')`, which names neither the
+ * cause nor the fix. TypeScript callers are protected (`factors` is required, so the compiler
+ * rejects a server scorecard); JavaScript callers were not. Hence the explicit check below.
+ */
 export function evaluateScorecard(definition: ScorecardDefinition, input: Record<string, unknown>): ScorecardResult {
+  if (!Array.isArray(definition?.factors)) {
+    const looksLikeServerShape = Array.isArray((definition as { bins?: unknown })?.bins);
+    throw new TypeError(
+      looksLikeServerShape
+        ? "evaluateScorecard() takes the legacy { factors[], bands[] } shape, but this scorecard " +
+          "has `bins` — it is the shape the server stores. Call evaluateServerScorecard() instead."
+        : "evaluateScorecard() requires `factors` to be an array. If this scorecard came from " +
+          "the RuleMind API, call evaluateServerScorecard() instead."
+    );
+  }
   const scoringMethod = definition.scoring_method ?? "points";
 
   if (scoringMethod === "woe") {

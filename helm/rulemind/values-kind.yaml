@@ -1,0 +1,58 @@
+# Overlay for a LOCAL kind cluster. Used by `make k8s-up` / scripts/k8s_up.sh.
+#
+# The point of this file is to make the chart actually RUN somewhere. Until now it was only ever
+# linted (`helm lint`) and rendered (`scripts/verify_chart.py`), which proves the YAML is valid
+# and says nothing about whether the pods start. Everything below is a local-cluster concession,
+# and each one is a deliberate divergence from the production defaults in values.yaml.
+
+image:
+  # Built locally by scripts/k8s_up.sh and pushed into the cluster with `kind load docker-image`.
+  # pullPolicy MUST be IfNotPresent (or Never): kind has no registry, so an Always policy makes
+  # every pod ImagePullBackOff on an image that is already sitting on the node.
+  web:    { repository: rulemind/web, tag: local, pullPolicy: IfNotPresent }
+  api:    { repository: rulemind/api, tag: local, pullPolicy: IfNotPresent }
+  worker: { repository: rulemind/api, tag: local, pullPolicy: IfNotPresent }
+
+# One of each. The production defaults (web 2, api 3, worker 2) would schedule 7 pods carrying a
+# resident sklearn/lightgbm stack each onto a single-node cluster on a laptop.
+replicaCount: { web: 1, api: 1, worker: 1 }
+
+# No ingress controller is installed in the kind cluster, so an Ingress object would be created
+# and never served -- which looks like a broken deploy. The smoke script port-forwards the
+# Services instead, which is what it wants to test anyway: that the Service routes to a Ready pod.
+ingress:
+  enabled: false
+
+# The HPA needs metrics-server, which kind does not ship. With it enabled the Deployment omits
+# `replicas` (so the autoscaler owns scale) and nothing ever sets it -- one pod, by accident
+# rather than by choice.
+hpa:
+  enabled: false
+
+env:
+  databaseUrl: postgresql://rulemind:rulemind@rulemind-postgres:5432/rulemind
+  redisUrl: redis://rulemind-redis:6379/0
+  # Filled in at install time by scripts/k8s_up.sh with freshly generated random values.
+  # Deliberately NOT the committed dev secrets: rulemindEnv below is `production`, and
+  # app/security_config.py refuses to start on a default secret -- a check worth exercising
+  # rather than tiptoeing around.
+  configKey: ""
+  adminJwtSecret: ""
+  adminPassword: ""
+  devApiKey: ""
+  # Kept at production so the fail-closed startup gate is armed here too. If this said
+  # `development` the local cluster would prove strictly less than compose already does.
+  rulemindEnv: production
+  # No proxy in front of the Service when port-forwarding, so the socket peer IS the client.
+  # 1 would make the app trust an X-Forwarded-For header nothing is setting.
+  trustedProxyHops: 0
+
+# Single uvicorn worker: one pod on a laptop node, and each worker is a separate SQLAlchemy pool
+# plus its own copy of the ML stack.
+api:
+  uvicornWorkers: 1
+
+resources:
+  api:    { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: 1000m, memory: 1Gi } }
+  web:    { requests: { cpu: 50m,  memory: 128Mi }, limits: { cpu: 500m,  memory: 512Mi } }
+  worker: { requests: { cpu: 50m,  memory: 256Mi }, limits: { cpu: 500m,  memory: 768Mi } }

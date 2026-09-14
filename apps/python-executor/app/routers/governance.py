@@ -8,6 +8,7 @@ request-scoped source of truth."""
 from __future__ import annotations
 
 import os
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -22,23 +23,58 @@ router = APIRouter()
 # ── Data protection ────────────────────────────────────────────────────────
 class DataProtectionRequest(BaseModel):
     retention_days: Optional[int] = None
+    # Retention in CALENDAR MONTHS, which is the unit customers and regulators actually write
+    # down ("retain for 7 years", "purge PII after 24 months"). Days is a lossy encoding of that:
+    # 7 years is 2557 days, not the 2555 an operator gets by multiplying. When months is set it
+    # is authoritative and days becomes a measured mirror; 0 clears it back to days.
+    retention_months: Optional[int] = None
     pii_redact_keys: Optional[List[str]] = None
 
 
 def _data_protection_view(tenant_id: str) -> Dict[str, Any]:
-    from ..logic import REDACTED_KEYS
+    from ..archiver import archiving_available
+    from ..logic import REDACTED_KEY_TOKENS, REDACTED_KEYS, _key_match_mode, _value_scan_mode
     from ..storage import decision_encryption_enabled
 
     settings = main.storage.get_settings(tenant_id=tenant_id)
+    _retention_enforced, _retention_reason = archiving_available()
     custom = (settings.get("engine_config", {}) or {}).get("pii_redact_keys", []) or []
     env_keys = [k.strip() for k in (os.getenv("RULEMIND_PII_REDACT_KEYS", "") or "").split(",") if k.strip()]
     return {
         "retention_days": int(settings.get("audit_retention_days", 90) or 90),
+        # None means this workspace never set months, and days stays authoritative. That
+        # distinction is load bearing -- fabricating a month count for a tenant whose 90 days is
+        # not a whole number of months would silently move their purge date.
+        "retention_months": settings.get("audit_retention_months"),
         "encryption_at_rest": decision_encryption_enabled(),
         "archive_sink": (os.getenv("DECISION_ARCHIVE_SINK", "none") or "none"),
+        # Whether the retention window above is actually ENFORCED. It usually is not: purging
+        # only happens as the second half of archive-then-purge, so with no sink configured
+        # (the default, and set in no deployment artifact) archive_old_decisions returns
+        # {"skipped": "archiving_disabled"} and nothing is ever deleted, however short the
+        # window. A workspace that set "purge after 24 months" for a compliance obligation is
+        # therefore retaining forever, and nothing said so. Reporting it here makes the setting
+        # honest rather than advisory; the default is deliberately unchanged, because flipping
+        # it would start deleting customer data on upgrade.
+        # ...and whether the sink can actually RUN. This used to test only that the variable was
+        # set, which made it a claim about configuration rather than about behaviour: the sink
+        # clients (clickhouse-connect, boto3, pyarrow) are lazy optional imports and none is in
+        # requirements.txt, so on the shipped image DECISION_ARCHIVE_SINK=clickhouse fails at the
+        # first write, the purge never runs -- it is the second half of archive-then-purge -- and
+        # this endpoint still answered `true`. The one place an operator would look to discover
+        # that retention was not happening told them it was.
+        "retention_enforced": _retention_enforced,
+        "retention_blocked_reason": _retention_reason or None,
         "pii_redact_keys": custom,
         "builtin_redact_keys": sorted(REDACTED_KEYS),
         "env_redact_keys": env_keys,
+        # Redaction no longer depends on key names alone, and an auditor asking "what is
+        # actually stripped from our decision log?" cannot answer that from the key list by
+        # itself. Both new dimensions are deployment-level (env), so they are read-only here
+        # alongside encryption and the archive sink.
+        "qualified_redact_tokens": sorted(REDACTED_KEY_TOKENS),
+        "key_match_mode": _key_match_mode(),
+        "value_scan_mode": _value_scan_mode(),
     }
 
 
@@ -58,6 +94,8 @@ def update_data_protection(request: Request, body: DataProtectionRequest) -> Dic
     patch: Dict[str, Any] = {}
     if body.retention_days is not None:
         patch["audit_retention_days"] = max(1, int(body.retention_days))
+    if body.retention_months is not None:
+        patch["audit_retention_months"] = max(0, int(body.retention_months))
     if body.pii_redact_keys is not None:
         engine = dict(settings.get("engine_config", {}) or {})
         engine["pii_redact_keys"] = [str(k).strip() for k in body.pii_redact_keys if str(k).strip()]
@@ -242,7 +280,7 @@ def backtest_policy_endpoint(
             bundle_version=bundle_version, sample=sample, full=full,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ── What-if KPI simulation (T2.7) ──────────────────────────────────────────
@@ -268,7 +306,7 @@ def whatif_endpoint(request: Request, policy_id: str, body: WhatIfRequest) -> Di
             bundle_version=body.bundle_version, full=body.full, sample=body.sample,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── Shadow execution / dark launch (T2.6) ──────────────────────────────────
@@ -286,7 +324,7 @@ def register_shadow_endpoint(request: Request, policy_id: str, body: ShadowReque
     try:
         return shadow.register_shadow(main.storage, policy_id, body.candidate_policy_id, tenant_id=tenant_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.delete("/api/v1/policies/{policy_id}/shadow")
@@ -335,7 +373,7 @@ def rollback_endpoint(request: Request, policy_id: str, body: RollbackRequest) -
         return release.rollback_policy(
             main.storage, policy_id, body.promotion_id, actor, tenant_id=tenant_id, reason=body.reason)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ── Collaborative editing (CRDT merge) + time-travel (T4.12 backend) ────────
@@ -359,3 +397,70 @@ def crdt_merge_endpoint(body: CrdtMergeRequest) -> Dict[str, Any]:
     merged, conflicts = crdt.three_way_merge(
         body.base, body.edit_a, body.edit_b, body.ts_a, body.actor_a, body.ts_b, body.actor_b)
     return {"merged": merged, "conflicts": conflicts}
+
+
+# ── Audit chain integrity ──────────────────────────────────────────────────
+@router.get("/api/v1/audit/verify")
+def verify_audit_chain(request: Request, limit: Optional[int] = Query(None, ge=1, le=100000)) -> Dict[str, Any]:
+    """Walk this tenant's audit chain and report whether it is intact.
+
+    Returns 200 with ``ok: false`` on a broken chain rather than an error status: a detected
+    break is a successful answer to the question the endpoint asks, and an auditor's tooling
+    needs the body (the break list) exactly when the chain is bad. Alert on ``ok``, not on HTTP.
+
+    ``pre_chain`` counts rows written before the chain migration. They are unverifiable by
+    construction and are never included in ``verified`` -- see the 0017 migration for why they
+    are not backfilled.
+
+    ``head`` commits to the whole history. Export it somewhere the database operator cannot
+    rewrite; without that anchor the chain detects partial edits but not a full recompute.
+    """
+    tenant_id = main.active_tenant_id(request)
+    return main.storage.verify_audit_chain(tenant_id=tenant_id, limit=limit)
+
+
+# ── Usage metering & quota (Track B4) ──────────────────────────────────────
+@router.get("/api/v1/usage")
+def usage_summary(request: Request) -> Dict[str, Any]:
+    """This workspace's metered usage for the current calendar month, with its quota position.
+
+    `used` here is the billable number: server-side decisions plus decisions ingested from
+    devices, counting each exactly once (a device replaying an unacked batch is not re-billed).
+
+    `enforced` reports whether exceeding the limit actually rejects traffic. It is false by
+    default -- an operator is expected to watch real numbers accumulate before switching
+    enforcement on, so that turning it on is a decision rather than an upgrade side effect.
+    """
+    from .. import quota
+
+    tenant_id = main.active_tenant_id(request)
+    start, end = quota.period_bounds()
+    used = main.storage.get_usage_total(quota.METRIC_DECISIONS, tenant_id=tenant_id, start=start, end=end)
+    status = quota.evaluate(main.storage.get_tenant(tenant_id), used)
+    return {
+        "quota": status,
+        "daily": main.storage.get_usage_daily(tenant_id=tenant_id, start=start, end=end),
+        # The lifetime AI counters, kept for display. They carry no time dimension and are NOT
+        # a billing basis -- see the UsageRecord docstring.
+        "ai_usage_lifetime": (main.storage.get_tenant(tenant_id) or {}).get("config", {}).get("ai_usage", {}),
+    }
+
+
+@router.get("/api/v1/usage/history")
+def usage_history(request: Request, days: int = Query(90, ge=1, le=730)) -> Dict[str, Any]:
+    """Daily usage rows for the last `days` days, oldest first — the series behind a usage chart
+    and the source an invoice for a past period is reconciled against."""
+    from datetime import timedelta
+
+    from .. import quota
+
+    tenant_id = main.active_tenant_id(request)
+    end = date.today() + timedelta(days=1)  # exclusive, so today is included
+    start = end - timedelta(days=days + 1)
+    rows = main.storage.get_usage_daily(tenant_id=tenant_id, start=start, end=end)
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "daily": rows,
+        "total": sum(r["count"] for r in rows if r["metric"] == quota.METRIC_DECISIONS),
+    }

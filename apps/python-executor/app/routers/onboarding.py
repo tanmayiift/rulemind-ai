@@ -8,6 +8,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException
 
 from .. import main
+from ..env import env_bool
 from ..main import OnboardingAIRequest, OnboardingSignupRequest, active_tenant_id, maybe_compile_bundle
 
 router = APIRouter()
@@ -37,8 +38,17 @@ def _onboarding_view(tenant_id: str) -> Dict[str, Any]:
 @router.post("/api/v1/onboarding/signup")
 def onboarding_signup(request: OnboardingSignupRequest) -> Dict[str, Any]:
     """Public: create a workspace + issue a DEV key (shown once). Prod key comes later,
-    after the client verifies their integration. (In production, gate this behind email
-    verification / CAPTCHA — it is intentionally open here for self-serve onboarding.)"""
+    after the client verifies their integration.
+
+    Four unauthenticated writes that end in a LIVE API key in the response body, on a path
+    listed in middleware.EXEMPT_PATHS — which returns from dispatch() roughly seventy lines
+    before the rate-limit check, so the limiter was not merely skipped for this route, it was
+    unreachable from it. TenantContextMiddleware now applies an IP-keyed pre-auth budget
+    ahead of both early returns; RULEMIND_SELF_SERVE_SIGNUP=0 closes the door entirely for a
+    deployment that provisions tenants out of band.
+    """
+    if not env_bool("RULEMIND_SELF_SERVE_SIGNUP", True):
+        raise HTTPException(status_code=403, detail="Self-serve signup is disabled on this deployment.")
     tenant = main.storage.create_tenant(name=request.company, plan=request.plan,
                                         config={"onboarding": {"org": {"company": request.company, "contact_email": request.contact_email, "use_case": request.use_case}}})
     main.storage.seed_sample_inventory(tenant["id"])  # so they can try a decision immediately

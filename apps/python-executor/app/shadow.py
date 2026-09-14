@@ -70,7 +70,8 @@ def run_shadow(
             return None
         from .fast_decide import fast_decide
 
-        shadow_decision = fast_decide(storage, candidate, payload, tenant_id, log=False)
+        # Storage resolves "" to the default tenant, which is what the None path meant.
+        shadow_decision = fast_decide(storage, candidate, payload, tenant_id or "", log=False)
         shadow_outcome = shadow_decision.get("outcome")
         diverged = shadow_outcome != live_outcome
         # Log the shadow decision so divergence is auditable — tagged, never counted as a real decision.

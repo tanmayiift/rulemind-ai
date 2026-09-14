@@ -16,9 +16,10 @@ import logging
 import os
 from collections import Counter
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .storage import Storage
+from . import env
 
 logger = logging.getLogger("rulemind.slo")
 
@@ -32,12 +33,18 @@ ERROR_OUTCOMES = {"error"}
 try:  # pragma: no cover - exercised indirectly; import guard for envs without the dep
     from prometheus_client import Gauge
 
-    SLO_P95_LATENCY = Gauge("rulemind_slo_p95_latency_ms", "Recent-window p95 decision latency (ms)", ["tenant"])
-    SLO_ERROR_RATE = Gauge("rulemind_slo_error_rate_pct", "Recent-window decision error rate (%)", ["tenant"])
-    SLO_DRIFT_DISTANCE = Gauge("rulemind_slo_outcome_drift", "Outcome-mix drift vs baseline (total-variation distance)", ["tenant"])
-    SLO_HEALTHY = Gauge("rulemind_slo_healthy", "1 when the workspace SLO is met, 0 when breached", ["tenant"])
-    SLO_BREACHES = Gauge("rulemind_slo_active_breaches", "Active SLO breaches by type (1 active, 0 clear)", ["tenant", "type"])
-    _BREACH_TYPES = ("latency_p95", "error_rate", "approval_rate_low", "approval_rate_high", "outcome_drift")
+    # multiprocess_mode="max" on every gauge. Under a multiprocess registry a plain Gauge
+    # produces one series PER WORKER PID, so a scrape returns N contradictory values for the
+    # same tenant and any alert on them is meaningless. These are all workspace-level facts
+    # computed by whichever worker ran the SLO check, so taking the max across workers is the
+    # reading that matches what the number means. Ignored entirely by a single-process registry,
+    # so this is safe either way.
+    SLO_P95_LATENCY = Gauge("rulemind_slo_p95_latency_ms", "Recent-window p95 decision latency (ms)", ["tenant"], multiprocess_mode="max")
+    SLO_ERROR_RATE = Gauge("rulemind_slo_error_rate_pct", "Recent-window decision error rate (%)", ["tenant"], multiprocess_mode="max")
+    SLO_DRIFT_DISTANCE = Gauge("rulemind_slo_outcome_drift", "Outcome-mix drift vs baseline (total-variation distance)", ["tenant"], multiprocess_mode="max")
+    SLO_HEALTHY = Gauge("rulemind_slo_healthy", "1 when the workspace SLO is met, 0 when breached", ["tenant"], multiprocess_mode="max")
+    SLO_BREACHES = Gauge("rulemind_slo_active_breaches", "Active SLO breaches by type (1 active, 0 clear)", ["tenant", "type"], multiprocess_mode="max")
+    _BREACH_TYPES: Tuple[str, ...] = ("latency_p95", "error_rate", "approval_rate_low", "approval_rate_high", "outcome_drift")
 except Exception:  # pragma: no cover - metrics are best-effort
     Gauge = None  # type: ignore
     SLO_P95_LATENCY = SLO_ERROR_RATE = SLO_DRIFT_DISTANCE = SLO_HEALTHY = SLO_BREACHES = None  # type: ignore
@@ -63,14 +70,14 @@ def record_prometheus(tenant_id: str, report: Dict[str, Any]) -> None:
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.getenv(name, str(default)))
+        return env.env_float(name, default)
     except (TypeError, ValueError):
         return default
 
 
 def _env_int(name: str, default: int) -> int:
     try:
-        return int(os.getenv(name, str(default)))
+        return env.env_int(name, default)
     except (TypeError, ValueError):
         return default
 

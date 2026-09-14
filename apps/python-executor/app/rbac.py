@@ -61,6 +61,14 @@ ROLE_DESCRIPTIONS = {
 # specific prefixes are listed before their parents.
 _WRITE_PREFIX_CAPABILITY = [
     ("/api/v1/access", MANAGE_ACCESS),
+    # Listed BEFORE "/api/v1/webhooks" would match, and separately from it: the inbound webhook
+    # entity is an AUTHOR prefix (below), while a SUBSCRIPTION is standing egress configuration
+    # -- it sends this workspace's decision data to a third party, for every matching event,
+    # until someone removes it. That belongs with settings and branding. A policy_maker can
+    # already POST to any URL from an action step, so this is not about reaching the network; it
+    # is that the role documented as "cannot manage access" should not be able to point the
+    # workspace's event stream at a new destination.
+    ("/api/v1/webhook-subscriptions", MANAGE_ACCESS),
     ("/api/v1/settings", MANAGE_ACCESS),
     ("/api/v1/branding", MANAGE_ACCESS),
     ("/api/v1/reports/email-config", MANAGE_ACCESS),
@@ -68,6 +76,23 @@ _WRITE_PREFIX_CAPABILITY = [
     ("/api/v1/promotions", DEPLOY),
     ("/api/v1/deploy", DEPLOY),
 ]
+
+# Prefixes whose writes are identity operations: provisioning members, superadmin actions, or
+# establishing/ending a human session. These were all falling through the unknown-write default
+# to AUTHOR, which meant `policy_maker` -- documented as unable to manage access -- could
+# provision and DEACTIVATE members through /scim/v2, the workspace owner included.
+#
+# /api/v1/auth and /api/mobile/v1/auth are listed for completeness of the MAP, not as the
+# enforcement point: those routes establish identity before one exists and manage their own
+# auth (see middleware's human-auth carve-out), so the middleware does not run this check on
+# them. Mapping them keeps the table honest -- an un-carved-out sibling added later inherits
+# MANAGE_ACCESS rather than AUTHOR.
+_IDENTITY_PREFIXES = (
+    "/scim/v2",
+    "/api/admin/v1",
+    "/api/v1/auth",
+    "/api/mobile/v1/auth",
+)
 
 # Authoring resource prefixes — write methods here need the AUTHOR capability.
 _AUTHOR_PREFIXES = (
@@ -78,11 +103,30 @@ _AUTHOR_PREFIXES = (
     "/api/v1/policies",
     "/api/v1/decision-tables",
     "/api/v1/experiments",
-    "/api/v1/models",
     "/api/v1/schedules",
     "/api/v1/webhooks",
     "/api/v1/bundles",
     "/api/v1/segments",
+    "/api/v1/debug",        # P04: stepping a policy is authoring-time inspection; it runs
+                            # with simulate=True and writes no decision.
+    "/api/v1/journeys",     # P15: a journey is an authoring artifact -- screens and the policy
+                            # they feed. Locking one is part of authoring it, not a deploy.
+    "/api/v1/model-sets",  # P05: groups models this workspace already has and routes
+                           # between them; grants no reach the author lacked.
+    "/api/v1/predictors",   # P20: names an existing number and records it in THIS workspace,
+                            # so it is authoring -- unlike a webhook subscription, which sends
+                            # workspace data to a third party and is manage_access above.
+    # Added when the unknown-write default was flipped to fail-closed. Each of these was
+    # previously reaching AUTHOR only by falling off the end of the map; they are listed
+    # explicitly so the fail-closed default cannot lock an author out of them.
+    "/api/v1/ai",             # AI authoring assistance (draft a rule/policy)
+    "/api/v1/collab",         # collaborative editing of drafts
+    "/api/v1/import",         # bulk import of authoring entities
+    "/api/v1/evaluations",    # model/policy evaluation runs
+    "/api/v1/reports",        # report generation (email-config stays MANAGE_ACCESS above)
+    "/api/v1/analytics",      # analytics recompute
+    "/api/v1/onboarding",     # guided setup (signup itself is middleware-exempt)
+    "/api/mobile/v1",         # mobile session/tenant selection (auth carved out above)
 )
 
 # Write paths that are really "run a decision", not authoring.
@@ -92,6 +136,8 @@ _DECIDE_PREFIXES = (
     "/api/v1/test",
     "/sdk/v1",
     "/api/v1/workflows",  # loop-debug / callbacks / resume — evaluation, not authoring
+    "/api/v1/executions",  # resume a paused execution — continuing an evaluation
+    "/api/v1/decisions",   # replay a decision — re-running it, not authoring
 )
 
 
@@ -102,6 +148,15 @@ def required_capability(method: str, path: str) -> str:
     # `/policies/{id}/promote` is a deploy action even though it sits under /policies.
     if path.startswith("/api/v1/policies") and path.endswith("/promote"):
         return DEPLOY
+    # Model MANAGEMENT (upload/update/delete) unpickles an author-supplied blob, which is code
+    # execution (T2.1) -- restrict it to MANAGE_ACCESS so a policy_maker cannot reach it. Running
+    # a STORED, admin-vetted model (predict/test) is an evaluation, so it stays at DECIDE.
+    if path.startswith("/api/v1/models"):
+        if path.endswith("/predict") or path.endswith("/test"):
+            return DECIDE
+        return MANAGE_ACCESS
+    if path.startswith(_IDENTITY_PREFIXES):
+        return MANAGE_ACCESS
     for prefix, capability in _WRITE_PREFIX_CAPABILITY:
         if path.startswith(prefix):
             return capability
@@ -109,8 +164,15 @@ def required_capability(method: str, path: str) -> str:
         return DECIDE
     if path.startswith(_AUTHOR_PREFIXES):
         return AUTHOR
-    # Unknown write: require AUTHOR (blocks viewers, allows policy makers/admins).
-    return AUTHOR
+    # Unknown write: FAIL CLOSED. This used to return AUTHOR, which meant every new mutating
+    # prefix was auto-granted to policy_maker the moment it was added -- the map was
+    # deny-by-omission-of-nothing. /scim/v2 is the proof it actually happened: member
+    # provisioning, including deactivating the owner, was reachable by an author.
+    #
+    # MANAGE_ACCESS is the most restrictive capability, so an unmapped route is now admin-only.
+    # A new route being too restrictive surfaces immediately as a 403 in development; a new
+    # route being too permissive surfaces as an incident. Add the prefix to a list above.
+    return MANAGE_ACCESS
 
 
 def capabilities_for(role: str) -> Set[str]:

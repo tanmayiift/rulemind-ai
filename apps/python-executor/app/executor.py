@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import copy
+import json
 import os
 import time
 import uuid
@@ -12,12 +13,20 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from . import circuit_breaker
+from . import circuit_breaker, input_schema, variable_reachability
 from .experiments import apply_experiment_overrides, resolve_experiment_assignment
 from .jsonpath import evaluate_math_expr, resolve_jsonpath
-from .logic import evaluate_rule_definition, evaluate_scorecard, json_dumps, redact_payload
+from .logic import compare, evaluate_rule_definition, evaluate_scorecard, json_dumps, redact_payload
 from .sandbox import execute_variable
 from .storage import Storage, mask_secret_values
+from .egress import (
+    EgressBlocked,
+    build_pinned_request,
+    clamp_poll_interval_ms,
+    clamp_polls,
+    clamp_retries,
+    clamp_timeout_ms,
+)
 from .templates import resolve_template
 
 
@@ -107,7 +116,7 @@ def evaluate_condition(condition: str, context: Dict[str, Any]) -> bool:
             raise ValueError("Unsupported boolean operator")
         if isinstance(node, ast.Compare):
             left = visit(node.left)
-            for operator, comparator in zip(node.ops, node.comparators):
+            for operator, comparator in zip(node.ops, node.comparators, strict=False):
                 right = visit(comparator)
                 if isinstance(operator, ast.Eq):
                     if left != right:
@@ -155,6 +164,24 @@ def evaluate_condition(condition: str, context: Dict[str, Any]) -> bool:
     return bool(visit(tree))
 
 
+class EvaluationBudgetExceeded(Exception):
+    """A decision ran past its wall-clock budget and was abandoned.
+
+    Raised rather than returned because a partial evaluation is not a decision -- some
+    variables computed, some did not, and the ones that did not are None, which is exactly the
+    input that silently flips gates (see _fail_closed_on_variable_errors). Surfacing this as a
+    504 lets the caller retry; inventing an outcome from half-computed inputs would not.
+    """
+
+    def __init__(self, budget_ms: int, elapsed_ms: int, stage: str) -> None:
+        self.budget_ms = budget_ms
+        self.elapsed_ms = elapsed_ms
+        self.stage = stage
+        super().__init__(
+            "Evaluation budget of {0}ms exceeded after {1}ms during {2}.".format(
+                budget_ms, elapsed_ms, stage))
+
+
 @dataclass
 class ExecutionContext:
     payload: Dict[str, Any]
@@ -166,11 +193,24 @@ class ExecutionContext:
     # all, leaving no way to deep-link the case it had just created.
     decision_id: Optional[str] = None
     variables: Dict[str, Any] = field(default_factory=dict)
+    # {variable_id: message} for variables that FAILED to compute. Their entry in `variables`
+    # is None, which is indistinguishable from a legitimately-null value -- and a None fed to a
+    # gate silently flips the decision (logic.py returns False for every comparison against
+    # None, so "reject if fraud_score >= 90" simply does not reject). Keeping the errors
+    # separate is what lets the decision fail closed instead of guessing.
+    variable_errors: Dict[str, str] = field(default_factory=dict)
     rule_results: List[Dict[str, Any]] = field(default_factory=list)
     scorecard_results: Dict[str, Any] = field(default_factory=dict)
     decision_table_results: Dict[str, Any] = field(default_factory=dict)
     transform_outputs: Dict[str, Any] = field(default_factory=dict)
     action_results: List[Dict[str, Any]] = field(default_factory=list)
+    # One redacted entry per decision-time source fetch (attempted, cached, skipped or failed).
+    source_fetches: List[Dict[str, Any]] = field(default_factory=list)
+    # {connector_id: {"error": message, "on_failure": mode}} for sources that were configured to
+    # be fetched and could not be. Kept apart from the payload for the same reason
+    # `variable_errors` is: an ABSENT source payload and an EMPTY one are indistinguishable once
+    # the variables have run, and the absent case must not be answered with sample data.
+    source_fetch_errors: Dict[str, Dict[str, str]] = field(default_factory=dict)
     # Innermost active loop bindings (item + index names -> values); exposed in the
     # context view so loop-body steps and conditions can reference the current item.
     loop_scope: Dict[str, Any] = field(default_factory=dict)
@@ -190,6 +230,10 @@ class ExecutionContext:
     started_at: datetime = field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
     total_latency_ms: int = 0
+    # Wall-clock budget for the whole evaluation. 0 disables it. `deadline` is a
+    # time.perf_counter() value, not a timestamp -- it must not move if the wall clock does.
+    budget_ms: int = 0
+    deadline: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -211,6 +255,10 @@ class ExecutionContext:
             decision_table_results=copy.deepcopy(payload.get("decision_table_results", {})),
             transform_outputs=copy.deepcopy(payload.get("transform_outputs", {})),
             action_results=copy.deepcopy(payload.get("action_results", [])),
+            # Restored on resume so a paused decision cannot come back with its failed sources
+            # forgotten — the fail-closed guard runs again after the resume completes.
+            source_fetches=copy.deepcopy(payload.get("source_fetches", [])),
+            source_fetch_errors=copy.deepcopy(payload.get("source_fetch_errors", {})),
             loop_scope=copy.deepcopy(payload.get("loop_scope", {})),
             pending_operations=copy.deepcopy(payload.get("pending_operations", [])),
             outcome=str(payload.get("outcome", "pending")),
@@ -236,6 +284,47 @@ class ActionFailedError(RuntimeError):
 _MAX_WORKFLOW_DEPTH = 10
 
 
+# Decision sources whose catalog may come from the process-wide, epoch-stamped cache.
+#
+# Everything else — the test console, simulations, backtests, anything an author drives —
+# reads straight from the DB. Not because the cache is unsafe, but because its TTL backstop
+# exists for the writes that DON'T bump the epoch (connector CRUD, `dev` variable edits), and
+# those are exactly the edits an author makes and then immediately tests. "Edit a variable,
+# hit Test, see the old value for a few seconds" is a correctness bug, whatever the latency
+# win. Production traffic replays the same catalog thousands of times and is where the win is.
+_SHARED_CATALOG_SOURCES = frozenset({"api", "sdk_server", "sdk_edge", "sdk_edge_resume", "callback"})
+
+# Sources allowed to pre-fill unsupplied fields from each connector's `sample_payload`.
+#
+# This is an AUTHORING affordance: in the test console you type {"bureau_score": 590} and want
+# the other twenty fields to hold plausible values so the policy runs end to end. On real
+# traffic it is a correctness hole with no visible symptom. Every connector's sample was seeded
+# unconditionally, so `POST /decide {"payload": {}}` returned **approve** on a demo
+# bureau_score of 756 -- a caller whose integration silently sent nothing got a confident
+# approval with a complete, legitimate-looking audit trail behind it. Failing closed on a
+# missing field is recoverable; approving on someone else's demo data is not.
+#
+# `simulation` keeps it because what-if and backtest are author-driven surfaces that write no
+# decision and are read as exploration, and stripping it there would change every existing
+# saved scenario. Nothing else does: not api, sdk_*, webhook, cron, callback, review or shadow.
+_SAMPLE_SEEDING_SOURCES = frozenset({"test_console", "simulation", "loop_debug"})
+
+# Sources that must NEVER perform a decision-time source fetch (connector_fetch).
+#
+# Identical membership to _SAMPLE_SEEDING_SOURCES, and not by coincidence: these are the
+# author-driven surfaces, and the reason they pre-fill from samples is the reason they must not
+# reach for the real thing. A backtest is the sharp case — `_run_decision_batch` fans thousands
+# of historical payloads out across 32 threads, so one click would become thousands of live
+# bureau pulls, a rate-limit incident and a bill, all to re-derive outcomes for applications
+# that were decided months ago. The surface for "does my connector actually work" already
+# exists and opens exactly one connection: POST /api/v1/connectors/{id}/test.
+#
+# Deliberately a separate constant rather than a reuse of the set above: they answer different
+# questions, and the day someone wants the test console to fetch live, that must not also
+# silently switch backtests on.
+_NO_FETCH_SOURCES = frozenset({"test_console", "simulation", "loop_debug"})
+
+
 class PolicyExecutor:
     def __init__(self, storage: Storage):
         self.storage = storage
@@ -246,19 +335,39 @@ class PolicyExecutor:
         # (list_variables was previously queried on every rule/scorecard step, and
         # secrets were re-fetched + decrypted on every step via _context_view).
         self._catalog: Dict[str, Dict[str, Any]] = {}
+        # Secrets are memoized separately, not written back into `_catalog`: the catalog entry
+        # may be the process-wide shared one, and mutating a shared dict from a request thread
+        # is a data race waiting to happen.
+        self._secrets: Dict[str, Dict[str, Any]] = {}
+        # {tenant_id: {connector_id: connector-with-secrets}}. Only populated for connectors that
+        # actually fetch, and read from the DB rather than the shared epoch cache: it is one
+        # extra query on a path that is about to make an HTTP call anyway, and it means a
+        # rotated credential takes effect on the next decision instead of after the catalog TTL.
+        self._connector_configs: Dict[str, Dict[str, Any]] = {}
+        # Set by execute(); decides whether this run may use the shared cross-request cache.
+        self._source: str = "api"
+        # Environment of the policy being executed (dev/uat/prod). Read only by sub-workflow
+        # alias resolution, so an alias can point at a different child per environment.
+        self._environment: str = "dev"
 
     def _catalog_for(self, tenant_id: str) -> Dict[str, Any]:
         cat = self._catalog.get(tenant_id)
         if cat is None:
-            variables = self.storage.list_variables(tenant_id=tenant_id)
-            cat = {
-                "connectors": {item["id"]: item for item in self.storage.list_connectors(tenant_id=tenant_id)},
-                "variables": variables,
-                "variable_lookup": {item["id"]: item for item in variables},
-                "settings": self.storage.get_settings(tenant_id=tenant_id),
-            }
+            cat = self._load_catalog(tenant_id)
             self._catalog[tenant_id] = cat
         return cat
+
+    def _load_catalog(self, tenant_id: str) -> Dict[str, Any]:
+        """4 DB reads, paid per request because the executor that memoizes them is itself
+        constructed per request (main.workflow_executor). For production traffic that work is
+        identical on every call, so it is served from the shared epoch-stamped cache in
+        fast_decide — the mechanism the fast path already uses, which `invalidate()` clears
+        on publish and which carries a TTL backstop for edits that don't bump the epoch."""
+        from . import fast_decide
+
+        if self._source in _SHARED_CATALOG_SOURCES:
+            return fast_decide.tenant_catalog(self.storage, tenant_id)
+        return fast_decide._build_tenant_catalog(self.storage, tenant_id)
 
     def _context_view(self, ctx: ExecutionContext) -> Dict[str, Any]:
         scorecards = {
@@ -284,24 +393,113 @@ class PolicyExecutor:
         }
 
     def _tenant_secrets(self, tenant_id: str) -> Dict[str, Any]:
-        cat = self._catalog_for(tenant_id)
-        if "secrets" in cat:
-            return cat["secrets"]
-        secrets: Dict[str, Any] = {}
-        for connector in cat["connectors"].values():
-            raw = self.storage.get_connector(connector["id"], include_secrets=True, tenant_id=tenant_id) or {}
-            config = raw.get("config", {})
-            for key, value in config.items():
-                if any(marker in key.lower() for marker in ("token", "secret", "password", "api_key", "apikey")):
-                    secrets[key] = value
-        cat["secrets"] = secrets
-        return secrets
+        """Decrypted connector secrets for template resolution.
+
+        The per-connector `get_connector(include_secrets=True)` loop that used to live inline
+        here was the "+N" in this path's 8+N queries: one DB read and one Fernet decrypt per
+        connector, on every request, because the executor holding the memo was itself
+        per-request. Production sources now share it across requests via the epoch cache.
+
+        Still lazy: nothing reads secrets unless an action / transform / review-gate step runs,
+        so a pure-rule policy pays nothing. And the result is memoized HERE rather than written
+        back into the catalog dict, because that dict may be the shared one.
+        """
+        cached = self._secrets.get(tenant_id)
+        if cached is None:
+            from . import fast_decide
+
+            connectors = self._catalog_for(tenant_id)["connectors"]
+            if self._source in _SHARED_CATALOG_SOURCES:
+                cached = fast_decide.tenant_secrets(self.storage, tenant_id, connectors)
+            else:
+                cached = fast_decide._build_tenant_secrets(self.storage, tenant_id, connectors)
+            self._secrets[tenant_id] = cached
+        return cached
+
+    def _validate_input(self, ctx: ExecutionContext) -> None:
+        """Check the caller's nested input keys against the sources' declared schema (P06).
+
+        WHY THIS RUNS BEFORE ANYTHING ELSE. An unchecked nested key resolves to None, and
+        `logic.py` returns False for every comparison against None -- so a misspelled
+        `bureau.scores[0].scoreNmae` does not fail, it re-phrases the rule, and which direction it
+        breaks depends on how the author happened to word the gate. Same failure mode as a
+        variable that could not compute (_fail_closed_on_variable_errors), one step earlier in the
+        pipeline: there the input errored, here it was never checked.
+
+        Off by default. A hard schema check switched on globally would refuse every integration
+        already in production, so it is opt-in per tenant and per policy under
+        `engine_config.input_validation` -- see app/input_schema.py for the shape.
+
+        Not fail-open: when enforcement finds a blocking issue this RAISES, and no decision is
+        produced. `warn` mode records the same issues and lets the decision through, so an
+        operator can see what enforcement would reject before switching it on.
+        """
+        catalog = self._catalog_for(ctx.tenant_id)
+        settings = input_schema.resolve_settings(
+            catalog["settings"].get("engine_config", {}) or {}, ctx.policy_id)
+        if not settings.enabled:
+            return
+        issues = input_schema.validate_payload(ctx.payload, catalog["connectors"], settings)
+        if not issues:
+            return
+        blocking = [issue for issue in issues if settings.blocks(issue)]
+        self._record_input_issues(ctx, issues, blocked=bool(blocking))
+        ctx.step_trace.append({
+            "type": "input_validation",
+            "status": "rejected" if blocking else "warned",
+            "mode": settings.mode,
+            "issues": [issue.to_dict() for issue in issues],
+            "detail": "{0} input problem(s) found; {1} of them block the decision.".format(
+                len(issues), len(blocking)),
+        })
+        if blocking:
+            raise input_schema.InputValidationError(issues, policy_id=ctx.policy_id, blocking=blocking)
+
+    def _record_input_issues(
+        self, ctx: ExecutionContext, issues: List[input_schema.InputIssue], blocked: bool
+    ) -> None:
+        """Make a bad payload observable whether or not it was rejected.
+
+        Warn mode exists to be watched: an operator has to be able to see the typo'd integration
+        without reading decisions one at a time. Best-effort -- recording must never itself break
+        the decision.
+        """
+        try:
+            self.storage.add_error_event(
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "scope": "decision",
+                    "stage": "input_validation",
+                    "entity_type": "policy",
+                    "entity_id": ctx.policy_id,
+                    "message": "Input payload {0}: {1} problem(s) at {2}".format(
+                        "rejected" if blocked else "flagged (warn mode)",
+                        len(issues),
+                        ", ".join(issue.path for issue in issues[:10])),
+                    "details": {
+                        "policy_id": ctx.policy_id,
+                        "execution_id": ctx.execution_id,
+                        "blocked": blocked,
+                        "issues": [issue.to_dict() for issue in issues],
+                    },
+                },
+                tenant_id=ctx.tenant_id,
+            )
+        except Exception:  # noqa: BLE001 - observability must not break the decision
+            pass
 
     def _payloads_by_source(self, ctx: ExecutionContext) -> Dict[str, Dict[str, Any]]:
         connectors = self._catalog_for(ctx.tenant_id)["connectors"]
+        seed_samples = self._source in _SAMPLE_SEEDING_SOURCES
+        if self.seed_samples_override is not None:
+            seed_samples = self.seed_samples_override
         normalized: Dict[str, Dict[str, Any]] = {}
         for connector_id, connector in connectors.items():
-            normalized[connector_id] = copy.deepcopy(connector.get("sample_payload", {}))
+            # See _SAMPLE_SEEDING_SOURCES: on production traffic an unsupplied field must stay
+            # unsupplied, so the variable that reads it fails and the decision fails closed --
+            # rather than quietly evaluating against demo data.
+            normalized[connector_id] = (
+                copy.deepcopy(connector.get("sample_payload", {})) if seed_samples else {})
 
         # A source-keyed dict (e.g. {"loan": {...}}) replaces that source wholesale;
         # everything else is a flat top-level field.
@@ -330,45 +528,241 @@ class PolicyExecutor:
 
     @staticmethod
     def _collect_condition_variable_ids(node: Any, out: set) -> None:
-        if isinstance(node, dict):
-            if node.get("type") == "condition" and node.get("variable"):
-                out.add(str(node["variable"]))
-            for value in node.values():
-                PolicyExecutor._collect_condition_variable_ids(value, out)
-        elif isinstance(node, list):
-            for item in node:
-                PolicyExecutor._collect_condition_variable_ids(item, out)
+        """Adapter -- see app/variable_reachability.py, which owns the walk."""
+        variable_reachability.collect_condition_variable_ids(node, out)
 
-    def _needed_variable_ids(self, policy: Dict[str, Any], rules: Dict[str, Any], scorecards: Dict[str, Any], tenant_id: str) -> set:
-        """Variable ids the policy uses, closed over inter-variable dependencies.
+    def _needed_variable_ids(self, policy: Dict[str, Any], rules: Dict[str, Any],
+                             scorecards: Dict[str, Any], tenant_id: str) -> set:
+        """Variable ids this policy can reach, for COMPUTE_ONLY_USED_VARS.
 
-        Over-inclusive by design (a substring match on variable code counts as a
-        dependency) so we never skip a variable a computation relies on.
+        A thin adapter over `variable_reachability.needed_variable_ids`. The walk lives in
+        its own module because `fast_decide` runs the SAME analysis on the serving path: two
+        copies would drift, and a drift here means the two paths compute different variables
+        for one policy -- a performance flag changing the outcome. See that module's
+        docstring for why the analysis has to be complete and why it is over-inclusive.
         """
-        direct: set = set()
-        for step in policy.get("steps", []):
-            ref_id = step.get("ref_id") or step.get("ref")
-            if step.get("type") == "rule" and ref_id in rules:
-                rule = rules[ref_id]
-                self._collect_condition_variable_ids(rule.get("tree"), direct)
-                self._collect_condition_variable_ids(rule.get("nodes"), direct)
-            elif step.get("type") == "scorecard" and ref_id in scorecards:
-                for factor in scorecards[ref_id].get("bins", []):
-                    if factor.get("variable_id"):
-                        direct.add(str(factor["variable_id"]))
-        by_id = {v["id"]: v for v in self._catalog_for(tenant_id)["variables"]}
-        needed: set = set()
-        stack = list(direct)
-        while stack:
-            vid = stack.pop()
-            if vid in needed or vid not in by_id:
+        return variable_reachability.needed_variable_ids(
+            policy,
+            rules,
+            scorecards,
+            getattr(self, "_decision_tables", {}) or {},
+            {v["id"]: v for v in self._catalog_for(tenant_id)["variables"]},
+            lambda ref: self.storage.get_policy(ref, tenant_id=tenant_id),
+        )
+
+    # ------------------------------------------------------------- decision-time source fetch
+    #
+    # THE GAP THIS CLOSES. `_execute_connector` never opened a socket. When the caller supplied
+    # no data for a source it substituted that connector's `sample_payload` and reported
+    # `{"status": "ok"}` for a source it had not contacted -- and a sample_payload is by
+    # construction a healthy, approving example. A policy whose bureau integration was dead
+    # therefore decided on demo data, at HTTP 200, with a complete-looking audit trail.
+    #
+    # WHY THIS RUNS BEFORE _compute_variables AND NOT IN THE CONNECTOR STEP. Variables are
+    # computed once, up front, from `_payloads_by_source`; steps run afterwards. So a connector
+    # step that mutates ctx.payload cannot affect a single variable -- the data would arrive
+    # after everything that reads it. Retrieval has to happen where the payload map is still
+    # being assembled, which is here. The connector step keeps its job of REPORTING what
+    # happened to its source (see _execute_connector).
+    #
+    # WHAT IS FETCHED. Only connectors that opted in (`config.fetch_at_decision`), only when the
+    # caller supplied nothing for that source, and only for sources something in this run
+    # actually reads. A connector without the flag is untouched, so every policy that worked
+    # before this existed still works unchanged.
+
+    def _sources_in_use(self, policy: Dict[str, Any], tenant_id: str, needed_variable_ids: Optional[set]) -> set:
+        """Source ids this run will read: every computed variable's source, plus any source a
+        connector step names. Over-inclusive on purpose -- fetching a source nothing reads only
+        costs a request, while skipping one that IS read reintroduces the empty-payload
+        fail-open this module exists to close."""
+        sources: set = set()
+        for variable in self._catalog_for(tenant_id)["variables"]:
+            if needed_variable_ids is not None and variable["id"] not in needed_variable_ids:
                 continue
-            needed.add(vid)
-            code = str(by_id[vid].get("code", ""))
-            for other in by_id:
-                if other != vid and other not in needed and other in code:
-                    stack.append(other)
-        return needed
+            sources.add(str(variable.get("source_id") or ""))
+        self._collect_connector_sources(policy.get("steps", []) or [], sources, tenant_id, set())
+        return sources
+
+    def _collect_connector_sources(self, steps: Any, sources: set, tenant_id: str, seen: set) -> None:
+        """Every connector step reachable from `steps`, INCLUDING nested ones.
+
+        This walked only the top level once, and that was the original fail-open surviving inside
+        the fix for it. A conditional data pull -- "only hit the bureau when amount > X" -- is
+        precisely why a connector step sits inside a branch, so the nested case is the common one,
+        not the exotic one. A source missed here is never fetched, so ctx.source_fetch_errors
+        stays empty, neither fail-closed guard fires, and `_execute_connector` answers the step
+        with `sample_payload` at status ok. That was reproduced end to end as a live `approve`
+        decided entirely on demo data for a connector explicitly configured to fetch.
+
+        Sub-workflows are followed too, because a child policy's connector steps are just as
+        reachable. `seen` guards the same cycle `_execute_workflow` guards at run time; here a
+        cycle would only spin rather than mis-decide, but a spin during payload assembly is a
+        hang before any budget check has run.
+        """
+        if not isinstance(steps, list):
+            return
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            step_type = step.get("type")
+            ref = str(step.get("ref_id") or step.get("ref") or "")
+            config = step.get("config") if isinstance(step.get("config"), dict) else {}
+            if step_type == "connector":
+                sources.add(ref)
+                continue
+            if step_type == "loop":
+                self._collect_connector_sources(config.get("steps"), sources, tenant_id, seen)
+                continue
+            if step_type == "branch":
+                for branch in config.get("branches", []) or []:
+                    if isinstance(branch, dict):
+                        self._collect_connector_sources(branch.get("steps"), sources, tenant_id, seen)
+                self._collect_connector_sources(config.get("default"), sources, tenant_id, seen)
+                continue
+            if step_type == "workflow":
+                if not ref or ref in seen:
+                    continue
+                seen.add(ref)
+                try:
+                    sub = self.storage.get_policy(ref, tenant_id=tenant_id)
+                except Exception:  # pragma: no cover - a missing child fails later, in the step
+                    sub = None
+                if sub:
+                    self._collect_connector_sources(
+                        sub.get("steps", []) or [], sources, tenant_id, seen)
+
+    def _connector_with_secrets(self, tenant_id: str, connector_id: str) -> Optional[Dict[str, Any]]:
+        """The connector row with its config decrypted. A fetch cannot authenticate with the
+        masked `••••••••` that `list_connectors` (and therefore the catalog) returns."""
+        cache = self._connector_configs.setdefault(tenant_id, {})
+        if connector_id not in cache:
+            cache[connector_id] = self.storage.get_connector(
+                connector_id, include_secrets=True, tenant_id=tenant_id)
+        return cache[connector_id]
+
+    async def _fetch_sources(
+        self,
+        ctx: ExecutionContext,
+        policy: Dict[str, Any],
+        connectors: Dict[str, Any],
+        needed_variable_ids: Optional[set] = None,
+    ) -> None:
+        from . import connector_fetch
+
+        if self._simulate or self._source in _NO_FETCH_SOURCES:
+            return
+        candidates = [cid for cid in sorted(connectors) if connector_fetch.fetch_enabled(connectors[cid])]
+        if not candidates:
+            return
+        in_use = self._sources_in_use(policy, ctx.tenant_id, needed_variable_ids)
+        view: Optional[Dict[str, Any]] = None
+        for connector_id in candidates:
+            if connector_id not in in_use:
+                continue
+            supplied = ctx.payload.get(connector_id) if isinstance(ctx.payload, dict) else None
+            if isinstance(supplied, dict) and supplied:
+                # The source-agnostic contract: a caller who sends the data owns it. Fetching is
+                # for the case where they did not, so this is not an optimisation to be tuned
+                # away -- overwriting a supplied payload with a fetched one would change what
+                # every existing integration decides.
+                ctx.source_fetches.append(
+                    {"source": connector_id, "status": "skipped", "outcome": "caller_supplied"})
+                continue
+            # Before the request, not after: the budget must not be spent starting work there is
+            # no time to finish. connector_fetch clamps each attempt's own timeout to what is
+            # left, the same two-part enforcement _compute_variables and _poll_action use.
+            self._check_budget(ctx, "connector fetch ({0})".format(connector_id))
+            connector = self._connector_with_secrets(ctx.tenant_id, connector_id) or connectors[connector_id]
+            if view is None:
+                view = self._context_view(ctx)
+            result = await connector_fetch.fetch_source(
+                connector, view, ctx.tenant_id, deadline=ctx.deadline)
+            entry = connector_fetch.trace_entry(result, connector)
+            ctx.source_fetches.append(entry)
+            if result.get("status") == "ok":
+                ctx.payload[connector_id] = result.get("payload") or {}
+                continue
+            behaviour = connector_fetch.on_fetch_failure(connector)
+            entry["on_failure"] = behaviour
+            message = str(entry.get("error") or "source fetch failed")
+            # NOT ctx.payload[connector_id] = sample_payload. There is no branch here that
+            # answers a failed fetch with demo data; the source stays absent and the decision
+            # fails closed in _fail_closed_on_fetch_errors.
+            ctx.source_fetch_errors[connector_id] = {"error": message, "on_failure": behaviour}
+            self._record_source_fetch_error(ctx, connector_id, entry)
+            if behaviour == connector_fetch.ON_FAILURE_ABORT:
+                raise connector_fetch.SourceFetchFailed(connector_id, message)
+
+    def _fail_closed_on_fetch_errors(self, ctx: ExecutionContext) -> None:
+        """Send a decision to review when a source it declared it needs could not be retrieved.
+
+        The argument is `_fail_closed_on_variable_errors`, one layer out. A source that did not
+        arrive makes every variable reading it None, and logic.py returns False for every
+        comparison against None -- so which way the decision falls is decided by how the author
+        happened to phrase the gate:
+
+            "reject if fraud_score >= 90"    -> False -> NOT rejected   (fails OPEN)
+            "approve if bureau_score >= 700" -> False -> not approved   (fails closed)
+
+        Every "flag the bad ones" rule fails open, which is the whole fraud and risk category.
+
+        Review even over a reject, for the reason that guard gives: an adverse action has to
+        carry a reason, and "we could not reach the bureau" is not one to put in a denial
+        letter. There is no global opt-out here -- the escape hatch is per connector
+        (`on_fetch_failure: "continue"`), so switching it off is a decision about one source
+        rather than about the whole tenant.
+        """
+        from . import connector_fetch
+
+        if not ctx.source_fetch_errors:
+            return
+        failed = sorted(
+            source_id for source_id, info in ctx.source_fetch_errors.items()
+            if info.get("on_failure") != connector_fetch.ON_FAILURE_CONTINUE)
+        if not failed or ctx.outcome == "review":
+            return
+        original = ctx.outcome
+        ctx.outcome = "review"
+        ctx.step_trace.append({
+            "type": "source_fetch_guard",
+            "status": "failed_closed",
+            "outcome": "review",
+            "original_outcome": original,
+            "failed_sources": failed,
+            "detail": "Sent to review: {0} data source(s) could not be retrieved, and an absent "
+                      "source silently changes gate outcomes.".format(len(failed)),
+        })
+
+    def _record_source_fetch_error(self, ctx: ExecutionContext, source_id: str, entry: Dict[str, Any]) -> None:
+        """Make a failed source retrieval observable and alertable, not just traced.
+
+        For an egress refusal this is also the security signal that a connector was pointed at
+        an internal address: the request never left the process, but the attempt is what a
+        security team wants to see. Best-effort -- recording must never break the decision, and
+        `entry` is already redacted by connector_fetch.trace_entry.
+        """
+        try:
+            self.storage.add_error_event(
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "scope": "decision",
+                    "stage": "source_fetch_error",
+                    "entity_type": "connector",
+                    "entity_id": source_id,
+                    "message": "Data source could not be retrieved ({0}): {1}".format(
+                        entry.get("outcome"), entry.get("error")),
+                    "details": {
+                        "policy_id": ctx.policy_id,
+                        "execution_id": ctx.execution_id,
+                        "outcome": entry.get("outcome"),
+                        "url": entry.get("url"),
+                        "on_failure": entry.get("on_failure"),
+                    },
+                },
+                tenant_id=ctx.tenant_id,
+            )
+        except Exception:  # noqa: BLE001 - observability must not break the decision
+            pass
 
     def _compute_variables(self, ctx: ExecutionContext, needed_ids: Optional[set] = None) -> None:
         catalog = self._catalog_for(ctx.tenant_id)
@@ -380,11 +774,27 @@ class PolicyExecutor:
         for variable in catalog["variables"]:
             if needed_ids is not None and variable["id"] not in needed_ids:
                 continue
+            # Two-part enforcement. The check abandons the run between variables; the clamp
+            # stops the NEXT variable from overshooting the budget on its own -- without it a
+            # 2000ms variable started with 5ms of budget left would still run the full 2000ms,
+            # and with 55 variables that error compounds.
+            self._check_budget(ctx, "variable computation")
+            remaining = self._budget_remaining_ms(ctx)
+            effective_timeout = timeout_ms if remaining is None else max(1, min(timeout_ms, remaining))
             source_payload = payloads.get(variable["source_id"], {})
-            execution = execute_variable(variable["code"], source_payload, values, timeout_ms=timeout_ms, memory_mb=memory_mb)
+            execution = execute_variable(variable["code"], source_payload, values, timeout_ms=effective_timeout, memory_mb=memory_mb)
             values[variable["id"]] = execution.get("value")
+            # The error used to be discarded here. A sandbox timeout returns
+            # {"value": None, "error": "..."} rather than raising, so the variable became a
+            # silent None -- and under load the sandbox queue manufactures those from perfectly
+            # healthy code. The fast path already recorded them (fast_decide.py:216-219, with a
+            # comment saying a None fed to a gate can flip a decision); this is the DEFAULT
+            # path, and it did not.
+            if execution.get("error"):
+                ctx.variable_errors[variable["id"]] = str(execution.get("error"))
         ctx.variables = values
         ctx.payload = payloads
+        self._record_variable_errors(ctx)
 
     async def _run_steps(
         self,
@@ -402,8 +812,19 @@ class PolicyExecutor:
         is a later phase) and stops on an aborting failure."""
         for index in range(start_index, len(steps)):
             step = steps[index]
+            # Variables are not the only slow thing: an action step makes an outbound HTTP call
+            # with its own timeoutMs and retries, so a policy can blow the budget without
+            # computing a single variable.
+            self._check_budget(ctx, "step {0}".format(step.get("id") or index))
             if depth == 0:
                 ctx.current_step_index = index
+                # Depth 0 only: a debugger steps through the POLICY's steps. Pausing inside a
+                # branch arm or a sub-workflow would leave `paused_at_step` pointing at an index
+                # in a list the resume path cannot address, and the run could never continue.
+                if self.debug_stop_before is not None and index >= self.debug_stop_before:
+                    ctx.status = "paused"
+                    ctx.paused_at_step = index
+                    return
             config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
             condition = config.get("condition")
             if condition and not evaluate_condition(condition, self._context_view(ctx)):
@@ -417,13 +838,27 @@ class PolicyExecutor:
                 if ctx.status == "paused":
                     ctx.step_trace.append({"step": step, "result": result, "error": error, "duration_ms": _ms_since(started)})
                     return
+            except EvaluationBudgetExceeded:
+                # Must escape this handler. A sub-workflow step recurses into _run_steps, so a
+                # budget exception raised in a NESTED policy would otherwise be caught here and
+                # downgraded into an ordinary step error -- the run would keep going, past the
+                # deadline, and the budget would silently apply only to the top level.
+                raise
             except Exception as exc:  # a step raised — do not silently drop it
                 error = str(exc)
                 # Accuracy is paramount: a decision GATE that errors must not be silently
                 # skipped, or a decision could pass a gate it should have failed (fail-open).
                 # Fail CLOSED — escalate to human review — and record an observable error event
                 # (not just the trace line) so it's alertable, never a silent wrong decision.
-                if step.get("type") in ("rule", "scorecard", "decision_table"):
+                #
+                # `workflow` belongs in this set for the same reason, and did not used to be in
+                # it. A sub-workflow is a bundle of gates; the errors that escape it are exactly
+                # the ones that mean NONE of them ran -- an unregistered alias, a dangling id, a
+                # cycle, depth exhaustion. The parent then finished with the child's rejections
+                # simply absent, which is the fail-open the child was composed in to prevent.
+                # (A step failing INSIDE the child is caught by the child's own _run_steps at
+                # depth+1 and handled there, so this only escalates whole-child failures.)
+                if step.get("type") in ("rule", "scorecard", "decision_table", "workflow"):
                     ctx.outcome = _merge_outcome(ctx.outcome, "review")
                     self._record_gate_error(ctx, step, error)
                 if config.get("onFailure") == "abort":
@@ -686,14 +1121,60 @@ class PolicyExecutor:
             return {"branch": "default", "matched": True}
         return {"branch": None, "matched": False}
 
+    def _resolve_workflow_alias(self, alias: str, ctx: ExecutionContext) -> str:
+        """Map a sub-workflow alias to a policy id, within THIS tenant (P08).
+
+        The registry is `engine_config.workflow_aliases` on tenant settings -- the same
+        per-tenant settings pattern as `engine_config.shadow_map`. Two forms:
+
+            "workflow_aliases": {"kyc_check": "policy_kyc_v3"}
+            "workflow_aliases": {"kyc_check": {"dev": "policy_kyc_v4", "prod": "policy_kyc_v3"}}
+
+        The second is the point of the feature: a parent names `kyc_check` once and never has to
+        be rewritten as the child moves dev -> uat -> prod, or as a new version of the child
+        replaces it in one environment at a time. `default` covers environments not listed.
+
+        CROSS-TENANT IS STRUCTURALLY IMPOSSIBLE, not merely checked. The registry is read from
+        this tenant's own settings and the id it yields is loaded with a tenant-scoped
+        get_policy, so a tenant can only ever name policies it already owns; an alias pointing at
+        another tenant's id resolves to nothing and fails closed like any other dangling alias.
+
+        Returns "" when the alias is not registered. The caller treats that as fatal -- there is
+        deliberately NO fallback to "maybe a policy has this id", because a fallback would make a
+        typo'd alias silently run a policy nobody named.
+        """
+        registry = self._catalog_for(ctx.tenant_id)["settings"].get("engine_config", {}) or {}
+        entry: Any = (registry.get("workflow_aliases") or {}).get(alias)
+        if isinstance(entry, dict):
+            entry = entry.get(self._environment) or entry.get("default")
+        return str(entry) if entry else ""
+
     async def _execute_subworkflow(self, step, ctx, rules, scorecards, connectors, source, depth):
         """Invoke another policy as a step (composition), sharing the live context.
-        Guards against cycles and runaway depth."""
+        Guards against cycles and runaway depth.
+
+        A child may be named by raw `ref_id` or by a stable `config.alias`. The alias WINS when
+        both are present: a step that names an alias has opted into indirection, and quietly
+        running a stale hard-coded id when the registry does not answer is precisely the bug the
+        alias exists to prevent.
+        """
         if depth >= _MAX_WORKFLOW_DEPTH:
             raise ValueError("Max sub-workflow depth ({0}) exceeded".format(_MAX_WORKFLOW_DEPTH))
-        ref_id = step.get("ref_id") or step.get("ref")
+        config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
+        alias = str(config.get("alias") or step.get("alias") or "")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
+        if alias:
+            resolved = self._resolve_workflow_alias(alias, ctx)
+            if not resolved:
+                raise ValueError(
+                    "Sub-workflow alias '{0}' is not registered for this workspace "
+                    "(engine_config.workflow_aliases)".format(alias))
+            ref_id = resolved
         if not ref_id:
             raise ValueError("Sub-workflow step missing ref_id")
+        # Cycle check on the RESOLVED id, never on the alias. Two aliases can point at one policy
+        # (and an alias can point at a policy a parent also names by raw id), so guarding the
+        # name would let A -> B -> A back in through a second spelling of B.
         if ref_id in self._visited_workflows:
             raise ValueError("Sub-workflow cycle detected: {0}".format(ref_id))
         sub_policy = self.storage.get_policy(ref_id, tenant_id=ctx.tenant_id)
@@ -701,7 +1182,10 @@ class PolicyExecutor:
             raise ValueError("Unknown sub-workflow: {0}".format(ref_id))
         self._visited_workflows.add(ref_id)
         await self._run_steps(sub_policy.get("steps", []) or [], ctx, rules, scorecards, connectors, source, depth + 1)
-        return {"workflow": ref_id, "outcome": ctx.outcome}
+        result = {"workflow": ref_id, "outcome": ctx.outcome}
+        if alias:
+            result["alias"] = alias
+        return result
 
     async def debug_loop(
         self,
@@ -721,6 +1205,9 @@ class PolicyExecutor:
             execution_id=str(uuid.uuid4()),
             started_at=datetime.utcnow(),
         )
+        # An authoring surface: debug_loop never goes through execute(), so _source would
+        # otherwise still read "api" and the sample pre-fill this endpoint relies on would stop.
+        self._source = "loop_debug"
         rules = {item["id"]: item for item in self.storage.list_rules(tenant_id=tenant_id)}
         scorecards = {item["id"]: item for item in self.storage.list_scorecards(tenant_id=tenant_id)}
         self._decision_tables = {item["id"]: item for item in self.storage.list_decision_tables(tenant_id=tenant_id)}
@@ -734,6 +1221,29 @@ class PolicyExecutor:
         result["outcome"] = ctx.outcome
         result["status"] = ctx.status
         return result
+
+    # Step-through debugging (P04). None means "run to completion", which is every ordinary
+    # decision; an integer means "pause BEFORE the step at this index".
+    #
+    # Deliberately reuses the pause the executor already has for review gates and async actions
+    # rather than inventing a debug mode: `paused_at_step` + `ExecutionContext.to_dict/from_dict`
+    # + `_run_steps(start_index=...)` already express "stopped here, resume from here". A second,
+    # debug-only execution path would be a second set of semantics to keep in step with the real
+    # one, and the whole point of a debugger is that it shows you what production does.
+    debug_stop_before: Optional[int] = None
+
+    # Sample seeding, decoupled from `simulate`. None means "whatever this source normally does".
+    #
+    # `simulate=True` forces `_source = "simulation"`, and simulation is in
+    # _SAMPLE_SEEDING_SOURCES -- so asking for "no side effects" silently also asks for "fill
+    # every unsupplied field from the connector's demo payload". For what-if and backtest that is
+    # correct and deliberate. For the STEP-THROUGH DEBUGGER it is the one thing that must not
+    # happen: an operator replaying a rejected application would be shown avg_balance=45200 and
+    # liveness=98.4 out of the demo fixture, decide the policy is broken, and change a threshold
+    # that was never the problem -- production saw none of those fields and failed closed, which
+    # is why it rejected. The debugger needs simulate's silence, not simulation's generosity, so
+    # the two are separate knobs rather than one.
+    seed_samples_override: Optional[bool] = None
 
     async def execute(
         self,
@@ -752,6 +1262,11 @@ class PolicyExecutor:
         # terminal "review" instead of pausing + creating a task. Lets a batch of
         # thousands of what-if cases run concurrently without DB write contention.
         self._simulate = simulate
+        # Recorded before any catalog read: it decides whether this run may serve its tenant
+        # catalog from the shared cross-request cache (production sources) or must read the
+        # DB (authoring/simulation). A simulate=True run never shares, whatever its source —
+        # backtests are author-driven and must see the edit being tested.
+        self._source = "simulation" if simulate else source
         if resume_from:
             ctx = resume_from
             ctx.status = "running"
@@ -766,6 +1281,20 @@ class PolicyExecutor:
                 started_at=datetime.utcnow(),
             )
             start_step = 0
+
+        # Start the clock before ANY work, including the catalog reads below -- a decision that
+        # spends its whole budget on a slow DB is just as timed out as one that spends it in the
+        # sandbox, and the caller cannot tell the difference anyway.
+        self._start_budget(ctx)
+        # Sub-workflow aliases can resolve to a different child per environment, so record which
+        # environment this run is in before any step executes.
+        self._environment = str(policy.get("status") or "dev")
+
+        # Check the caller's input BEFORE computing anything. A resume carries the payload that
+        # was already validated at the original run, so re-checking it would only be able to
+        # reject a decision a human is already reviewing.
+        if not resume_from:
+            self._validate_input(ctx)
 
         assignment = resolve_experiment_assignment(self.storage, tenant_id, policy["id"], ctx.user_id or (ctx.payload.get("user_id") if isinstance(ctx.payload, dict) else None))
         if assignment:
@@ -790,6 +1319,10 @@ class PolicyExecutor:
             # computing the full catalog per case is the dominant backtest cost.
             if simulate or os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1":
                 needed = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
+            # Retrieve opted-in sources BEFORE the variables that read them. A connector step
+            # runs after this point and so cannot supply data to a single variable; see the
+            # block comment on _fetch_sources.
+            await self._fetch_sources(ctx, policy, connectors, needed_variable_ids=needed)
             self._compute_variables(ctx, needed_ids=needed)
 
         steps = policy.get("steps", [])
@@ -803,6 +1336,10 @@ class PolicyExecutor:
 
         if ctx.status == "running":
             ctx.status = "completed"
+        # Both guards, in this order. Each is a no-op when the other has already sent the
+        # decision to review; running only one would leave the other's failure mode open.
+        self._fail_closed_on_fetch_errors(ctx)
+        self._fail_closed_on_variable_errors(ctx)
         ctx.completed_at = datetime.utcnow()
         ctx.total_latency_ms = int((ctx.completed_at - ctx.started_at).total_seconds() * 1000)
         # Simulation is a pure what-if: no decision log, no execution row.
@@ -849,6 +1386,117 @@ class PolicyExecutor:
         else:
             self.storage.create_workflow_execution(payload, tenant_id=ctx.tenant_id)
 
+    # Default budget. A healthy decision is single-digit milliseconds, so 10s is ~1000x
+    # headroom -- this is a SAFETY bound, not an SLO. Before it existed there was no bound at
+    # all: the demo tenant alone has 55 variables at a 2000ms per-variable timeout, so one
+    # request could legitimately hold a threadpool slot for 110 seconds. Tune it down to your
+    # actual SLO; set evaluation_budget_ms = 0 to disable.
+    DEFAULT_BUDGET_MS = 10000
+
+    def _start_budget(self, ctx: ExecutionContext) -> None:
+        limits = self._catalog_for(ctx.tenant_id)["settings"].get("engine_config", {}) or {}
+        try:
+            budget = int(limits.get("evaluation_budget_ms", self.DEFAULT_BUDGET_MS))
+        except (TypeError, ValueError):
+            budget = self.DEFAULT_BUDGET_MS
+        ctx.budget_ms = max(0, budget)
+        ctx.deadline = (time.perf_counter() + ctx.budget_ms / 1000.0) if ctx.budget_ms else None
+
+    def _budget_remaining_ms(self, ctx: ExecutionContext) -> Optional[int]:
+        """Milliseconds left, or None when no budget is set."""
+        if ctx.deadline is None:
+            return None
+        return int((ctx.deadline - time.perf_counter()) * 1000)
+
+    def _check_budget(self, ctx: ExecutionContext, stage: str) -> None:
+        """Cooperative deadline check.
+
+        Deliberately NOT asyncio.wait_for. /decide is a sync `def` served from Starlette's
+        threadpool, so cancelling the await would return 504 to the caller while the underlying
+        work carried on holding its thread -- the timeout would make the overload worse rather
+        than shed it. Checking between units of work, and shrinking each variable's own timeout
+        to whatever budget is left, bounds the real wall clock instead of just the wait.
+        """
+        remaining = self._budget_remaining_ms(ctx)
+        if remaining is not None and remaining <= 0:
+            # remaining is <= 0 here, so this is budget + overshoot -- how far past the deadline
+            # the last unit of work actually ran, which is the number an operator needs when
+            # deciding whether the budget is too tight or a single step is misbehaving.
+            raise EvaluationBudgetExceeded(ctx.budget_ms, ctx.budget_ms - remaining, stage)
+
+    def _fail_closed_on_variable_errors(self, ctx: ExecutionContext) -> None:
+        """Send a decision to review when an input it needed could not be computed.
+
+        WHY THIS IS NOT OPTIONAL. A failed variable is None, and logic.py returns False for
+        every comparison against None. So the direction a decision fails is decided by how the
+        author happened to phrase the rule:
+
+            "reject if fraud_score >= 90"   -> condition False -> NOT rejected   (fails OPEN)
+            "approve if bureau_score >= 700" -> condition False -> not approved  (fails closed)
+
+        Every "flag the bad ones" rule -- the entire fraud and risk category -- fails open. And
+        scorecards are worse: a null factor contributes 0 points, so the score inflates toward
+        approve. Under load, a saturated sandbox pool turns healthy variables into nulls, which
+        means peak traffic is exactly when this silently approves the most.
+
+        Deliberately conservative: ANY failed variable sends the decision to review, without
+        trying to prove which gates read it. Dependency analysis would be more precise and is
+        the wrong trade here -- being wrong in the precise direction means approving a fraud
+        case. `engine_config.fail_open_on_variable_error` exists for an operator who has
+        measured their own exposure and disagrees; it defaults to off.
+        """
+        if not ctx.variable_errors:
+            return
+        settings = self._catalog_for(ctx.tenant_id)["settings"].get("engine_config", {}) or {}
+        if settings.get("fail_open_on_variable_error"):
+            return
+        if ctx.outcome == "review":
+            return
+        # A reject is NOT "conservative enough" to leave alone. It is an adverse action, and an
+        # adverse action has to carry a reason -- so leaving it would mean issuing a customer a
+        # denial whose stated reason is an input that never computed. Both directions are wrong
+        # when the inputs are unknown; review is the only honest destination.
+        original = ctx.outcome
+        ctx.outcome = "review"
+        ctx.step_trace.append({
+            "type": "variable_error_guard",
+            "status": "failed_closed",
+            "outcome": "review",
+            "original_outcome": original,
+            "failed_variables": sorted(ctx.variable_errors),
+            "detail": "Sent to review: {0} variable(s) could not be computed, and a null input "
+                      "silently changes gate outcomes.".format(len(ctx.variable_errors)),
+        })
+
+    def _record_variable_errors(self, ctx: ExecutionContext) -> None:
+        """Make a failed variable observable.
+
+        Mirrors _record_gate_error's contract: a decision that was affected by a failure must be
+        alertable rather than silent. Best-effort -- recording must never break the decision.
+
+        Note what this does NOT do: it does not substitute a value. The decision still has a
+        None where a number should be, and `_variables_failed_closed` is what stops that None
+        reaching a gate.
+        """
+        if not ctx.variable_errors:
+            return
+        for variable_id, message in ctx.variable_errors.items():
+            try:
+                self.storage.add_error_event(
+                    {
+                        "tenant_id": ctx.tenant_id,
+                        "scope": "decision",
+                        "stage": "variable_error",
+                        "entity_type": "variable",
+                        "entity_id": variable_id,
+                        "message": "Variable failed to compute (value is null): {0}".format(message),
+                        "details": {"policy_id": ctx.policy_id, "execution_id": ctx.execution_id},
+                    },
+                    tenant_id=ctx.tenant_id,
+                )
+            except Exception:  # noqa: BLE001 - observability must not break the decision
+                pass
+
     def _record_gate_error(self, ctx: ExecutionContext, step: Dict[str, Any], message: str) -> None:
         """Record an observable error when a decision gate (rule/scorecard/table) fails to
         evaluate — so a fail-closed decision is alertable, not silent. Best-effort: recording the
@@ -863,6 +1511,28 @@ class PolicyExecutor:
                     "entity_id": step.get("ref_id") or step.get("ref") or step.get("id"),
                     "message": "Decision gate errored (failed closed to review): {0}".format(message),
                     "details": {"policy_id": ctx.policy_id, "execution_id": ctx.execution_id},
+                },
+                tenant_id=ctx.tenant_id,
+            )
+        except Exception:  # pragma: no cover - observability must not break the decision
+            pass
+
+    def _record_action_error(self, ctx: ExecutionContext, step: Dict[str, Any], url: str, method: str, message: str) -> None:
+        """Record an observable error when an action is refused or fails. Best-effort.
+
+        For an SSRF block this is the alert that an author tried to reach an internal target --
+        the request never left the process, but the attempt is exactly what a security team wants
+        to see."""
+        try:
+            self.storage.add_error_event(
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "scope": "decision",
+                    "stage": "action_error",
+                    "entity_type": "action",
+                    "entity_id": step.get("id"),
+                    "message": message,
+                    "details": {"policy_id": ctx.policy_id, "execution_id": ctx.execution_id, "method": method},
                 },
                 tenant_id=ctx.tenant_id,
             )
@@ -884,7 +1554,11 @@ class PolicyExecutor:
         record = {
             "tenant_id": ctx.tenant_id,
             "id": decision_id,
-            "client_id": ctx.user_id or payload_client_id,
+            # NOT ctx.user_id. client_id is the DEVICE idempotency key under
+            # UNIQUE(tenant_id, client_id); a userId repeats per customer, so writing it here
+            # silently dropped every re-decision. The subject goes in user_id.
+            "client_id": payload_client_id,
+            "user_id": ctx.user_id,
             "policy_id": ctx.policy_id,
             "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
             "computed_variables": copy.deepcopy(ctx.variables),
@@ -905,16 +1579,62 @@ class PolicyExecutor:
         decision_log.persist_decision(self.storage, record, ctx.tenant_id)
 
     def _execute_connector(self, step: Dict[str, Any], ctx: ExecutionContext, connectors: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        ref_id = step.get("ref_id") or step.get("ref")
+        """Report on this step's source. Retrieval already happened in `_fetch_sources`.
+
+        The step cannot ACQUIRE data usefully -- steps run after every variable has been
+        computed, so anything written to ctx.payload here arrives after everything that reads
+        it. What it can do is tell the truth about the source, which is the half that was
+        missing: it used to answer `{"status": "ok"}` for a source it had never contacted.
+        """
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
+        failure = ctx.source_fetch_errors.get(ref_id)
+        if failure:
+            # The one line this whole feature turns on: a source whose fetch failed is NOT
+            # answered with its sample_payload. Reporting `ok` on demo data is how a dead
+            # bureau produced confident approvals.
+            return {
+                "status": "failed",
+                "source": ref_id,
+                "error": failure.get("error"),
+                "on_failure": failure.get("on_failure"),
+                "payload_keys": [],
+            }
         payload = ctx.payload.get(ref_id) if isinstance(ctx.payload, dict) else None
         if not payload:
+            # DEFENCE IN DEPTH, and the second half of a fail-open that was reproduced as a live
+            # `approve`. The guard above only fires when a fetch was ATTEMPTED and failed. If the
+            # source was never reached at all -- and `_sources_in_use` missing a nested connector
+            # step was exactly that -- there is no error to find, and this branch would answer a
+            # fetch-configured source with its sample_payload, which is by construction a healthy,
+            # approving example.
+            #
+            # So the seeding is gated on the connector, not on the truthiness of the payload: a
+            # connector that opted into fetching never receives sample data here, whatever route
+            # got us to this step. Reaching this line for such a connector means retrieval did not
+            # run when it should have, which is a bug in this file -- so it reports `failed` and
+            # lets the fail-closed path do its job, rather than papering over it with demo data.
+            #
+            # Unchanged for every connector that never opted in: on the authoring surfaces this is
+            # the sample pre-fill the test console relies on, and on production traffic
+            # `_payloads_by_source` has already left the source empty, so it only affects what the
+            # trace reports -- not what any variable saw.
+            from . import connector_fetch
+            if connector_fetch.fetch_enabled(connectors.get(ref_id) or {}):
+                return {
+                    "status": "failed",
+                    "source": ref_id,
+                    "error": "source_not_retrieved: this connector is configured to fetch at "
+                             "decision time but no data was retrieved for it",
+                    "on_failure": connector_fetch.on_fetch_failure(connectors.get(ref_id) or {}),
+                    "payload_keys": [],
+                }
             payload = connectors.get(ref_id, {}).get("sample_payload", {})
             if ref_id:
                 ctx.payload[ref_id] = copy.deepcopy(payload)
         return {"status": "ok", "payload_keys": sorted(list((payload or {}).keys()))}
 
     def _execute_rule(self, step: Dict[str, Any], ctx: ExecutionContext, rules: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         rule = rules.get(ref_id)
         if not rule:
             raise ValueError("Unknown rule: {0}".format(ref_id))
@@ -928,7 +1648,7 @@ class PolicyExecutor:
     def _execute_decision_table(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
         from .decision_tables import evaluate_decision_table
 
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         table = getattr(self, "_decision_tables", {}).get(ref_id)
         if not table:
             raise ValueError("Unknown decision table: {0}".format(ref_id))
@@ -940,7 +1660,7 @@ class PolicyExecutor:
         return result
 
     def _execute_scorecard(self, step: Dict[str, Any], ctx: ExecutionContext, scorecards: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        ref_id = step.get("ref_id") or step.get("ref")
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
         scorecard = scorecards.get(ref_id)
         if not scorecard:
             raise ValueError("Unknown scorecard: {0}".format(ref_id))
@@ -990,7 +1710,136 @@ class PolicyExecutor:
             ctx.paused_at_step = ctx.current_step_index
             ctx.pending_operations.append({"type": "async_action", "step_id": step_id, "url": config.get("url")})
             return {"paused": True, "awaiting": "callback", "stepId": step_id, "executionId": ctx.execution_id}
+        if config.get("mode") == "poll":
+            return await self._poll_action(step, ctx, config)
         return await self._fire_action_request(step, ctx, config)
+
+    # ------------------------------------------------------------------ polling actions
+    #
+    # THE GAP THIS CLOSES. The action step had exactly two shapes: fire once (with
+    # retry-on-FAILURE), and `mode: "async"`, which pauses the whole execution until the provider
+    # posts back to the workflow callback endpoint. Neither is polling.
+    #
+    # Retrying is not polling, and the difference is the whole point: a retry loop exits on the
+    # first 2xx, so a provider that answers `200 {"status": "pending"}` -- which is the normal
+    # shape of a job-status endpoint -- ends the loop on the first attempt with a result the
+    # policy then treats as final. The condition polling waits for is on the RESPONSE CONTENT,
+    # not on the transport.
+    #
+    # And async is not polling either: it requires the provider to call back. Every provider that
+    # only offers "POST to start, GET to check" -- KYC vendors, document processors, batch bureau
+    # pulls -- has no callback to give, so today they can only be modelled as a single shot that
+    # reads whatever the first response happened to contain.
+    #
+    # FAIL CLOSED. Three separate ways this refuses to report success it does not have:
+    #   * no condition, or a malformed one, is never satisfied (rather than trivially true);
+    #   * a body that is not JSON, or a path that is not in it, resolves to None -- and logic.py
+    #     returns False for every comparison against None, so it polls on and then times out;
+    #   * running out of attempts defaults to `review_gate`, NOT `continue`. Continuing would
+    #     hand the policy a "pending" payload and let a rule phrased as `reject if status ==
+    #     "failed"` approve it, which is the exact fail-open shape `_fail_closed_on_variable_errors`
+    #     exists to stop. An author who genuinely wants a best-effort poll sets onPollTimeout
+    #     explicitly.
+
+    @staticmethod
+    def _poll_condition_met(condition: Any, result: Dict[str, Any]) -> bool:
+        """Evaluate the exit condition against one response.
+
+        `compare` is logic.py's own primitive -- the operator set the TypeScript, Rust, Kotlin and
+        Dart engines are held to by the parity corpus. A poll condition is authored in the same UI
+        as a rule condition, so `status == "complete"` has to mean here exactly what it means
+        there; a second comparison implementation in this file would be a second set of operator
+        semantics to keep in step with four other engines.
+        """
+        if not isinstance(condition, dict) or not condition:
+            return False
+        body: Any = result.get("body")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (ValueError, TypeError):
+                body = None
+        view = {"status": result.get("status"), "success": result.get("success"), "body": body}
+        path = str(condition.get("path") or condition.get("field") or "")
+        if not path:
+            return False
+        # `$.body.status` is the explicit form. A bare `body.status` is accepted because that is
+        # what the condition builder emits for rules, and an author should not have to know which
+        # of the two surfaces they are on.
+        actual = resolve_jsonpath(path if path.startswith("$.") else "$." + path, view)
+        try:
+            return bool(compare(
+                actual,
+                str(condition.get("operator") or condition.get("op") or "=="),
+                condition.get("value"),
+                condition.get("value2"),
+                condition.get("type"),
+            ))
+        except Exception:  # pragma: no cover - a bad operator must not decide the policy
+            return False
+
+    async def _poll_action(self, step: Dict[str, Any], ctx: ExecutionContext, config: Dict[str, Any]) -> Dict[str, Any]:
+        condition = config.get("pollUntil") or config.get("until")
+        max_polls = clamp_polls(config.get("maxPolls", 3))
+        interval_ms = clamp_poll_interval_ms(config.get("pollIntervalMs", 1000))
+        step_id = str(step.get("id") or step.get("name") or "action")
+
+        result: Dict[str, Any] = {}
+        for attempt in range(max_polls):
+            # BEFORE the request, not after: the point is not to start work there is no time to
+            # finish. The single-shot path is bounded by clamp_timeout_ms alone because it makes
+            # one request; a poll makes up to `max_polls` of them with sleeps in between, so
+            # without this the step's ceiling is maxPolls x (timeout + interval) regardless of
+            # what the tenant's evaluation budget says.
+            self._check_budget(ctx, "action poll ({0})".format(step_id))
+            result = await self._fire_action_request(step, ctx, config)
+            if self._poll_condition_met(condition, result):
+                # Mutated in place, not copied: _fire_action_request appends the very same dict to
+                # ctx.action_results, so a copy would leave the recorded attempt without the poll
+                # fields and the returned one with them -- two versions of one action.
+                result["polls"] = attempt + 1
+                result["pollSatisfied"] = True
+                ctx.step_trace.append({
+                    "type": "action_poll", "stepId": step_id, "status": "satisfied",
+                    "polls": attempt + 1, "maxPolls": max_polls,
+                })
+                return result
+            if attempt < max_polls - 1 and interval_ms:
+                # Never sleep past the deadline. Sleeping the full interval and letting the NEXT
+                # _check_budget raise would report the overshoot as the poll's fault when it was
+                # this sleep's; clamping means the budget exception, when it comes, is raised at
+                # the moment the budget actually ran out.
+                remaining = self._budget_remaining_ms(ctx)
+                sleep_ms = interval_ms if remaining is None else max(0, min(interval_ms, remaining))
+                if sleep_ms:
+                    await asyncio.sleep(sleep_ms / 1000.0)
+
+        # Exhausted. The last response is kept rather than replaced, because an operator
+        # debugging a poll that never satisfied needs to see what the provider kept saying -- and
+        # it is annotated in place for the same reason as the success branch above, so
+        # ctx.action_results holds one entry per HTTP attempt with the last one marked, rather
+        # than N attempts plus a synthetic summary that looks like an N+1th call that never
+        # happened.
+        timed_out = result
+        timed_out["polls"] = max_polls
+        timed_out["pollSatisfied"] = False
+        timed_out["success"] = False
+        timed_out["error"] = "poll_condition_not_met after {0} attempt(s)".format(max_polls)
+        ctx.step_trace.append({
+            "type": "action_poll", "stepId": step_id, "status": "timeout",
+            "polls": max_polls, "maxPolls": max_polls,
+        })
+        self._record_action_error(
+            ctx, step, str(config.get("url", "")), str(config.get("method", "POST")).upper(),
+            timed_out["error"],
+        )
+        # Default review_gate, not the single-shot path's `continue` -- see the block comment above.
+        on_timeout = config.get("onPollTimeout", "review_gate")
+        if on_timeout == "abort":
+            raise ActionFailedError(timed_out["error"])
+        if on_timeout == "review_gate":
+            ctx.outcome = _merge_outcome(ctx.outcome, "review")
+        return timed_out
 
     async def _fire_action_request(self, step: Dict[str, Any], ctx: ExecutionContext, config: Dict[str, Any]) -> Dict[str, Any]:
         view = self._context_view(ctx)
@@ -999,8 +1848,10 @@ class PolicyExecutor:
         method = str(config.get("method", "POST")).upper()
         headers = resolve_template(config.get("headers", {}), view, resolved_secrets)
         body = resolve_template(config.get("bodyTemplate", {}), view, resolved_secrets)
-        timeout = int(config.get("timeoutMs", 5000)) / 1000
-        retries = int(config.get("retries", 0))
+        # Clamp author-supplied tunables: unclamped, one action could be timeoutMs=600000 x
+        # retries=10 -- a 100-minute request pinning a worker (and defeating the T1.3 budget).
+        timeout = clamp_timeout_ms(config.get("timeoutMs", 5000)) / 1000
+        retries = clamp_retries(config.get("retries", 0))
         last_error = None
 
         if url.startswith("rulemind://simulate/"):
@@ -1035,23 +1886,71 @@ class PolicyExecutor:
                 ctx.action_results.append(short)
                 on_failure = config.get("onFailure", "continue")
                 if on_failure == "abort":
-                    raise ActionFailedError("Action skipped — circuit open for {0}".format(breaker_key))
+                    raise ActionFailedError("Action skipped — circuit open for {0}".format(breaker_key)) from open_err
                 if on_failure == "review_gate":
                     ctx.outcome = _merge_outcome(ctx.outcome, "review")
                 return short
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        # SSRF guard on the REAL, secret-injecting path (the console guard never covered this).
+        # Resolve + range-check the host, then pin the connection to the vetted IP so a DNS
+        # rebind can't swing it to an internal address between check and connect.
+        # Resolution runs off the event loop and under whatever budget is left, for the reason
+        # spelled out in connector_fetch._send: build_pinned_request -> egress.vet_url ->
+        # socket.getaddrinfo is a BLOCKING resolve with no timeout of its own, so leaving it
+        # ahead of the deadline check bounded only the connect and let one unresponsive
+        # nameserver (stock config: timeout 5s x 2 attempts) blow through even the default 10s
+        # budget on a single step -- while blocking every other request in the worker. This is
+        # the path connector_fetch copied, so the same fix belongs on both or the budget is
+        # unenforceable on anything that opens a socket.
+        remaining_ms = self._budget_remaining_ms(ctx)
+        resolve_timeout = timeout if remaining_ms is None else max(0.001, min(timeout, remaining_ms / 1000.0))
+        try:
+            pinned = await asyncio.wait_for(
+                asyncio.to_thread(build_pinned_request, url), resolve_timeout)
+        except asyncio.TimeoutError as expired:
+            last_error = "timeout: name resolution exceeded the remaining evaluation budget"
+            self._record_action_error(ctx, step, url, method, last_error)
+            failure_result = {"success": False, "error": last_error, "attempts": 0}
+            ctx.action_results.append(failure_result)
+            on_failure = config.get("onFailure", "continue")
+            if on_failure == "abort":
+                raise ActionFailedError(last_error) from expired
+            if on_failure == "review_gate":
+                ctx.outcome = _merge_outcome(ctx.outcome, "review")
+            return failure_result
+        except EgressBlocked as blocked:
+            last_error = "blocked_by_egress_policy: {0}".format(blocked)
+            self._record_action_error(ctx, step, url, method, last_error)
+            if breaker is not None:
+                breaker.record_failure()
+            failure_result = {"success": False, "error": last_error, "attempts": 0, "blocked": True}
+            ctx.action_results.append(failure_result)
+            on_failure = config.get("onFailure", "continue")
+            if on_failure == "abort":
+                raise ActionFailedError(last_error) from blocked
+            if on_failure == "review_gate":
+                ctx.outcome = _merge_outcome(ctx.outcome, "review")
+            return failure_result
+
+        request_headers = dict(headers or {})
+        request_headers["Host"] = pinned.host_header
+        request_extensions = {"sni_hostname": pinned.sni_hostname}
+        connect_url = pinned.url
+
+        # follow_redirects stays False: chasing a 3xx re-opens SSRF (redirect to metadata) and
+        # would bypass the pinning we just did. A redirect surfaces as a non-2xx result instead.
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             for attempt in range(retries + 1):
                 attempt_started = time.perf_counter()
                 try:
                     if method == "GET":
-                        response = await client.get(url, headers=headers)
+                        response = await client.get(connect_url, headers=request_headers, extensions=request_extensions)
                     elif method == "PUT":
-                        response = await client.put(url, json=body, headers=headers)
+                        response = await client.put(connect_url, json=body, headers=request_headers, extensions=request_extensions)
                     elif method == "PATCH":
-                        response = await client.patch(url, json=body, headers=headers)
+                        response = await client.patch(connect_url, json=body, headers=request_headers, extensions=request_extensions)
                     else:
-                        response = await client.post(url, json=body, headers=headers)
+                        response = await client.post(connect_url, json=body, headers=request_headers, extensions=request_extensions)
                     result = {
                         "status": response.status_code,
                         "success": 200 <= response.status_code < 300,
@@ -1100,8 +1999,32 @@ class PolicyExecutor:
 
     def _execute_model(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
         from .model_executor import execute_model
-        ref_id = step.get("ref_id") or step.get("ref")
-        model = self.storage.get_model(ref_id, include_blob=True)
+        ref_id = str(step.get("ref_id") or step.get("ref") or "")
+        # A model step may name a MODEL SET as well as a model (P05). Sets are looked up second,
+        # so an existing model keeps winning on an id collision and no policy changes meaning:
+        # the two namespaces are separate today and a set added later must not shadow a model
+        # someone has been running for months.
+        model = self.storage.get_model(ref_id, include_blob=True, tenant_id=ctx.tenant_id)
+        routed_label = None
+        if not model:
+            from . import modelsets
+
+            model_set = self.storage.get_model_set(ref_id, tenant_id=ctx.tenant_id)
+            if model_set and model_set.get("is_active", True):
+                member, reason = modelsets.resolve_member(model_set, self._context_view(ctx))
+                if member is None:
+                    # No member matched and there is no unconditional one. Raising is right: a
+                    # model step exists to produce a number, and inventing one -- or silently
+                    # skipping the step -- would let the policy decide on a value no model gave.
+                    raise ValueError(
+                        "Model set '{0}' routed nowhere: {1}".format(ref_id, reason))
+                routed_label = member["label"]
+                model = self.storage.get_model(
+                    member["model_id"], include_blob=True, tenant_id=ctx.tenant_id)
+                if not model:
+                    raise ValueError(
+                        "Model set '{0}' routes to '{1}', which no longer exists".format(
+                            ref_id, member["model_id"]))
         if not model:
             raise ValueError("Unknown model: {0}".format(ref_id))
         config = step.get("config", {}) if isinstance(step.get("config"), dict) else {}
@@ -1126,6 +2049,12 @@ class PolicyExecutor:
         # Store prediction in variables for downstream steps
         if result.get("prediction") is not None:
             ctx.variables[output_variable] = result["prediction"]
+        if routed_label is not None:
+            # Which member answered, in the step result and therefore in the trace. Without it a
+            # decision made through a set is unexplainable after the fact: the outcome names the
+            # SET, and the set may route differently for the next applicant.
+            result = {**result, "model_set": ref_id, "routed_to": routed_label,
+                      "model_id": model.get("id")}
         return result
 
     async def _execute_review_gate(self, step: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:

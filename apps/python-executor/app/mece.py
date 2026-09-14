@@ -157,9 +157,10 @@ def value_sets_overlap(a: ValueSet, b: ValueSet) -> bool:
     if a.included is None and b.included is None:
         return True
     if a.included is None:
-        return any(v not in a.excluded for v in b.included)
+        # a.included is None was handled above, so b.included is the non-None side here.
+        return any(v not in a.excluded for v in b.included)  # type: ignore[union-attr]
     if b.included is None:
-        return any(v not in b.excluded for v in a.included)
+        return any(v not in b.excluded for v in a.included)  # type: ignore[union-attr]
     return bool(a.included & b.included)
 
 
@@ -169,7 +170,8 @@ def value_sets_intersection(a: ValueSet, b: ValueSet) -> ValueSet:
     if a.included is None and b.included is None:
         return ValueSet(included=None, excluded=a.excluded | b.excluded)
     if a.included is None:
-        return ValueSet(included={v for v in b.included if v not in a.excluded})
+        # Narrowed by the guard above; mypy does not carry it to this expression.
+        return ValueSet(included={v for v in b.included if v not in a.excluded})  # type: ignore[union-attr]
     if b.included is None:
         return ValueSet(included={v for v in a.included if v not in b.excluded})
     return ValueSet(included=a.included & b.included)
@@ -386,7 +388,7 @@ def _expand_and(child_ids: List[str], walk) -> List[List[FieldConstraint]]:
         cb = walk(cid)
         if not cb:
             continue
-        new_result = []
+        new_result: List[Any] = []
         for existing in result:
             for branch in cb:
                 if len(new_result) >= BRANCH_CAP:
@@ -646,10 +648,11 @@ def analyze_mece(rules: List[Dict[str, Any]]) -> Dict[str, Any]:
                                 if fa[f].opaque or fb[f].opaque:
                                     descs.append(f"{f} uses opaque operators")
                                 elif fa[f].intervals and fb[f].intervals:
-                                    inter = interval_intersection(fa[f].intervals[0], fb[f].intervals[0])
+                                    # guarded by `fa[f].intervals and fb[f].intervals` on the elif above
+                                    inter = interval_intersection(fa[f].intervals[0], fb[f].intervals[0])  # type: ignore[index]
                                     descs.append(f"{f} overlaps in range {inter.format()}" if inter else f"{f} overlaps")
                                 elif fa[f].value_set and fb[f].value_set:
-                                    isect = value_sets_intersection(fa[f].value_set, fb[f].value_set)
+                                    isect = value_sets_intersection(fa[f].value_set, fb[f].value_set)  # type: ignore[arg-type]
                                     if isect.included and len(isect.included) > 0:
                                         descs.append(f"{f} overlaps on values: {{{', '.join(sorted(isect.included))}}}")
                                     else:
@@ -680,7 +683,8 @@ def analyze_mece(rules: List[Dict[str, Any]]) -> Dict[str, Any]:
     numeric_intervals: Dict[str, List[Interval]] = {}
     boolean_values: Dict[str, Set[str]] = {}
     categorical_info: Dict[str, Dict[str, Any]] = {}
-    all_fields: Set[str] = set()
+    # Distinct from the outer all_fields (:597): this is a second, local accumulation.
+    all_fields = set()  # type: ignore[no-redef]
 
     for space in rule_spaces:
         for branch in space["branches"]:

@@ -31,6 +31,7 @@ class SmokeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         db_path = os.path.join(self.tempdir.name, "smoke.db")
+        self._orig_storage = app_main.storage
         app_main.storage = Storage(path=db_path)
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
@@ -39,14 +40,33 @@ class SmokeTests(unittest.TestCase):
         self.client.close()
         self.tempdir.cleanup()
 
+        # Restore the global, and release this test's engine. Placed at the END of tearDown so
+        # the teardown above still runs against THIS test's storage -- an earlier version put it
+        # first and silently redirected those statements at the restored global.
+        #
+        # The restore is the load-bearing half. Leaving app_main.storage pointed at a deleted
+        # tempdir made an UNRELATED module later fail with
+        # `sqlite3.OperationalError: unable to open database file`: the failure lands on whoever
+        # reads the global next, never on the test that leaked it, which is why it looked like a
+        # random flake for so long.
+        try:
+            app_main.storage.engine.dispose()
+        except Exception:  # pragma: no cover - teardown must not fail the test
+            pass
+        try:
+            app_main.storage = self._orig_storage
+        except Exception:  # pragma: no cover
+            pass
+
     def test_health_and_ready(self):
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/ready").status_code, 200)
 
     def test_decide_on_seeded_policy(self):
         policies = self.client.get("/api/v1/policies", headers=self.headers).json()
-        if not policies:
-            self.skipTest("no seeded policies")
+        # skipTest here made a seeding regression report as a pass; these tests exist to
+        # decide against a seeded policy, so its absence is the failure, not a reason to bail.
+        self.assertTrue(policies, "RULEMIND_SEED_DEMO=1 produced no policies; seeding regressed")
         policy_id = policies[0]["id"]
         resp = self.client.post(
             "/api/v1/decide",
@@ -58,8 +78,9 @@ class SmokeTests(unittest.TestCase):
 
     def test_mece_analysis(self):
         policies = self.client.get("/api/v1/policies", headers=self.headers).json()
-        if not policies:
-            self.skipTest("no seeded policies")
+        # skipTest here made a seeding regression report as a pass; these tests exist to
+        # decide against a seeded policy, so its absence is the failure, not a reason to bail.
+        self.assertTrue(policies, "RULEMIND_SEED_DEMO=1 produced no policies; seeding regressed")
         policy_id = policies[0]["id"]
         resp = self.client.post(f"/api/v1/policies/{policy_id}/analyze-mece", headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)

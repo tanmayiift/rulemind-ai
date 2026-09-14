@@ -41,7 +41,9 @@ def submit_review_decision(storage: Storage, task_id: str, response: Dict[str, A
     if hasattr(result, "__await__"):
         import asyncio
 
-        result = asyncio.run(result)
+        # hasattr(result, "__await__") above narrows this at runtime; mypy cannot
+        # follow a hasattr guard.
+        result = asyncio.run(result)  # type: ignore[arg-type]
     storage.add_audit_event(
         {
             "tenant_id": task["tenant_id"],
@@ -53,4 +55,4 @@ def submit_review_decision(storage: Storage, task_id: str, response: Dict[str, A
         },
         tenant_id=task["tenant_id"],
     )
-    return {"task": updated, "execution": result.to_dict()}
+    return {"task": updated, "execution": result.to_dict()}  # type: ignore[attr-defined]

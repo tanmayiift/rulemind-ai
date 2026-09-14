@@ -14,6 +14,7 @@ environments, or globally with RULEMIND_SKIP_SECRET_CHECK=1 (discouraged; logged
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import List, Mapping, Optional
 
@@ -27,8 +28,35 @@ PRODUCTION_SECRET_CHECKS = [
 ]
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 def _is_local_dev(env: Mapping[str, str]) -> bool:
-    return env.get("NODE_ENV", "development") == "development" or env.get("PYTEST_CURRENT_TEST") is not None
+    """Whether to skip the fail-closed default-secret check.
+
+    RULEMIND_ENV is checked FIRST and is the signal a deployment should set, because
+    NODE_ENV defaulting to "development" means a deploy that simply never sets it skips the
+    entire check and boots with the four known-public defaults listed in
+    PRODUCTION_SECRET_CHECKS. That silent path is the real hazard here.
+
+    The unset case still counts as local dev -- removing it would break `pnpm dev` and every
+    shell that does not export NODE_ENV, contradicting this module's own goal of running out
+    of the box -- but it now WARNS, so the gap is visible instead of silent.
+    """
+    if env.get("PYTEST_CURRENT_TEST") is not None:
+        return True
+    rulemind_env = (env.get("RULEMIND_ENV") or "").strip().lower()
+    if rulemind_env:
+        return rulemind_env not in ("production", "prod", "staging")
+    node_env = (env.get("NODE_ENV") or "").strip().lower()
+    if not node_env:
+        LOGGER.warning(
+            "Neither RULEMIND_ENV nor NODE_ENV is set, so the default-secret check is being "
+            "SKIPPED and built-in development secrets may be in use. Set RULEMIND_ENV=production "
+            "on any real deployment."
+        )
+        return True
+    return node_env == "development"
 
 
 def default_secret_violations(env: Optional[Mapping[str, str]] = None) -> List[str]:

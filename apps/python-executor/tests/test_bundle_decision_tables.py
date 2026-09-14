@@ -24,6 +24,7 @@ from app.storage import Storage  # noqa: E402
 class BundleDecisionTableTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "b.db"))
         self.storage = app_main.storage
         self.tenant = self.storage.default_tenant_id
@@ -45,6 +46,24 @@ class BundleDecisionTableTests(unittest.TestCase):
 
     def tearDown(self):
         self.tempdir.cleanup()
+
+        # Restore the global, and release this test's engine. Placed at the END of tearDown so
+        # the teardown above still runs against THIS test's storage -- an earlier version put it
+        # first and silently redirected those statements at the restored global.
+        #
+        # The restore is the load-bearing half. Leaving app_main.storage pointed at a deleted
+        # tempdir made an UNRELATED module later fail with
+        # `sqlite3.OperationalError: unable to open database file`: the failure lands on whoever
+        # reads the global next, never on the test that leaked it, which is why it looked like a
+        # random flake for so long.
+        try:
+            app_main.storage.engine.dispose()
+        except Exception:  # pragma: no cover - teardown must not fail the test
+            pass
+        try:
+            app_main.storage = self._orig_storage
+        except Exception:  # pragma: no cover
+            pass
 
     def test_bundle_includes_decision_tables(self):
         bundle = compile_bundle(self.storage, self.tenant, force=True)

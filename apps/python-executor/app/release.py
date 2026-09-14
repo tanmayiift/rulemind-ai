@@ -59,7 +59,7 @@ def rollback_policy(
     if not snapshot:
         raise ValueError("No snapshot found for promotion {0} of policy {1}.".format(promotion_id, policy_id))
 
-    restored = {"rules": [], "scorecards": [], "decision_tables": []}
+    restored: Dict[str, List[Any]] = {"rules": [], "scorecards": [], "decision_tables": []}
 
     # 1) Restore referenced assets to their snapshotted definitions.
     for rid, rule in (snapshot.get("rules") or {}).items():
@@ -95,7 +95,8 @@ def rollback_policy(
     new_snapshot = None
     try:
         from .policy_diff import policy_snapshot
-        new_snapshot = policy_snapshot(storage, tenant_id, storage.get_policy(policy_id, tenant_id=tenant_id))
+        # The policy was just resolved above; a None here would mean it vanished mid-call.
+        new_snapshot = policy_snapshot(storage, tenant_id, storage.get_policy(policy_id, tenant_id=tenant_id))  # type: ignore[arg-type]
     except Exception:
         pass
     storage.add_promotion(

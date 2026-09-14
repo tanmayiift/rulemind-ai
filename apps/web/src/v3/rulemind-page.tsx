@@ -133,7 +133,12 @@ export function RuleMindPage(props: { page: PageId }) {
   }
 
   return (
-    <div style={{ background: theme.bg, minHeight: "100%" }}>
+    // The per-page marker is deliberately on the SUCCESS branch only: the loading and error
+    // branches above return early, so its presence means this page resolved its data, not
+    // merely that the shell rendered. e2e used to assert `body` contained /rule/i, which the
+    // sidebar satisfies on every route -- including the error banner -- so all seven
+    // "page loads" tests passed without a page ever loading.
+    <div style={{ background: theme.bg, minHeight: "100%" }} data-testid={"page-" + props.page}>
       {notice ? (
         <div style={{ padding: "16px 20px 0" }} data-testid="app-notice">
           <InfoBanner message={notice} toneKey="success" />

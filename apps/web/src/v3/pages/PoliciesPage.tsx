@@ -78,12 +78,13 @@ import {
   SectionHeader,
   InfoBanner,
   EmptyState,
+  EnvironmentEmptyState,
 } from "../kit";
 import { DecisionFlow } from "./TestingPage";
 
 export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment, isMobile } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, setEnvironment, isMobile } = useRuleMindStore();
   const connectorMap = React.useMemo(
     () => Object.fromEntries(props.data.connectors.map((connector) => [connector.id, connector])),
     [props.data.connectors]
@@ -91,6 +92,15 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
   const editableRules = props.data.rules.filter((rule) => rule.status === "prod" || rule.status === environment);
   const editableScorecards = props.data.scorecards.filter((scorecard) => scorecard.status === "prod" || scorecard.status === environment);
   const environmentPolicies = props.data.policies.filter((policy) => policy.status === environment);
+  // Counted across ALL environments so the empty state can say where the work actually is,
+  // rather than implying the workspace is empty when it is only this environment that is.
+  const policyCountsByEnvironment = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    props.data.policies.forEach((policy) => {
+      counts[policy.status] = (counts[policy.status] || 0) + 1;
+    });
+    return counts;
+  }, [props.data.policies]);
   const [selectedId, setSelectedId] = React.useState<string | null>(environmentPolicies[0]?.id ?? null);
   const [policyName, setPolicyName] = React.useState("");
   const [steps, setSteps] = React.useState<PolicyStepRecord[]>([]);
@@ -231,6 +241,17 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
           </div>
         }
       />
+
+      {environmentPolicies.length === 0 ? (
+        <EnvironmentEmptyState
+          icon={<Layers size={28} />}
+          entityPlural="policies"
+          counts={policyCountsByEnvironment}
+          current={environment}
+          onSwitch={(next) => setEnvironment(next as typeof environment)}
+          createHint="Chain connectors, rules and scorecards into a decision flow below."
+        />
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "280px 1fr", gap: 12 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 12, display: "grid", gap: 10 }}>

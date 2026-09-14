@@ -94,35 +94,78 @@ def run(r: Runner):
             got = res.get("value") if isinstance(res, dict) else res
             c.ok(got == 42, f"expected 42, got {got!r} (body={json.dumps(body)[:200]})")
 
+    # Each escape is a DECORATED FUNCTION BODY, and every request carries source_id -- the same
+    # two corrections already applied to case 3.1 above, which were never applied to this loop.
+    # Without them the endpoint 422s on a malformed request before the sandbox is ever reached,
+    # and the old `if status != 200: c.ok(True)` below turned that into a pass. All seven of
+    # these cases, plus 3.3, have therefore been asserting nothing:
+    #
+    #   sent:      {"code": "import os\nresult = ...", "payload": {}}
+    #   received:  422 {"detail":[{"loc":["body","source_id"],"msg":"Field required"}]}
+    #   recorded:  PASS
+    #
+    # The sandbox itself was fine all along -- a well-formed attempt returns
+    # {"error": "Import not allowed: os"}. It is the test that was broken, which is worse: a
+    # green row asserting the opposite of nothing.
     SANDBOX_ESCAPES = [
-        ("import os", "import os\nresult = os.listdir('/')"),
-        ("__import__", "result = __import__('os').listdir('/')"),
-        ("open file", "result = open('/etc/passwd').read()"),
-        ("builtins via subclass", "result = ().__class__.__bases__[0].__subclasses__()"),
-        ("eval", "result = eval(\"__import__('os').getcwd()\")"),
-        ("exec", "exec('import os'); result = 1"),
-        ("globals", "result = globals()['__builtins__']"),
+        ("import os", "    import os\n    return os.listdir('/')"),
+        ("__import__", "    return __import__('os').listdir('/')"),
+        ("open file", "    return open('/etc/passwd').read()"),
+        ("builtins via subclass", "    return ().__class__.__bases__[0].__subclasses__()"),
+        ("eval", "    return eval(\"__import__('os').getcwd()\")"),
+        ("exec", "    exec('import os')\n    return 1"),
+        ("globals", "    return globals()['__builtins__']"),
     ]
-    for i, (label, code) in enumerate(SANDBOX_ESCAPES, start=1):
+    for i, (label, body_src) in enumerate(SANDBOX_ESCAPES, start=1):
         with r.case(f"3.2.{i}", f"Sandbox blocks: {label}") as c:
-            resp = r.post("/api/v1/variables/test-draft", json={"code": code, "payload": {}})
+            code = ('@variable(source="custom")\n'
+                    "def probe(payload, variables, apis):\n" + body_src)
+            resp = r.post("/api/v1/variables/test-draft",
+                          json={"source_id": "custom", "code": code, "payload": {}})
+            # A 422 here means WE sent a malformed request, not that the sandbox blocked
+            # anything. That must fail loudly rather than masquerade as a block.
+            if resp.status_code == 422:
+                c.fail(f"malformed request, sandbox never reached: {resp.text[:200]}")
+                continue
+            # A non-200, non-422 rejection IS a block -- the request was refused before
+            # execution -- but say so explicitly rather than silently accepting any status.
             if resp.status_code != 200:
-                c.ok(True); continue
+                c.info({"status": resp.status_code, "body": resp.text[:200]})
+                c.ok(True, f"rejected with {resp.status_code}")
+                continue
             body = resp.json()
-            err = body.get("error") or body.get("traceback") or ""
-            val = body.get("result", body.get("value"))
-            blocked = bool(err) or val in (None, "")
-            c.ok(blocked, f"NOT BLOCKED — returned {str(val)[:160]!r}")
+            res = body.get("result", body)
+            err = (res.get("error") if isinstance(res, dict) else None) or body.get("error") or ""
+            val = res.get("value") if isinstance(res, dict) else res
+            blocked = bool(err) and val in (None, "")
+            c.ok(blocked, f"NOT BLOCKED — error={str(err)[:120]!r} value={str(val)[:160]!r}")
             c.info({"error": str(err)[:200], "result": str(val)[:200]})
 
     with r.case("3.3", "Sandbox enforces timeout on infinite loop") as c:
+        # Same two corrections. Previously this 422'd in about a millisecond and the only
+        # assertion was `elapsed < 15000`, which a 422 satisfies trivially -- so it passed
+        # without ever starting a loop, let alone timing one out.
+        code = ('@variable(source="custom")\n'
+                "def probe(payload, variables, apis):\n"
+                "    while True:\n"
+                "        pass\n")
         t0 = time.perf_counter()
         resp = r.post("/api/v1/variables/test-draft",
-                      json={"code": "while True: pass\nresult = 1", "payload": {}}, timeout=30)
+                      json={"source_id": "custom", "code": code, "payload": {}}, timeout=30)
         elapsed = (time.perf_counter() - t0) * 1000
         c.info({"elapsed_ms": round(elapsed), "status": resp.status_code,
                 "body": resp.text[:200]})
-        c.ok(elapsed < 15000, f"took {elapsed:.0f}ms — timeout not enforced")
+        if resp.status_code == 422:
+            c.fail(f"malformed request, sandbox never reached: {resp.text[:200]}")
+        else:
+            c.ok(elapsed < 15000, f"took {elapsed:.0f}ms — timeout not enforced")
+            # The loop must actually have RUN and been killed, not been rejected instantly.
+            # A sub-100ms result means nothing executed, which is how this passed before.
+            c.ok(elapsed > 100, f"returned in {elapsed:.0f}ms — nothing was executed")
+            if resp.status_code == 200:
+                res = resp.json().get("result", {})
+                err = res.get("error") if isinstance(res, dict) else None
+                c.ok(bool(err), f"no timeout error reported: {str(res)[:160]}")
 
     with r.case("3.4", "Rule test endpoint returns per-condition detail") as c:
         rules = r.get("/api/v1/rules").json()
@@ -139,7 +182,12 @@ def run(r: Runner):
         c.ok(resp.status_code == 200, f"{resp.status_code}")
         if resp.status_code == 200:
             fns = resp.json()
-            n = len(fns) if isinstance(fns, list) else len(fns.get("functions", []))
+            # `all_functions`, not `functions` -- the endpoint returns
+            # {total_functions, categories, all_functions} (main.py:1632). This case read a key
+            # that never existed, so it reported "no excel functions returned" against a
+            # perfectly healthy 230-function library.
+            n = len(fns) if isinstance(fns, list) else (
+                fns.get("total_functions") or len(fns.get("all_functions", [])))
             c.info({"count": n}); c.ok(n > 0, "no excel functions returned")
 
     # ================= 4. DECISIONING =================
@@ -186,7 +234,9 @@ def run(r: Runner):
         c.ok(resp.status_code == 200, f"{resp.status_code}: {resp.text[:300]}")
         if resp.status_code == 200:
             b = resp.json()
-            rows = b if isinstance(b, list) else b.get("results", b.get("decisions", []))
+            # `rows`, not `results`/`decisions` -- /decide/batch returns
+            # {targetType, targetId, rows, count, performance} (runtime.py:375).
+            rows = b if isinstance(b, list) else b.get("rows", b.get("results", b.get("decisions", [])))
             c.ok(len(rows) == 3, f"expected 3 results, got {len(rows)}")
 
     # ================= 5. VISIBILITY / EXPLAINABILITY =================
@@ -225,17 +275,17 @@ def run(r: Runner):
         for i in range(3):
             r.post("/api/v1/decide", json={"policyId": pol, "payload": {"age": 30 + i}, "userId": marker})
         time.sleep(2.0)  # async decision log
-        # client_id, not userId: /decide's `userId` is stored as client_id
-        # (executor.py:878) and the row exposes only client_id
-        # (storage.py:780-801). `userId` is not an accepted query param
-        # (insights.py:68), so FastAPI dropped it and this assertion was
-        # matching a key that never existed.
-        resp = r.get("/api/v1/audit/decisions", params={"client_id": marker, "limit": 50})
+        # user_id, the SUBJECT filter. This case previously found 1 of 3 and was written off
+        # as a test bug; it was a product bug. /decide wrote `userId` into client_id, which is
+        # under UNIQUE(tenant_id, client_id), so decisions 2 and 3 were silently discarded --
+        # the caller had a 200 and a decision_id that never existed. Subject and idempotency
+        # key are now separate columns.
+        resp = r.get("/api/v1/audit/decisions", params={"user_id": marker, "limit": 50})
         c.ok(resp.status_code == 200, f"{resp.status_code}: {resp.text[:200]}")
         if resp.status_code == 200:
             b = resp.json()
             rows = b if isinstance(b, list) else b.get("items", b.get("decisions", b.get("results", [])))
-            mine = [x for x in rows if x.get("client_id") == marker]
+            mine = [x for x in rows if x.get("user_id") == marker]
             c.info({"returned": len(rows), "matching_marker": len(mine)})
             c.ok(len(mine) >= 3, f"expected >=3 decisions for {marker}, found {len(mine)}")
 
@@ -265,11 +315,17 @@ def run(r: Runner):
         resp = r.get("/api/v1/settings")
         c.ok(resp.status_code == 200, f"{resp.status_code}")
         marker = "4111111111111111"
+        # Sent twice: once under an obviously-sensitive key, once under an innocuous one. The
+        # second is the case key-name matching alone cannot catch, and it is how a card number
+        # actually reaches the decision log -- the caller picks the field names, not us.
         b = r.post("/api/v1/decide", json={"policyId": pol,
-                                           "payload": {"age": 30, "card_number": marker},
+                                           "payload": {"age": 30, "card_number": marker,
+                                                       "external_ref": marker},
                                            "userId": "e2e-pii"})
         c.info({"decide": b.status_code})
         time.sleep(1.5)
         hits = r.get("/api/v1/audit/decisions", params={"limit": 20})
         if hits.status_code == 200 and marker in hits.text:
-            c.warn("raw card-like value echoed back in audit payload (no default redaction)")
+            # Was a warn(). It is a fail: the value is stored verbatim in payload_preview and
+            # returned in full to any viewer-role user, so downgrading it hid a live PII leak.
+            c.fail("raw card-like value echoed back in audit payload (default redaction not applied)")

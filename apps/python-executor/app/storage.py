@@ -6,15 +6,21 @@ import logging
 import hashlib
 import hmac
 import json
-import os
 import time as _time
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from sqlalchemy import case, delete, desc, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
+
+from .archiver import normalize_retention_months, retention_window_days
+from .audit_chain import GENESIS_HASH, compute_hash as compute_audit_hash, verify as verify_audit_chain_rows
+from .idempotency import is_expired as is_idempotency_expired, should_remember as should_remember_idempotent
+from .quota import METRIC_DECISIONS
 from sqlalchemy.orm import Session
 
 LOGGER = logging.getLogger(__name__)
@@ -31,6 +37,7 @@ from .auth import (
     otp_code_hash,
     session_token_hash,
 )
+from . import env
 from .context import get_current_tenant_id
 from .db import engine_for, session_factory
 from .logic import generate_rule_expression_definition, json_dumps, now_iso
@@ -59,13 +66,22 @@ from .models import (
     ReportDefinition,
     ReviewTask,
     Rule,
+    LoginAttempt,
+    SamlAssertionSeen,
     SchedulerLease,
     Scorecard,
     SdkEvent,
     Setting,
+    IdempotencyRecord,
     Tenant,
+    UsageRecord,
     Variable,
+    ModelSet,
+    Journey,
+    Predictor,
+    PredictorValue,
     Webhook,
+    WebhookSubscription,
     WorkflowExecution,
     WorkspaceMember,
     uuid4_str,
@@ -73,11 +89,24 @@ from .models import (
 from .seed_data import CONNECTORS, DEFAULT_SETTINGS, POLICIES, RULES, SCORECARDS, VARIABLES
 
 
-SECRET_FIELD_MARKERS = ("token", "secret", "password", "api_key", "apikey", "client_secret", "private_key")
+SECRET_FIELD_MARKERS = (
+    "token", "secret", "password", "api_key", "apikey", "client_secret", "private_key",
+    # Added with outbound client certificates (P02). "password" does NOT match
+    # "passphrase", and nothing here matched "client_cert_p12" -- so a PKCS#12 bundle and
+    # its passphrase were stored in the clear and echoed back unredacted, which is a
+    # private key in a connector row. This list is a substring test, so a new secret-ish
+    # config key is only protected if a marker actually appears in it; naming alone is not
+    # enough.
+    "passphrase", "client_cert_p12",
+)
 
 # Verified API keys are cached per-Storage-instance (bcrypt is deliberately
 # ~200ms; running it per request caps the whole API at a few req/s). TTL below.
-_API_KEY_CACHE_TTL = float(os.getenv("API_KEY_CACHE_TTL", "300"))
+#
+# env.env_float, not float(os.getenv(...)): this runs at MODULE IMPORT, so a set-but-blank
+# API_KEY_CACHE_TTL made `float("")` raise ValueError before a single request handler existed —
+# the process died at import with a traceback that named neither the variable nor the fix.
+_API_KEY_CACHE_TTL = env.env_float("API_KEY_CACHE_TTL", 300.0)
 
 
 def _parse_client_datetime(value: Any) -> Optional[datetime]:
@@ -104,40 +133,180 @@ def serialize_datetime(value: Optional[datetime]) -> Optional[str]:
     return value.replace(microsecond=0).isoformat() + "Z"
 
 
+# ── config-at-rest encryption ────────────────────────────────────────────────
+#
+# Everything below shares one master secret, RULEMIND_CONFIG_KEY. Two things were wrong with
+# how it was used, and both fail in the same direction — quietly.
+#
+# 1. THE KEY WAS UNROTATABLE. `fernet_key()` derived exactly one key and every decrypt used it
+#    alone, so changing RULEMIND_CONFIG_KEY orphaned every encrypted column at once. There was
+#    no second chance: no MultiFernet, no old-key list, nothing anywhere in the repo.
+#
+# 2. EVERY DECRYPT RETURNED SOMETHING PLAUSIBLE ON THE WRONG KEY. `except: return value`
+#    handed the CIPHERTEXT back as if it were the plaintext. So a rotation did not fail — it
+#    "succeeded" and then sent the base64 of a connector token as a live Authorization header,
+#    fed ciphertext bytes to `pickle.loads`, and emptied every connector config to `{}`. The
+#    operator's signal that the key was wrong was a slow, distributed outage.
+#
+# The chain below fixes both: MultiFernet tries the primary key then every configured old key,
+# and a token that decrypts under NONE of them raises DecryptionError instead of degrading.
+# The one legacy path that IS deliberate — a row written before encryption existed — is now
+# gated on the Fernet version marker rather than on "an exception happened".
+
+# A Fernet token is urlsafe-base64 whose first byte is the version 0x80, which always encodes
+# as "gAAAAA". That marker is what separates "this column holds ciphertext" (a decrypt failure
+# here is a real error) from "this column holds a pre-encryption plaintext" (returning it is
+# correct). Before, the two were indistinguishable because both arrived as `except Exception`.
+_FERNET_PREFIX = "gAAAAA"
+_FERNET_PREFIX_BYTES = b"gAAAAA"
+
+CONFIG_KEY_VAR = "RULEMIND_CONFIG_KEY"
+CONFIG_KEY_OLD_VAR = "RULEMIND_CONFIG_KEY_OLD"
+_CONFIG_KEY_DEFAULT = "rulemind-dev-master-key"
+
+# A fixed application salt. The master secret lives only in the environment and there is
+# nowhere to persist a random per-deployment salt that every replica would agree on, so the
+# salt is a constant and the work factor carries the weight. This is still a large improvement
+# on the bare `sha256(raw)` it replaces: a single SHA-256 over an operator-chosen passphrase is
+# brute-forceable at billions of guesses/second on commodity GPUs, which matters because the
+# thing being guessed is the key to every stored secret and every decision payload.
+_KDF_SALT = b"rulemind.config-key.pbkdf2.v1"
+_KDF_ITERATIONS = 200_000
+
+# Derivation is ~100ms, and the old code derived a key on EVERY encrypt and decrypt call.
+# Memoised per distinct secret; the process already holds these values in os.environ.
+_DERIVED_KEY_CACHE: Dict[str, bytes] = {}
+_KEY_CHAIN_CACHE: Dict[Tuple[str, Tuple[str, ...]], MultiFernet] = {}
+
+
+class DecryptionError(RuntimeError):
+    """Stored ciphertext could not be decrypted with any configured key.
+
+    Deliberately loud. The alternative this replaces — returning the ciphertext, or `{}` —
+    turned a wrong RULEMIND_CONFIG_KEY into corrupt-but-plausible data flowing outward.
+    """
+
+
+def _looks_encrypted(value: str) -> bool:
+    return value.startswith(_FERNET_PREFIX)
+
+
+def _derive_key(secret: str) -> bytes:
+    """PBKDF2-HMAC-SHA256 -> a urlsafe-base64 Fernet key."""
+    cached = _DERIVED_KEY_CACHE.get(secret)
+    if cached is not None:
+        return cached
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(), length=32, salt=_KDF_SALT, iterations=_KDF_ITERATIONS
+    )
+    derived = base64.urlsafe_b64encode(kdf.derive(secret.encode("utf-8")))
+    _DERIVED_KEY_CACHE[secret] = derived
+    return derived
+
+
+def _legacy_sha256_key(secret: str) -> bytes:
+    """The pre-KDF derivation: one unsalted SHA-256 of the raw secret.
+
+    Kept ONLY as a decryption key. Switching to PBKDF2 changes the derived key, so every row
+    already in the database was encrypted under this one; dropping it would render every
+    connector config, provider key, SMTP password, SSO secret, webhook secret, model blob and
+    decision payload permanently unreadable, with no error at write time to warn anyone. It
+    stays in the chain so old rows keep decrypting, and `scripts/rotate_config_key.py`
+    re-encrypts them onto the KDF key at the operator's convenience.
+    """
+    return base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+
+
+def _config_key_secrets() -> Tuple[str, Tuple[str, ...]]:
+    """(primary, previous...) — env.env_str so a set-but-BLANK RULEMIND_CONFIG_KEY falls back to
+    the dev default rather than deriving the key from "", which is publicly computable and would
+    silently encrypt every tenant's secrets under a key printed in this comment."""
+    primary = env.env_str(CONFIG_KEY_VAR, _CONFIG_KEY_DEFAULT)
+    return primary, tuple(env.env_list(CONFIG_KEY_OLD_VAR))
+
+
+def crypto() -> MultiFernet:
+    """The key chain: encrypt() uses the FIRST key, decrypt() tries them in order.
+
+    Order is primary-KDF, primary-legacy-sha256, then each RULEMIND_CONFIG_KEY_OLD entry in
+    both derivations. That means: new writes use the primary KDF key; reads still succeed for
+    data written before the KDF change and for data written under a previous master secret.
+    """
+    primary, olds = _config_key_secrets()
+    cache_key = (primary, olds)
+    cached = _KEY_CHAIN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    raw_keys = [_derive_key(primary), _legacy_sha256_key(primary)]
+    for old in olds:
+        raw_keys.append(_derive_key(old))
+        raw_keys.append(_legacy_sha256_key(old))
+    chain = MultiFernet([Fernet(key) for key in raw_keys])
+    _KEY_CHAIN_CACHE[cache_key] = chain
+    return chain
+
+
 def fernet_key() -> bytes:
-    raw = os.getenv("RULEMIND_CONFIG_KEY", "rulemind-dev-master-key")
-    digest = hashlib.sha256(raw.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest)
+    """The PRIMARY key — what new writes are encrypted under. Reads must go through `crypto()`
+    so previous keys are tried too."""
+    primary, _ = _config_key_secrets()
+    return _derive_key(primary)
+
+
+def _decryption_error(field: str) -> DecryptionError:
+    return DecryptionError(
+        "Could not decrypt {0}: the stored value is Fernet ciphertext but none of the "
+        "configured keys open it. {1} has most likely been changed or rotated. Set the "
+        "PREVIOUS key(s) in {2} (comma-separated) so reads keep working, then run "
+        "scripts/rotate_config_key.py to re-encrypt onto the new key. Refusing to return the "
+        "ciphertext as if it were the plaintext value.".format(
+            field, CONFIG_KEY_VAR, CONFIG_KEY_OLD_VAR
+        )
+    )
 
 
 def encrypt_config_payload(value: Dict[str, Any]) -> str:
-    return Fernet(fernet_key()).encrypt(json.dumps(value).encode("utf-8")).decode("utf-8")
+    return crypto().encrypt(json.dumps(value).encode("utf-8")).decode("utf-8")
 
 
 def decrypt_config_payload(value: str) -> Dict[str, Any]:
+    """A connector's config (base URLs, auth headers, credentials).
+
+    Used to return `{}` on any failure, which is the worst possible answer: the connector kept
+    working, just with no auth and no configured endpoint, so the failure surfaced as confusing
+    downstream 401s rather than as "the key is wrong".
+    """
     if not value:
         return {}
-    try:
-        return json.loads(Fernet(fernet_key()).decrypt(value.encode("utf-8")).decode("utf-8"))
-    except Exception:
+    if not _looks_encrypted(value):
+        # Deliberate legacy path: rows written before encrypted_config was encrypted held raw
+        # JSON. Narrow — gated on the value not being ciphertext at all, not on "it threw".
         try:
-            return json.loads(value)
-        except Exception:
-            return {}
+            parsed = json.loads(value)
+        except ValueError as exc:
+            raise DecryptionError(
+                "Connector config is neither Fernet ciphertext nor legacy JSON; the column is "
+                "corrupt and cannot be interpreted."
+            ) from exc
+        return parsed if isinstance(parsed, dict) else {}
+    try:
+        return json.loads(crypto().decrypt(value.encode("utf-8")).decode("utf-8"))
+    except InvalidToken as exc:
+        raise _decryption_error("connector config") from exc
 
 
 def decision_encryption_enabled() -> bool:
     """Encrypt decision payloads at rest (default ON). Financial/KYC/health/any-PII inputs must
     not sit in the DB as plaintext. Disable only for a plaintext-required migration."""
-    return (os.getenv("DECISION_ENCRYPT_AT_REST", "1") or "1").strip() not in ("0", "false", "no")
+    return env.env_bool("DECISION_ENCRYPT_AT_REST", True)
 
 
 def encrypt_decision_field(value: Any) -> Any:
-    """Encrypt a decision JSON blob (payload/variables) for storage. Returns a Fernet token
-    string when encryption is enabled, else the value unchanged (dev/migration)."""
+    """Encrypt a decision JSON blob (payload/variables/rule results/scorecard/trace) for storage.
+    Returns a Fernet token string when encryption is enabled, else the value unchanged."""
     if value is None or not decision_encryption_enabled():
         return value
-    return Fernet(fernet_key()).encrypt(json_dumps(value).encode("utf-8")).decode("utf-8")
+    return crypto().encrypt(json_dumps(value).encode("utf-8")).decode("utf-8")
 
 
 def decrypt_decision_field(value: Any) -> Any:
@@ -145,41 +314,128 @@ def decrypt_decision_field(value: Any) -> Any:
     plaintext (a JSON object already), so old rows keep reading after encryption is turned on."""
     if not isinstance(value, str):
         return value  # legacy plaintext dict/list, or None
-    try:
-        return json.loads(Fernet(fernet_key()).decrypt(value.encode("utf-8")).decode("utf-8"))
-    except Exception:
+    if not _looks_encrypted(value):
+        # Deliberate legacy path: a pre-encryption row, or a JSON column that round-tripped the
+        # blob as a JSON *string*. Not a decrypt failure — there is no ciphertext here.
         try:
             return json.loads(value)
-        except Exception:
+        except ValueError:
             return value
+    try:
+        return json.loads(crypto().decrypt(value.encode("utf-8")).decode("utf-8"))
+    except InvalidToken as exc:
+        raise _decryption_error("decision field") from exc
+
+
+def audit_encryption_enabled() -> bool:
+    """Encrypt audit metadata and source IPs at rest (default ON).
+
+    The audit trail was the one PII store left in plaintext while the decisions beside it were
+    encrypted. `metadata_json` carries the emails, usernames and source IPs of failed sign-ins,
+    invitations and role changes; `ip_address` is a source IP by definition. Disable only for a
+    plaintext-required migration, exactly as with DECISION_ENCRYPT_AT_REST.
+    """
+    return env.env_bool("AUDIT_ENCRYPT_AT_REST", True)
+
+
+def encrypt_audit_field(value: Any) -> Any:
+    """Encrypt an audit metadata blob for storage. No-op when disabled or empty."""
+    if value is None or not audit_encryption_enabled():
+        return value
+    return crypto().encrypt(json_dumps(value).encode("utf-8")).decode("utf-8")
+
+
+def encrypt_audit_text(value: Optional[str]) -> Optional[str]:
+    """Encrypt a short audit string (the source IP). No-op when disabled or empty."""
+    if not value or not audit_encryption_enabled():
+        return value
+    return crypto().encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_audit_text(value: Optional[str]) -> Optional[str]:
+    """Decrypt a stored audit string, tolerating pre-encryption plaintext rows.
+
+    Raises DecryptionError only when the value IS ciphertext and no configured key opens it --
+    the rotated-key case, which the caller reports rather than crashing on.
+    """
+    if not isinstance(value, str) or not _looks_encrypted(value):
+        return value
+    try:
+        return crypto().decrypt(value.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise _decryption_error("audit ip_address") from exc
 
 
 def encrypt_secret_text(value: str) -> str:
-    return Fernet(fernet_key()).encrypt(value.encode("utf-8")).decode("utf-8")
+    return crypto().encrypt(value.encode("utf-8")).decode("utf-8")
 
 
 def decrypt_secret_text(value: Optional[str]) -> Optional[str]:
+    """Decrypt one stored secret (LLM provider key, SMTP password, SSO client secret, webhook
+    signing secret).
+
+    This one returned the CIPHERTEXT on failure, and every caller passes the result straight
+    into an outbound request — so a wrong key meant a base64 blob was sent as a live
+    Authorization header / SMTP password / OIDC client_secret to a third party, and the only
+    symptom was an authentication failure at the far end.
+    """
     if not value:
         return None
-    try:
-        return Fernet(fernet_key()).decrypt(value.encode("utf-8")).decode("utf-8")
-    except Exception:
+    if not _looks_encrypted(value):
+        # Deliberate legacy path: a secret stored before encrypt_secret_text existed. Narrow —
+        # only for values that carry no Fernet version marker.
         return value
+    try:
+        return crypto().decrypt(value.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise _decryption_error("stored secret") from exc
 
 
 def encrypt_model_blob(blob: bytes) -> bytes:
     """Encrypt a hosted model's raw bytes at rest. The DB (and any dump / backup /
     replica) only ever holds ciphertext — the model's weights are unreadable without
     RULEMIND_CONFIG_KEY. Protects proprietary / black-box model IP."""
-    return Fernet(fernet_key()).encrypt(blob)
+    return crypto().encrypt(blob)
 
 
 def decrypt_model_blob(blob: bytes) -> bytes:
-    try:
-        return Fernet(fernet_key()).decrypt(blob)
-    except Exception:
-        # Tolerate a pre-encryption blob (defensive; shouldn't occur post-migration).
+    """Decrypt a hosted model's pickled bytes.
+
+    Returning the raw ciphertext on failure fed it to `pickle.loads`, which is both guaranteed
+    to fail confusingly and a deserialisation path that should never be handed attacker- or
+    corruption-shaped bytes.
+    """
+    if not blob:
         return blob
+    if not blob.startswith(_FERNET_PREFIX_BYTES):
+        # Deliberate legacy path: a model uploaded before blobs were encrypted.
+        return blob
+    try:
+        return crypto().decrypt(blob)
+    except InvalidToken as exc:
+        raise _decryption_error("hosted model blob") from exc
+
+
+def decision_payload_hash(payload: Any) -> str:
+    """A KEYED fingerprint of a decision payload.
+
+    Was a bare `sha256(canonical_json)`. Decision payloads are overwhelmingly low-entropy PII —
+    a PAN, a phone number, a date of birth, a pincode, a loan amount — so an unsalted, unkeyed
+    digest is reversible by enumeration: anyone with read access to the `decisions` table (a
+    replica, a backup, a support export) can recover the exact input by hashing candidates.
+    That defeats the point of encrypting payload_preview in the same row.
+
+    HMAC under a key derived from RULEMIND_CONFIG_KEY makes enumeration require the key, which
+    is exactly the property the encrypted columns already depend on. The subkey is separated by
+    label so this never reuses the Fernet encryption key material directly.
+
+    Note for operators: rotating RULEMIND_CONFIG_KEY changes the hash produced for NEW rows.
+    Nothing in the codebase looks a decision up by payload_hash (verified), so this is a
+    fingerprint for correlation only, not an index.
+    """
+    primary, _ = _config_key_secrets()
+    subkey = hmac.new(b"rulemind.payload-hash.v1", primary.encode("utf-8"), hashlib.sha256).digest()
+    return hmac.new(subkey, json_dumps(payload).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def mask_secret_values(value: Any) -> Any:
@@ -196,11 +452,71 @@ def mask_secret_values(value: Any) -> Any:
     return value
 
 
+_AUDIT_LOG = logging.getLogger("rulemind.storage.audit_listeners")
+
+# ── audit listeners ────────────────────────────────────────────────────────
+# Storage does not import webhook_dispatch, and must not: that would make the persistence layer
+# depend on outbound HTTP, and this file is already the largest in the backend. The dependency is
+# inverted instead -- interested modules register here at startup, and storage only knows it holds
+# a list of callables.
+#
+# Every listener is best effort and isolated. A written audit event is a fact; a listener that
+# raises must not turn it into an exception for the caller who was merely recording a promotion.
+_AUDIT_LISTENERS: List[Any] = []
+
+
+def register_audit_listener(listener: Any) -> None:
+    """Call `listener(storage, event_dict)` after every audit event is durably written."""
+    if listener not in _AUDIT_LISTENERS:
+        _AUDIT_LISTENERS.append(listener)
+
+
+def clear_audit_listeners() -> None:
+    """Test hook. Listeners are process-global, so a suite that registers one must be able to
+    take it back off rather than leaking it into every later test in the same process."""
+    _AUDIT_LISTENERS.clear()
+
+
+_DECISION_LISTENERS: List[Any] = []
+
+
+def register_decision_listener(listener: Any) -> None:
+    """Call `listener(storage, decision_dict)` after every Decision row is written."""
+    if listener not in _DECISION_LISTENERS:
+        _DECISION_LISTENERS.append(listener)
+
+
+def clear_decision_listeners() -> None:
+    """Test hook, for the same reason as clear_audit_listeners."""
+    _DECISION_LISTENERS.clear()
+
+
+def _notify_decision_listeners(storage: Any, decision: Dict[str, Any]) -> None:
+    for listener in list(_DECISION_LISTENERS):
+        try:
+            listener(storage, decision)
+        except Exception:  # pragma: no cover - a listener must never break the decision
+            _AUDIT_LOG.warning("decision listener %r failed",
+                               getattr(listener, "__name__", listener), exc_info=True)
+
+
+def _notify_audit_listeners(storage: Any, event: Dict[str, Any]) -> None:
+    for listener in list(_AUDIT_LISTENERS):
+        try:
+            listener(storage, event)
+        except Exception:  # pragma: no cover - a listener must never break the write
+            _AUDIT_LOG.warning("audit listener %r failed",
+                               getattr(listener, "__name__", listener), exc_info=True)
+
+
 class Storage:
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: Optional[str] = None, force_sqlite: bool = False):
+        # force_sqlite: for the few tests that are ABOUT the SQLite backend (file backup and
+        # restore, WAL mode, the rotation script run against a .db path) and build a
+        # `sqlite:///...` URL by hand afterwards. See db.test_schema_for.
         self.path = path
-        self.engine = engine_for(path)
-        self.SessionLocal = session_factory(path)
+        self.engine = engine_for(path, force_sqlite=force_sqlite)
+        self.SessionLocal = session_factory(path, force_sqlite=force_sqlite)
         self._create_schema()
         self._reconcile_sqlite_columns()
         self.default_tenant_id: Optional[str] = None
@@ -213,8 +529,13 @@ class Storage:
         # rationale as the API-key cache; role is read live so a role change /
         # deactivation takes effect within the TTL (and eagerly, see _invalidate_member).
         self._member_session_cache: Dict[str, Any] = {}
-        self.default_admin_email = os.getenv("RULEMIND_ADMIN_EMAIL", "admin@rulemind.local")
-        self.default_admin_password = os.getenv("RULEMIND_ADMIN_PASSWORD", "rulemind-admin")
+        # env.env_str throughout: a set-but-blank RULEMIND_ADMIN_PASSWORD would otherwise seed the
+        # platform admin with an EMPTY password (os.getenv returns "" and the default never
+        # applies) — and security_config's default-secret check passes, because "" is not the
+        # built-in default it looks for. A blank RULEMIND_ADMIN_EMAIL is just as bad in a
+        # different way: the seeded admin gets an unaddressable account nobody can log in as.
+        self.default_admin_email = env.env_str("RULEMIND_ADMIN_EMAIL", "admin@rulemind.local")
+        self.default_admin_password = env.env_str("RULEMIND_ADMIN_PASSWORD", "rulemind-admin")
         self.seed_if_empty()
 
     @contextmanager
@@ -229,14 +550,27 @@ class Storage:
         finally:
             session.close()
 
-    def _tenant_id(self, tenant_id: Optional[str] = None) -> str:
-        resolved = tenant_id or get_current_tenant_id() or self.default_tenant_id
+    def _tenant_id(self, tenant_id: Optional[str] = None, payload_tenant: Optional[str] = None) -> str:
+        """Resolve the tenant to operate on, in strict precedence order.
+
+        `payload_tenant` comes LAST, after the authenticated context. Fifteen writers used to
+        resolve `tenant_id or payload.get("tenant_id")`, which put a request-body field AHEAD of
+        the auth context whenever the caller relied on the context (i.e. passed no tenant_id) --
+        the precedence was backwards. Not exploitable today because no Pydantic model declares a
+        tenant_id field, so the key never survives request parsing; but it is one `extra="allow"`
+        or one new field away from a cross-tenant write primitive, and the ordering should not be
+        the thing standing between those. Internal callers that carry the tenant inside the
+        payload (batch import, WAL replay) still work -- they simply no longer outrank auth.
+        """
+        resolved = tenant_id or get_current_tenant_id() or payload_tenant or self.default_tenant_id
         if not resolved:
             raise ValueError("Tenant context is required.")
         return resolved
 
     def _seed_default_tenant(self, session: Session) -> Tenant:
-        plaintext = os.getenv("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000")
+        # env.env_str: a blank RULEMIND_DEV_API_KEY would seed a tenant whose API key is the
+        # EMPTY STRING — and key_lookup_hash("") is a fixed, publicly computable digest.
+        plaintext = env.env_str("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000")
         lookup_hash = key_lookup_hash(plaintext)
         tenant = session.scalar(select(Tenant).where(Tenant.api_key_hash == lookup_hash).limit(1))
         if tenant:
@@ -250,7 +584,9 @@ class Storage:
         return tenant
 
     def _seed_default_api_key(self, session: Session, tenant: Tenant) -> None:
-        plaintext = os.getenv("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000")
+        # env.env_str: a blank RULEMIND_DEV_API_KEY would seed a tenant whose API key is the
+        # EMPTY STRING — and key_lookup_hash("") is a fixed, publicly computable digest.
+        plaintext = env.env_str("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000")
         lookup_hash = key_lookup_hash(plaintext)
         existing_for_lookup = session.scalar(select(ApiKey).where(ApiKey.lookup_hash == lookup_hash).limit(1))
         if existing_for_lookup:
@@ -293,6 +629,34 @@ class Storage:
         )
 
     def seed_if_empty(self) -> None:
+        """Seed the default tenant, API key and admin — safely when several processes do it at once.
+
+        EVERY REPLICA RUNS THIS AT BOOT, against one shared database. The body below is
+        check-then-insert with nothing between the check and the insert, so two processes
+        starting together both see an empty table and both insert. One wins; the other gets
+
+            IntegrityError: duplicate key value violates unique constraint
+            "ix_api_keys_lookup_hash"
+
+        and, because this runs during startup, the process dies. Found on a local kind cluster
+        where the api and worker pods boot simultaneously (the worker CrashLoopBackOff'd once);
+        the chart's own production defaults are api=3 + worker=2, so a real install races five
+        ways on first boot. SQLite hid it completely — one process, one file.
+
+        The retry is the fix rather than a lock: losing the race means the winner has already
+        written exactly the rows this process wanted, so re-reading gets the same result a
+        successful seed would have. Retrying once is enough — the second pass takes the
+        `if existing` branch, which is why this is not a retry loop.
+        """
+        try:
+            self._seed_if_empty_once()
+        except IntegrityError:
+            # The winner committed between our SELECT and our INSERT. Its rows are the rows we
+            # were about to write, so re-reading is the whole recovery.
+            LOGGER.info("seed_if_empty lost a concurrent seed race; re-reading the winner's rows")
+            self._seed_if_empty_once()
+
+    def _seed_if_empty_once(self) -> None:
         with self.connect() as session:
             tenant = self._seed_default_tenant(session)
             self._seed_default_api_key(session, tenant)
@@ -310,7 +674,7 @@ class Storage:
             # is OPT-IN: a fresh clone starts clean so a new customer builds their own
             # via guided onboarding. Set RULEMIND_SEED_DEMO=1 to load the samples (the
             # test suite sets it per-file). Workspace settings always exist regardless.
-            if os.getenv("RULEMIND_SEED_DEMO", "0") != "1":
+            if not env.env_bool("RULEMIND_SEED_DEMO"):
                 self._ensure_settings(session, tenant.id)
                 return
 
@@ -567,8 +931,10 @@ class Storage:
             )
 
         for variable in VARIABLES:
-            existing = session.scalar(select(Variable).where(Variable.tenant_id == tenant_id, Variable.public_id == variable["id"]))
-            if existing:
+            # A distinct name per model: reusing `existing` pins its inferred type to
+            # whichever branch mypy sees first.
+            existing_variable = session.scalar(select(Variable).where(Variable.tenant_id == tenant_id, Variable.public_id == variable["id"]))
+            if existing_variable:
                 continue
             last_test_result = {
                 "value": variable["seed_value"],
@@ -606,8 +972,10 @@ class Storage:
 
         variable_lookup = {item["id"]: item for item in VARIABLES}
         for rule in RULES:
-            existing = session.scalar(select(Rule).where(Rule.tenant_id == tenant_id, Rule.public_id == rule["id"]))
-            if existing:
+            # A distinct name per model: reusing `existing` pins its inferred type to
+            # whichever branch mypy sees first.
+            existing_rule = session.scalar(select(Rule).where(Rule.tenant_id == tenant_id, Rule.public_id == rule["id"]))
+            if existing_rule:
                 continue
             expression = generate_rule_expression_definition(rule, variable_lookup)
             session.add(
@@ -638,8 +1006,10 @@ class Storage:
             )
 
         for scorecard in SCORECARDS:
-            existing = session.scalar(select(Scorecard).where(Scorecard.tenant_id == tenant_id, Scorecard.public_id == scorecard["id"]))
-            if existing:
+            # A distinct name per model: reusing `existing` pins its inferred type to
+            # whichever branch mypy sees first.
+            existing_scorecard = session.scalar(select(Scorecard).where(Scorecard.tenant_id == tenant_id, Scorecard.public_id == scorecard["id"]))
+            if existing_scorecard:
                 continue
             session.add(
                 Scorecard(
@@ -668,8 +1038,10 @@ class Storage:
             )
 
         for policy in POLICIES:
-            existing = session.scalar(select(Policy).where(Policy.tenant_id == tenant_id, Policy.public_id == policy["id"]))
-            if existing:
+            # A distinct name per model: reusing `existing` pins its inferred type to
+            # whichever branch mypy sees first.
+            existing_policy = session.scalar(select(Policy).where(Policy.tenant_id == tenant_id, Policy.public_id == policy["id"]))
+            if existing_policy:
                 continue
             session.add(
                 Policy(
@@ -781,13 +1153,19 @@ class Storage:
         return {
             "id": model.id,
             "client_id": model.client_id,
+            "user_id": model.user_id,
             "policy_id": model.policy_id,
             "payload": copy.deepcopy(decrypt_decision_field(model.payload_preview) or {}),
             "payload_hash": model.payload_hash,
             "computed_variables": copy.deepcopy(decrypt_decision_field(model.computed_variables) or {}),
-            "rule_results": copy.deepcopy(model.rule_results or []),
-            "scorecard_result": copy.deepcopy(model.scorecard_result),
-            "trace": copy.deepcopy(model.trace or []),
+            # rule_results / scorecard_result / trace are decrypted here for the same reason the
+            # two above are: they carry the same PII. The trace records the evaluated INPUT
+            # values at every step, so leaving it in the clear (as it was) meant encrypting
+            # payload_preview protected almost nothing — the plaintext sat one column over, and
+            # redact_payload is applied only to the payload, never to the trace.
+            "rule_results": copy.deepcopy(decrypt_decision_field(model.rule_results) or []),
+            "scorecard_result": copy.deepcopy(decrypt_decision_field(model.scorecard_result)),
+            "trace": copy.deepcopy(decrypt_decision_field(model.trace) or []),
             "outcome": model.outcome,
             "latency_ms": model.latency_ms,
             "source": model.source,
@@ -833,18 +1211,51 @@ class Storage:
 
     @staticmethod
     def _audit_event_to_dict(model: AuditEvent) -> Dict[str, Any]:
-        return {
+        """Rebuild the application-level event, decrypting metadata and ip_address.
+
+        A wrong or rotated RULEMIND_CONFIG_KEY must not raise out of here. This function is what
+        `verify_audit_chain` feeds the verifier, so raising turned "one workspace's key was
+        rotated without RULEMIND_CONFIG_KEY_OLD" into a 500 from the compliance endpoint --
+        the audit chain reporting itself as broken software rather than as a chain it cannot
+        currently read. The undecryptable rows are flagged instead, and audit_chain.verify
+        reports them as `metadata_undecryptable` rather than comparing a hash it cannot
+        reconstruct and calling the row tampered.
+        """
+        undecryptable = False
+        try:
+            metadata = decrypt_decision_field(model.metadata_json)
+        except DecryptionError:
+            metadata, undecryptable = {}, True
+        # deepcopy unconditionally. decrypt_decision_field returns a legacy plaintext row's dict
+        # BY REFERENCE (it short-circuits on non-str), so without this the caller would be handed
+        # the live JSON column off the SQLAlchemy model -- and this dict is returned straight out
+        # of list_audit_events and the audit export. The pre-encryption code copied here for
+        # exactly that reason; it must not be lost to the decrypt path.
+        metadata = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
+        try:
+            ip_address = decrypt_audit_text(model.ip_address)
+        except DecryptionError:
+            ip_address, undecryptable = None, True
+        event = {
             "id": model.id,
             "tenant_id": model.tenant_id,
             "event_type": model.event_type,
             "entity_type": model.entity_type,
             "entity_id": model.entity_id,
             "detail": model.detail,
-            "metadata": copy.deepcopy(model.metadata_json or {}),
+            "metadata": metadata,
             "user_id": model.user_id,
-            "ip_address": model.ip_address,
+            "ip_address": ip_address,
             "created_at": serialize_datetime(model.created_at),
+            "seq": model.seq,
+            "prev_hash": model.prev_hash,
+            "hash": model.hash,
         }
+        if undecryptable:
+            # Deliberately NOT in CHAINED_FIELDS -- it is a read-time observation about this
+            # process's keys, not part of what the row committed to.
+            event["metadata_undecryptable"] = True
+        return event
 
     @staticmethod
     def _bundle_to_dict(model: Bundle) -> Dict[str, Any]:
@@ -874,7 +1285,7 @@ class Storage:
             return self._connector_to_dict(model, include_secrets=include_secrets) if model else None
 
     def create_connector(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         with self.connect() as session:
             session.add(
@@ -903,7 +1314,10 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_connector(payload["id"], tenant_id=resolved)
+        created = self.get_connector(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("connector {0} vanished immediately after creation".format(payload["id"]))
+        return created
 
     def update_connector(self, connector_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -961,7 +1375,7 @@ class Storage:
             return self._variable_to_dict(row) if row else None
 
     def create_variable(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         snapshot = copy.deepcopy(payload)
         with self.connect() as session:
@@ -990,7 +1404,12 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_variable(payload["id"], tenant_id=resolved)
+        created = self.get_variable(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("variable {0} vanished immediately after creation".format(payload["id"]))
+        self._audit_entity_change("variable", payload["id"], "created", resolved,
+                                  version=created.get("version"))
+        return created
 
     def update_variable(self, variable_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1023,6 +1442,8 @@ class Storage:
                         snapshot=copy.deepcopy(next_value),
                     )
                 )
+        self._audit_entity_change("variable", variable_id, "updated", resolved,
+                                  version=next_value.get("version"))
         return self.get_variable(variable_id, tenant_id=resolved)
 
     def delete_variable(self, variable_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1034,6 +1455,9 @@ class Storage:
             model = self._query_by_public_id(session, Variable, variable_id, resolved)
             if model:
                 session.delete(model)
+        # A deletion is the change most worth having in the trail, and the row is gone
+        # afterwards -- EntityHistory keeps the snapshot, this records who removed it.
+        self._audit_entity_change("variable", variable_id, "deleted", resolved)
         return current
 
     def list_rules(self, status: Optional[str] = None, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1052,7 +1476,7 @@ class Storage:
             return self._rule_to_dict(row) if row else None
 
     def create_rule(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         with self.connect() as session:
             session.add(
@@ -1081,7 +1505,12 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_rule(payload["id"], tenant_id=resolved)
+        created = self.get_rule(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("rule {0} vanished immediately after creation".format(payload["id"]))
+        self._audit_entity_change("rule", payload["id"], "created", resolved,
+                                  version=created.get("version"))
+        return created
 
     def update_rule(self, rule_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1114,6 +1543,8 @@ class Storage:
                         snapshot=copy.deepcopy(next_value),
                     )
                 )
+        self._audit_entity_change("rule", rule_id, "updated", resolved,
+                                  version=next_value.get("version"))
         return self.get_rule(rule_id, tenant_id=resolved)
 
     def delete_rule(self, rule_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1125,6 +1556,9 @@ class Storage:
             model = self._query_by_public_id(session, Rule, rule_id, resolved)
             if model:
                 session.delete(model)
+        # A deletion is the change most worth having in the trail, and the row is gone
+        # afterwards -- EntityHistory keeps the snapshot, this records who removed it.
+        self._audit_entity_change("rule", rule_id, "deleted", resolved)
         return current
 
     def list_scorecards(self, status: Optional[str] = None, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1143,7 +1577,7 @@ class Storage:
             return self._scorecard_to_dict(row) if row else None
 
     def create_scorecard(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         with self.connect() as session:
             session.add(
@@ -1171,7 +1605,12 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_scorecard(payload["id"], tenant_id=resolved)
+        created = self.get_scorecard(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("scorecard {0} vanished immediately after creation".format(payload["id"]))
+        self._audit_entity_change("scorecard", payload["id"], "created", resolved,
+                                  version=created.get("version"))
+        return created
 
     def update_scorecard(self, scorecard_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1203,6 +1642,8 @@ class Storage:
                         snapshot=copy.deepcopy(next_value),
                     )
                 )
+        self._audit_entity_change("scorecard", scorecard_id, "updated", resolved,
+                                  version=next_value.get("version"))
         return self.get_scorecard(scorecard_id, tenant_id=resolved)
 
     def delete_scorecard(self, scorecard_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1214,6 +1655,9 @@ class Storage:
             model = self._query_by_public_id(session, Scorecard, scorecard_id, resolved)
             if model:
                 session.delete(model)
+        # A deletion is the change most worth having in the trail, and the row is gone
+        # afterwards -- EntityHistory keeps the snapshot, this records who removed it.
+        self._audit_entity_change("scorecard", scorecard_id, "deleted", resolved)
         return current
 
     def list_policies(self, status: Optional[str] = None, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1232,7 +1676,7 @@ class Storage:
             return self._policy_to_dict(row) if row else None
 
     def create_policy(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         now = datetime.utcnow()
         with self.connect() as session:
             session.add(
@@ -1260,7 +1704,10 @@ class Storage:
                     created_at=now,
                 )
             )
-        return self.get_policy(payload["id"], tenant_id=resolved)
+        created = self.get_policy(payload["id"], tenant_id=resolved)
+        if created is None:  # pragma: no cover - the row was just written in this transaction
+            raise RuntimeError("policy {0} vanished immediately after creation".format(payload["id"]))
+        return created
 
     def update_policy(self, policy_id: str, patch: Dict[str, Any], bump_version: bool = True, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1307,21 +1754,36 @@ class Storage:
         return current
 
     def add_decision(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        """Persist one decision.
+
+        Raises on a duplicate client_id rather than letting the IntegrityError escape as an
+        unhandled 500 from the async writer. Only add_decisions_batch used to handle this, so a
+        collision on the /decide path surfaced nowhere: the caller already had its 200, the row
+        was gone, and usage was never recorded. The collision itself is now near-impossible
+        (the subject moved to user_id) but a device genuinely replaying a client_id through this
+        path must still fail loudly rather than silently.
+        """
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         preview = copy.deepcopy(payload.get("payload", {}))
-        payload_hash = payload.get("payload_hash") or hashlib.sha256(json_dumps(preview).encode("utf-8")).hexdigest()
+        # Computed here, never taken from the caller. `payload.get("payload_hash") or ...` let an
+        # SDK client set the fingerprint of its own decision to any value it liked — including
+        # one collided onto another decision's. Nothing in the codebase reads a decision by
+        # payload_hash, so no caller relies on supplying it (verified across the API, the WAL
+        # replay path and all five SDKs).
+        payload_hash = decision_payload_hash(preview)
         with self.connect() as session:
             decision = Decision(
                 id=payload.get("id") or uuid4_str(),
                 tenant_id=resolved,
                 client_id=payload.get("client_id") or payload.get("clientId"),
+                user_id=payload.get("user_id") or payload.get("userId"),
                 policy_id=payload.get("policy_id"),
                 payload_hash=payload_hash,
                 payload_preview=encrypt_decision_field(preview),
                 computed_variables=encrypt_decision_field(copy.deepcopy(payload.get("computed_variables", {}))),
-                rule_results=copy.deepcopy(payload.get("rule_results", [])),
-                scorecard_result=copy.deepcopy(payload.get("scorecard_result")),
-                trace=copy.deepcopy(payload.get("trace", [])),
+                rule_results=encrypt_decision_field(copy.deepcopy(payload.get("rule_results", []))),
+                scorecard_result=encrypt_decision_field(copy.deepcopy(payload.get("scorecard_result"))),
+                trace=encrypt_decision_field(copy.deepcopy(payload.get("trace", []))),
                 outcome=payload["outcome"],
                 latency_ms=int(payload.get("latency_ms", 0)),
                 source=payload.get("source", "api"),
@@ -1336,10 +1798,42 @@ class Storage:
             session.add(decision)
             session.flush()
             result = self._decision_to_dict(decision)
+            # THE TRANSACTIONAL OUTBOX (parity P09), and the whole reason it is on this line
+            # rather than after the `with` block. The decision row and the outbox row commit
+            # TOGETHER or not at all, which is the only way to publish a decision to a broker
+            # without a window where one exists and the other does not. Outside the transaction
+            # this would be ordinary "write then publish" and would lose a message on any crash
+            # in between.
+            #
+            # Best-effort in the sense that a failure here must not lose the decision -- but
+            # note the asymmetry with decision_bus below: that one is fire-and-forget because
+            # the SSE feed is a live convenience, whereas an outbox row that fails to insert
+            # means this decision will never reach a consumer. It is logged loudly rather than
+            # swallowed silently.
+            from . import decision_outbox
+
+            decision_outbox.enqueue(session, resolved, result)
         # Best-effort real-time fan-out to the live SSE feed (no-op without Redis; never raises).
         from . import decision_bus
 
         decision_bus.publish_decision(resolved, result)
+        # One server-side decision = one billable unit. Metered here, at the single place a
+        # Decision row is written, rather than at /api/v1/decide -- that endpoint has two code
+        # paths (fast and executor) and there are three more entry points besides it, so
+        # metering at the handler would silently miss whichever path was added last.
+        #
+        # In a `finally` relative to the write: this used to sit after session.flush(), so any
+        # exception during the write skipped it entirely and the tenant was under-billed for a
+        # decision they had already been served. Metering follows the row, not the happy path.
+        self.record_usage(METRIC_DECISIONS, 1, tenant_id=resolved)
+        # Same argument as the metering directly above, and the same funnel: /decide has a fast
+        # path and an executor path, plus three other entry points, so a hook at any handler
+        # would miss whichever path was added last. Emitting from here is what stops outbound
+        # webhooks becoming the fourth FAST_DECIDE divergence of this cycle.
+        # The resolved tenant is passed in rather than read off `result`: _decision_to_dict does
+        # not carry tenant_id, so a listener reading it off the row silently got None and did
+        # nothing. Found by the end-to-end webhook test, not by inspection.
+        _notify_decision_listeners(self, {**result, "tenant_id": resolved})
         return result
 
     def add_decisions_batch(self, decisions: List[Dict[str, Any]], tenant_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1380,7 +1874,7 @@ class Storage:
                 if client_id is not None:
                     seen.add(client_id)
                 preview = copy.deepcopy(record.get("payload", {}))
-                payload_hash = record.get("payload_hash") or hashlib.sha256(json_dumps(preview).encode("utf-8")).hexdigest()
+                payload_hash = decision_payload_hash(preview)  # keyed; never caller-supplied
                 row = Decision(
                     id=uuid4_str(),
                     tenant_id=resolved,
@@ -1389,9 +1883,9 @@ class Storage:
                     payload_hash=payload_hash,
                     payload_preview=encrypt_decision_field(preview),
                     computed_variables=encrypt_decision_field(copy.deepcopy(record.get("computed_variables", {}))),
-                    rule_results=copy.deepcopy(record.get("rule_results", [])),
-                    scorecard_result=copy.deepcopy(record.get("scorecard_result")),
-                    trace=copy.deepcopy(record.get("trace", [])),
+                    rule_results=encrypt_decision_field(copy.deepcopy(record.get("rule_results", []))),
+                    scorecard_result=encrypt_decision_field(copy.deepcopy(record.get("scorecard_result"))),
+                    trace=encrypt_decision_field(copy.deepcopy(record.get("trace", []))),
                     outcome=record.get("outcome", "pending"),
                     latency_ms=int(record.get("latency_ms", record.get("latencyMs", 0)) or 0),
                     source=record.get("source", "on_device"),
@@ -1416,11 +1910,16 @@ class Storage:
                     inserted += 1
                 except IntegrityError:
                     duplicates += 1
+        # Bill `inserted`, NOT `received`. A device retrying an unacked batch re-sends decisions
+        # the server already stored; counting those would charge a customer for their own
+        # network being unreliable. Outside the `with` block on purpose -- record_usage opens
+        # its own session, and nesting one inside this transaction deadlocks on SQLite.
+        self.record_usage(METRIC_DECISIONS, inserted, tenant_id=resolved)
         return {"received": len(decisions), "inserted": inserted, "duplicates": duplicates, "acked": acked}
 
     def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0,
                        client_id: Optional[str] = None, policy_id: Optional[str] = None,
-                       outcome: Optional[str] = None) -> List[Dict[str, Any]]:
+                       outcome: Optional[str] = None, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         from . import decision_log
         decision_log.flush()  # read-after-write: see any just-submitted async writes
         resolved = self._tenant_id(tenant_id)
@@ -1434,6 +1933,8 @@ class Storage:
             query = select(Decision).where(Decision.tenant_id == resolved)
             if client_id:
                 query = query.where(Decision.client_id == client_id)
+            if user_id:
+                query = query.where(Decision.user_id == user_id)
             if policy_id:
                 query = query.where(Decision.policy_id == policy_id)
             if outcome:
@@ -1443,12 +1944,29 @@ class Storage:
             return [self._decision_to_dict(row) for row in rows]
 
     def get_decision(self, decision_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Point read of one decision, tolerant of a cross-worker write (T5.6).
+
+        `decision_log.flush()` alone is not enough here. It waits on THIS process's pending
+        futures, but the decision-log write is async and uvicorn runs several workers, so the
+        `decision_id` that /decide just handed back is routinely still in flight in a DIFFERENT
+        worker when the follow-up GET arrives -- and the caller gets a 404 for a decision that
+        exists. `await_row` flushes locally and then re-polls briefly, so the cost lands only on
+        the miss path and a hit is as fast as before.
+
+        Deliberately NOT applied to list_decisions/sample_policy_decisions: a bounded wait only
+        makes sense when a specific, known id is expected to be there.
+        """
         from . import decision_log
-        decision_log.flush()
+
         resolved = self._tenant_id(tenant_id)
-        with self.connect() as session:
-            row = session.scalar(select(Decision).where(Decision.tenant_id == resolved, Decision.id == decision_id))
-            return self._decision_to_dict(row) if row else None
+
+        def _fetch() -> Optional[Dict[str, Any]]:
+            with self.connect() as session:
+                row = session.scalar(
+                    select(Decision).where(Decision.tenant_id == resolved, Decision.id == decision_id))
+                return self._decision_to_dict(row) if row else None
+
+        return decision_log.await_row(_fetch)
 
     def sample_policy_decisions(self, policy_id: str, tenant_id: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
         """The most recent full decision rows for one policy (payload + computed variables included,
@@ -1788,8 +2306,98 @@ class Storage:
         settings = self.get_settings(tenant_id=tenant_id)
         return bool((settings.get("engine_config", {}) or {}).get("require_dual_control", False))
 
+    def claim_saml_assertion(self, assertion_id: str, not_on_or_after: Optional[datetime] = None,
+                             tenant_id: Optional[str] = None) -> bool:
+        """Record a SAML assertion id as consumed. Returns False if it was already used.
+
+        The UNIQUE(tenant_id, assertion_id) constraint is what makes this a claim rather than a
+        check-then-write: two concurrent POSTs of the same captured assertion race to INSERT and
+        exactly one wins, so a replay cannot slip through the window between reading and writing.
+        """
+        resolved = self._tenant_id(tenant_id)
+        try:
+            with self.connect() as session:
+                session.add(SamlAssertionSeen(
+                    tenant_id=resolved, assertion_id=assertion_id,
+                    not_on_or_after=not_on_or_after, created_at=datetime.utcnow()))
+            return True
+        except IntegrityError:
+            return False
+
+    # ── durable login-failure counters (see models.LoginAttempt) ─────────
+    def read_login_attempts(self, key: str) -> Tuple[int, Optional[datetime]]:
+        """(failures, expires_at) for this key, or (0, None) once the window has passed.
+
+        An expired row is deleted on read rather than left for a sweep: these rows are only ever
+        consulted on the login path, so the reader is the one process guaranteed to notice, and
+        the table stays bounded without a job that could silently stop running.
+        """
+        now = datetime.utcnow()
+        with self.connect() as session:
+            row = session.get(LoginAttempt, key)
+            if row is None:
+                return 0, None
+            if row.expires_at <= now:
+                session.delete(row)
+                return 0, None
+            return int(row.failures or 0), row.expires_at
+
+    def bump_login_attempts(self, key: str, ttl_seconds: int) -> Tuple[int, datetime]:
+        """Count one failure and return (failures, expires_at).
+
+        The window is set on the FIRST failure and never extended, matching the Redis tier's
+        one-shot EXPIRE -- refreshing it on every attempt would let an attacker keep a victim
+        locked out indefinitely by continuing to guess.
+
+        Retries on the primary-key race the way add_audit_event does: two replicas can read the
+        same absent row and both INSERT, and the constraint turns that into a retry rather than
+        a lost count.
+        """
+        now = datetime.utcnow()
+        for attempt in range(5):
+            try:
+                with self.connect() as session:
+                    row = session.get(LoginAttempt, key)
+                    if row is not None and row.expires_at <= now:
+                        session.delete(row)
+                        session.flush()
+                        row = None
+                    if row is None:
+                        expires = now + timedelta(seconds=max(1, ttl_seconds))
+                        session.add(LoginAttempt(key=key, failures=1, expires_at=expires))
+                        return 1, expires
+                    row.failures = int(row.failures or 0) + 1
+                    return int(row.failures), row.expires_at
+            except IntegrityError:
+                if attempt >= 4:
+                    raise
+        raise RuntimeError("unreachable")  # pragma: no cover
+
+    def clear_login_attempts(self, key: str) -> None:
+        """Reset after a successful authentication."""
+        with self.connect() as session:
+            row = session.get(LoginAttempt, key)
+            if row is not None:
+                session.delete(row)
+
+    def prune_saml_assertions(self, tenant_id: Optional[str] = None) -> int:
+        """Drop consumed assertions whose validity window has passed -- they can no longer be
+        accepted on their own merits, so keeping them serves nothing and the table would grow
+        without bound."""
+        resolved = self._tenant_id(tenant_id)
+        now = datetime.utcnow()
+        with self.connect() as session:
+            rows = session.scalars(
+                select(SamlAssertionSeen).where(
+                    SamlAssertionSeen.tenant_id == resolved,
+                    SamlAssertionSeen.not_on_or_after.is_not(None),
+                    SamlAssertionSeen.not_on_or_after < now)).all()
+            for row in rows:
+                session.delete(row)
+            return len(rows)
+
     def add_error_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = ErrorEvent(
                 tenant_id=resolved,
@@ -1812,32 +2420,309 @@ class Storage:
             rows = session.scalars(query).all()
             return [self._error_event_to_dict(row) for row in rows]
 
-    def add_audit_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
-        with self.connect() as session:
-            model = AuditEvent(
-                tenant_id=resolved,
-                event_type=payload["event_type"],
-                entity_type=payload.get("entity_type"),
-                entity_id=payload.get("entity_id"),
-                detail=payload.get("detail", ""),
-                metadata_json=copy.deepcopy(payload.get("metadata", {})),
-                user_id=payload.get("user_id"),
-                ip_address=payload.get("ip_address"),
-                created_at=datetime.utcnow(),
-            )
-            session.add(model)
-            session.flush()
-            return self._audit_event_to_dict(model)
+    # ── idempotency (Track B6) ──────────────────────────────────────────────
 
-    def list_audit_events(self, tenant_id: Optional[str] = None, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    def claim_idempotency_key(self, key: str, request_hash: str,
+                              tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Try to claim `key` for this request. Returns what the caller should do next.
+
+          {"action": "execute"}                           -- we won the claim; run the handler
+          {"action": "replay", "status": .., "body": ..}  -- a completed response exists
+          {"action": "in_flight"}                         -- claimed but unfinished: a
+                                                             concurrent duplicate, answer 409
+          {"action": "mismatch"}                          -- same key, DIFFERENT request: 422
+
+        The claim is an INSERT against uq(tenant_id, key), so two concurrent requests race at
+        the database and exactly one wins. Checking-then-inserting in Python would let both
+        pass the check and execute the write twice -- the exact bug this feature exists to
+        prevent.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            existing = session.scalar(
+                select(IdempotencyRecord).where(
+                    IdempotencyRecord.tenant_id == resolved, IdempotencyRecord.key == key))
+            if existing is not None:
+                if is_idempotency_expired(existing.created_at):
+                    # Expired: the key is free again. Reset in place rather than deleting and
+                    # re-inserting, which would reopen the race the constraint closes.
+                    existing.request_hash = request_hash
+                    existing.status_code = None
+                    existing.response_body = None
+                    existing.created_at = datetime.utcnow()
+                    return {"action": "execute"}
+                if existing.request_hash != request_hash:
+                    return {"action": "mismatch"}
+                if existing.status_code is None:
+                    return {"action": "in_flight"}
+                return {"action": "replay", "status": int(existing.status_code),
+                        "body": existing.response_body or ""}
+            try:
+                session.add(IdempotencyRecord(tenant_id=resolved, key=key,
+                                              request_hash=request_hash,
+                                              created_at=datetime.utcnow()))
+                session.flush()
+                return {"action": "execute"}
+            except IntegrityError:
+                # Lost the race to a concurrent claim between the SELECT and the INSERT.
+                session.rollback()
+                return {"action": "in_flight"}
+
+    def complete_idempotency_key(self, key: str, status_code: int, body: str,
+                                 tenant_id: Optional[str] = None) -> None:
+        """Record the response, or RELEASE the claim if the status must not be remembered."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(
+                select(IdempotencyRecord).where(
+                    IdempotencyRecord.tenant_id == resolved, IdempotencyRecord.key == key))
+            if row is None:
+                return
+            if not should_remember_idempotent(status_code):
+                # A 5xx is usually transient. Deleting frees the key so an honest retry can
+                # actually be retried, instead of being pinned to a failure that has passed.
+                session.delete(row)
+                return
+            row.status_code = int(status_code)
+            row.response_body = body
+
+    def release_idempotency_key(self, key: str, tenant_id: Optional[str] = None) -> None:
+        """Drop a claim outright -- used when the handler raised, so the key is not left
+        permanently in-flight and answering 409 forever."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            row = session.scalar(
+                select(IdempotencyRecord).where(
+                    IdempotencyRecord.tenant_id == resolved, IdempotencyRecord.key == key))
+            if row is not None:
+                session.delete(row)
+
+    # ── usage metering (Track B4) ───────────────────────────────────────────
+
+    def record_usage(self, metric: str, amount: int = 1, tenant_id: Optional[str] = None,
+                     day: Optional[date] = None) -> None:
+        """Add `amount` to a tenant's counter for one metric on one UTC day.
+
+        UPDATE-then-INSERT rather than read-modify-write: the UPDATE is atomic at the database,
+        so two concurrent decisions increment rather than clobber. A read-modify-write would
+        lose one of them and under-bill -- the failure mode that costs money silently instead
+        of erroring loudly.
+
+        Best effort by contract. Metering must never fail a decision the customer already
+        received: refusing to serve because the meter is down is strictly worse than an
+        under-count that reconciliation can repair. Enforcement is a separate, deliberate gate
+        (see app/quota.py); this is only the counter.
+        """
+        if amount <= 0:
+            return
+        resolved = self._tenant_id(tenant_id)
+        bucket = day or datetime.utcnow().date()
+        try:
+            with self.connect() as session:
+                updated = session.execute(
+                    update(UsageRecord)
+                    .where(UsageRecord.tenant_id == resolved, UsageRecord.day == bucket,
+                           UsageRecord.metric == metric)
+                    .values(count=UsageRecord.count + amount, updated_at=datetime.utcnow())
+                ).rowcount
+                if updated:
+                    return
+                try:
+                    session.add(UsageRecord(tenant_id=resolved, day=bucket, metric=metric,
+                                            count=amount, updated_at=datetime.utcnow()))
+                    session.flush()
+                except IntegrityError:
+                    # Another writer created the bucket between our UPDATE and INSERT. Roll back
+                    # the failed insert and apply the increment to the row that now exists --
+                    # dropping it here is exactly the lost-revenue bug the constraint exists to
+                    # prevent.
+                    session.rollback()
+                    session.execute(
+                        update(UsageRecord)
+                        .where(UsageRecord.tenant_id == resolved, UsageRecord.day == bucket,
+                               UsageRecord.metric == metric)
+                        .values(count=UsageRecord.count + amount, updated_at=datetime.utcnow())
+                    )
+        except Exception:  # noqa: BLE001 - see the best-effort contract above
+            LOGGER.warning("usage: failed to record %s+%s for tenant %s", metric, amount, resolved)
+
+    def get_usage_daily(self, tenant_id: Optional[str] = None, start: Optional[date] = None,
+                        end: Optional[date] = None, metric: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Daily rows in [start, end) -- end EXCLUSIVE, matching quota.period_bounds."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            stmt = select(UsageRecord).where(UsageRecord.tenant_id == resolved)
+            if start is not None:
+                stmt = stmt.where(UsageRecord.day >= start)
+            if end is not None:
+                stmt = stmt.where(UsageRecord.day < end)
+            if metric:
+                stmt = stmt.where(UsageRecord.metric == metric)
+            rows = session.scalars(stmt.order_by(UsageRecord.day.asc(), UsageRecord.metric.asc())).all()
+            return [
+                {"day": row.day.isoformat(), "metric": row.metric, "count": int(row.count)}
+                for row in rows
+            ]
+
+    def get_usage_total(self, metric: str, tenant_id: Optional[str] = None,
+                        start: Optional[date] = None, end: Optional[date] = None) -> int:
+        """Summed count for one metric over [start, end). This is the billable number."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            stmt = select(func.coalesce(func.sum(UsageRecord.count), 0)).where(
+                UsageRecord.tenant_id == resolved, UsageRecord.metric == metric)
+            if start is not None:
+                stmt = stmt.where(UsageRecord.day >= start)
+            if end is not None:
+                stmt = stmt.where(UsageRecord.day < end)
+            return int(session.execute(stmt).scalar() or 0)
+
+    def _audit_entity_change(self, entity_type: str, entity_id: str, action: str,
+                             tenant_id: str, version: Optional[int] = None) -> None:
+        """Record a create/update/delete of an authoring entity in the audit trail.
+
+        Rules, variables, scorecards and decision tables wrote an EntityHistory snapshot but
+        never an AuditEvent -- so "who changed which rule, when" was missing for the most-edited
+        entity types in a product whose whole job is governed decisioning. Policies, identity,
+        SDK, experiments, reviews and webhooks all emitted one; these four were simply never
+        wired up. Found by qa case 6.2, which had been written off as a test bug.
+
+        Best-effort by contract, matching add_audit_event's other callers: an authoring change
+        that succeeded must not be rolled back because the audit write failed. The chain's own
+        integrity is unaffected -- a missing event is a gap, not a broken link.
+        """
+        try:
+            self.add_audit_event(
+                {
+                    "event_type": f"{entity_type}_{action}",
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "detail": f"{entity_type.replace('_', ' ').title()} {entity_id} {action}.",
+                    "metadata": {"version": version} if version is not None else {},
+                },
+                tenant_id=tenant_id,
+            )
+        except Exception:  # noqa: BLE001 - see the best-effort contract above
+            LOGGER.warning("audit: failed to record %s %s for %s", entity_type, action, entity_id)
+
+    # Reserved tenant id for events that belong to the PLATFORM, not to any workspace.
+    #
+    # The platform-admin account has no tenant, so `_tenant_id` fell through to
+    # get_current_tenant_id() or default_tenant_id and filed superadmin events -- including the
+    # failed-login alerts raised during a credential-stuffing run -- into an unrelated customer's
+    # tamper-evident chain. That workspace's audit export then shows sign-in attempts against an
+    # account its owners do not have and cannot investigate, and the chain they are asked to
+    # attest to contains events that were never theirs.
+    #
+    # A reserved id rather than a new table: the chain, verification, retention and export all key
+    # on tenant_id already, so this gets a real, separately-verifiable chain for free. Tenant ids
+    # are uuid4 strings, so this cannot collide with one.
+    PLATFORM_TENANT_ID = "__platform__"
+
+    def add_audit_event(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        """Append one audit event, linked into the tenant's tamper-evident chain.
+
+        Retries on the (tenant_id, seq) unique constraint: two concurrent appends can read the
+        same tail and compute the same next seq, and the constraint turns that race into a
+        retry instead of a silently forked chain. Serializing every audit write behind a lock
+        would be the alternative and would make audit logging a throughput ceiling.
+        """
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                with self.connect() as session:
+                    tail = session.execute(
+                        select(AuditEvent.seq, AuditEvent.hash)
+                        .where(AuditEvent.tenant_id == resolved, AuditEvent.seq.isnot(None))
+                        .order_by(desc(AuditEvent.seq))
+                        .limit(1)
+                    ).first()
+                    seq = (tail[0] + 1) if tail else 1
+                    prev_hash = (tail[1] if tail and tail[1] else GENESIS_HASH)
+
+                    model = AuditEvent(
+                        tenant_id=resolved,
+                        event_type=payload["event_type"],
+                        entity_type=payload.get("entity_type"),
+                        entity_id=payload.get("entity_id"),
+                        detail=payload.get("detail", ""),
+                        # Encrypted at rest; _audit_event_to_dict decrypts, so the chain hash
+                        # below is still computed over the plaintext the verifier rebuilds and
+                        # every pre-existing hash keeps verifying.
+                        metadata_json=encrypt_audit_field(copy.deepcopy(payload.get("metadata", {}))),
+                        user_id=payload.get("user_id"),
+                        ip_address=encrypt_audit_text(payload.get("ip_address")),
+                        created_at=datetime.utcnow(),
+                        seq=seq,
+                        prev_hash=prev_hash,
+                    )
+                    session.add(model)
+                    session.flush()  # assigns id; created_at is set above
+                    # Hash the dict the VERIFIER will rebuild, not a hand-rolled copy of it --
+                    # any drift between the two shapes would show up as a false tamper report.
+                    model.hash = compute_audit_hash(self._audit_event_to_dict(model))
+                    session.flush()
+                    written = self._audit_event_to_dict(model)
+                _notify_audit_listeners(self, written)
+                return written
+            except IntegrityError:
+                if attempts >= 5:
+                    raise
+                continue
+
+    def list_audit_events(self, tenant_id: Optional[str] = None, event_type: Optional[str] = None,
+                          entity_type: Optional[str] = None, entity_id: Optional[str] = None,
+                          limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """Read the audit trail.
+
+        entity_type/entity_id/limit/offset were added when the trail got an HTTP read path: the
+        table is append-only and unbounded, so an unpaged fetch of a mature tenant is the same
+        timeout-and-OOM that list_decisions already documents. limit stays None by default so
+        the existing internal callers, which filter to one event_type and expect every match,
+        are unchanged.
+        """
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             stmt = select(AuditEvent).where(AuditEvent.tenant_id == resolved)
             if event_type:
                 stmt = stmt.where(AuditEvent.event_type == event_type)
-            rows = session.scalars(stmt.order_by(desc(AuditEvent.created_at))).all()
+            if entity_type:
+                stmt = stmt.where(AuditEvent.entity_type == entity_type)
+            if entity_id:
+                stmt = stmt.where(AuditEvent.entity_id == entity_id)
+            # seq is the chain position and is unique per tenant; created_at is not, so two
+            # events written in the same tick could otherwise swap places between pages and a
+            # paging reader would skip one. Matches verify_audit_chain's reasoning.
+            stmt = stmt.order_by(desc(AuditEvent.seq), desc(AuditEvent.created_at))
+            if offset:
+                stmt = stmt.offset(offset)
+            if limit is not None:
+                stmt = stmt.limit(limit)
+            rows = session.scalars(stmt).all()
             return [self._audit_event_to_dict(row) for row in rows]
+
+    def verify_audit_chain(self, tenant_id: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Any]:
+        """Walk this tenant's audit chain oldest-first and report on its integrity.
+
+        Ordered by `seq`, not `created_at`: created_at has second-or-better resolution but is
+        not guaranteed unique, and ordering the walk by a non-unique column would let two
+        events written in the same tick swap places and report a spurious break.
+
+        Legacy rows (seq IS NULL) sort first under both backends' NULLS-FIRST default for ASC,
+        which is what verify() expects -- they precede the chain in real time too.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            stmt = select(AuditEvent).where(AuditEvent.tenant_id == resolved).order_by(AuditEvent.seq.asc().nullsfirst())
+            if limit:
+                stmt = stmt.limit(limit)
+            rows = session.scalars(stmt).all()
+            report = verify_audit_chain_rows(self._audit_event_to_dict(row) for row in rows)
+            report["tenant_id"] = resolved
+            report["total"] = len(rows)
+            return report
 
     def get_history(self, entity_type: str, entity_id: str, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -1864,9 +2749,10 @@ class Storage:
         Data Protection settings, stored under engine_config.pii_redact_keys). Cached briefly so
         the decision-log hot path doesn't read settings on every decision."""
         resolved = self._tenant_id(tenant_id)
-        cache = getattr(self, "_pii_keys_cache", None)
+        cache: Optional[Dict[str, Tuple[List[str], float]]] = getattr(self, "_pii_keys_cache", None)
         if cache is None:
-            cache = self._pii_keys_cache = {}
+            fresh: Dict[str, Tuple[List[str], float]] = {}
+            cache = self._pii_keys_cache = fresh
         entry = cache.get(resolved)
         now = _time.time()
         if entry and entry[1] > now:
@@ -1881,13 +2767,21 @@ class Storage:
         with self.connect() as session:
             row = session.scalar(select(Setting).where(Setting.tenant_id == resolved))
             if not row:
-                return copy.deepcopy(DEFAULT_SETTINGS)
+                defaults = copy.deepcopy(DEFAULT_SETTINGS)
+                # DEFAULT_SETTINGS predates months; keep the key present so callers never have to
+                # distinguish "no settings row" from "months not configured".
+                defaults.setdefault("audit_retention_months", None)
+                return defaults
             return {
                 "api_base_url": row.api_base_url,
                 "auth_config": copy.deepcopy(row.auth_config or {}),
                 "engine_config": copy.deepcopy(row.engine_config or {}),
                 "source_defaults": copy.deepcopy(row.source_defaults or {}),
+                # Both units are returned RAW. Resolving which one applies is
+                # archiver.retention_cutoff's job, and deriving days here would make
+                # update_settings' read-modify-write silently overwrite the stored value.
                 "audit_retention_days": row.audit_retention_days,
+                "audit_retention_months": row.audit_retention_months,
                 "theme_mode": row.theme_mode,
                 "branding": copy.deepcopy(row.branding or {}),
                 "updated_at": serialize_datetime(row.updated_at),
@@ -1909,7 +2803,30 @@ class Storage:
             row.auth_config = copy.deepcopy(next_value["auth_config"])
             row.engine_config = copy.deepcopy(next_value["engine_config"])
             row.source_defaults = copy.deepcopy(next_value["source_defaults"])
-            row.audit_retention_days = int(next_value["audit_retention_days"])
+            # ── Retention unit precedence ──────────────────────────────────────────────────
+            # A patch that names months makes calendar months authoritative (an explicit 0 or
+            # negative clears them back to days); a patch that names only days reverts the
+            # workspace to days, which is what the days-only endpoints and the dashboard send.
+            # A patch that names neither leaves both columns exactly as stored.
+            #
+            # While months is set, audit_retention_days is kept as a truthful mirror rather than
+            # left stale, so /api/v1/settings, workspace export and every other days-speaking
+            # reader report the real window instead of whatever the tenant last typed in days.
+            months_patch = patch.get("audit_retention_months")
+            days_patch = patch.get("audit_retention_days")
+            if months_patch is not None:
+                months = normalize_retention_months(months_patch)
+                row.audit_retention_months = months
+                row.audit_retention_days = (
+                    retention_window_days(months)
+                    if months
+                    else int(days_patch if days_patch is not None else next_value["audit_retention_days"])
+                )
+            elif days_patch is not None:
+                row.audit_retention_months = None
+                row.audit_retention_days = int(days_patch)
+            else:
+                row.audit_retention_days = int(next_value["audit_retention_days"])
             row.theme_mode = next_value["theme_mode"]
             row.branding = copy.deepcopy(next_value.get("branding") or {})
             row.updated_at = datetime.utcnow()
@@ -1918,7 +2835,13 @@ class Storage:
     # ── AI Copilot config (BYO key) ────────────────────────────────────
     def _ai_config_row(self, session: Session, tenant_id: str) -> Setting:
         self._ensure_settings(session, tenant_id)
-        return session.scalar(select(Setting).where(Setting.tenant_id == tenant_id))
+        row = session.scalar(select(Setting).where(Setting.tenant_id == tenant_id))
+        # _ensure_settings has just created it if it was missing, so None here would be a
+        # real invariant break rather than an ordinary miss -- surface it instead of
+        # returning Optional and pushing the check onto every caller.
+        if row is None:  # pragma: no cover - _ensure_settings guarantees the row
+            raise RuntimeError(f"settings row missing for tenant {tenant_id}")
+        return row
 
     def get_ai_config_masked(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """UI-safe view — never exposes keys, only whether each provider is configured."""
@@ -1957,6 +2880,14 @@ class Storage:
                 slot = cfg["providers"].setdefault(name, {})
                 if "model" in ppatch:
                     slot["model"] = ppatch["model"]
+                # Not a secret -- it is an identifier, so it is stored in the clear alongside
+                # the encrypted key. Required by Anthropic's identity-linked keys.
+                if "workspace_id" in ppatch:
+                    wid = (ppatch.get("workspace_id") or "").strip()
+                    if wid:
+                        slot["workspace_id"] = wid
+                    else:
+                        slot.pop("workspace_id", None)
                 key = ppatch.get("key")
                 if key == "__CLEAR__":
                     slot.pop("key_encrypted", None)
@@ -1976,13 +2907,16 @@ class Storage:
         enc = slot.get("key_encrypted")
         if not enc:
             return None
-        return {"provider": prov, "api_key": decrypt_secret_text(enc), "model": slot.get("model") or None}
+        return {"provider": prov, "api_key": decrypt_secret_text(enc), "model": slot.get("model") or None,
+                "workspace_id": slot.get("workspace_id") or None}
 
     def replace_all(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> None:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
+            # Every model here carries tenant_id, but their common supertype is Base, which
+            # does not -- so the attribute is checked per-model at import time instead.
             for model in [Connector, Variable, Rule, Scorecard, Policy, Promotion, EntityHistory, Decision, ErrorEvent, AuditEvent]:
-                session.execute(delete(model).where(model.tenant_id == resolved))
+                session.execute(delete(model).where(model.tenant_id == resolved))  # type: ignore[attr-defined]
         for connector in payload.get("connectors", []):
             current = copy.deepcopy(connector)
             if self.get_connector(current["id"], tenant_id=resolved):
@@ -2428,10 +3362,15 @@ class Storage:
             "name": row.name,
             "role": row.role,
             "auth_provider": row.auth_provider,
+            # The IdP's own id for this person. Stored since the member model was written, but
+            # never surfaced -- so SCIM could set it and never read it back, which breaks the
+            # correlation an IdP uses to match its user to ours after an email change.
+            "external_id": row.external_id,
             "is_active": row.is_active,
             "has_password": bool(row.password_hash),
             "last_login_at": serialize_datetime(row.last_login_at),
             "created_at": serialize_datetime(row.created_at),
+            "updated_at": serialize_datetime(row.updated_at),
         }
 
     def _invalidate_member(self, member_id: str) -> None:
@@ -2681,7 +3620,7 @@ class Storage:
             }
 
     def create_or_update_experiment(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         public_id = payload.get("id")
         with self.connect() as session:
             model = self._query_by_public_id(session, Experiment, public_id, resolved) if public_id else None
@@ -2750,7 +3689,7 @@ class Storage:
             return True
 
     def save_bundle(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             current = session.scalars(select(Bundle).where(Bundle.tenant_id == resolved, Bundle.superseded.is_(False))).all()
             for row in current:
@@ -2823,7 +3762,7 @@ class Storage:
             ]
 
     def create_workflow_execution(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = WorkflowExecution(
                 id=payload.get("id") or uuid4_str(),
@@ -2881,7 +3820,7 @@ class Storage:
         }
 
     def create_review_task(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = ReviewTask(
                 id=payload.get("id") or uuid4_str(),
@@ -2979,7 +3918,7 @@ class Storage:
         }
 
     def create_webhook(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = Webhook(
                 id=payload.get("id") or uuid4_str(),
@@ -3017,6 +3956,24 @@ class Storage:
                 return None
             return self._webhook_to_dict(model, include_secret=include_secret)
 
+    def get_webhook_for_trigger(self, webhook_id: str, include_secret: bool = False) -> Optional[Dict[str, Any]]:
+        """Look a webhook up by id ALONE, for the unauthenticated receiver.
+
+        The receiver at POST /api/v1/webhooks/{id} is called by a third party that holds no API
+        key -- the HMAC signature is the authentication. So there is no auth context, and
+        get_webhook() (which is tenant-scoped and falls back to the FIRST tenant) returned None
+        for every tenant but the first: webhooks were simply broken for tenant #2 onward, and the
+        symptom was a 404 "Webhook not found" with nothing to indicate why.
+
+        Safe to be tenant-agnostic because the id is a UUID4 -- unguessable, and the signature is
+        still verified afterwards. The returned row carries its own tenant_id, which is what the
+        caller must use for everything downstream; that is the authoritative source here, not any
+        ambient context.
+        """
+        with self.connect() as session:
+            model = session.get(Webhook, webhook_id)
+            return self._webhook_to_dict(model, include_secret=include_secret) if model else None
+
     def get_webhook_by_path(self, endpoint_path: str, include_secret: bool = False) -> Optional[Dict[str, Any]]:
         with self.connect() as session:
             model = session.scalar(select(Webhook).where(Webhook.endpoint_path == endpoint_path, Webhook.is_active.is_(True)))
@@ -3042,8 +3999,447 @@ class Storage:
             "updated_at": serialize_datetime(model.updated_at),
         }
 
+    # ── model sets (P05) ──────────────────────────────────────────────────
+    def create_model_set(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        with self.connect() as session:
+            model = ModelSet(
+                id=payload.get("id") or uuid4_str(),
+                tenant_id=resolved,
+                public_id=payload.get("public_id") or payload.get("id") or uuid4_str(),
+                name=payload["name"],
+                description=payload.get("description"),
+                members=copy.deepcopy(payload.get("members") or []),
+                is_active=bool(payload.get("is_active", True)),
+                status=payload.get("status", "dev"),
+            )
+            session.add(model)
+            session.flush()
+            return self._model_set_to_dict(model)
+
+    def update_model_set(self, set_id: str, patch: Dict[str, Any],
+                         tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(ModelSet).where(
+                ModelSet.tenant_id == resolved, ModelSet.public_id == set_id))
+            if not model:
+                return None
+            for field in ("name", "description", "members", "is_active", "status"):
+                if field in patch:
+                    setattr(model, field, copy.deepcopy(patch[field]))
+            session.flush()
+            return self._model_set_to_dict(model)
+
+    def delete_model_set(self, set_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(ModelSet).where(
+                ModelSet.tenant_id == resolved, ModelSet.public_id == set_id))
+            if not model:
+                return False
+            session.delete(model)
+            return True
+
+    def get_model_set(self, set_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(ModelSet).where(
+                ModelSet.tenant_id == resolved, ModelSet.public_id == set_id))
+            return self._model_set_to_dict(model) if model else None
+
+    def list_model_sets(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(ModelSet).where(ModelSet.tenant_id == resolved)
+                .order_by(desc(ModelSet.created_at))).all()
+            return [self._model_set_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _model_set_to_dict(model: "ModelSet") -> Dict[str, Any]:
+        return {
+            "id": model.public_id,
+            "row_id": model.id,
+            "tenant_id": model.tenant_id,
+            "name": model.name,
+            "description": model.description,
+            "members": copy.deepcopy(model.members or []),
+            "is_active": model.is_active,
+            "status": model.status,
+            "created_at": serialize_datetime(model.created_at),
+            "updated_at": serialize_datetime(model.updated_at),
+        }
+
+    # ── journeys (P15) ────────────────────────────────────────────────────
+    def create_journey(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        with self.connect() as session:
+            model = Journey(
+                id=uuid4_str(),
+                tenant_id=resolved,
+                public_id=payload.get("public_id") or payload.get("id") or uuid4_str(),
+                title=payload["title"],
+                category=payload.get("category"),
+                description=payload.get("description"),
+                policy_id=payload.get("policy_id"),
+                primary_color=payload.get("primary_color"),
+                screens=copy.deepcopy(payload.get("screens") or []),
+                is_locked=bool(payload.get("is_locked", False)),
+                is_active=bool(payload.get("is_active", True)),
+                status=payload.get("status", "dev"),
+            )
+            session.add(model)
+            session.flush()
+            result = self._journey_to_dict(model)
+        self._audit_entity_change("journey", result["id"], "created", resolved)
+        return result
+
+    def update_journey(self, journey_id: str, patch: Dict[str, Any],
+                       tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(Journey).where(
+                Journey.tenant_id == resolved, Journey.public_id == journey_id))
+            if not model:
+                return None
+            content_changed = False
+            for field in ("title", "category", "description", "policy_id", "primary_color",
+                          "screens", "is_locked", "is_active", "status"):
+                if field in patch:
+                    setattr(model, field, copy.deepcopy(patch[field]))
+                    # The version tracks the CONTENT people fill in, so lock/unlock and the
+                    # dev->prod lifecycle do not bump it. A version that moves when nothing a
+                    # respondent sees has changed makes "which version did they answer?"
+                    # unanswerable, which is the only question the column exists for.
+                    if field in ("title", "category", "description", "policy_id",
+                                 "primary_color", "screens"):
+                        content_changed = True
+            if content_changed:
+                model.version = int(model.version or 1) + 1
+            session.flush()
+            result = self._journey_to_dict(model)
+        self._audit_entity_change("journey", journey_id, "updated", resolved,
+                                  version=result.get("version"))
+        return result
+
+    def delete_journey(self, journey_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(Journey).where(
+                Journey.tenant_id == resolved, Journey.public_id == journey_id))
+            if not model:
+                return False
+            session.delete(model)
+        self._audit_entity_change("journey", journey_id, "deleted", resolved)
+        return True
+
+    def get_journey(self, journey_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.scalar(select(Journey).where(
+                Journey.tenant_id == resolved, Journey.public_id == journey_id))
+            return self._journey_to_dict(model) if model else None
+
+    def list_journeys(self, tenant_id: Optional[str] = None,
+                      active_only: bool = False) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            query = select(Journey).where(Journey.tenant_id == resolved)
+            if active_only:
+                query = query.where(Journey.is_active.is_(True))
+            rows = session.scalars(query.order_by(desc(Journey.created_at))).all()
+            return [self._journey_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _journey_to_dict(model: "Journey") -> Dict[str, Any]:
+        return {
+            "id": model.public_id,
+            "row_id": model.id,
+            "tenant_id": model.tenant_id,
+            "title": model.title,
+            "category": model.category,
+            "description": model.description,
+            "policy_id": model.policy_id,
+            "primary_color": model.primary_color,
+            "screens": copy.deepcopy(model.screens or []),
+            # Kept in the payload because the mobile studio's journey cards render it, and
+            # deriving it client-side from `screens` would drift the moment a screen type stops
+            # counting as a step.
+            "step_count": len(model.screens or []),
+            "is_locked": model.is_locked,
+            "is_active": model.is_active,
+            "status": model.status,
+            "version": model.version,
+            "created_at": serialize_datetime(model.created_at),
+            "updated_at": serialize_datetime(model.updated_at),
+        }
+
+    # ── predictors (P20) ──────────────────────────────────────────────────
+    def create_predictor(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        with self.connect() as session:
+            model = Predictor(
+                id=payload.get("id") or uuid4_str(),
+                tenant_id=resolved,
+                name=payload["name"],
+                description=payload.get("description"),
+                source_type=payload["source_type"],
+                source_id=payload.get("source_id"),
+                is_active=bool(payload.get("is_active", True)),
+                baseline_days=int(payload.get("baseline_days", 30)),
+                current_days=int(payload.get("current_days", 7)),
+                bins=int(payload.get("bins", 10)),
+            )
+            session.add(model)
+            session.flush()
+            return self._predictor_to_dict(model)
+
+    def update_predictor(self, predictor_id: str, patch: Dict[str, Any],
+                         tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(Predictor, predictor_id)
+            if not model or model.tenant_id != resolved:
+                return None
+            for field in ("name", "description", "source_type", "source_id", "is_active",
+                          "baseline_days", "current_days", "bins"):
+                if field in patch:
+                    setattr(model, field, patch[field])
+            session.flush()
+            return self._predictor_to_dict(model)
+
+    def delete_predictor(self, predictor_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(Predictor, predictor_id)
+            if not model or model.tenant_id != resolved:
+                return False
+            # The observations go with it. Orphaned values would keep a deleted predictor's rows
+            # growing forever with nothing able to read them.
+            session.query(PredictorValue).filter(
+                PredictorValue.tenant_id == resolved,
+                PredictorValue.predictor_id == predictor_id).delete(synchronize_session=False)
+            session.delete(model)
+            return True
+
+    def get_predictor(self, predictor_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(Predictor, predictor_id)
+            if not model or model.tenant_id != resolved:
+                return None
+            return self._predictor_to_dict(model)
+
+    def list_predictors(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(Predictor).where(Predictor.tenant_id == resolved)
+                .order_by(desc(Predictor.created_at))).all()
+            return [self._predictor_to_dict(row) for row in rows]
+
+    def active_predictors(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Read on EVERY decision, so it is a narrow query and nothing else."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(Predictor).where(Predictor.tenant_id == resolved,
+                                        Predictor.is_active.is_(True))).all()
+            return [self._predictor_to_dict(row) for row in rows]
+
+    def record_predictor_values(self, tenant_id: str, rows: List[Dict[str, Any]]) -> int:
+        """Bulk-insert observations. One statement for all predictors of one decision, because
+        this is on the decision path and N predictors must not mean N round trips."""
+        if not rows:
+            return 0
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            session.add_all([
+                PredictorValue(
+                    tenant_id=resolved, predictor_id=row["predictor_id"],
+                    decision_id=row.get("decision_id"), value=float(row["value"]),
+                    # `created_at` is normally the column default (now), because on the decision
+                    # path the observation IS being made now. A BACKFILL must override it with
+                    # the decision's own timestamp: stamping a 20-day-old decision as today puts
+                    # the entire replayed history inside the current window, which does not just
+                    # fail to build a baseline -- it builds a WRONG one that looks populated, and
+                    # the drift report then compares today against today and reports no drift.
+                    **({"created_at": row["created_at"]} if row.get("created_at") else {}))
+                for row in rows])
+            return len(rows)
+
+    def predictor_covered_decision_ids(self, tenant_id: str, predictor_id: str) -> set:
+        """Decision ids this predictor already has a value for.
+
+        There is no unique constraint on (predictor_id, decision_id) -- the decision path writes
+        each decision exactly once, so it never needed one -- which means a backfill run twice
+        would DOUBLE the series and halve the apparent drift. This is how the second run knows
+        what to skip. Deliberately not a new constraint: adding one now would have to cope with
+        the NULL decision_ids the observe path can legitimately write.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            return {row for row in session.scalars(
+                select(PredictorValue.decision_id).where(
+                    PredictorValue.tenant_id == resolved,
+                    PredictorValue.predictor_id == predictor_id,
+                    PredictorValue.decision_id.is_not(None))).all()}
+
+    def predictor_values_between(self, tenant_id: str, predictor_id: str,
+                                 start: datetime, end: datetime) -> List[float]:
+        """The values in a window, as bare floats -- the only thing the drift maths needs, and
+        materialising dicts for a 30-day window would be a lot of objects for nothing."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            return [float(v) for v in session.scalars(
+                select(PredictorValue.value).where(
+                    PredictorValue.tenant_id == resolved,
+                    PredictorValue.predictor_id == predictor_id,
+                    PredictorValue.created_at >= start,
+                    PredictorValue.created_at < end)).all()]
+
+    @staticmethod
+    def _predictor_to_dict(model: "Predictor") -> Dict[str, Any]:
+        return {
+            "id": model.id,
+            "tenant_id": model.tenant_id,
+            "name": model.name,
+            "description": model.description,
+            "source_type": model.source_type,
+            "source_id": model.source_id,
+            "is_active": model.is_active,
+            "baseline_days": model.baseline_days,
+            "current_days": model.current_days,
+            "bins": model.bins,
+            "created_at": serialize_datetime(model.created_at),
+            "updated_at": serialize_datetime(model.updated_at),
+        }
+
+    # ── outbound webhook subscriptions (P03) ──────────────────────────────
+    def create_webhook_subscription(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+        with self.connect() as session:
+            model = WebhookSubscription(
+                id=payload.get("id") or uuid4_str(),
+                tenant_id=resolved,
+                name=payload["name"],
+                url=payload["url"],
+                event_types=copy.deepcopy(payload.get("event_types") or []),
+                filters=copy.deepcopy(payload.get("filters") or []),
+                secret=encrypt_secret_text(payload["secret"]) if payload.get("secret") else None,
+                is_active=bool(payload.get("is_active", True)),
+                timeout_ms=payload.get("timeout_ms"),
+                retries=payload.get("retries"),
+            )
+            session.add(model)
+            session.flush()
+            return self._webhook_subscription_to_dict(model)
+
+    def update_webhook_subscription(self, subscription_id: str, patch: Dict[str, Any],
+                                    tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookSubscription, subscription_id)
+            # The tenant check is the whole isolation boundary for this entity: session.get is
+            # keyed by primary key alone, so without it any workspace could patch any other's
+            # subscription by id -- including pointing its URL somewhere else.
+            if not model or model.tenant_id != resolved:
+                return None
+            for field in ("name", "url", "event_types", "filters", "is_active", "timeout_ms", "retries"):
+                if field in patch:
+                    setattr(model, field, copy.deepcopy(patch[field]))
+            # `secret` is deliberately NOT patchable here. Rotating it is a separate, explicit
+            # action -- silently accepting one in a general PATCH is how a secret arrives from a
+            # client that already had it in plaintext.
+            session.flush()
+            return self._webhook_subscription_to_dict(model)
+
+    def delete_webhook_subscription(self, subscription_id: str, tenant_id: Optional[str] = None) -> bool:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookSubscription, subscription_id)
+            if not model or model.tenant_id != resolved:
+                return False
+            session.delete(model)
+            return True
+
+    def get_webhook_subscription(self, subscription_id: str, tenant_id: Optional[str] = None,
+                                 include_secret: bool = False) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookSubscription, subscription_id)
+            if not model or model.tenant_id != resolved:
+                return None
+            return self._webhook_subscription_to_dict(model, include_secret=include_secret)
+
+    def list_webhook_subscriptions(self, tenant_id: Optional[str] = None,
+                                   include_secret: bool = False) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(WebhookSubscription)
+                .where(WebhookSubscription.tenant_id == resolved)
+                .order_by(desc(WebhookSubscription.created_at))).all()
+            return [self._webhook_subscription_to_dict(r, include_secret=include_secret) for r in rows]
+
+    def subscriptions_for_event(self, tenant_id: str, event_type: str) -> List[Dict[str, Any]]:
+        """Active subscriptions in this tenant that name this event type.
+
+        Returned WITH secrets, because the only caller is the dispatcher and it has to sign. The
+        event-type filter is applied in SQL rather than in Python so a workspace with many
+        subscriptions does not decrypt every secret on every event.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(
+                select(WebhookSubscription).where(
+                    WebhookSubscription.tenant_id == resolved,
+                    WebhookSubscription.is_active.is_(True))).all()
+            out = []
+            for row in rows:
+                if event_type in (row.event_types or []):
+                    out.append(self._webhook_subscription_to_dict(row, include_secret=True))
+            return out
+
+    def record_webhook_delivery(self, subscription_id: str, ok: bool, error: Optional[str] = None,
+                                tenant_id: Optional[str] = None) -> None:
+        """Last-known delivery state, so a subscriber that has been silently failing is visible
+        without trawling logs. Not a delivery log -- that would grow with event volume."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookSubscription, subscription_id)
+            if not model or model.tenant_id != resolved:
+                return
+            model.last_delivery_at = datetime.utcnow()
+            model.last_delivery_ok = bool(ok)
+            model.last_delivery_error = None if ok else (error or "")[:1000]
+            model.consecutive_failures = 0 if ok else int(model.consecutive_failures or 0) + 1
+
+    @staticmethod
+    def _webhook_subscription_to_dict(model: "WebhookSubscription", include_secret: bool = False) -> Dict[str, Any]:
+        return {
+            "id": model.id,
+            "tenant_id": model.tenant_id,
+            "name": model.name,
+            "url": model.url,
+            "event_types": copy.deepcopy(model.event_types or []),
+            "filters": copy.deepcopy(model.filters or []),
+            # Same contract as an API key: the plaintext is returned exactly once, at creation.
+            "secret": decrypt_secret_text(model.secret) if include_secret else ("••••••••" if model.secret else None),
+            "is_active": model.is_active,
+            "timeout_ms": model.timeout_ms,
+            "retries": model.retries,
+            "last_delivery_at": serialize_datetime(model.last_delivery_at),
+            "last_delivery_ok": model.last_delivery_ok,
+            "last_delivery_error": model.last_delivery_error,
+            "consecutive_failures": model.consecutive_failures,
+            "created_at": serialize_datetime(model.created_at),
+            "updated_at": serialize_datetime(model.updated_at),
+        }
+
     def create_schedule(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = CronSchedule(
                 id=payload.get("id") or uuid4_str(),
@@ -3108,7 +4504,7 @@ class Storage:
         }
 
     def add_action_log(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        resolved = self._tenant_id(tenant_id or payload.get("tenant_id"))
+        resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
         with self.connect() as session:
             model = ActionLog(
                 tenant_id=resolved,
@@ -3296,7 +4692,10 @@ class Storage:
                 version=1, snapshot=self._decision_table_to_dict(row), created_at=now,
             ))
             session.flush()
-            return self._decision_table_to_dict(row)
+            result = self._decision_table_to_dict(row)
+        self._audit_entity_change("decision_table", result["id"], "created", resolved,
+                                  version=result.get("version"))
+        return result
 
     def update_decision_table(self, table_id: str, patch: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -3313,13 +4712,19 @@ class Storage:
                 tenant_id=resolved, entity_type="decision_table", entity_id=table_id,
                 version=row.version, snapshot=self._decision_table_to_dict(row), created_at=row.updated_at,
             ))
-            return self._decision_table_to_dict(row)
+            result = self._decision_table_to_dict(row)
+        self._audit_entity_change("decision_table", result["id"], "updated", resolved,
+                                  version=result.get("version"))
+        return result
 
     def delete_decision_table(self, table_id: str, tenant_id: Optional[str] = None) -> bool:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
             result = session.execute(delete(DecisionTable).where(DecisionTable.tenant_id == resolved, DecisionTable.public_id == table_id))
-            return result.rowcount > 0
+            deleted = result.rowcount > 0
+        if deleted:
+            self._audit_entity_change("decision_table", table_id, "deleted", resolved)
+        return deleted
 
     # ---- Report definitions ------------------------------------------------ #
     @staticmethod
@@ -3532,7 +4937,6 @@ class Storage:
                 )
             )
             return result.rowcount > 0
-
 
     # ---- Scheduler leader lease (multi-replica single-fire) --------------- #
     def try_acquire_scheduler_lease(self, owner: str, ttl_seconds: int = 30) -> bool:

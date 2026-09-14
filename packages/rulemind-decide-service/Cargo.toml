@@ -1,6 +1,6 @@
 [package]
 name = "rulemind-decide-service"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Standalone Rust decision service — the high-throughput /decide hot path over the RuleMind eval-core"
 license = "Apache-2.0"
@@ -15,6 +15,13 @@ axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Drive the real axum Router in-process (`ServiceExt::oneshot`) so the tests exercise the
+# service's HTTP boundary — extractor, handler, status code, JSON body — not just the library
+# it wraps. `http-body-util` is how axum 0.7 response bodies are collected.
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
 [profile.release]
 lto = true

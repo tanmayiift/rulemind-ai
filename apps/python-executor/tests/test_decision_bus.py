@@ -15,7 +15,7 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from app import decision_bus  # noqa: E402
+from app import decision_bus, runtime  # noqa: E402
 
 
 class DecisionBusTests(unittest.TestCase):
@@ -56,6 +56,11 @@ class DecisionBusTests(unittest.TestCase):
         finally:
             if saved is not None:
                 os.environ["REDIS_URL"] = saved
+            # Restoring the env var is not enough: redis_client() latches
+            # _REDIS_UNAVAILABLE=True permanently the first time it runs without a URL, and
+            # nothing here could clear it. Any Redis-backed test running later in the same
+            # process then took the fallback path and passed for the wrong reason.
+            runtime.reset_redis_client_for_tests()
 
     def test_subscribe_without_redis_yields_nothing(self):
         import asyncio
@@ -72,6 +77,11 @@ class DecisionBusTests(unittest.TestCase):
         finally:
             if saved is not None:
                 os.environ["REDIS_URL"] = saved
+            # Restoring the env var is not enough: redis_client() latches
+            # _REDIS_UNAVAILABLE=True permanently the first time it runs without a URL, and
+            # nothing here could clear it. Any Redis-backed test running later in the same
+            # process then took the fallback path and passed for the wrong reason.
+            runtime.reset_redis_client_for_tests()
 
 
 if __name__ == "__main__":

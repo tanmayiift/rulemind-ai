@@ -12,7 +12,7 @@ subsystem.
 | **1** | Responsive mobile, both Flutter apps + automated matrix | 7–10 days | — |
 | **1.7** | SDK integration correctness, missing SDK READMEs | 4–6 days | credibility of the SDK story |
 | **2** | This analysis (`docs/parity/`) | 3–4 days | blocks phases 3+ |
-| **3** | Quick parity wins, no new entities (P01, P06, P08, P16, P18, P21, P22-palette) | 2–3 weeks | — |
+| **3** | Quick parity wins, no new entities (P01, P06, P08, P16, P17-twin, P18; ~~P21~~ and ~~P22-palette~~ shipped 2026-09) | 2–3 weeks | — |
 | **4** | Outbound webhooks, p12, predictor entity, DLQ + Idempotency-Key (P02, P03, P09-partial, P20) | 4–6 weeks | feeds phase 5 metrics |
 | **5** | Canary, modelset, step-through debugger (P04, P05, P11) | 6–8 weeks | pays the zero-coverage test debt |
 | **6** | Monaco, matrix entity (P07, P13) | 6–10 weeks | — |

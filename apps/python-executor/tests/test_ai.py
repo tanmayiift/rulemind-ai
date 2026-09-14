@@ -24,6 +24,7 @@ os.environ.setdefault("RULEMIND_ADMIN_JWT_SECRET", "rulemind-test-admin-secret")
 import app.ai as ai
 import app.main as app_main
 from app.storage import Storage
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 _RULE_JSON = json.dumps({
     "name": "Bureau gate",
@@ -35,6 +36,7 @@ _RULE_JSON = json.dumps({
 class AITests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ai.db"))
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
@@ -42,7 +44,10 @@ class AITests(unittest.TestCase):
         # A real seeded variable id so an AI-generated predictor draft validates against known ids.
         self.var_id = app_main.storage.list_variables()[0]["id"]
 
-        async def fake(api_key, model, system, user, max_tokens, temperature):
+        # **kwargs so an added provider parameter (e.g. workspace_id) does not break the
+        # stub. Pinning a stub to an exact signature makes every additive change to the
+        # real function look like a test failure.
+        async def fake(api_key, model, system, user, max_tokens, temperature, **kwargs):
             self.calls["n"] += 1
             sys_l = system.lower()
             if "POLICY" in system:
@@ -175,7 +180,7 @@ class AITests(unittest.TestCase):
 
     def test_generate_predictor_flags_unknown_variable_ids(self) -> None:
         # Force the model to emit an unknown id — the draft must be marked invalid, never silently saved.
-        async def bad(api_key, model, system, user, max_tokens, temperature):
+        async def bad(api_key, model, system, user, max_tokens, temperature, **kwargs):
             self.calls["n"] += 1
             return json.dumps({"name": "x", "bins": [{"variable_id": "does_not_exist", "weight": 1.0,
                                                       "ranges": [{"min": 0, "max": 1, "points": 5}]}]})
@@ -356,10 +361,77 @@ class AITests(unittest.TestCase):
         self.assertIn("claude-sonnet-5", r["models"])  # curated default present
         self.assertEqual(r["default"], "claude-sonnet-5")
 
+    def test_anthropic_sends_the_workspace_header_when_configured(self) -> None:
+        """Identity-linked Anthropic keys REJECT any request that does not name a workspace:
+        `400 invalid_request_error: anthropic-workspace-id is required when authenticating
+        with an identity-linked API key`.
+
+        This was found by finally running the live suite against a real key (#123) -- every
+        AI feature was unusable with that key type, and the /v1/models fetch failed the same
+        way, which silently degraded the model picker to the curated fallback.
+
+        Classic keys ignore the header, so sending it whenever it is known is safe for both.
+        """
+        import asyncio
+
+        import httpx
+
+        seen = []
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"content": [{"type": "text", "text": "ok"}], "usage": {}}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                seen.append(headers or {})
+                return _Resp()
+
+        orig = httpx.AsyncClient
+        httpx.AsyncClient = _Client
+        try:
+            asyncio.run(ai._call_anthropic("k", "claude-sonnet-5", "s", "u", 10, 0.0,
+                                           workspace_id="wrkspc_123"))
+            self.assertEqual(seen[-1].get("anthropic-workspace-id"), "wrkspc_123")
+
+            # Absent when not configured -- never send an empty header.
+            asyncio.run(ai._call_anthropic("k", "claude-sonnet-5", "s", "u", 10, 0.0))
+            self.assertNotIn("anthropic-workspace-id", seen[-1])
+        finally:
+            httpx.AsyncClient = orig
+
+    def test_workspace_id_falls_back_to_the_environment(self) -> None:
+        """So an operator can set it once for the deployment instead of per workspace."""
+        import os as _os
+
+        saved = _os.environ.pop("ANTHROPIC_WORKSPACE_ID", None)
+        try:
+            self.assertIsNone(ai.anthropic_workspace_id(None))
+            _os.environ["ANTHROPIC_WORKSPACE_ID"] = "wrkspc_env"
+            self.assertEqual(ai.anthropic_workspace_id(None), "wrkspc_env")
+            self.assertEqual(ai.anthropic_workspace_id("wrkspc_explicit"), "wrkspc_explicit",
+                             "an explicitly configured id must win over the environment")
+        finally:
+            _os.environ.pop("ANTHROPIC_WORKSPACE_ID", None)
+            if saved is not None:
+                _os.environ["ANTHROPIC_WORKSPACE_ID"] = saved
+
     def test_models_live_fetch_merges_when_key_set(self) -> None:
         self._set_key(provider="anthropic")
         orig = dict(ai._LIVE_FETCHERS)
-        async def _live_a(key):
+        async def _live_a(key, **kwargs):
             return ["claude-brand-new-9", "claude-sonnet-5"]
         ai._LIVE_FETCHERS["anthropic"] = _live_a
         try:

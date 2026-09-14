@@ -1,0 +1,134 @@
+
+# Alert rules for RuleMind.
+#
+# WHY THESE EXIST. Before this file, `observability/` had a Grafana dashboard and no alerting
+# block or rule_files at all — you could look at graphs, but nothing told anyone when something
+# broke. A dashboard is for diagnosis after you already know; alerts are what tell you.
+#
+# EVERY EXPRESSION HERE USES A SERIES THAT PROVABLY EXISTS. They were checked by scraping
+# /metrics on a running stack, not read off the source. That check is the reason this file could
+# be written at all: it found that `/api/v1/decide` emitted NOTHING — both decision metrics were
+# incremented only on the SDK path — so half these rules would have been permanently silent
+# while looking correctly configured. A rule that can never fire is worse than a missing rule,
+# because it reads as coverage.
+#
+# Series in use, with their labels:
+#   rulemind_decisions_total{outcome, source}          counter
+#   rulemind_decision_latency_seconds{source}          histogram (_bucket/_sum/_count)
+#   rulemind_bundle_syncs_total{status}                counter
+#   up{job}                                            the scrape itself
+#
+# Thresholds deliberately mirror the product's own SLO object (`/api/v1/settings/slo`:
+# latency_p95_ms, error_rate_pct) rather than inventing a second, competing definition of
+# "healthy". Where a workspace overrides its SLO, treat these as the platform floor.
+
+groups:
+  - name: rulemind-availability
+    rules:
+      - alert: RuleMindApiDown
+        expr: up{job="rulemind-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The RuleMind API is not being scraped"
+          description: >-
+            Prometheus cannot reach {{ $labels.instance }}. Either the process is gone or it
+            cannot serve /metrics. Check `/health` (liveness) and `/ready` (dependencies) —
+            they answer differently on purpose, and /ready is the one that reports the
+            database, Redis and the sandbox pool.
+          runbook: docs/runbooks/production.md#the-api-is-down
+
+      - alert: RuleMindDecisionsStopped
+        expr: |
+          sum(rate(rulemind_decisions_total[10m])) == 0
+          and sum(rulemind_decisions_total offset 1h) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No decisions served for 10 minutes"
+          description: >-
+            A decisioning engine that has stopped deciding is an outage even when every health
+            check is green — the pods are up and nothing is being answered. The second clause
+            requires that traffic existed an hour ago, so this stays quiet on a fresh install
+            and in environments that are legitimately idle.
+          runbook: docs/runbooks/production.md#decisions-stopped
+
+  - name: rulemind-latency
+    rules:
+      - alert: RuleMindDecisionLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, source) (rate(rulemind_decision_latency_seconds_bucket[5m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 decision latency above 500ms on {{ $labels.source }}"
+          description: >-
+            Measured p95 on a developer laptop is ~20ms at concurrency 1 (docs/PERFORMANCE.md),
+            so 500ms is a generous ceiling rather than a target. Split by `source`: `api` is the
+            executor path and `api_fast` the serving path — if api_fast disappears while api
+            rises, traffic has fallen off the fast path rather than the engine getting slower,
+            and those two causes have completely different fixes.
+          runbook: docs/runbooks/production.md#latency
+
+      - alert: RuleMindDecisionLatencyCritical
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, source) (rate(rulemind_decision_latency_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "p95 decision latency above 2s on {{ $labels.source }}"
+          description: >-
+            At this point the evaluation budget (engine_config.evaluation_budget_ms) is likely
+            firing and callers are getting 504s. The usual cause is the sandbox pool: each
+            variable has its own timeout, and a saturated pool serialises them.
+          runbook: docs/runbooks/production.md#latency
+
+  - name: rulemind-correctness
+    rules:
+      - alert: RuleMindOutcomeMixShifted
+        expr: |
+          abs(
+            sum(rate(rulemind_decisions_total{outcome="approve"}[30m]))
+            / clamp_min(sum(rate(rulemind_decisions_total[30m])), 0.001)
+            -
+            sum(rate(rulemind_decisions_total{outcome="approve"}[30m] offset 1d))
+            / clamp_min(sum(rate(rulemind_decisions_total[30m] offset 1d)), 0.001)
+          ) > 0.2
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Approval rate moved more than 20 points against the same window yesterday"
+          description: >-
+            THE ALERT THAT MATTERS MOST FOR THIS PRODUCT, and the one a generic stack does not
+            have. Every request can return 200 in 15ms while the engine approves everything it
+            should reject — a bureau returning nulls, a variable erroring to None, a policy
+            promoted by mistake. Latency and error-rate alerts are all silent for that. This is
+            not a precision instrument; it is a tripwire that says "look at what changed".
+            Compare against /api/v1/slo/status, which computes the same idea per workspace with
+            the tenant's own min/max approval bounds.
+          runbook: docs/runbooks/production.md#the-outcome-mix-moved
+
+      - alert: RuleMindBundleSyncFailing
+        expr: rate(rulemind_bundle_syncs_total{status!="ok"}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "On-device bundle syncs are failing"
+          description: >-
+            Devices that cannot sync keep deciding OFFLINE against the bundle they already
+            have — so this does not show up as errors, it shows up as devices quietly running
+            an old policy. Decisions from those devices carry a `bundle_hash`, which is how you
+            tell afterwards which ones ran stale.
+          runbook: docs/runbooks/production.md#bundle-sync

@@ -158,6 +158,73 @@ class CoreEngineTests(unittest.TestCase):
         self.assertEqual(result["experiment_variant"], "challenger")
         self.assertEqual(result["outcome"], "reject")  # 80k < 90k now
 
+    def test_control_flow_steps_fail_closed_instead_of_being_skipped(self):
+        """`loop`/`branch`/`workflow`/`monitor` were in neither step-type set.
+
+        They fell through to `else`, wrote "unknown step type" into the trace, and the loop
+        CONTINUED -- so the core returned whatever the remaining steps decided, at full
+        confidence. Because a branch decides WHICH steps run, an approve-by-default policy
+        whose reject lives inside one came back as approve. what-if, backtest and governance
+        replay are exactly the surfaces used to justify a decision after the fact.
+        """
+        bundle = sample_bundle()
+        # An approving payload, with the gate that would reject buried in a branch the core
+        # cannot evaluate. Before the fix this returned "approve" and nothing above the trace
+        # said otherwise.
+        bundle["policy"]["steps"] = [
+            {"type": "outcome", "ref_id": "approve"},
+            {"type": "branch", "ref_id": "risk_split"},
+        ]
+        out = decide(bundle, {"annual_income": 120000, "risk_flag": False}, {})
+
+        self.assertEqual(out["outcome"], "review", "an unevaluable branch must not approve")
+        self.assertFalse(out["input_valid"])
+        self.assertTrue(any("branch" in e for e in out["validation_errors"]), out["validation_errors"])
+        entry = next(t for t in out["trace"] if t.get("step", {}).get("type") == "branch")
+        self.assertTrue(entry.get("undecidable"))
+        # Not "deferred": that means a host will resolve it, and for this core there is no host.
+        self.assertNotIn("deferred", entry)
+
+    def test_a_genuinely_unknown_step_type_also_fails_closed(self):
+        bundle = sample_bundle()
+        bundle["policy"]["steps"] = [
+            {"type": "outcome", "ref_id": "approve"},
+            {"type": "teleport", "ref_id": "x"},
+        ]
+        out = decide(bundle, {"annual_income": 120000, "risk_flag": False}, {})
+        self.assertEqual(out["outcome"], "review")
+        self.assertFalse(out["input_valid"])
+
+    def test_empty_variables_does_not_fall_back_to_payload(self):
+        """An explicit empty variables map must NOT make the payload the feature map.
+
+        `dict(context.get("variables") or payload or {})` treated `{}` as absent,
+        so a caller that computed zero variables silently decided on raw payload
+        keys. That is a fail-open: it promotes unvalidated caller input into the
+        position of authored, typed variables. Under COMPUTE_ONLY_USED_VARS a
+        policy that reads no variables produces exactly that empty map, so this
+        is reachable, not theoretical.
+        """
+        payload = {"annual_income": 80000, "risk_flag": False}
+        result = decide(
+            sample_bundle(),
+            payload,
+            {"variables": {}, "strict_validation": False},
+        )
+        # With the payload leaking in, rule_income sees annual_income=80000 and
+        # the policy approves. With no variables it cannot, and rejects.
+        self.assertEqual(result["outcome"], "reject")
+        self.assertEqual(result["variables"], {})
+
+    def test_absent_variables_key_still_uses_payload(self):
+        """The legacy contract stays: no "variables" key at all means payload-as-features."""
+        payload = {"annual_income": 80000, "risk_flag": False}
+        self.assertEqual(decide(sample_bundle(), payload)["outcome"], "approve")
+        self.assertEqual(
+            decide(sample_bundle(), payload, {"strict_validation": False})["outcome"],
+            "approve",
+        )
+
     def test_validate_input_helper(self):
         schema = {"fields": {"pan": {"type": "string", "pattern": r"^[A-Z]{5}[0-9]{4}[A-Z]$"}}}
         self.assertEqual(validate_input({"pan": "ABCDE1234F"}, schema), [])

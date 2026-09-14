@@ -11,6 +11,7 @@ Design points:
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -89,9 +90,27 @@ def _temperature_rejected(resp: Any, body: Dict[str, Any]) -> bool:
     return resp.status_code == 400 and "temperature" in body and "temperature" in resp.text.lower()
 
 
-async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+def anthropic_workspace_id(configured: Optional[str] = None) -> Optional[str]:
+    """Workspace id for an identity-linked Anthropic key.
+
+    Anthropic's newer identity-linked keys are scoped to a workspace and REJECT any request
+    that does not name one: `400 invalid_request_error: anthropic-workspace-id is required
+    when authenticating with an identity-linked API key`. Classic keys ignore the header, so
+    sending it whenever it is known is safe for both.
+
+    Config wins; ANTHROPIC_WORKSPACE_ID is the fallback so an operator can set it once in the
+    environment rather than per workspace.
+    """
+    return (configured or os.getenv("ANTHROPIC_WORKSPACE_ID") or "").strip() or None
+
+
+async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float,
+                          workspace_id: Optional[str] = None) -> Tuple[str, Dict[str, int]]:
     url = "https://api.anthropic.com/v1/messages"
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    workspace = anthropic_workspace_id(workspace_id)
+    if workspace:
+        headers["anthropic-workspace-id"] = workspace
     body: Dict[str, Any] = {"model": model, "max_tokens": max_tokens, "system": system,
                             "messages": [{"role": "user", "content": user}]}
     if not _model_omits_temperature(model):
@@ -103,7 +122,7 @@ async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_
                 body.pop("temperature", None)
                 resp = await client.post(url, headers=headers, json=body)
     except Exception as e:  # network
-        raise AIError(f"Anthropic request failed: {e}")
+        raise AIError(f"Anthropic request failed: {e}") from e
     if resp.status_code != 200:
         raise AIError(f"Anthropic error {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
@@ -113,7 +132,9 @@ async def _call_anthropic(api_key: str, model: str, system: str, user: str, max_
     return text, {"input_tokens": int(usage.get("input_tokens", 0)), "output_tokens": int(usage.get("output_tokens", 0))}
 
 
-async def _call_openai(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+async def _call_openai(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float,
+                       workspace_id: Optional[str] = None) -> Tuple[str, Dict[str, int]]:
+    del workspace_id  # anthropic-only; accepted so the provider dispatch stays uniform
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
     body: Dict[str, Any] = {"model": model, "max_tokens": max_tokens,
@@ -127,7 +148,7 @@ async def _call_openai(api_key: str, model: str, system: str, user: str, max_tok
                 body.pop("temperature", None)
                 resp = await client.post(url, headers=headers, json=body)
     except Exception as e:
-        raise AIError(f"OpenAI request failed: {e}")
+        raise AIError(f"OpenAI request failed: {e}") from e
     if resp.status_code != 200:
         raise AIError(f"OpenAI error {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
@@ -136,7 +157,9 @@ async def _call_openai(api_key: str, model: str, system: str, user: str, max_tok
     return text, {"input_tokens": int(usage.get("prompt_tokens", 0)), "output_tokens": int(usage.get("completion_tokens", 0))}
 
 
-async def _call_gemini(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float) -> str:
+async def _call_gemini(api_key: str, model: str, system: str, user: str, max_tokens: int, temperature: float,
+                       workspace_id: Optional[str] = None) -> Tuple[str, Dict[str, int]]:
+    del workspace_id  # anthropic-only; accepted so the provider dispatch stays uniform
     """Google Gemini via the Generative Language API.
 
     Shaped differently from the other two: the key rides in a header rather than
@@ -163,7 +186,7 @@ async def _call_gemini(api_key: str, model: str, system: str, user: str, max_tok
                 generation.pop("temperature", None)
                 resp = await client.post(url, headers=headers, json=body)
     except Exception as e:
-        raise AIError(f"Gemini request failed: {e}")
+        raise AIError(f"Gemini request failed: {e}") from e
     if resp.status_code != 200:
         raise AIError(f"Gemini error {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
@@ -197,15 +220,19 @@ CURATED_MODELS = {
 }
 
 
-async def _fetch_live_models_anthropic(api_key: str) -> List[str]:
+async def _fetch_live_models_anthropic(api_key: str, workspace_id: Optional[str] = None) -> List[str]:
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    workspace = anthropic_workspace_id(workspace_id)
+    if workspace:
+        headers["anthropic-workspace-id"] = workspace
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get("https://api.anthropic.com/v1/models",
-                                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+        resp = await client.get("https://api.anthropic.com/v1/models", headers=headers)
     resp.raise_for_status()
     return [m["id"] for m in resp.json().get("data", []) if m.get("id")]
 
 
-async def _fetch_live_models_openai(api_key: str) -> List[str]:
+async def _fetch_live_models_openai(api_key: str, workspace_id: Optional[str] = None) -> List[str]:
+    del workspace_id  # anthropic-only; accepted so the fetcher dispatch stays uniform
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
     resp.raise_for_status()
@@ -215,7 +242,8 @@ async def _fetch_live_models_openai(api_key: str) -> List[str]:
                   and not any(x in m for x in ("audio", "realtime", "transcribe", "tts", "embedding", "moderation", "search")))
 
 
-async def _fetch_live_models_gemini(api_key: str) -> List[str]:
+async def _fetch_live_models_gemini(api_key: str, workspace_id: Optional[str] = None) -> List[str]:
+    del workspace_id  # anthropic-only; accepted so the fetcher dispatch stays uniform
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get("https://generativelanguage.googleapis.com/v1beta/models",
                                 headers={"x-goog-api-key": api_key})
@@ -236,7 +264,8 @@ _LIVE_FETCHERS = {"anthropic": _fetch_live_models_anthropic,
                   "gemini": _fetch_live_models_gemini}
 
 
-async def list_models(provider: str, api_key: Optional[str] = None) -> Dict[str, Any]:
+async def list_models(provider: str, api_key: Optional[str] = None,
+                      workspace_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the selectable models for a provider. Live-fetches from the provider's
     /models API when a key is available (so new launches show up automatically),
     falling back to the curated list on any error or when no key is set."""
@@ -246,7 +275,7 @@ async def list_models(provider: str, api_key: Optional[str] = None) -> Dict[str,
     if not api_key:
         return {"provider": provider, "models": curated, "default": default, "live": False}
     try:
-        live = await _LIVE_FETCHERS[provider](api_key)
+        live = await _LIVE_FETCHERS[provider](api_key, workspace_id=workspace_id)
         # Merge: keep curated ordering first (recommended), then any extra live ids.
         merged = list(dict.fromkeys([*curated, *live])) if live else curated
         return {"provider": provider, "models": merged, "default": default, "live": bool(live)}
@@ -311,7 +340,8 @@ def set_usage_recorder(fn: Any) -> None:
 
 
 async def complete(provider: str, api_key: str, system: str, user: str, model: Optional[str] = None,
-                   max_tokens: int = 1500, temperature: float = 0.2) -> str:
+                   max_tokens: int = 1500, temperature: float = 0.2,
+                   workspace_id: Optional[str] = None) -> str:
     provider = (provider or "anthropic").lower()
     fn = _PROVIDERS.get(provider)
     if not fn:
@@ -319,7 +349,7 @@ async def complete(provider: str, api_key: str, system: str, user: str, model: O
     if not api_key:
         raise AIError("No API key configured for this provider.")
     resolved_model = model or DEFAULT_MODELS[provider]
-    result = await fn(api_key, resolved_model, system, user, max_tokens, temperature)
+    result = await fn(api_key, resolved_model, system, user, max_tokens, temperature, workspace_id=workspace_id)
     # Providers return (text, usage); legacy/mocked ones may return a bare string.
     if isinstance(result, tuple):
         text, usage = result
@@ -333,11 +363,12 @@ async def complete(provider: str, api_key: str, system: str, user: str, model: O
     return text
 
 
-async def test_connection(provider: str, api_key: str, model: Optional[str] = None) -> Dict[str, Any]:
+async def test_connection(provider: str, api_key: str, model: Optional[str] = None,
+                          workspace_id: Optional[str] = None) -> Dict[str, Any]:
     """A tiny call to confirm the key works. ~1 token out."""
     try:
         out = await complete(provider, api_key, "You are a connectivity probe.", "Reply with the single word: ok",
-                             model=model, max_tokens=5, temperature=0)
+                             model=model, max_tokens=5, temperature=0, workspace_id=workspace_id)
         return {"ok": True, "provider": provider, "model": model or DEFAULT_MODELS[provider], "sample": out[:40]}
     except AIError as e:
         return {"ok": False, "error": str(e)}
@@ -404,10 +435,11 @@ Rules:
 """
 
 
-async def generate_rule(provider: str, api_key: str, prompt: str, variables: List[Dict[str, Any]], model: Optional[str] = None) -> Dict[str, Any]:
+async def generate_rule(provider: str, api_key: str, prompt: str, variables: List[Dict[str, Any]], model: Optional[str] = None,
+                     workspace_id: Optional[str] = None) -> Dict[str, Any]:
     var_lines = "\n".join(f"- {v.get('id')} ({v.get('name','')})" for v in variables[:120])
     user = f"Available variables:\n{var_lines}\n\nRequirement:\n{prompt}\n\nReturn the JSON now."
-    raw = await complete(provider, api_key, _RULE_SYSTEM, user, model=model, max_tokens=1500, temperature=0.1)
+    raw = await complete(provider, api_key, _RULE_SYSTEM, user, model=model, max_tokens=1500, temperature=0.1, workspace_id=workspace_id)
     obj = extract_json(raw)
     if not isinstance(obj, dict) or "tree" not in obj:
         raise AIError("Model output was not a valid rule object.")
@@ -429,12 +461,13 @@ Rules:
 
 
 async def generate_policy(provider: str, api_key: str, prompt: str, connectors: List[Dict[str, Any]],
-                    rules: List[Dict[str, Any]], scorecards: List[Dict[str, Any]], model: Optional[str] = None) -> Dict[str, Any]:
+                    rules: List[Dict[str, Any]], scorecards: List[Dict[str, Any]], model: Optional[str] = None,
+                     workspace_id: Optional[str] = None) -> Dict[str, Any]:
     def ids(items):
         return "\n".join(f"- {i.get('id')} ({i.get('name','')})" for i in items[:80]) or "  (none)"
     user = (f"Connectors:\n{ids(connectors)}\n\nRules:\n{ids(rules)}\n\nScorecards:\n{ids(scorecards)}\n\n"
             f"Requirement:\n{prompt}\n\nReturn the JSON now.")
-    raw = await complete(provider, api_key, _POLICY_SYSTEM, user, model=model, max_tokens=1800, temperature=0.1)
+    raw = await complete(provider, api_key, _POLICY_SYSTEM, user, model=model, max_tokens=1800, temperature=0.1, workspace_id=workspace_id)
     obj = extract_json(raw)
     if not isinstance(obj, dict) or not isinstance(obj.get("steps"), list):
         raise AIError("Model output was not a valid policy object.")
@@ -451,7 +484,8 @@ conditions (the drivers of a decline/review). Be factual, reference the numbers,
 NOT invent conditions. Output STRICT JSON: {"summary":"<2-4 sentences>","reason_codes":["<short reason>", ...]}"""
 
 
-async def explain_decision(provider: str, api_key: str, decision: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Any]:
+async def explain_decision(provider: str, api_key: str, decision: Dict[str, Any], model: Optional[str] = None,
+                     workspace_id: Optional[str] = None) -> Dict[str, Any]:
     lines: List[str] = [f"Outcome: {decision.get('outcome')}"]
     for step in decision.get("trace") or []:
         s = step.get("step") or {}
@@ -464,7 +498,7 @@ async def explain_decision(provider: str, api_key: str, decision: Dict[str, Any]
             if "score" in res:
                 lines.append(f"Scorecard {s.get('label') or s.get('ref_id')}: score={res.get('score')}")
     user = "Decision evidence:\n" + "\n".join(lines[:120]) + "\n\nReturn the JSON now."
-    raw = await complete(provider, api_key, _EXPLAIN_SYSTEM, user, model=model, max_tokens=800, temperature=0.2)
+    raw = await complete(provider, api_key, _EXPLAIN_SYSTEM, user, model=model, max_tokens=800, temperature=0.2, workspace_id=workspace_id)
     obj = extract_json(raw)
     if not isinstance(obj, dict) or "summary" not in obj:
         raise AIError("Model output was not a valid explanation.")
@@ -487,10 +521,11 @@ Rules:
 
 
 async def generate_predictor(provider: str, api_key: str, definition: str, variables: List[Dict[str, Any]],
-                             model: Optional[str] = None) -> Dict[str, Any]:
+                             model: Optional[str] = None,
+                     workspace_id: Optional[str] = None) -> Dict[str, Any]:
     var_lines = "\n".join(f"- {v.get('id')} ({v.get('name','')}, {v.get('category','')})" for v in variables[:120])
     user = f"Available variables:\n{var_lines}\n\nPredictor definition:\n{definition}\n\nReturn the JSON now."
-    raw = await complete(provider, api_key, _PREDICTOR_SYSTEM, user, model=model, max_tokens=1800, temperature=0.1)
+    raw = await complete(provider, api_key, _PREDICTOR_SYSTEM, user, model=model, max_tokens=1800, temperature=0.1, workspace_id=workspace_id)
     obj = extract_json(raw)
     if not isinstance(obj, dict) or not isinstance(obj.get("bins"), list) or not obj["bins"]:
         raise AIError("Model output was not a valid predictor/scorecard object.")
@@ -510,12 +545,13 @@ JSON: {"summary":"<3-5 sentences>","recommendation":"promote"|"hold"|"rollback",
 
 
 async def analyze_experiment(provider: str, api_key: str, experiment: Dict[str, Any], results: Dict[str, Any],
-                             model: Optional[str] = None) -> Dict[str, Any]:
+                             model: Optional[str] = None,
+                     workspace_id: Optional[str] = None) -> Dict[str, Any]:
     import json as _json
     user = (f"Experiment: {experiment.get('name')} (hash_key={experiment.get('hash_key')}, "
             f"status={experiment.get('status')})\nVariants: {_json.dumps(experiment.get('variants', []))[:1500]}\n\n"
             f"Results:\n{_json.dumps(results)[:3500]}\n\nReturn the JSON now.")
-    raw = await complete(provider, api_key, _EXPERIMENT_SYSTEM, user, model=model, max_tokens=1500, temperature=0.2)
+    raw = await complete(provider, api_key, _EXPERIMENT_SYSTEM, user, model=model, max_tokens=1500, temperature=0.2, workspace_id=workspace_id)
     obj = extract_json(raw)
     if not isinstance(obj, dict) or "recommendation" not in obj:
         raise AIError("Model output was not a valid experiment analysis.")
@@ -535,13 +571,14 @@ drivers. Output STRICT JSON: {"summary":"<3-5 sentences>","top_reasons":[{"drive
 
 
 async def analyze_rejections(provider: str, api_key: str, policy_name: str, drivers: Any,
-                             model: Optional[str] = None) -> Dict[str, Any]:
+                             model: Optional[str] = None,
+                     workspace_id: Optional[str] = None) -> Dict[str, Any]:
     import json as _json
     user = (f"Policy: {policy_name}\n\nRejection drivers (most impactful first):\n"
             f"{_json.dumps(drivers)[:3500]}\n\nReturn the JSON now.")
     # 900 truncated mid-JSON on a policy with several drivers — this response carries
     # top_reasons plus recommendations, so it is the largest of the generators.
-    raw = await complete(provider, api_key, _REJECTION_SYSTEM, user, model=model, max_tokens=2000, temperature=0.2)
+    raw = await complete(provider, api_key, _REJECTION_SYSTEM, user, model=model, max_tokens=2000, temperature=0.2, workspace_id=workspace_id)
     obj = extract_json(raw)
     if not isinstance(obj, dict) or "top_reasons" not in obj:
         raise AIError("Model output was not a valid rejection analysis.")

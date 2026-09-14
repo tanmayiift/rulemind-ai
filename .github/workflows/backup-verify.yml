@@ -1,0 +1,71 @@
+name: backup-verify
+
+# The point of running this on a schedule is that the SCRIPT stays exercised. A backup
+# procedure first used during an incident is a procedure nobody knows is broken.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/python-executor/scripts/backup_verify.py"
+      - ".github/workflows/backup-verify.yml"
+
+concurrency:
+  group: backup-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rulemind
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rulemind
+      RULEMIND_CONFIG_KEY: ci-backup-verify-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # pg_dump/pg_restore must match the SERVER major version. The runner image ships an
+      # older client by default, and a version mismatch fails at restore time -- exactly the
+      # silent-until-the-incident failure this job exists to catch.
+      - name: Install postgres 16 client
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          pg_dump --version
+
+      - name: Install dependencies
+        run: pip install -r apps/python-executor/requirements.txt
+
+      - name: Create schema and seed a chained audit trail
+        working-directory: apps/python-executor
+        run: |
+          python - <<'PY'
+          from app.storage import Storage
+          storage = Storage()
+          tenant = storage.default_tenant_id
+          for i in range(5):
+              storage.add_audit_event({"event_type": "policy_promoted", "detail": f"seed {i}"}, tenant_id=tenant)
+          storage.add_decision({"policy_id": "p", "outcome": "approve", "payload": {}}, tenant_id=tenant)
+          print("seeded", storage.verify_audit_chain(tenant_id=tenant))
+          PY
+
+      # The real assertion: dump -> restore into a scratch database -> verify tables, row
+      # counts and the audit chain -> drop the scratch. Non-zero exit fails the job.
+      - name: Back up and prove the backup restores
+        working-directory: apps/python-executor
+        run: python scripts/backup_verify.py --out "$RUNNER_TEMP/backups"

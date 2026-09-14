@@ -1,7 +1,6 @@
 from copy import deepcopy
-
-
-CONNECTORS = [
+from typing import Any, Dict, List
+CONNECTORS: List[Dict[str, Any]] = [
     {
         "id": "bureau",
         "name": "Credit Bureau",
@@ -242,7 +241,7 @@ CONNECTORS = [
 ]
 
 
-VARIABLES = [
+VARIABLES: List[Dict[str, Any]] = [
     {
         "id": "bureau_score",
         "name": "Bureau Score",
@@ -796,7 +795,7 @@ VARIABLES = [
 ]
 
 
-RULES = [
+RULES: List[Dict[str, Any]] = [
     {
         "id": "r1",
         "name": "PL Score Gate (Bureau+Bank+KYC)",
@@ -997,7 +996,7 @@ RULES = [
 ]
 
 
-SCORECARDS = [
+SCORECARDS: List[Dict[str, Any]] = [
     {
         "id": "sc1",
         "name": "PL Eligibility Score",
@@ -1136,7 +1135,7 @@ SCORECARDS = [
 ]
 
 
-POLICIES = [
+POLICIES: List[Dict[str, Any]] = [
     {
         "id": "policy_pl_underwriting",
         "name": "PL Underwriting",
@@ -1284,7 +1283,7 @@ POLICIES = [
 ]
 
 
-DEFAULT_SETTINGS = {
+DEFAULT_SETTINGS: Dict[str, Any] = {
     "api_base_url": "http://localhost:8080",
     "auth_config": {"method": "bearer", "token": ""},
     "engine_config": {"python_version": "3.11", "timeout_ms": 2000, "memory_mb": 128},

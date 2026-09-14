@@ -1,6 +1,6 @@
 # RuleMind AI — End-to-End Test Plan & Findings Log
 
-**Living document.** Last full pass: 2026-08-27, against **PostgreSQL 16** and a **full Docker stack**, with the **AI layer validated against a live provider key**. Environment: macOS 26.6 (Darwin 25.6, arm64) · Python 3.11.16 · Node 20.20.2 ·
+**Living document.** Counts in §10 refreshed **2026-09-05**; the narrative findings below are from the last full pass: 2026-08-27, against **PostgreSQL 16** and a **full Docker stack**, with the **AI layer validated against a live provider key**. Environment: macOS 26.6 (Darwin 25.6, arm64) · Python 3.11.16 · Node 20.20.2 ·
 pnpm 9.15.4 · Flutter 3.47.1 / Dart 3.13.1 · Xcode 26.6 · CocoaPods 1.11.3 · **no Docker**.
 
 Legend: ✅ pass · ⚠️ pass-with-finding · ❌ fail · ⛔ blocked · ⬜ not run
@@ -18,7 +18,7 @@ Everything below was installed from official sources into `~/.local` without sud
 | 0.2 | Node 20.20.2 + pnpm 9.15.4 | ✅ |
 | 0.3 | `pip install -r requirements.txt` | ✅ (**F-01** fixed) |
 | 0.4 | xgboost / lightgbm loadable (libomp) | ✅ (**F-02** documented) |
-| 0.5 | Alembic migrations → head (16 revisions) | ✅ |
+| 0.5 | Alembic migrations → head (28 revisions) | ✅ |
 | 0.6 | API boots, `/health` responds | ✅ |
 | 0.7 | `.env` actually consumed | ✅ (**F-03** fixed) |
 | 0.8 | Web dashboard builds + serves (Next 14, :3000) | ✅ |
@@ -77,6 +77,18 @@ Everything below was installed from official sources into `~/.local` without sud
 | 5.1 | Trace covers every policy step | ✅ |
 | 5.2 | Per-condition variable / operator / threshold / value / passed | ✅ |
 | 5.3 | Decision id returned by `/decide` | ✅ (**F-11** fixed) |
+| 5.4 | **Step through a failing execution** (parity P04): Decision Explorer → "Step through" → the debugger opens with that decision's payload → advance one step at a time and read the variables, rule results and outcome-so-far at each stop | ✅ `tests/test_debugger.py` (25); verified in-browser against the demo inventory |
+| 5.5 | The debugger's answers equal production's | ✅ stepped vs a real `simulate=False` run, incl. the empty payload. Was NOT true on first build: `simulate=True` also switches sample seeding on, so it showed demo values for fields the caller never sent — see `PolicyExecutor.seed_samples_override` |
+| 5.6 | Stepping has no side effects | ✅ no decision row, no billed unit, no outbound action; the control asserts a normal run *does* write one, so a build that never writes at all cannot pass |
+| 5.7 | **Import a 3-dimension pricing matrix** (parity P07): upload .csv/.xlsx → map columns to dimensions and outputs → import → the optimiser reports the sheet's uncovered ranges → the table evaluates | ✅ `tests/test_decision_table_import.py` (36) + `e2e/decision-table-import.spec.ts`; driven in-browser with a real 4-row sheet |
+| 5.8 | An unreadable cell refuses the import | ✅ every problem returned at once, each naming its row and column; nothing is created. A skipped cell is a WILDCARD, so a partial import would apply a row's price to every input |
+| 5.9 | Column types come from the data | ✅ and it is not cosmetic — with `field_type` defaulted to "string" the optimiser cannot order the column, every row reads "not_analyzable", and the gap analysis reports nothing at all |
+| 8.7 | **Journey lifecycle** (parity P15): create a journey → lock it → duplicate it → run it from an SDK | ✅ `tests/test_journeys.py` (31) + `e2e/journeys.spec.ts`; driven in-browser end to end |
+| 8.8 | Lock freezes screens without blocking promotion | ✅ a locked journey refuses content edits (409, naming duplication as the way forward) but still promotes to prod, and locking does not bump the version a respondent's answers are keyed to |
+| 8.9 | Authored journeys reach the device, demos fall back | ✅ the SDK manifest serves active journeys in the camelCase shape the Flutter example reads; a workspace with none authored still gets the built-in demo flows, and demo scenarios are dropped once it has its own (journey ids are slugified titles, so they can collide with a demo's) |
+| 8.10 | **Derived feature → backfill → scorecard** (parity P12): a variable that reads other variables, backfilled over historical decisions, usable in a scorecard | ✅ `tests/test_predictor_backfill.py` (12) + `e2e/predictor-backfill.spec.ts`. The derived-feature and scorecard halves predated the work and are asserted rather than assumed |
+| 8.11 | A backfill is idempotent | ✅ and it matters: there is no unique constraint on (predictor_id, decision_id), so a second run would silently double the monitoring series and halve the apparent drift |
+| 8.12 | Backfilled values carry the decision's own timestamp | ✅ the column defaults to `now`, and accepting that would drop the whole replayed history into the current window — the drift report would then compare today against today and report no drift. A wrong baseline is worse than an empty one |
 
 ## 6. Case-wise history & audit — ⚠️→✅
 | # | Case | Result |
@@ -121,20 +133,52 @@ At concurrency 16, 222/400 requests returned **429** — the hardcoded 1 000 req
 * Sidebar IA — **F-18**.
 
 ## 10. Regression baseline — re-run against merged `main` on **PostgreSQL 16**
-| Suite | Result |
-|---|---|
-| Python unittest — **PostgreSQL** | ✅ **733 passed**, 4 skipped, 0 failed |
-| Python unittest — SQLite | ✅ 733 passed (same result) |
-| Vitest (TS) | ✅ **157 passed** |
-| Flutter SDK | ✅ **127 passed** |
-| Kotlin (`rulemind-core` + `sample-app`) | ✅ **20 passed** |
-| Demo app — unit | ✅ **4 passed** |
-| Demo app — iOS integration | ✅ **20 passed** (16/16 server-vs-device parity) |
-| Playwright `e2e/` | ⚠️ **44 / 48** — 1 order-dependent failure (#125), 3 blocked behind it |
-| Web route sweep | ✅ 34/36 clean |
 
-All 16 journey scenarios return outcomes **identical on Postgres and SQLite**.
-All 16 Alembic migrations apply cleanly to Postgres (32 tables).
+Refreshed **2026-09-06**, every lane re-run on the same tree. The previous refresh was one day
+old and four of its nine numbers had already moved (Python 1457 -> 1892, Vitest 443 -> 462,
+Playwright 58 -> 68, migrations 24 -> 28), because the parity backlog closed in between. That is
+the point of dating the table rather than maintaining it: a stale baseline is worse than none,
+since a real regression landing between two passes reads as "the number went up anyway".
+
+| Suite | Result | Was (2026-08-27) |
+|---|---|---|
+| Python unittest — SQLite | ✅ **1892 passed**, 21 skipped, 0 failed | 1457 |
+| Python unittest — **PostgreSQL 16** | ✅ **1891 passed**, 21 skipped, 0 failed | not re-run |
+| Vitest (TS) | ✅ **462 passed** (16 files) | 443 |
+| Flutter SDK | ✅ **163 passed** | 163 |
+| Kotlin `rulemind-core` | ✅ **46 passed** | 46 |
+| Rust `rulemind-core-rs` | ✅ **19 passed** (`--no-default-features`) | 19 |
+| Rust `rulemind-decide-service` | ✅ **10 passed** | 10 |
+| Playwright `e2e/` | ✅ **68 / 68** (`RM_E2E_ALLOW_DESTRUCTIVE=1`) | 58 / 58 |
+| `smoke_compose.sh` | ✅ **14 / 14** | 14 / 14 |
+| `smoke_k8s.sh` (kind + Helm) | ✅ **16 / 16** | — (new) |
+| `tests/test_decision_outbox.py` (needs a broker) | ✅ **18 / 18** | — (new) |
+
+The Postgres lane was actually run this time, with `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` — without
+it 66 modules construct `Storage(path=…)` and silently re-run SQLite, which is how a "Postgres
+pass" goes green without having touched Postgres. Two things about the numbers are worth stating
+rather than smoothing over: the lane runs **1891, one fewer than SQLite's 1892** (a SQLite-only
+case), and it takes **1110s against 590s** — that ~1.9x is the cost of the only lane that can
+catch a test whose result depends on how fast the database is.
+
+The URL must be `postgresql://`, not `postgresql+psycopg://`: `requirements.txt` pins
+`psycopg2-binary`, so the psycopg-3 scheme fails *every module import* with
+`ModuleNotFoundError: No module named 'psycopg'` — 153 loader errors that look like a broken
+virtualenv rather than one wrong word.
+
+Playwright now runs **68**, not 58. Five tests are gated behind `RM_E2E_ALLOW_DESTRUCTIVE=1` (set
+in CI); without it the run is 63 passed + 5 skipped, which is still green and therefore easy to
+mistake for the full suite.
+
+**28** Alembic migrations (not 24) — `apps/python-executor/alembic/versions/`.
+
+PostgreSQL 16 is correct and unchanged: `docker-compose.yml`, the Helm chart, the k8s manifests
+and CI all pin `postgres:16`.
+
+Two claims that stood here are **removed rather than carried forward**, because both were
+cross-lane assertions and the Postgres lane was not re-run: "all 16 journey scenarios return
+outcomes identical on Postgres and SQLite", and the table count "(32 tables)". They go back in
+when the Postgres lane does.
 
 ## 11. Load — measured on PostgreSQL 16, 4 workers, limiter off
 | Config | conc 4 | conc 16 | conc 32 |

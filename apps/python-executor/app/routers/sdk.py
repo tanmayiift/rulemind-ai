@@ -63,7 +63,13 @@ router = APIRouter()
 def sdk_experience_manifest(request: Request) -> Dict[str, Any]:
     tenant_id = active_tenant_id(request)
     latest = main.storage.latest_bundle(tenant_id=tenant_id)
-    return build_experience_manifest(tenant_id, public_api_base_url(request), latest_bundle_version=int(latest["version"]) if latest else 0)
+    # Only ACTIVE journeys reach a device: `is_active=False` is how an author retires a flow
+    # without deleting the record the decisions already made under it point at.
+    journeys = main.storage.list_journeys(tenant_id=tenant_id, active_only=True)
+    return build_experience_manifest(
+        tenant_id, public_api_base_url(request),
+        latest_bundle_version=int(latest["version"]) if latest else 0,
+        journeys=journeys)
 
 
 @router.get("/sdk/v1/health")
@@ -134,7 +140,7 @@ def sdk_bundle(request: Request) -> Response:
         response_payload = render_bundle_response(content, request.headers.get("x-client-public-key"))
     except BundleEncryptionRequired as exc:
         # A policy choice, not a server fault — tell the caller what to send.
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     BUNDLE_SYNCS_TOTAL.labels(status="success").inc()
     return Response(content=json_dumps(response_payload), media_type="application/json")
 
@@ -165,7 +171,7 @@ def sdk_policy_block(policy_id: str, request: Request) -> Response:
         try:
             payload = render_block_response(block, client_public_key)
         except BundleEncryptionRequired as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     else:
         # Signed plaintext: the client can inspect + evaluate the block directly, and verify the
         # RSA signature over its canonical bytes. Confidentiality comes from TLS/mTLS in transit.

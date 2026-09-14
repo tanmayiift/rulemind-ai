@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
 
 from .. import main
+from ..connector_probe import ConnectorMisconfigured, probe_connector, redact_connector_secrets
 from ..logic import now_iso
 from ..main import (
     ConnectorCreateRequest,
@@ -19,6 +20,7 @@ from ..main import (
     PromoteRequest,
     TestPayloadRequest,
     VariableDraftTestRequest,
+    VariableLintRequest,
     VariableUpsertRequest,
     active_tenant_id,
     connector_payload,
@@ -95,18 +97,49 @@ def delete_connector(connector_id: str) -> Dict[str, Any]:
 
 @router.post("/api/v1/connectors/{connector_id}/test")
 def test_connector(connector_id: str) -> Dict[str, Any]:
-    connector = ensure_exists(main.storage.get_connector(connector_id), "connector", connector_id)
-    return {
+    """Actually connect to the connector's endpoint and report what happened.
+
+    This used to return ``passed: true`` unconditionally without opening a socket, which made the
+    dashboard's "Test connection" button a source of false confidence right before a production
+    cutover. See ``app/connector_probe.py`` for why the egress guard and the secret redaction are
+    not optional here, and why a misconfigured connector is a 422 while a downstream failure is a
+    200 carrying ``passed: false``.
+    """
+    connector = ensure_exists(
+        main.storage.get_connector(connector_id, include_secrets=True), "connector", connector_id
+    )
+    try:
+        probe = probe_connector(connector)
+    except ConnectorMisconfigured as bad:
+        record_error("connectors", "connector_test", bad.reason, "connector", connector_id, {"code": bad.code})
+        raise HTTPException(status_code=422, detail=bad.reason) from bad
+    if not probe["passed"]:
+        record_error(
+            "connectors",
+            "connector_test",
+            "{0}: {1}".format(probe["outcome"], probe["reason"]),
+            "connector",
+            connector_id,
+            {"outcome": probe["outcome"], "status": probe["status"]},
+        )
+    config = connector.get("config") or {}
+    result = {
         "connector_id": connector["id"],
-        "passed": True,
+        "passed": probe["passed"],
+        "probe": probe,
         "schema_paths": connector["schema_paths"],
         "sample_payload": connector["sample_payload"],
         "config_summary": {
-            "auth_type": connector.get("config", {}).get("auth_type", "api_key"),
-            "base_url": connector.get("config", {}).get("base_url", ""),
-            "has_webhook": bool(connector.get("config", {}).get("webhook_url")),
+            "auth_type": config.get("auth_type", "api_key"),
+            "base_url": config.get("base_url", ""),
+            "has_webhook": bool(config.get("webhook_url")),
         },
     }
+    # The connector was loaded WITH secrets so the probe could authenticate. Nothing derived from
+    # them may leave here — scrubbed by value (a secret pasted into base_url's query, or echoed
+    # inside a transport error) and then by key name, over the whole body at once.
+    scrubbed: Dict[str, Any] = redact_connector_secrets(result, connector)
+    return scrubbed
 
 
 # ── Variables ──────────────────────────────────────────────────────────────
@@ -120,7 +153,7 @@ def list_variables(
 
 
 @router.post("/api/v1/variables")
-def create_variable(request: VariableUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:
+def create_variable(request: VariableUpsertRequest, background_tasks: BackgroundTasks = None) -> Dict[str, Any]:  # type: ignore[assignment]
     connectors = current_connectors()
     if request.source_id not in connectors:
         raise HTTPException(status_code=422, detail="Unknown source connector.")
@@ -147,7 +180,9 @@ def create_variable(request: VariableUpsertRequest, background_tasks: Background
 def update_variable(
     variable_id: str,
     request: VariableUpsertRequest,
-    background_tasks: BackgroundTasks = None,
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     existing = ensure_exists(main.storage.get_variable(variable_id), "variable", variable_id)
     updated = main.storage.update_variable(
@@ -183,6 +218,60 @@ def test_variable(variable_id: str, request: TestPayloadRequest = Body(default=T
     return result
 
 
+@router.post("/api/v1/variables/lint")
+def lint_variable_draft(request: VariableLintRequest) -> Dict[str, Any]:
+    """Diagnostics for the editor, WITHOUT running the code (P13).
+
+    The editor needs to say "line 4: unexpected indent" or "line 7: Import not allowed: os"
+    before the author clicks Test. Doing that in the browser would mean a Python parser in
+    JavaScript and a second copy of the sandbox policy -- two implementations that would drift
+    from the ones that actually decide whether the code runs, and a linter that disagrees with
+    the runtime is worse than no linter, because the author learns to ignore it.
+
+    So this reuses `sandbox.validate_source`: the exact function the sandbox calls before
+    executing anything. A diagnostic here is therefore not an approximation of the rule, it IS
+    the rule.
+
+    It does not EXECUTE. `test-draft` above already does that, in a real sandbox with a timeout
+    and a memory cap; this is the cheap check that runs while someone is typing, so it must not
+    spawn a process or touch a connector.
+    """
+    from ..sandbox import validate_source
+
+    code = request.code or ""
+    if not code.strip():
+        # A FAST PATH, not a correctness guard -- `ast.parse("")` succeeds, so removing this
+        # returns the same answer. It exists because an empty editor is the state every new
+        # variable starts in and the linter fires on a timer: this skips a parse and a cache
+        # write on the most common input. Stated plainly because a mutation removing it changes
+        # nothing observable, and a comment claiming otherwise would send someone hunting.
+        return {"ok": True, "diagnostics": []}
+    try:
+        validate_source(code)
+    except SyntaxError as bad:
+        # SyntaxError carries the position; ValueError (a policy violation) does not, so the two
+        # are reported differently rather than pretending to a precision only one of them has.
+        return {"ok": False, "diagnostics": [{
+            "severity": "error",
+            "message": bad.msg or "Syntax error",
+            "line": bad.lineno or 1,
+            "column": bad.offset or 1,
+            "kind": "syntax",
+        }]}
+    except ValueError as refused:
+        return {"ok": False, "diagnostics": [{
+            "severity": "error",
+            "message": str(refused),
+            # No line number: validate_source raises on an AST walk without carrying the node
+            # position out. Reporting line 1 would put the marker on the wrong line, which is
+            # worse than putting it on none -- the message names the symbol.
+            "line": None,
+            "column": None,
+            "kind": "policy",
+        }]}
+    return {"ok": True, "diagnostics": []}
+
+
 @router.post("/api/v1/variables/test-draft")
 def test_variable_draft(request: VariableDraftTestRequest) -> Dict[str, Any]:
     connectors = current_connectors()
@@ -206,15 +295,17 @@ def test_variable_draft(request: VariableDraftTestRequest) -> Dict[str, Any]:
         }
     }
     if result["result"]["error"]:
-        record_error("variables", "draft_test", result["result"]["error"], "variable", None, {"source_id": request.source_id})
+        record_error("variables", "draft_test", str(result["result"]["error"]), "variable", None, {"source_id": request.source_id})
     return result
 
 
 @router.post("/api/v1/variables/{variable_id}/promote")
 def promote_variable(
     variable_id: str,
-    request: PromoteRequest,
-    background_tasks: BackgroundTasks = None,
+    request: PromoteRequest = Body(default=PromoteRequest()),
+    # FastAPI injects this; Optional[BackgroundTasks] is rejected by its response-field
+    # validation at import time, so the bare annotation is required here.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     promoted = promote_entity("variable", variable_id, request.promoted_by, request.reason)
     if promoted["status"] == "prod":

@@ -130,12 +130,12 @@ def analyze_champion_challenger(
     if champion is None:
         return {"champion": None, "challengers": []}
 
-    champion_stats = variant_stats.get(champion.get("id"), {})
+    champion_stats = variant_stats.get(str(champion.get("id") or ""), {})
     champion_approval = float(champion_stats.get("approvalRate", 0))
 
     challenger_rows = []
     for challenger in challengers:
-        stats = variant_stats.get(challenger.get("id"), {})
+        stats = variant_stats.get(str(challenger.get("id") or ""), {})
         lift = round(float(stats.get("approvalRate", 0)) - champion_approval, 2)
         p_value = two_proportion_pvalue(
             int(champion_stats.get("approved", 0)),

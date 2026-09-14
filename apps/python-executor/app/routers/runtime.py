@@ -40,11 +40,12 @@ from ..main import (
     workflow_executor,
 )
 from ..storage import _parse_client_datetime
+from .. import env
 
 router = APIRouter()
 
 # Max payload lines accepted per JSONL simulation upload (config so limits move without code).
-SIMULATION_JSONL_MAX = int(os.getenv("SIMULATION_JSONL_MAX", "50000"))
+SIMULATION_JSONL_MAX = env.env_int("SIMULATION_JSONL_MAX", 50000)
 
 
 # ── Test / simulation console ──────────────────────────────────────────────
@@ -93,11 +94,72 @@ def batch_simulation(request: BatchSimulationRequest) -> Dict[str, Any]:
         elif request.targetType == "decide":
             if not request.targetId:
                 raise HTTPException(status_code=422, detail="targetId is required for decision batch simulation.")
-            result = decide(DecideRequest(policy_id=request.targetId, payload=payload))
+            # policy_id (not policyId) is valid: DecideRequest sets populate_by_name=True
+            # (main.py:269); verified at runtime. mypy reads only the alias because the
+            # pydantic plugin is not enabled.
+            result = decide(DecideRequest(policy_id=request.targetId, payload=payload))  # type: ignore[call-arg]
         else:
             raise HTTPException(status_code=422, detail="Unsupported batch targetType.")
         rows.append({"index": index, "payload": payload, "result": result})
     return {"targetType": request.targetType, "targetId": request.resolved_target_id, "rows": rows, "count": len(rows)}
+
+
+def _enforce_quota() -> None:
+    """Refuse a decision when the workspace is over its monthly allowance.
+
+    No-op unless QUOTA_ENFORCE=1 -- see app/quota.py for why enforcement is opt-in while
+    metering is always on.
+
+    402, not 429. 429 means "you are going too fast" and every well-behaved HTTP client
+    responds by backing off and RETRYING, which is exactly wrong here: no amount of waiting
+    restores the allowance before the period rolls over, so the retry storm is pure waste and
+    it makes a billing event indistinguishable from a burst in the logs. 402 Payment Required
+    says the only thing that will fix this is a plan change.
+
+    WHERE THIS IS AND IS NOT APPLIED, and why:
+      * /api/v1/decide -- gated. It writes a Decision row, so it is the billable unit.
+      * /api/v1/decide/batch and .../batch/jsonl -- NOT gated. Both run in simulation mode and
+        log no decision (see their docstrings), so they are not billable and rejecting them
+        would charge a customer's quota against what-if runs they were never billed for.
+      * POST /sdk/v1/decisions -- metered but NOT gated, deliberately. Those decisions were
+        already taken on the device; refusing the upload does not prevent the usage, it only
+        destroys the audit record and strands the device's outbox in a retry loop it can never
+        drain. Over-quota device volume is a billing conversation, not a data-loss event.
+    """
+    from .. import quota
+
+    if not quota.enforcement_enabled():
+        return
+    tenant_id = active_tenant_id()
+    tenant = main.storage.get_tenant(tenant_id)
+    start, end = quota.period_bounds()
+    used = main.storage.get_usage_total(quota.METRIC_DECISIONS, tenant_id=tenant_id, start=start, end=end)
+    status = quota.evaluate(tenant, used)
+    if status["exceeded"]:
+        raise HTTPException(status_code=402, detail={
+            "error": "quota_exceeded",
+            "message": "Monthly decision quota exhausted for this workspace.",
+            **{k: status[k] for k in ("plan", "limit", "used", "period_start", "period_end")},
+        })
+
+
+def _record_decision_metrics(outcome: str, source: str, latency_ms: Optional[float]) -> None:
+    """Emit the Prometheus decision metrics for ONE served decision.
+
+    WHY A HELPER FOR TWO LINES. /decide has two return paths (fast path and executor) and this
+    is exactly the shape of thing that gets added to one and forgotten on the other -- which is
+    how it came to be missing from BOTH while /sdk/v1/decide had it, so `/metrics` reported
+    nothing for the endpoint the product is actually about. One function, called on every path.
+
+    Never allowed to affect the decision. A metrics backend problem must not turn a served
+    decision into a 500 -- the same stance decision_bus.py takes on its publish.
+    """
+    try:
+        main.DECISIONS_TOTAL.labels(outcome=str(outcome), source=source).inc()
+        if latency_ms is not None:
+            main.DECISION_LATENCY.labels(source=source).observe(max(float(latency_ms), 1.0) / 1000.0)
+    except Exception:  # pragma: no cover - observability must never break the hot path
+        pass
 
 
 @router.post("/api/v1/decide")
@@ -112,6 +174,7 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
     So a partial flat and a partial nested of the same field can decide differently; send the full
     source payload under its key when you want an exact, reproducible decision.
     """
+    _enforce_quota()
     policy = ensure_exists(main.storage.get_policy(request.policy_id), "policy", request.policy_id)
     # Scalable hot path: serve pure-compute policies from the cached bundle via the stateless
     # core (Rust when available), bypassing the heavy PolicyExecutor. fast_path_eligible is the
@@ -122,12 +185,14 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
 
         if fast_path_eligible(main.storage, policy, active_tenant_id()):
             decision = fast_decide(main.storage, policy, request.payload or {}, active_tenant_id(), user_id=request.user_id)
+            _record_decision_metrics(decision["outcome"], "api_fast", decision.get("latency_ms"))
             if decision["outcome"] == "reject":
                 record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {})
             return decision
     # source="api" so the executor logs this as a production decision (exactly one
     # Decision row); the fast path above logs source="api_fast", also once.
     outcome = test_policy_entity(policy, request.payload, source="api", user_id=request.user_id)
+    _record_decision_metrics(outcome["result"]["outcome"], "api", outcome.get("latency_ms"))
     if outcome["result"]["outcome"] == "reject":
         record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {"trace": outcome["result"].get("trace", [])})
     return {
@@ -138,6 +203,10 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         "outcome": outcome["result"]["outcome"],
         "score": outcome["result"].get("scorecard_result", {}).get("score") if outcome["result"].get("scorecard_result") else None,
         "variables": outcome["values"],
+        # A variable that failed to compute is None in "variables" above, and None is also a
+        # perfectly legitimate value -- so without this map an integrator cannot tell a real
+        # null from a bureau call that timed out. Empty on a healthy decision.
+        "variable_errors": outcome.get("variable_errors") or {},
         "rule_results": [item for item in outcome["result"]["trace"] if item.get("step", {}).get("type") == "rule"],
         "scorecard_result": outcome["result"].get("scorecard_result"),
         "trace": outcome["result"]["trace"],
@@ -148,22 +217,6 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
 class ActionTestRequest(BaseModel):
     action: Dict[str, Any]
     context: Optional[Dict[str, Any]] = None
-
-
-_BLOCKED_HOST_MARKERS = ("localhost", "127.", "0.0.0.0", "169.254.", "::1", "metadata.google", "metadata.")
-
-
-def _action_host_blocked(url: str) -> bool:
-    """Light SSRF guard for the interactive console: block loopback / link-local /
-    cloud-metadata targets. Saved workflow actions are authored deliberately; this
-    ad-hoc endpoint should not be a pivot to internal services."""
-    try:
-        from urllib.parse import urlparse
-
-        host = (urlparse(url).hostname or "").lower()
-    except Exception:
-        return True
-    return any(host == marker.rstrip(".") or host.startswith(marker) for marker in _BLOCKED_HOST_MARKERS)
 
 
 @router.post("/api/v1/test/action")
@@ -194,24 +247,35 @@ def test_action(request: ActionTestRequest) -> Dict[str, Any]:
 
     if not isinstance(url, str) or not url:
         raise HTTPException(status_code=422, detail="Action url is required.")
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise HTTPException(status_code=422, detail="Only http(s) URLs are supported.")
-    if _action_host_blocked(url):
-        raise HTTPException(status_code=422, detail="That host is blocked in the console (loopback / link-local / metadata).")
+
+    # Same SSRF guard as the real action path (executor), not the old substring blocklist: resolve
+    # + range-check the host and pin the vetted IP. follow_redirects stays False so a 302 to an
+    # internal target can't bypass the check.
+    from ..egress import EgressBlocked, build_pinned_request
+
+    try:
+        pinned = build_pinned_request(url)
+    except EgressBlocked as blocked:
+        raise HTTPException(status_code=422, detail="Blocked by egress policy: {0}".format(blocked)) from blocked
+
+    request_headers = dict(headers or {})
+    request_headers["Host"] = pinned.host_header
+    extensions = {"sni_hostname": pinned.sni_hostname}
+    connect_url = pinned.url
 
     started = time.perf_counter()
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             if method == "GET":
-                resp = client.get(url, headers=headers)
+                resp = client.get(connect_url, headers=request_headers, extensions=extensions)
             elif method == "PUT":
-                resp = client.put(url, json=body, headers=headers)
+                resp = client.put(connect_url, json=body, headers=request_headers, extensions=extensions)
             elif method == "PATCH":
-                resp = client.patch(url, json=body, headers=headers)
+                resp = client.patch(connect_url, json=body, headers=request_headers, extensions=extensions)
             elif method == "DELETE":
-                resp = client.request("DELETE", url, headers=headers)
+                resp = client.request("DELETE", connect_url, headers=request_headers, extensions=extensions)
             else:
-                resp = client.post(url, json=body, headers=headers)
+                resp = client.post(connect_url, json=body, headers=request_headers, extensions=extensions)
         latency = (time.perf_counter() - started) * 1000
         return {
             "ok": True,
@@ -305,14 +369,20 @@ def _run_decision_batch(policy: Dict[str, Any], payloads: List[Dict[str, Any]], 
     from ..fast_decide import fast_decide, is_fast_servable
 
     use_fast = is_fast_servable(policy)
-    workers = min(int(os.getenv("SIM_MAX_WORKERS", "32")), max(4, (os.cpu_count() or 4) * 4))
+    workers = min(env.env_int("SIM_MAX_WORKERS", 32), max(4, (os.cpu_count() or 4) * 4))
     default_outcome = policy.get("defaultOutcome") or "review"
 
     def _one(item: tuple) -> tuple:
         index, payload = item
         try:
             if use_fast:
-                d = fast_decide(main.storage, policy, payload or {}, tenant_id, log=False)
+                # seed_samples matches the executor branch below, which passes
+                # source="simulation" -- one of _SAMPLE_SEEDING_SOURCES. A backtest is an
+                # author surface replaying historical payloads, so an unsupplied source
+                # pre-fills from the sample there. On /decide it must not, and does not:
+                # fast_decide defaults seed_samples=False.
+                d = fast_decide(main.storage, policy, payload or {}, tenant_id, log=False,
+                                seed_samples=True)
                 return index, {"index": index, "result": {"policy_id": policy["id"], "outcome": d["outcome"], "latency_ms": d.get("latency_ms")}}
             ctx = asyncio.run(PolicyExecutor(main.storage).execute(
                 policy=policy, payload=payload or {}, tenant_id=tenant_id, source="simulation", simulate=True))
@@ -643,9 +713,9 @@ async def stream_decisions(request: Request) -> StreamingResponse:
     tenant_id = active_tenant_id(request)
     after_param = request.query_params.get("after")
     once = request.query_params.get("once") in ("1", "true", "yes")
-    poll_seconds = float(os.getenv("DECISION_STREAM_POLL_SECONDS", "1.0"))
-    max_seconds = float(os.getenv("DECISION_STREAM_MAX_SECONDS", "3600"))
-    backlog_size = int(os.getenv("DECISION_STREAM_BACKLOG", "25"))
+    poll_seconds = env.env_float("DECISION_STREAM_POLL_SECONDS", 1.0)
+    max_seconds = env.env_float("DECISION_STREAM_MAX_SECONDS", 3600)
+    backlog_size = env.env_int("DECISION_STREAM_BACKLOG", 25)
 
     def _emit(row: Dict[str, Any]):
         # Advance the cursor to this row's full-precision timestamp, then frame the clean row.

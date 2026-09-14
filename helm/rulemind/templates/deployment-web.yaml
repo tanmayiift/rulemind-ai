@@ -12,14 +12,69 @@ spec:
       labels:
         app: rulemind-web
     spec:
+      {{- include "rulemind.podSecurityContext" . | nindent 6 }}
       containers:
         - name: web
           image: "{{ .Values.image.web.repository }}:{{ .Values.image.web.tag }}"
           imagePullPolicy: {{ .Values.image.web.pullPolicy }}
+          {{- include "rulemind.containerSecurityContext" . | nindent 10 }}
           ports:
             - containerPort: 3000
           env:
+            # WARNING: this is currently a no-op. apps/web/src/lib/store.ts reads
+            # process.env.NEXT_PUBLIC_API_BASE_URL, and Next.js substitutes
+            # NEXT_PUBLIC_* constants at BUILD time (apps/web/Dockerfile sets the
+            # ARG/ENV before `pnpm --filter @rulemind/web build`), so whatever is
+            # set here never reaches the browser bundle. It is rendered anyway so
+            # that it becomes correct the moment store.ts reads the value at
+            # runtime. Until then, build the web image with
+            #   --build-arg NEXT_PUBLIC_API_BASE_URL=
+            # (empty) so the client issues same-origin /api/v1/... requests, which
+            # the ingress routes to the API Service.
+            #
+            # The previous value here was "http://rulemind-api:8080": cluster-
+            # internal DNS that no browser can resolve.
             - name: NEXT_PUBLIC_API_BASE_URL
-              value: "http://rulemind-api:8080"
+              value: {{ .Values.env.webApiBaseUrl | quote }}
+            - name: NODE_ENV
+              value: production
+            - name: RULEMIND_ENV
+              value: {{ .Values.env.rulemindEnv | quote }}
+          # The web container had no probes at all: a wedged Next.js server stayed
+          # in the Service endpoints forever and was never restarted.
+          startupProbe:
+            httpGet:
+              path: /
+              port: 3000
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
 {{ toYaml .Values.resources.web | indent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /workspace/apps/web/.next/cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        # `next start` writes its incremental cache here at runtime, so this mount
+        # is what a read-only root filesystem would need.
+        - name: next-cache
+          emptyDir: {}

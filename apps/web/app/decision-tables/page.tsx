@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Trash2, Play, GripVertical, ArrowUp, ArrowDown, Table2, AlertTriangle } from "lucide-react";
+import { Plus, Trash2, Play, GripVertical, ArrowUp, ArrowDown, Table2, AlertTriangle, Upload } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { Button, Card, Field, Input, Select, Badge, EmptyState, PageHeader, SectionTitle } from "../../src/v3/ui";
@@ -16,6 +16,23 @@ type Table = {
   default_row?: { outputs: Record<string, string> } | null;
   version?: number;
 };
+// ---------------------------------------------------------------- spreadsheet import (P07)
+// The workbook is parsed HERE and never reaches the API. SheetJS is already a dependency (the
+// simulation page uses it the same way); the deployed API runs on 512MB with a resident ML
+// stack; and OOXML is a zip of XML, a decompression-bomb and XXE surface that a list of JSON
+// rows is not. `app/decision_table_import.py` carries the same reasoning from the other side.
+type ImportRole = "input" | "output" | "ignore";
+type ImportColumn = { header: string; role: ImportRole; variable_id?: string; field_type?: string; type?: string };
+type ImportProblem = { row?: number; header?: string; column?: number; message: string };
+
+/** A first guess at each column's role, visible and changeable in the mapping table. */
+function guessRole(header: string, index: number, total: number): ImportRole {
+  // Spreadsheets put the answer on the right. Worth guessing, because the alternative is mapping
+  // twelve columns by hand before finding out whether the sheet imports at all.
+  if (/price|amount|rate|limit|decision|outcome|result|action|premium|fee/i.test(header)) return "output";
+  return index >= total - 1 ? "output" : "input";
+}
+
 type Diagnostic = { type: string; severity: string; description: string; rows?: string[]; shadowedBy?: string };
 type Analysis = { diagnostics: Diagnostic[]; ok: boolean; hasConflicts: boolean; hasGaps: boolean; hasInvalidValues: boolean; hasUnreachableRows: boolean; hasUnanalyzableRows?: boolean; rowCount: number; hitPolicy: string };
 type Variable = { id: string; name: string; field_type?: string };
@@ -59,6 +76,12 @@ export default function DecisionTablesPage() {
   const [testValues, setTestValues] = React.useState("{}");
   const [testResult, setTestResult] = React.useState<Record<string, unknown> | null>(null);
   const dragRow = React.useRef<number | null>(null);
+  const [importColumns, setImportColumns] = React.useState<ImportColumn[] | null>(null);
+  const [importRows, setImportRows] = React.useState<Record<string, unknown>[]>([]);
+  const [importName, setImportName] = React.useState("");
+  const [importProblems, setImportProblems] = React.useState<ImportProblem[]>([]);
+  const [importing, setImporting] = React.useState(false);
+  const fileInput = React.useRef<HTMLInputElement | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -178,13 +201,201 @@ export default function DecisionTablesPage() {
 
   const cellNeedsValue = (op: string) => !["any", "exists", "!exists"].includes(op);
 
+  const readSheet = React.useCallback(async (file: File) => {
+    setImportProblems([]); setError(null); setStatus(null);
+    try {
+      let rows: Record<string, unknown>[] = [];
+      if (/\.csv$/i.test(file.name)) {
+        // SheetJS reads CSV too, so one code path handles both rather than a hand-rolled parser
+        // that would get quoted commas wrong.
+        const XLSX = await import("xlsx");
+        const wb = XLSX.read(await file.text(), { type: "string" });
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+      } else if (/\.xlsx?$/i.test(file.name)) {
+        const XLSX = await import("xlsx"); // dynamic — keeps SheetJS off the main bundle
+        const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+      } else {
+        throw new Error("Unsupported file — use .csv, .xls or .xlsx.");
+      }
+      if (rows.length === 0) throw new Error("That sheet has a header but no data rows.");
+
+      const headers = Object.keys(rows[0]);
+      setImportColumns(headers.map((header, index) => {
+        const role = guessRole(header, index, headers.length);
+        const match = variables.find((v) => v.id === header || v.name === header
+          || v.id === header.toLowerCase().replace(/[^a-z0-9]+/g, "_"));
+        return role === "input"
+          // field_type only when the variable declares one -- otherwise the backend reads it
+          // off the column's own values, which beats defaulting a numeric column to "string".
+          ? { header, role, variable_id: match?.id || "", field_type: match?.field_type || undefined }
+          // No `type` for a value column: the backend infers number/string/boolean from what
+          // is actually in it. Sending a literal "value" (an earlier version did) is a type the
+          // authoring editor has no <option> for, so it renders the first one and a price column
+          // reads as "outcome" on screen.
+          : { header, role, type: /decision|outcome|action/i.test(header) ? "outcome" : undefined };
+      }));
+      setImportRows(rows);
+      setImportName(file.name.replace(/\.[^.]+$/, ""));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not read that file.");
+      setImportColumns(null); setImportRows([]);
+    }
+  }, [variables]);
+
+  const cancelImport = React.useCallback(() => {
+    setImportColumns(null); setImportRows([]); setImportProblems([]); setImportName("");
+    if (fileInput.current) fileInput.current.value = "";
+  }, []);
+
+  const runImport = React.useCallback(async () => {
+    if (!importColumns) return;
+    setImporting(true); setImportProblems([]); setError(null);
+    try {
+      const created = await apiJson<Table & { analysis?: Analysis }>(
+        apiBaseUrl, "/api/v1/decision-tables/import",
+        { method: "POST", body: JSON.stringify({
+            name: importName || "Imported table",
+            columns: importColumns,
+            rows: importRows,
+            hit_policy: draft.hit_policy,
+          }) }, apiKey);
+      cancelImport();
+      await load();
+      setDraft(created);
+      setStatus(`Imported ${created.rows.length} rows. Check the optimiser panel for gaps.`);
+    } catch (e) {
+      // The API answers 422 with EVERY problem it found, each naming its row and column, so the
+      // author fixes the sheet once instead of round-tripping per cell. `apiJson` throws with the
+      // raw response TEXT as the message (not a parsed body), so the list has to be recovered
+      // from it -- otherwise the panel renders a wall of JSON and the per-cell detail is wasted.
+      let problems: ImportProblem[] = [];
+      try {
+        problems = JSON.parse(e instanceof Error ? e.message : "")?.detail?.problems ?? [];
+      } catch {
+        problems = [];
+      }
+      if (problems.length) setImportProblems(problems);
+      else setError(e instanceof Error ? e.message : "The import failed.");
+    } finally {
+      setImporting(false);
+    }
+  }, [apiBaseUrl, apiKey, cancelImport, draft.hit_policy, importColumns, importName, importRows, load]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <PageHeader
         title="Decision Tables"
         subtitle="Grid-authored decision logic with a live optimiser."
-        actions={<Button onClick={() => { setDraft(emptyTable()); setTestResult(null); setStatus(null); }}><Plus size={15} /> New table</Button>}
+        actions={
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".csv,.xls,.xlsx"
+              style={{ display: "none" }}
+              data-testid="dt-import-file"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void readSheet(f); }}
+            />
+            <Button variant="secondary" onClick={() => fileInput.current?.click()} data-testid="dt-import-open">
+              <Upload size={15} /> Import spreadsheet
+            </Button>
+            <Button onClick={() => { setDraft(emptyTable()); setTestResult(null); setStatus(null); }}><Plus size={15} /> New table</Button>
+          </div>
+        }
       />
+
+      {/* ---- Import mapping. Shown only once a sheet is loaded, because a mapping table with no
+              sheet behind it is a form asking about a file that does not exist yet. ---- */}
+      {importColumns ? (
+        <Card>
+          <SectionTitle right={
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button variant="secondary" onClick={cancelImport}>Cancel</Button>
+              <Button onClick={() => void runImport()} disabled={importing} data-testid="dt-import-run">
+                {importing ? "Importing…" : `Import ${importRows.length} rows`}
+              </Button>
+            </div>
+          }>
+            Map the spreadsheet
+          </SectionTitle>
+          <div style={{ fontSize: 12.5, color: "var(--rm-dim)", margin: "2px 0 14px" }}>
+            Each input column becomes a dimension of the matrix and needs a variable to read.
+            Cells may say <code>&gt;= 1000</code>, <code>100 - 999</code>, <code>gold|silver</code>,
+            or <code>*</code> for “any”.
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 1fr", gap: 10, marginBottom: 14 }}>
+            <Field label="Table name"><Input value={importName} onChange={(e) => setImportName(e.target.value)} /></Field>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {importColumns.map((column, index) => (
+              <div key={column.header} style={{ display: "grid", gridTemplateColumns: "1fr 130px 1fr", gap: 10, alignItems: "center" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {column.header}
+                  <span style={{ color: "var(--rm-dim)", fontWeight: 400, marginLeft: 8, fontSize: 11.5, fontFamily: "var(--font-mono)" }}>
+                    {String(importRows[0]?.[column.header] ?? "")}
+                  </span>
+                </div>
+                <Select
+                  value={column.role}
+                  onChange={(e) => setImportColumns(importColumns.map((c, i) =>
+                    i === index ? { ...c, role: e.target.value as ImportRole } : c))}
+                >
+                  <option value="input">Dimension</option>
+                  <option value="output">Output</option>
+                  <option value="ignore">Ignore</option>
+                </Select>
+                {column.role === "input" ? (
+                  <Select
+                    value={column.variable_id || ""}
+                    onChange={(e) => {
+                      const v = variables.find((x) => x.id === e.target.value);
+                      setImportColumns(importColumns.map((c, i) => i === index
+                        ? { ...c, variable_id: e.target.value, field_type: v?.field_type || undefined } : c));
+                    }}
+                  >
+                    <option value="">Choose a variable…</option>
+                    {variables.map((v) => <option key={v.id} value={v.id}>{v.name || v.id}</option>)}
+                  </Select>
+                ) : column.role === "output" ? (
+                  <Select
+                    value={column.type || ""}
+                    onChange={(e) => setImportColumns(importColumns.map((c, i) =>
+                      i === index ? { ...c, type: e.target.value || undefined } : c))}
+                  >
+                    <option value="">Value — type read from the column</option>
+                    <option value="outcome">Outcome (approve / review / reject)</option>
+                  </Select>
+                ) : (
+                  <div style={{ fontSize: 12, color: "var(--rm-dim)" }}>Not imported.</div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {importProblems.length ? (
+            <div style={{ marginTop: 16, padding: 12, borderRadius: 10, border: "1px solid var(--rm-danger)" }} data-testid="dt-import-problems">
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--rm-danger)", marginBottom: 8 }}>
+                <AlertTriangle size={14} style={{ verticalAlign: "-2px" }} /> {importProblems.length} problem{importProblems.length === 1 ? "" : "s"} — nothing was imported
+              </div>
+              {/* Every problem at once, each naming its cell. The import is refused rather than
+                  partially applied: a skipped condition is a WILDCARD, so a half-imported row
+                  would apply its price to every input instead of the one the sheet meant. */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto" }}>
+                {importProblems.map((problem, index) => (
+                  <div key={index} style={{ fontSize: 12.5 }}>
+                    {problem.row ? <strong>Row {problem.row}</strong> : null}
+                    {problem.header ? <span style={{ color: "var(--rm-dim)" }}> · {problem.header}</span> : null}
+                    <span> — {problem.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
 
       {error ? <Card><div style={{ color: "var(--rm-danger)", fontSize: 13 }}>{error}</div></Card> : null}
       {status ? <Card><div style={{ color: "var(--rm-success)", fontSize: 13 }}>{status}</div></Card> : null}

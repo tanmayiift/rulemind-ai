@@ -174,6 +174,22 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
   const { apiBaseUrl, apiKey, environment, isMobile } = useRuleMindStore();
   const environmentRules = props.data.rules.filter((rule) => rule.status === environment);
   const environmentPolicies = props.data.policies.filter((policy) => policy.status === environment);
+  // An empty picker with a disabled Execute is a dead end: nothing tells the user WHY there is
+  // nothing to pick. These say where the entities actually live, matching the empty states on
+  // the Policies, Rules and Scorecards pages.
+  const elsewhereLabel = React.useCallback(
+    (all: Array<{ status: string }>, plural: string) => {
+      const others: Record<string, number> = {};
+      all.forEach((item) => {
+        if (item.status !== environment) others[item.status] = (others[item.status] || 0) + 1;
+      });
+      const parts = Object.entries(others).map(([env, n]) => n + " in " + env.toUpperCase());
+      return parts.length
+        ? "No " + plural + " in " + environment.toUpperCase() + " — " + parts.join(", ")
+        : "No " + plural + " yet";
+    },
+    [environment]
+  );
   const [variableResults, setVariableResults] = React.useState<VariableBatchTestResponse | null>(null);
   const [ruleId, setRuleId] = React.useState(environmentRules[0]?.id ?? "");
   const [policyId, setPolicyId] = React.useState(environmentPolicies[0]?.id ?? "");
@@ -320,6 +336,9 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
           <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Rule tester</div>
           <div style={{ display: "flex", gap: 8 }}>
             <InlineSelect aria-label="Rule to test" value={ruleId} onChange={(event) => setRuleId(event.target.value)} style={{ flex: 1 }}>
+              {environmentRules.length === 0 ? (
+                <option value="">{elsewhereLabel(props.data.rules, "rules")}</option>
+              ) : null}
               {environmentRules.map((rule) => (
                 <option key={rule.id} value={rule.id}>
                   {rule.name}
@@ -349,6 +368,9 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
           <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Policy trace</div>
           <div style={{ display: "flex", gap: 8 }}>
             <InlineSelect aria-label="Policy to test" value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ flex: 1 }}>
+              {environmentPolicies.length === 0 ? (
+                <option value="">{elsewhereLabel(props.data.policies, "policies")}</option>
+              ) : null}
               {environmentPolicies.map((policy) => (
                 <option key={policy.id} value={policy.id}>
                   {policy.name}
@@ -387,6 +409,9 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
               </InlineSelect>
             ) : (
               <InlineSelect aria-label="Policy to test" value={policyId} onChange={(event) => setPolicyId(event.target.value)} style={{ flex: 1 }}>
+              {environmentPolicies.length === 0 ? (
+                <option value="">{elsewhereLabel(props.data.policies, "policies")}</option>
+              ) : null}
                 {environmentPolicies.map((policy) => (
                   <option key={policy.id} value={policy.id}>
                     {policy.name}

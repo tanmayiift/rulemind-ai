@@ -13,10 +13,11 @@ they aren't browsers, so they aren't CSRF-exposed.
 """
 from __future__ import annotations
 
-import os
 import secrets
 
 from fastapi import Request, Response
+
+from . import runtime
 
 SESSION_COOKIE = "rm_session"
 CSRF_COOKIE = "rm_csrf"
@@ -27,7 +28,22 @@ CSRF_PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _secure() -> bool:
-    return os.getenv("NODE_ENV", "development") != "development"
+    """Whether to set `Secure` on the session/CSRF cookies — i.e. "is this a real deployment?".
+
+    This used to be `os.getenv("NODE_ENV", "development") != "development"`, which asks the
+    WRONG variable. RULEMIND_ENV is the signal a RuleMind deployment sets (see
+    security_config._is_local_dev); a manifest that sets RULEMIND_ENV=production and leaves
+    NODE_ENV alone -- which is what the Helm chart does -- got `Secure=False`, so the httpOnly
+    session cookie and its CSRF partner shipped over TLS without the Secure attribute. Any
+    plaintext http:// request to the same host (a stray link, a downgrade, a captive portal)
+    then leaks a live session token that JS was deliberately prevented from reading.
+
+    Delegating to runtime.is_local_dev() rather than re-deriving it: this file previously held
+    one of THREE byte-identical copies of the NODE_ENV test (middleware.admin_cookie_secure and
+    db._warn_if_sqlite_in_production were the others), so fixing it in one place left the others
+    behind.
+    """
+    return not runtime.is_local_dev()
 
 
 def set_session_cookies(response: Response, token: str, max_age_seconds: int = 60 * 60 * 24 * 7) -> str:

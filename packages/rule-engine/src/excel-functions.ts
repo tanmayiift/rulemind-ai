@@ -367,6 +367,51 @@ function PMT(rate: Num, nper: Num, pv: Num, fv: Num = 0, type_: number = 0): num
   return -(p * q + f) / ((q - 1) / r * (1 + r * type_));
 }
 
+/**
+ * Interest portion of one payment. Ported from `app/excel_functions.py::IPMT`, which is the
+ * declared source of truth -- including its quirks, because parity is the requirement, not
+ * elegance. The `type_ === 1 && i > 1` branch there computes the same expression as its `else`,
+ * so both are folded into one statement here; changing the arithmetic would be a divergence
+ * even if the current Python looks like it meant something different.
+ */
+function IPMT(rate: Num, per: Num, nper: Num, pv: Num, fv: Num = 0, type_: number = 0): number {
+  const r = toNum(rate);
+  const pmtVal = PMT(rate, nper, pv, fv, type_);
+  if (Math.trunc(type_) === 1 && Math.trunc(toNum(per)) === 1) return 0;
+  let remaining = toNum(pv);
+  for (let i = 1; i < Math.trunc(toNum(per)); i += 1) {
+    remaining += pmtVal - remaining * r;
+  }
+  return remaining * r;
+}
+
+function PPMT(rate: Num, per: Num, nper: Num, pv: Num, fv: Num = 0, type_: number = 0): number {
+  return PMT(rate, nper, pv, fv, type_) - IPMT(rate, per, nper, pv, fv, type_);
+}
+
+/**
+ * Cumulative interest over an INCLUSIVE period range, matching Python's
+ * `range(start_period, end_period + 1)`. Excel itself errors when start > end; Python returns 0
+ * for that (the range is empty), so this does too.
+ */
+function CUMIPMT(rate: Num, nper: Num, pv: Num, startPeriod: Num, endPeriod: Num,
+                 type_: number = 0): number {
+  let total = 0;
+  for (let p = Math.trunc(toNum(startPeriod)); p <= Math.trunc(toNum(endPeriod)); p += 1) {
+    total += IPMT(rate, p, nper, pv, 0, type_);
+  }
+  return total;
+}
+
+function CUMPRINC(rate: Num, nper: Num, pv: Num, startPeriod: Num, endPeriod: Num,
+                  type_: number = 0): number {
+  let total = 0;
+  for (let p = Math.trunc(toNum(startPeriod)); p <= Math.trunc(toNum(endPeriod)); p += 1) {
+    total += PPMT(rate, p, nper, pv, 0, type_);
+  }
+  return total;
+}
+
 function FV(rate: Num, nper: Num, pmt: Num, pv: Num = 0, type_: number = 0): number {
   const r = toNum(rate), n = toNum(nper), p = toNum(pmt), present = toNum(pv);
   if (r === 0) return -(present + p * n);
@@ -630,6 +675,49 @@ function DAYS(endDate: AnyVal, startDate: AnyVal): number {
   return Math.round((e.getTime() - s.getTime()) / 86400000);
 }
 
+/**
+ * The 360-day-year day count, in both conventions. Ported from
+ * `app/excel_functions.py::DAYS360`; the US/NASD asymmetry is deliberate and is the part a
+ * from-scratch port gets wrong -- d2 is only pulled back from 31 to 30 when d1 is ALREADY
+ * >= 30. So 2024-01-30 -> 2024-03-31 is 60 (d1 is 30, so d2 clamps too) while 2024-01-29 ->
+ * 2024-03-31 is 62 (d1 is 29, so d2 stays 31). Clamping both ends unconditionally -- the
+ * obvious reading -- gives 61 for the second and is wrong.
+ */
+function DAYS360(startDate: AnyVal, endDate: AnyVal, method: boolean = false): number {
+  const s = toDateParts(startDate);
+  const e = toDateParts(endDate);
+  let d1 = s.day;
+  let d2 = e.day;
+  if (method) {
+    // European: both ends simply clamp.
+    d1 = Math.min(d1, 30);
+    d2 = Math.min(d2, 30);
+  } else {
+    if (d1 === 31) d1 = 30;
+    if (d2 === 31 && d1 >= 30) d2 = 30;
+  }
+  return (e.year - s.year) * 360 + (e.month - s.month) * 30 + (d2 - d1);
+}
+
+/**
+ * Calendar parts of a date, matching Python's `_to_date`. `new Date("2024-01-30")` parses an
+ * ISO date as UTC midnight while `getDate()` reads it in the LOCAL zone, so west of Greenwich
+ * that returns the 29th -- and DAYS360 is arithmetic on exactly those numbers. Reading the UTC
+ * accessors for ISO strings keeps this stable wherever it runs.
+ */
+function toDateParts(value: AnyVal): { year: number; month: number; day: number } {
+  if (value instanceof Date) {
+    return { year: value.getFullYear(), month: value.getMonth() + 1, day: value.getDate() };
+  }
+  const text = String(value);
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  if (iso) {
+    return { year: Number(iso[1]), month: Number(iso[2]), day: Number(iso[3]) };
+  }
+  const parsed = new Date(text);
+  return { year: parsed.getFullYear(), month: parsed.getMonth() + 1, day: parsed.getDate() };
+}
+
 function EDATE(startDate: AnyVal, months: number): Date {
   const d = startDate instanceof Date ? new Date(startDate) : new Date(String(startDate));
   d.setMonth(d.getMonth() + months);
@@ -711,6 +799,7 @@ export const EXCEL_FUNCTIONS: Record<string, (...args: any[]) => any> = {
 
   // Financial
   PMT, FV, PV, NPV, IRR, NPER, SLN, EFFECT, NOMINAL,
+  IPMT, PPMT, CUMIPMT, CUMPRINC,
 
   // Logical
   AND: AND_FUNC, OR: OR_FUNC, NOT: NOT_FUNC, XOR,
@@ -725,7 +814,7 @@ export const EXCEL_FUNCTIONS: Record<string, (...args: any[]) => any> = {
   VLOOKUP, INDEX, MATCH, CHOOSE, COLUMNS, ROWS, TRANSPOSE,
 
   // Date & Time
-  DATE: DATE_FUNC, DAY, MONTH, YEAR, DAYS, EDATE, EOMONTH, NOW, TODAY, WEEKDAY,
+  DATE: DATE_FUNC, DAY, MONTH, YEAR, DAYS, DAYS360, EDATE, EOMONTH, NOW, TODAY, WEEKDAY,
 
   // Information
   ISBLANK, ISNUMBER, ISTEXT, ISLOGICAL, ISERROR, ISNA,

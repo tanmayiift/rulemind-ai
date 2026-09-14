@@ -17,7 +17,7 @@ import re
 import statistics
 from datetime import date, datetime, timedelta
 from functools import reduce
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # Type helpers
@@ -299,7 +299,7 @@ def SUBTOTAL(function_num: int, *args: Any) -> float:
 def SUM_FUNC(*args: Any) -> float:
     return sum(_nums(*args))
 
-def SUMIF(range_vals: list, criteria: Any, sum_range: list = None) -> float:
+def SUMIF(range_vals: list, criteria: Any, sum_range: Optional[list] = None) -> float:
     if sum_range is None:
         sum_range = range_vals
     total = 0.0
@@ -366,7 +366,7 @@ def AVERAGEA(*args: Any) -> float:
         raise ValueError("AVERAGEA: no values")
     return sum(vals) / len(vals)
 
-def AVERAGEIF(range_vals: list, criteria: Any, avg_range: list = None) -> float:
+def AVERAGEIF(range_vals: list, criteria: Any, avg_range: Optional[list] = None) -> float:
     if avg_range is None:
         avg_range = range_vals
     vals = []
@@ -724,7 +724,7 @@ def XNPV(rate: Numeric, values: list, dates: list) -> float:
     flows = _nums(*values)
     ds = [_to_date(d) for d in dates]
     d0 = ds[0]
-    return sum(cf / (1 + r) ** ((d - d0).days / 365.0) for cf, d in zip(flows, ds))
+    return sum(cf / (1 + r) ** ((d - d0).days / 365.0) for cf, d in zip(flows, ds, strict=False))
 
 def XIRR(values: list, dates: list, guess: float = 0.1) -> float:
     flows = _nums(*values)
@@ -733,8 +733,8 @@ def XIRR(values: list, dates: list, guess: float = 0.1) -> float:
     days = [(d - d0).days / 365.0 for d in ds]
     rate = _num(guess)
     for _ in range(200):
-        npv = sum(cf / (1 + rate) ** t for cf, t in zip(flows, days))
-        dnpv = sum(-t * cf / (1 + rate) ** (t + 1) for cf, t in zip(flows, days))
+        npv = sum(cf / (1 + rate) ** t for cf, t in zip(flows, days, strict=False))
+        dnpv = sum(-t * cf / (1 + rate) ** (t + 1) for cf, t in zip(flows, days, strict=False))
         if abs(dnpv) < 1e-12:
             break
         new_rate = rate - npv / dnpv
@@ -756,7 +756,7 @@ def DB(cost: Numeric, salvage: Numeric, life: Numeric, period: Numeric, month: N
     if p == 1:
         return c * rate * m / 12
     total_depr = c * rate * m / 12
-    for i in range(2, int(p)):
+    for _ in range(2, int(p)):
         total_depr += (c - total_depr) * rate
     if p == l + 1:
         return (c - total_depr) * rate * (12 - m) / 12
@@ -1195,7 +1195,7 @@ def CHOOSE(index_num: int, *values: Any) -> Any:
         raise ValueError("CHOOSE: index out of range")
     return values[idx - 1]
 
-def LOOKUP(lookup_value: Any, lookup_vector: list, result_vector: list = None) -> Any:
+def LOOKUP(lookup_value: Any, lookup_vector: list, result_vector: Optional[list] = None) -> Any:
     if result_vector is None:
         result_vector = lookup_vector
     flat_lookup = _flat(lookup_vector)
@@ -1230,7 +1230,7 @@ def TRANSPOSE(array: list) -> list:
         return []
     if not isinstance(array[0], (list, tuple)):
         return [[v] for v in array]
-    return [list(row) for row in zip(*array)]
+    return [list(row) for row in zip(*array, strict=False)]
 
 def SORT_FUNC(array: list, sort_index: int = 1, sort_order: int = 1, by_col: bool = False) -> list:
     idx = int(sort_index) - 1
@@ -1253,7 +1253,7 @@ def FILTER_FUNC(array: list, include: list, if_empty: Any = None) -> list:
 def UNIQUE(array: list, by_col: bool = False, exactly_once: bool = False) -> list:
     if by_col:
         array = TRANSPOSE(array)
-    seen = []
+    seen: List[Any] = []
     counts: Dict[str, int] = {}
     for row in array:
         key = str(row)
@@ -1269,9 +1269,9 @@ def SEQUENCE(rows: int, columns: int = 1, start: Numeric = 1, step: Numeric = 1)
     r, c = int(rows), int(columns)
     result = []
     val = s
-    for i in range(r):
+    for _ in range(r):
         row = []
-        for j in range(c):
+        for _ in range(c):
             row.append(val)
             val += st
         result.append(row if c > 1 else row[0])
@@ -1368,7 +1368,7 @@ def MINUTE(serial_number: Any) -> int:
 def MONTH(serial_number: Any) -> int:
     return _to_date(serial_number).month
 
-def NETWORKDAYS(start_date: Any, end_date: Any, holidays: list = None) -> int:
+def NETWORKDAYS(start_date: Any, end_date: Any, holidays: Optional[list] = None) -> int:
     sd, ed = _to_date(start_date), _to_date(end_date)
     hols = set(_to_date(h) for h in (holidays or []))
     count = 0
@@ -1417,7 +1417,7 @@ def WEEKNUM(serial_number: Any, return_type: int = 1) -> int:
     d = _to_date(serial_number)
     return d.isocalendar()[1]
 
-def WORKDAY(start_date: Any, days: int, holidays: list = None) -> date:
+def WORKDAY(start_date: Any, days: int, holidays: Optional[list] = None) -> date:
     d = _to_date(start_date)
     hols = set(_to_date(h) for h in (holidays or []))
     remaining = int(days)
@@ -1581,7 +1581,9 @@ def OCT2HEX(octal: str, places: int = 0) -> str:
 def CONVERT(number: Numeric, from_unit: str, to_unit: str) -> float:
     """Unit conversion (common units)."""
     n = _num(number)
-    _conversions: Dict[Tuple[str, str], float] = {
+    # Optional: the temperature pairs carry None because they need an offset formula
+    # rather than a multiplicative factor, and are handled separately below.
+    _conversions: Dict[Tuple[str, str], Optional[float]] = {
         ("m", "ft"): 3.28084, ("ft", "m"): 0.3048,
         ("m", "in"): 39.3701, ("in", "m"): 0.0254,
         ("m", "cm"): 100, ("cm", "m"): 0.01,
@@ -1591,6 +1593,8 @@ def CONVERT(number: Numeric, from_unit: str, to_unit: str) -> float:
         ("kg", "lbm"): 2.20462, ("lbm", "kg"): 0.453592,
         ("kg", "g"): 1000, ("g", "kg"): 0.001,
         ("kg", "oz"): 35.274, ("oz", "kg"): 0.0283495,
+        # Temperature pairs need an offset, not a factor, so they carry None and are handled
+        # separately below -- the table is genuinely Dict[Tuple[str, str], Optional[float]].
         ("C", "F"): None, ("F", "C"): None, ("C", "K"): None, ("K", "C"): None,
         ("l", "gal"): 0.264172, ("gal", "l"): 3.78541,
         ("l", "ml"): 1000, ("ml", "l"): 0.001,

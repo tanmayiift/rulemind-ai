@@ -23,12 +23,14 @@ os.environ.pop("AUTH_MODE", None)
 
 import app.main as app_main  # noqa: E402
 from app.storage import Storage  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 class DbTuningTests(unittest.TestCase):
     def test_sqlite_runs_in_wal_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
-            s = Storage(path=os.path.join(tmp, "wal.db"))
+            # WAL is a SQLite journal mode; this assertion is meaningless on Postgres.
+            s = Storage(path=os.path.join(tmp, "wal.db"), force_sqlite=True)
             with s.connect() as session:
                 mode = session.execute(__import__("sqlalchemy").text("PRAGMA journal_mode")).scalar()
             self.assertEqual(str(mode).lower(), "wal")
@@ -37,6 +39,7 @@ class DbTuningTests(unittest.TestCase):
 class WebhookAuthTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "wh.db"))
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
@@ -76,6 +79,7 @@ class WebhookAuthTests(unittest.TestCase):
 class AccessAuditTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "audit.db"))
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}

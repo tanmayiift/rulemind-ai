@@ -3,6 +3,13 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: rulemind
+  annotations:
+    # /api/v1/decisions/stream is an SSE endpoint and /ws/v1/collab/{doc_id} is a
+    # WebSocket; both are long-lived. ingress-nginx's 60s default read timeout
+    # would cut them.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   tls:
@@ -13,6 +20,26 @@ spec:
     - host: {{ .Values.ingress.host }}
       http:
         paths:
+          # THE API ROUTES MUST COME FIRST. This Ingress previously had exactly
+          # one rule ("/" -> web) and no route to the API at all, so the browser
+          # had no reachable backend under any configuration. Every call the
+          # dashboard makes is under /api/ (apps/web/src/lib/api.ts builds
+          # `${apiBaseUrl}${path}` with paths like /api/v1/rules), and the collab
+          # channel is /ws/v1/collab/{doc_id}.
+          - path: {{ .Values.ingress.apiPath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: rulemind-api
+                port:
+                  number: {{ .Values.service.api.port }}
+          - path: {{ .Values.ingress.wsPath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: rulemind-api
+                port:
+                  number: {{ .Values.service.api.port }}
           - path: /
             pathType: Prefix
             backend:

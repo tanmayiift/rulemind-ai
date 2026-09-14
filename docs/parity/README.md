@@ -16,7 +16,10 @@ three lenses, ending in a sequenced build plan rather than a gap list.
 
 ## The headline
 
-Of **22 features** named in the changelog: **3 present, 8 partial, 10 absent, 1 deliberately cut.**
+Of **22 features** named in the changelog: **2 present, 9 partial, 10 absent, 1 deliberately cut.**
+(Re-audited 2026-09-04. The present column went *down*: P21 was promoted when the evaluation
+budget shipped, and P10 and P17 were demoted because neither had a test covering the claim the
+row makes. See the re-audit section of `PARITY-MATRIX.md`.)
 
 That distribution — a few generic infrastructure overlaps plus a large block of named product
 nouns that appear nowhere in the codebase — is what you would expect when comparing a
@@ -31,9 +34,12 @@ nothing. Another (`P19`, superflows) is flagged as possibly a naming artifact of
 platform rather than a capability gap, and is not scheduled until someone defines what it
 would mean here.
 
-**It does not inflate the present column.** The three `PRESENT` rows were checked
-function-by-function, not by keyword. The Excel row lists all four named functions with line
-numbers inside a ~230-function library.
+**It does not inflate the present column.** The bar is: implementing code *and* a test that
+covers the claim the row makes — not a test of something adjacent. The 2026-09-04 re-audit
+applied it and demoted two rows that had been scored on code alone. `P17` (Excel functions) was
+the cautionary one: all four named functions exist inside a ~230-function library, which is what
+the original evidence said, but two of them (`CUMIPMT`, `DAYS360`) have no test anywhere and are
+missing from the TypeScript twin — so the row was counting the library, not the functions.
 
 **It does not hide a cheaper answer.** `P09` asks for Kafka and exactly-once delivery. The
 roadmap ships a DLQ and an `Idempotency-Key` convention on the existing Redis bus in Phase 4,
@@ -49,6 +55,17 @@ is set on the way in rather than discovered during estimation.
 
 ## Keeping it honest
 
-`parity.json` is the guard. A check asserts that every `ABSENT` or `PARTIAL` feature has both
-an owning phase and a named E2E flow, so a gap cannot quietly become unowned. Precedent for a
-machine-readable expectations file already exists at `qa/e2e-full/journey_expectations.json`.
+`parity.json` is the guard. `check_parity.py` asserts that every `ABSENT` or `PARTIAL` feature
+has both an owning phase and a named E2E flow, and that every row cites evidence — so a gap
+cannot quietly become unowned. Precedent for a machine-readable expectations file already exists
+at `qa/e2e-full/journey_expectations.json`.
+
+**As of 2026-09-04 that check actually runs.** It is the `contracts` job in
+`.github/workflows/sdk-verify.yml` — no `needs`, no path filter, a few seconds. Until then it was
+a script in the repo that no workflow invoked, which is worth stating plainly: for the first week
+of its life the guard against rot was itself the thing rotting. The 2026-09-04 re-audit found
+drifted line numbers on most rows and three wrong states, all of which accumulated in that window.
+
+What the check still cannot do is verify a citation. It reads structure, not `app/executor.py`.
+Line numbers drift on every refactor, so re-read the rows against the code periodically rather
+than trusting a green job.

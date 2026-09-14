@@ -96,7 +96,7 @@ Every request flows through, in order:
 3. **`AUTH_MODE=none`** — early-return for local/dev and the test harness.
 4. **Credential resolution** — either `X-Api-Key` (→ `storage.get_tenant_by_api_key`) **or**
    `Authorization: Bearer <session>` (a human member session). Both resolve to **tenant + RBAC role**.
-5. **Tenant active check** + **rate limiting** (`rate_limit_allow`, plan-based: 5000 enterprise /
+5. **Tenant active check** + **rate limiting** (`rate_limit.check`, plan-based: 5000 enterprise /
    1000 standard req/window; **fail-closed in production**).
 6. Sets `request.state.tenant_id / role / actor_kind / session_id / api_key_id`.
 
@@ -125,19 +125,22 @@ server, Rust fast path, and on-device SDKs never diverge.
 
 **Reference engine:** `app/logic.py`.
 
-- **Operators (12), one authority** — `compare()` (`logic.py:215`): `== != > >= < <= between in not_in
-  exists !exists regex boolean`. Missing variable → `None` → comparisons return `False` (this exact
-  rule is mirrored in Kotlin/Dart after the missing-var parity fix).
-- **Rule trees** — `evaluate_rule_tree()` (`logic.py:281`) walks an AND/OR/NOT tree with a recursion
+- **Operators (12), one authority** — `compare()` (`app/logic.py:422`): `== != > >= < <= between in
+  not_in exists !exists regex`. `boolean` used to be listed here as a thirteenth operator, which is
+  why the count never matched the list — it is a **`field_type`**, not an operator: it changes how
+  `==` and `!=` coerce their operands. `packages/shared/operators.spec.json` is the corpus all five
+  engines are checked against and carries exactly these 12. Missing variable → `None` → comparisons
+  return `False` (mirrored in Kotlin/Dart after the missing-var parity fix).
+- **Rule trees** — `evaluate_rule_tree()` (`app/logic.py:513`) walks an AND/OR/NOT tree with a recursion
   **depth guard**; v1 flat `nodes` are normalized via `nodes_to_tree` / `flatten_tree_to_nodes`. v2
   rules carry an explicit `tree` (preserved verbatim by the compiler).
-- **Scorecards** — `evaluate_scorecard()` (`logic.py:382`): sum points for matched bins, clamp to
+- **Scorecards** — `evaluate_scorecard()` (`app/logic.py:633`): sum points for matched bins, clamp to
   `[base_score, max_score]`.
-- **Policy pipeline** — `execute_policy()` (`logic.py:520`): resolve connector payloads → compute
+- **Policy pipeline** — `execute_policy()` (`app/logic.py:771`): resolve connector payloads → compute
   variables → run each step (rule/scorecard/model/branch/action…) → merge into a final `outcome` +
   `score` + full `trace`.
 
-**Structured decision core:** `app/core/engine.py` — `decide()` (`engine.py:183`) is the clean,
+**Structured decision core:** `app/core/engine.py` — `decide()` (`app/core/engine.py:203`) is the clean,
 DB-free entry (input validation via `validate_input`, experiment resolution, `DecisionResult`), reused
 by the Lambda adapter (`app/core/lambda_handler.py`) and service wrapper (`app/core/service.py`).
 
@@ -347,7 +350,7 @@ full evaluator, scorecard, policy executor, decision-table evaluator, experiment
   `/audit/promotions`.
 - **PII & retention** — `settings.audit_retention_days`; data-protection controls at
   `GET/PUT /settings/data-protection`; decision payloads are **encrypted at rest**, and
-  `redact_payload()` (`logic.py:581`) strips sensitive keys from previews. A pluggable **archiver**
+  `redact_payload()` (`app/logic.py:1065`) strips sensitive keys from previews. A pluggable **archiver**
   (ClickHouse / S3) offloads aged decisions.
 - **SLO & drift** — per-tenant SLO config (`GET/PUT /settings/slo`, `/slo/status`) with
   outcome-drift alerting (`app/slo.py`).

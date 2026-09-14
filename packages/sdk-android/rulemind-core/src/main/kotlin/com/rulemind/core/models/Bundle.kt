@@ -56,15 +56,56 @@ data class CompiledRule(
     val expression: String? = null,
 )
 
+/**
+ * One bin of a scorecard factor.
+ *
+ * [min]/[max] are `null` when the JSON omitted the key, which the Python core reads as
+ * `float(candidate.get("min", 0))` — i.e. **0.0**, not an open bound. [matchable] is false when
+ * the key was present but null or non-numeric: `float()` raises there and the Python core skips
+ * that candidate entirely, so it can never match.
+ */
 data class ScoreRange(
     val min: Double? = null,
     val max: Double? = null,
     val points: Int = 0,
-)
+    val matchable: Boolean = true,
+) {
+    val lowerBound: Double get() = min ?: 0.0
+    val upperBound: Double get() = max ?: 0.0
+}
+
+/** A weight-of-evidence bin: the same bound semantics as [ScoreRange], carrying woe/iv instead of points. */
+data class WoeRange(
+    val min: Double? = null,
+    val max: Double? = null,
+    val woe: Double = 0.0,
+    val iv: Double = 0.0,
+    val eventRate: Double? = null,
+    val nonEventRate: Double? = null,
+    val matchable: Boolean = true,
+) {
+    val lowerBound: Double get() = min ?: 0.0
+    val upperBound: Double get() = max ?: 0.0
+}
 
 data class ScoreFactor(
-    val variableId: String,
+    /** Null when the bin omits `variable_id`: the Python core then looks up the key `None`,
+     *  finds nothing, and scores the factor against a value of 0. */
+    val variableId: String?,
     val ranges: List<ScoreRange>,
+    /** Multiplies this factor's points before they are summed (points / weighted methods). */
+    val weight: Double = 1.0,
+    /** The logistic-regression coefficient this factor's WoE is multiplied by. */
+    val coefficient: Double = 0.0,
+    val woeValues: List<WoeRange> = emptyList(),
+)
+
+/** A derived metric computed from the scored result by a formula (see [com.rulemind.core.SafeFormula]). */
+data class ScorecardMetric(
+    val name: String = "unnamed",
+    val formula: String = "0",
+    val unit: String = "",
+    val category: String = "financial",
 )
 
 data class Scorecard(
@@ -73,6 +114,16 @@ data class Scorecard(
     val baseScore: Int = 300,
     val maxScore: Int = 900,
     val bins: List<ScoreFactor>,
+    /** "points" (default), "woe" or "formula". Anything else falls through to points, as in Python. */
+    val scoringMethod: String = "points",
+    // ── WoE (points-to-double-the-odds) calibration ──
+    val intercept: Double = 0.0,
+    val pdo: Double = 20.0,
+    val targetScore: Double = 600.0,
+    val targetOdds: Double = 50.0,
+    /** Custom scoring expression for `scoringMethod == "formula"`. */
+    val formula: String? = null,
+    val metrics: List<ScorecardMetric> = emptyList(),
 )
 
 data class PolicyStep(

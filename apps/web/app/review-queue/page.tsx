@@ -86,7 +86,15 @@ export default function ReviewQueuePage() {
         {(!isMobile || mobileTab === "list") && (
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 14, overflow: "hidden" }}>
           <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>Pending Tasks</div>
-          {tasks.length === 0 ? <div style={{ padding: 16, color: theme.dim, fontSize: "var(--rm-fs-body)" }}>No pending tasks.</div> : null}
+          {tasks.length === 0 ? (
+            /* "No pending tasks." on its own reads like something is broken. A review task only
+               exists because a policy routed a decision to a human, so the empty state should
+               say that -- an empty queue is the system working, not a missing feature. */
+            <div style={{ padding: 16, color: theme.dim, fontSize: "var(--rm-fs-body)", display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 600, color: theme.muted }}>Nothing waiting for review</div>
+              <div>Tasks appear here when a policy sends a decision to a review gate instead of approving or rejecting it outright.</div>
+            </div>
+          ) : null}
           {tasks.map((task) => (
             <button
               key={task.id}

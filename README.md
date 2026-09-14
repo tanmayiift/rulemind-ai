@@ -2,10 +2,22 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-5b5bd6.svg)](LICENSE)
 [![Built on RuleMind](https://img.shields.io/badge/Built%20on-RuleMind-5b5bd6.svg)](https://github.com/tanmayiift/rulemind-ai)
+[![Tests](https://img.shields.io/badge/tests-see_TEST__RESULTS.md-5b5bd6.svg)](TEST_RESULTS.md)
+
+<!-- The tests badge points at the committed, GENERATED report rather than at a CI status
+     endpoint. That is deliberate and honest: GitHub Actions is currently refusing to START a
+     job for this repo — every run fails in seconds with zero steps executed and no runner
+     assigned, because of a billing block ("recent account payments have failed or your spending
+     limit needs to be increased"), not because any test fails and not because minutes ran out.
+     A workflow-status badge would show a red X that says nothing about the code. TEST_RESULTS.md
+     is produced by scripts/run_all_tests.sh from the runners' own output and can be regenerated
+     by anyone who clones this. Swap this for a real workflow badge once CI executes again. -->
 
 Open-source, source-agnostic decisioning engine. Build rules, scorecards, and policies from any JSON data source — then deploy them through `dev > uat > prod` with full audit trails.
 
-RuleMind accepts JSON payloads from pluggable connectors (bureau, bank, GST, device, KYC, or custom APIs), lets teams author Python variables, click-built rules, scorecards, and multi-step policies — all from a visual dashboard.
+RuleMind accepts JSON payloads from pluggable connectors (bureau, bank, GST, device, KYC, or custom APIs) — pushed in with the decision request, or **retrieved by RuleMind at decision time** from the connector's own endpoint, through an SSRF-guarded egress path and inside the evaluation budget. It lets teams author Python variables, click-built rules, scorecards, and multi-step policies — all from a visual dashboard.
+
+Decision-time retrieval is opt-in per connector and **fails closed**: if a source cannot be reached, the decision goes to review rather than proceeding on that connector's sample payload.
 
 > **Operators:** see **[INTEGRATION.md](INTEGRATION.md)** for the resilience/security/evaluation reference — circuit breaker, durable decision WAL, PII redaction, backtest sample-vs-full modes, cross-engine operator semantics, and the full environment-variable list.
 
@@ -50,13 +62,41 @@ packages/
   sdk-flutter/          Flutter SDK (Dart) + on-device engine + sample app
   ui/                   Shared UI primitives
   widget/               Embeddable widget
+  flutter-ui/           Shared Flutter widgets
 
+demo-app/               Flutter showcase app (on-device vs server parity)
 e2e/                    Playwright end-to-end tests
 test/                   TypeScript unit tests (engine, SDK, auth, cross-platform parity)
 qa/                     Automated QA suite + workbook manifest
-infra/ k8s/ helm/       Deployment manifests
+docs/                   Architecture, HLD, and the parity matrix (docs/parity/)
+scripts/                Verification gates (smoke_compose.sh, smoke_k8s.sh,
+                        verify_chart.py, check_audit_ignores.py)
+design/                 Design assets
+third_party/            Vendored dependencies
+infra/ k8s/ helm/       Kubernetes manifests + Helm chart (run locally via kind)
 observability/          Grafana / Prometheus / Tempo / OTel collector config
 ```
+
+## Deployment
+
+**Everything runs locally, on your own Docker. There is no hosted dependency and nothing to
+pay for.** Two paths, both verified by a committed smoke script:
+
+| Path | Command | What it gives you |
+|---|---|---|
+| Docker Compose | `make up` | api + web + Postgres + Redis + a migrate job. The normal way to run it. |
+| + durable delivery | `docker compose --profile kafka up -d kafka` | Kafka in KRaft mode (no ZooKeeper) for the decision outbox. Behind a profile because it is the heaviest container in the stack (~560 MB) and the decision path works without it. |
+| Kubernetes | `make k8s-up` | A [kind](https://kind.sigs.k8s.io/) cluster running the Helm chart in `helm/rulemind`, from images built and loaded locally — no registry, no cloud. |
+
+`scripts/smoke_compose.sh` (14 checks) and `scripts/smoke_k8s.sh` verify each path end to end:
+dependency health, the sandbox actually spawning, security headers, that the API docs are not
+public, that the container runs as non-root, and that a real decision runs and lands in the
+audit trail. `/docs` is disabled outside development — see `RULEMIND_ENABLE_DOCS` in
+`.env.example`.
+
+This project was briefly deployed to a hosted provider and that has been removed entirely —
+the free tiers moved to paid. The Kubernetes manifests stay because they cost nothing to keep
+and now actually run, against a local cluster, instead of only being linted.
 
 ## Quick Start
 
@@ -111,7 +151,23 @@ This starts:
 - **API** at http://localhost:8080
 - **API docs** at http://localhost:8080/docs
 
-The backend auto-seeds a realistic sample tenant on first startup (connectors, ~55 variables, rules, scorecards, and several policies) so every screen has data immediately. The web app authenticates with the dev API key `rm_live_devlocaltenantkey000000000000` — set `NEXT_PUBLIC_RULEMIND_DEV_API_KEY` (or paste it in **Settings** in the dashboard).
+A fresh install starts with an **empty workspace** — a tenant, an API key and an admin user, but
+no connectors, variables, rules or policies. That is deliberate: a new customer builds their own
+inventory through guided onboarding rather than deleting someone's demo data first.
+
+To get the sample lending inventory (connectors, ~55 variables, rules, scorecards, several
+policies) so every screen has data immediately, do either:
+
+```bash
+RULEMIND_SEED_DEMO=1 pnpm dev          # seed at startup
+```
+
+...or, on a running instance, click **Load samples** in onboarding — the same thing the API does
+at `POST /api/v1/onboarding/load-samples`, which also compiles the policy bundle so `/decide`
+works straight away.
+
+The web app authenticates with the dev API key `rm_live_devlocaltenantkey000000000000` — set
+`NEXT_PUBLIC_RULEMIND_DEV_API_KEY` (or paste it in **Settings** in the dashboard).
 
 ## Docker Compose (Production)
 
@@ -211,6 +267,15 @@ See `.env.example` for the full list.
 - **Kubernetes** — a Helm chart ships in `helm/rulemind/` (Deployments for web/api/worker, Service, Ingress, ConfigMap, Secret, migrate Job, HPA + PDB on the api). `helm install rulemind ./helm/rulemind -f my-values.yaml`.
 - **Scaling** — the decision path is **stateless**; run N api replicas behind the Ingress with the HPA on RPS/latency. For maximum throughput enable `FAST_DECIDE=1` (cached-bundle core) and, at the edge, the WASM core (`packages/rulemind-core-rs`, `./build-wasm.sh`).
 - **Secrets** — set `RULEMIND_CONFIG_KEY` (config-at-rest encryption), `RULEMIND_ADMIN_JWT_SECRET`, `RULEMIND_ADMIN_PASSWORD`, `POSTGRES_PASSWORD` (see the Docker Compose block for `openssl rand` examples). Connector credentials are Fernet-encrypted at rest.
+- **Durable decision delivery** — every decision writes a row to a **transactional outbox** in
+  the same database transaction, so a decision and its event commit together or neither does. A
+  leader-gated relay moves committed rows to Kafka with an idempotent producer, and the consumer
+  deduplicates on the event id, which makes processing effectively-once. A message that cannot be
+  handled goes to a dead-letter topic **and its offset is committed**, so one poison event cannot
+  block its partition. Turn it on with `docker compose --profile kafka up -d kafka` and set
+  `KAFKA_BOOTSTRAP_SERVERS`; without it the outbox still records every event, so you lose delivery
+  and never data.
+
 - **Observability** — Prometheus metrics are always at `/metrics`. For traces + dashboards in **one command**, run **`make observability`**: it turns tracing on (sets the OTLP endpoint) and brings up **Grafana** (`:3001`), **Prometheus** (`:9090`), **Tempo**, and the OTel collector with a pre-provisioned dashboard. (Equivalent to `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up`.) See [`observability/README.md`](observability/README.md).
 
 ### ⚡ Throughput & scaling (what to expect)
@@ -710,6 +775,10 @@ curl -X POST http://localhost:8080/api/v1/import \
   -d @config.json
 ```
 
+> Counts drift. `TEST_RESULTS.md` is generated by `scripts/run_all_tests.sh` and reads every
+> number from the runner's own output — prefer it over the figures above, which are typed by
+> hand and were ~25% low before 2026-09-14.
+
 **Validation checks:**
 - Rules: operator validity, variable references, outcome nodes present, tree depth limits
 - Variables: Python syntax (AST parse), source connector references
@@ -719,13 +788,13 @@ curl -X POST http://localhost:8080/api/v1/import \
 ## Testing
 
 ```bash
-# TypeScript unit tests (34 tests across 8 files)
+# TypeScript unit tests (462 tests across 16 files)
 pnpm test
 
-# Python backend tests (224 tests)
+# Python backend tests (1913 tests across 150 modules)
 cd apps/python-executor && python3 -m unittest discover -s tests -p 'test_*.py'
 
-# Playwright E2E tests — full server stack (43 edge-case + 5 workflow tests)
+# Playwright E2E tests — full server stack (68 tests across 8 spec files)
 pnpm test:e2e
 
 # Type checking
@@ -756,9 +825,14 @@ cd packages/sdk-android && ./gradlew :sample-app:connectedDebugAndroidTest
 | `packages/sdk-python/` | Python SDK |
 | `packages/sdk-android/` | Android SDK + sample app |
 | `packages/sdk-flutter/` | Flutter SDK + sample app |
-| `packages/schemas/` | Shared JSON schemas for rule definitions |
-| `e2e/` | Playwright E2E tests (48 tests across 2 spec files) |
-| `test/` | TypeScript unit tests (34 tests across 8 files) |
+| `packages/flutter-ui/` | Shared Flutter layout primitives + responsive test harness |
+| `packages/rulemind-core-rs/` | Rust core engine with Python bindings (pyo3) |
+| `packages/rulemind-decide-service/` | Standalone Rust `/decide` service (own Dockerfile) |
+| `demo-app/` | Flutter showcase app (on-device vs server parity) |
+| `e2e/` | Playwright E2E tests (68 tests across 8 spec files) |
+| `test/` | TypeScript unit tests (462 tests across 16 files) |
+| `qa/e2e-full/` | API journey + sandbox-escape suites, responsive sweep |
+| `infra/`, `k8s/`, `helm/`, `observability/` | Deployment + Grafana/Prometheus/Tempo |
 | `docker-compose.yml` | Production deployment with Postgres + Redis |
 | `.env.example` | Environment variable template |
 

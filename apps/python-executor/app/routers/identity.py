@@ -4,6 +4,7 @@ app/main.py. Stable helpers/models imported by value from app.main; direct stora
 main.storage live."""
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,13 @@ from ..main import (
     SsoConfigRequest,
     active_role,
     active_tenant_id,
+)
+from ..middleware import (
+    clear_login_failures,
+    client_ip,
+    login_guard_status,
+    login_max_attempts,
+    record_login_failure,
 )
 from ..session_cookie import clear_session_cookies, session_token_from_request, set_session_cookies
 
@@ -163,7 +171,7 @@ def access_create_member(request: MemberCreateRequest) -> Dict[str, Any]:
         member = main.storage.create_member(tenant_id, request.email, request.name or request.email,
                                              request.role, password=request.password)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     _audit_member("member_created", tenant_id, member["id"],
                   "Created member '{0}' ({1})".format(member["email"], request.role), {"role": request.role})
     return member
@@ -202,15 +210,61 @@ def access_deactivate_member(member_id: str) -> Dict[str, Any]:
 
 
 # ── Human login (password + email OTP) ─────────────────────────────────────
+LOGIN_SCOPE_MEMBER = "member"
+
+LOGIN_LOGGER = logging.getLogger("rulemind.auth")
+
+
+def _audit_login_failure(identity: str, email: str, http_request: Request,
+                         member: Optional[Dict[str, Any]], guard: Any) -> None:
+    """Log every failure, and write an audit event once a run looks like an attack.
+
+    Emitted only above the threshold so ordinary fat-fingering does not flood the tamper-
+    evident chain, and only when the member (and therefore the tenant) is known — an audit
+    event for an unknown email would have to be attributed to some tenant, and guessing one
+    would put attacker-controlled text into an unrelated workspace's chain.
+    """
+    source_ip = client_ip(http_request)
+    LOGIN_LOGGER.warning("failed member login: email=%s ip=%s failures=%s locked=%s",
+                         email, source_ip, guard.failures, guard.locked)
+    if not guard.should_alert or not member:
+        return
+    _audit_member("login_failed_repeatedly", member["tenant_id"], member["id"],
+                  "{0} consecutive failed sign-in attempts for '{1}'{2}".format(
+                      guard.failures, email, " — account locked" if guard.locked else ""),
+                  {"source_ip": source_ip, "failures": guard.failures, "locked": guard.locked,
+                   "max_attempts": login_max_attempts(), "identity": identity})
+
+
+
 @router.post("/api/v1/auth/login")
-def member_login(request: LoginRequest, response: Response) -> Dict[str, Any]:
+def member_login(request: LoginRequest, response: Response, http_request: Request) -> Dict[str, Any]:
     """Password login for a workspace member. Sets an httpOnly session cookie (browser) + a CSRF
-    cookie, and also returns the token in the body for machine/mobile callers."""
+    cookie, and also returns the token in the body for machine/mobile callers.
+
+    Exempted from the middleware's tenant check at UNAUTH_AUTH_PREFIXES, which also put it
+    ahead of the per-tenant rate limiter — so until the pre-auth throttle was added this
+    accepted unlimited password guesses. It now counts failures per account as well, the same
+    shape storage.verify_member_otp already used for OTP codes.
+    """
+    identity = "{0}|{1}".format((request.tenant_id or "").strip().lower(), (request.email or "").strip().lower())
+    guard = login_guard_status(LOGIN_SCOPE_MEMBER, identity)
+    if guard.locked:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed sign-in attempts. Try again in {0}s.".format(max(1, guard.retry_after)),
+            headers={"Retry-After": str(max(1, guard.retry_after))},
+        )
     member = main.storage.get_member_by_email(request.email, tenant_id=request.tenant_id)
     if not member or not member.get("is_active"):
+        _audit_login_failure(identity, request.email, http_request, member,
+                             record_login_failure(LOGIN_SCOPE_MEMBER, identity))
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     if not main.storage.verify_member_password(member["id"], request.password):
+        _audit_login_failure(identity, request.email, http_request, member,
+                             record_login_failure(LOGIN_SCOPE_MEMBER, identity))
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    clear_login_failures(LOGIN_SCOPE_MEMBER, identity)
     session = main.storage.create_member_session(member["tenant_id"], member["id"])
     _audit_member("member_login", member["tenant_id"], member["id"],
                   "Password login by '{0}'".format(member["email"]), {"method": "password"})
@@ -352,12 +406,12 @@ def sso_start(tenant_id: Optional[str] = None) -> Dict[str, Any]:
     nonce = secrets.token_urlsafe(16)
     try:
         if provider == "oidc":
-            state = sso.issue_state(resolved_tenant, provider, nonce, cfg.get("redirect_uri", ""))
+            state = sso.issue_state(resolved_tenant or "", provider, nonce, cfg.get("redirect_uri", ""))
             return {"provider": "oidc", "redirect_url": sso.oidc_authorize_url(cfg, state, nonce)}
-        state = sso.issue_state(resolved_tenant, provider, nonce, cfg.get("acs_url", ""))
+        state = sso.issue_state(resolved_tenant or "", provider, nonce, cfg.get("acs_url", ""))
         return {"provider": "saml", "redirect_url": sso.saml_authn_request_url(cfg, state)}
     except sso.SsoError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/v1/auth/sso/oidc/callback")
@@ -374,7 +428,7 @@ def sso_oidc_callback(request: OidcCallbackRequest) -> Dict[str, Any]:
             raise HTTPException(status_code=404, detail="OIDC is not enabled for this workspace.")
         identity = sso.complete_oidc_login(cfg, request.code, state.get("n", ""))
     except sso.SsoError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
     return _sso_finish_login(tenant_id, identity, "oidc", cfg)
 
 
@@ -401,7 +455,10 @@ async def sso_saml_acs(http_request: Request) -> Dict[str, Any]:
         cfg = main.storage.get_sso_config_internal(tenant_id=tenant_id)
         if not cfg.get("enabled") or cfg.get("provider") != "saml":
             raise HTTPException(status_code=404, detail="SAML is not enabled for this workspace.")
-        identity = sso.parse_and_verify_saml_response(cfg, str(saml_response))
+        # storage + tenant_id enable single-use enforcement. Without them a captured
+        # assertion replays for its whole validity window (T3.5).
+        identity = sso.parse_and_verify_saml_response(
+            cfg, str(saml_response), storage=main.storage, tenant_id=tenant_id)
     except sso.SsoError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
     return _sso_finish_login(tenant_id, identity, "saml", cfg)

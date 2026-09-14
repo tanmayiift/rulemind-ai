@@ -66,9 +66,31 @@ class JobGatingTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.storage = Storage(path=os.path.join(self.tempdir.name, "gate.db"))
         import app.scheduler as sched
+        import app.mailer as mailer
         self.sched = sched
+        self.mailer = mailer
+
+        # Without SMTP, every delivery here returns transport="unconfigured" -- indistinguishable
+        # from the job never running, which is exactly what these tests exist to tell apart.
+        # Configure the tenant and inject a transport so a send is observable.
+        self.storage.set_email_config({"host": "smtp.example.com", "port": 587,
+                                       "from_addr": "reports@example.com"},
+                                      tenant_id=self.storage.default_tenant_id)
+        self.sent_to = []
+        outer = self
+
+        class _CapturingSMTP:
+            def send_message(self, msg):
+                outer.sent_to.extend(a.strip() for a in msg["To"].split(","))
+
+            def quit(self):
+                pass
+
+        self._orig_factory = mailer._SMTP_FACTORY
+        mailer._SMTP_FACTORY = lambda _cfg: _CapturingSMTP()
 
     def tearDown(self):
+        self.mailer._SMTP_FACTORY = self._orig_factory
         self.sched._IS_LEADER = False
         self.tempdir.cleanup()
 
@@ -89,7 +111,12 @@ class JobGatingTests(unittest.TestCase):
                                     "schedule": {"enabled": True, "cron": "0 9 * * *", "recipients": ["a@b.com"]}},
                                    tenant_id=tenant)
         out = asyncio.run(self.sched._scheduled_report(self.storage, "r2", tenant))
-        self.assertIn(out.get("transport"), {"unconfigured", "smtp"})
+        # This used to be assertIn(transport, {"unconfigured", "smtp"}) -- which passes when
+        # the report was NOT sent, since "unconfigured" is precisely the not-sent outcome.
+        # The test is here to prove leadership lets the job RUN, so it has to observe a send.
+        self.assertEqual(out.get("transport"), "smtp")
+        self.assertTrue(out.get("delivered"))
+        self.assertEqual(self.sent_to, ["a@b.com"])
 
     def test_manual_delivery_is_never_gated(self):
         # deliver_scheduled_report (used by manual paths) runs regardless of leadership.
@@ -100,7 +127,39 @@ class JobGatingTests(unittest.TestCase):
                                     "schedule": {"enabled": True, "cron": "0 9 * * *", "recipients": ["a@b.com"]}},
                                    tenant_id=tenant)
         out = asyncio.run(self.sched.deliver_scheduled_report(self.storage, "r4", tenant))
-        self.assertIn(out.get("transport"), {"unconfigured", "smtp"})
+        # Same as above: "unconfigured" would satisfy the old assertion while proving the
+        # opposite of this test's name. A manual delivery under _IS_LEADER=False must send.
+        self.assertEqual(out.get("transport"), "smtp")
+        self.assertTrue(out.get("delivered"))
+        self.assertEqual(self.sent_to, ["a@b.com"])
+
+    def test_saml_assertion_prune_is_leader_gated_and_actually_prunes(self):
+        """`storage.prune_saml_assertions` existed, had a test, and nothing ever called it.
+
+        The table takes one row per successful SSO login and is only ever read to reject a
+        replay, so on an SSO deployment it grew forever -- and that lookup is on the hot login
+        path, so the cost landed on authentication rather than as a slow query somewhere
+        ignorable.
+        """
+        tenant = self.storage.default_tenant_id
+        stale = datetime.utcnow() - timedelta(hours=1)
+        fresh = datetime.utcnow() + timedelta(hours=1)
+        self.assertTrue(self.storage.claim_saml_assertion("expired-assertion", stale, tenant_id=tenant))
+        self.assertTrue(self.storage.claim_saml_assertion("live-assertion", fresh, tenant_id=tenant))
+
+        self.sched._IS_LEADER = False
+        self.assertEqual(asyncio.run(self.sched._scheduled_prune_saml_assertions(self.storage)),
+                         {"skipped": "not_leader"})
+
+        self.sched._IS_LEADER = True
+        out = asyncio.run(self.sched._scheduled_prune_saml_assertions(self.storage))
+        self.assertEqual(out["pruned"], 1, "the expired assertion should have been dropped")
+        # The live one must survive: pruning it would let a still-valid assertion be replayed.
+        # claim_ returns False when the id is already recorded, so False here means still there.
+        self.assertFalse(self.storage.claim_saml_assertion("live-assertion", fresh, tenant_id=tenant),
+                         "a still-valid assertion was pruned and can now be replayed")
+        # ...and the expired one is genuinely gone, so the row can be re-claimed.
+        self.assertTrue(self.storage.claim_saml_assertion("expired-assertion", stale, tenant_id=tenant))
 
     def test_delete_report_is_scoped_and_safe(self):
         tenant = self.storage.default_tenant_id

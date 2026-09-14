@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 
@@ -68,13 +67,6 @@ def create_admin_jwt(subject: str, email: str, expires_hours: int = 12) -> str:
 def decode_admin_jwt(token: str) -> Dict[str, Any]:
     secret = env.env_str("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
     return jwt.decode(token, secret, algorithms=["HS256"])
-
-
-def generate_rsa_keypair_material() -> Dict[str, str]:
-    # Placeholder-friendly development helper. The actual compiler path uses a symmetric
-    # transport fallback when client public key encryption is unavailable.
-    seed = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8")
-    return {"public": seed, "private": seed}
 
 
 def generate_session_token() -> str:

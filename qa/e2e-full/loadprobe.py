@@ -1,6 +1,8 @@
 """Latency/throughput probe. Usage: loadprobe.py <port> [policyId]"""
-import httpx, time, concurrent.futures as cf, collections, sys
-BASE=f"http://127.0.0.1:{sys.argv[1]}"; H={"x-api-key":"rm_live_devlocaltenantkey000000000000","content-type":"application/json"}
+import httpx, time, concurrent.futures as cf, collections, os, sys
+# RM_KEY override to match bench.py / harness.py / seed_journeys.py -- this was the one
+# harness here with the key hard-coded and no way to point it at another workspace.
+BASE=f"http://127.0.0.1:{sys.argv[1]}"; H={"x-api-key":os.environ.get("RM_KEY","rm_live_devlocaltenantkey000000000000"),"content-type":"application/json"}
 POL=sys.argv[2] if len(sys.argv)>2 else "policy_claim_triage"
 def payload(i): return {"policyId":POL,"payload":{"claim":{"claim_amount_inr":20000+(i%50)*1000,"policy_age_months":i%60,
         "prior_claims_12m":i%4,"documents_complete":i%2,"police_report_filed":1,"incident_severity":1+(i%5),

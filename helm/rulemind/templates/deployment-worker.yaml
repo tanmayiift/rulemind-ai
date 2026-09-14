@@ -12,15 +12,68 @@ spec:
       labels:
         app: rulemind-worker
     spec:
+      {{- include "rulemind.podSecurityContext" . | nindent 6 }}
       containers:
         - name: worker
           image: "{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag }}"
           imagePullPolicy: {{ .Values.image.worker.pullPolicy }}
-          command: ["python3", "-m", "app.worker"]
+          {{- include "rulemind.containerSecurityContext" . | nindent 10 }}
+          # `args`, not `command`, so the image ENTRYPOINT stays in the chain.
+          args: ["python3", "-m", "app.worker"]
           envFrom:
             - configMapRef:
                 name: rulemind-config
             - secretRef:
                 name: rulemind-secrets
+          # The worker serves no HTTP, so probes go through the readiness file that
+          # app/worker.py writes on start and refreshes from heartbeat() every 30s
+          # (the same signal docker-compose.yml already health-checks on). Without
+          # any probe at all a worker whose scheduler loop had died stayed
+          # "Running" indefinitely and nothing rescheduled it.
+          startupProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - |
+                  import os, sys
+                  sys.exit(0 if os.path.exists("/tmp/rulemind-worker.ready") else 1)
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - |
+                  import os, sys, time
+                  path = "/tmp/rulemind-worker.ready"
+                  sys.exit(0 if os.path.exists(path) and time.time() - os.path.getmtime(path) < 90 else 1)
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - |
+                  import os, sys, time
+                  path = "/tmp/rulemind-worker.ready"
+                  sys.exit(0 if os.path.exists(path) and time.time() - os.path.getmtime(path) < 90 else 1)
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 2
           resources:
 {{ toYaml .Values.resources.worker | indent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}

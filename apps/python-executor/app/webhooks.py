@@ -28,7 +28,9 @@ from typing import Optional
 
 
 async def trigger_webhook(storage: Storage, webhook_id: str, body: Dict[str, Any], signature: Optional[str] = None) -> Dict[str, Any]:
-    webhook = storage.get_webhook(webhook_id, include_secret=True)
+    # Tenant-agnostic by id: this receiver is unauthenticated, so a tenant-scoped lookup
+    # resolved to the default tenant and 404'd every other tenant's webhook.
+    webhook = storage.get_webhook_for_trigger(webhook_id, include_secret=True)
     if not webhook or not webhook.get("is_active", False):
         raise ValueError("Webhook not found")
     if webhook.get("secret_hash"):

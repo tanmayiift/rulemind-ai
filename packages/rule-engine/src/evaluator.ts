@@ -142,7 +142,12 @@ function dateToEpoch(value: unknown): number | null {
 function compareValues(node: RuleNode, actual: unknown): { pass: boolean; reason?: string; expected?: unknown } {
   const config = node.config ?? {};
   const operator = config.operator ?? "==";
-  const fieldType = config.fieldType ?? "string";
+  // Lowercased, matching app/logic.py:454 `(field_type or "").lower()`. A bare `===` made a
+  // field declared "Boolean" or "Date" silently skip its typed comparison and fall through to
+  // the generic path -- so the same policy decided differently here than on the server. A
+  // differential fuzz of the Rust engine against Python found this exact bug there:
+  // 7,694 of 8,034 disagreements were this one line.
+  const fieldType = String(config.fieldType ?? "string").toLowerCase();
 
   if (operator !== "exists" && operator !== "!exists" && actual === undefined) {
     return {

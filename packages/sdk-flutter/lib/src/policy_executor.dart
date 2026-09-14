@@ -6,6 +6,51 @@ import "rule_evaluator.dart";
 import "scorecard_evaluator.dart";
 import "variable_vm.dart";
 
+/// Raised by a step the offline engine deliberately refuses to fake. Caught by the step loop and
+/// surfaced as the step's `error`, exactly as the Python executor surfaces a raised step.
+class UnsupportedStepException implements Exception {
+  UnsupportedStepException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Everything a single `evaluate()` mutates. Held in one object because control-flow steps
+/// (`loop`, `branch`, `workflow`) re-enter the step loop with the SAME live context, exactly as
+/// the Python executor does with its `ExecutionContext`.
+class _RunState {
+  _RunState(this.bundle, this.payload, this.executionId);
+
+  final Bundle bundle;
+  final Map<String, dynamic> payload;
+  final String executionId;
+
+  final Map<String, dynamic> variables = <String, dynamic>{};
+  final List<Map<String, dynamic>> ruleResults = <Map<String, dynamic>>[];
+  final Map<String, Map<String, dynamic>> scorecardResults = <String, Map<String, dynamic>>{};
+  final Map<String, Map<String, dynamic>> transformOutputs = <String, Map<String, dynamic>>{};
+  final List<Map<String, dynamic>> actionResults = <Map<String, dynamic>>[];
+  final List<Map<String, dynamic>> pendingOperations = <Map<String, dynamic>>[];
+  final List<Map<String, dynamic>> trace = <Map<String, dynamic>>[];
+  final List<String> skipped = <String>[];
+  final Map<String, dynamic> reviewResponse = <String, dynamic>{};
+
+  /// Loop bindings for the innermost `loop` step, visible to sub-step conditions/templates.
+  Map<String, dynamic> loopScope = const <String, dynamic>{};
+
+  /// Sub-workflow cycle guard — seeded with the root policy id, like the Python executor.
+  final Set<String> visitedWorkflows = <String>{};
+
+  String outcome = "pending";
+  double? score;
+  String status = "running";
+  int currentStepIndex = 0;
+  int? pausedAtStep;
+  Map<String, dynamic>? reviewTask;
+}
+
 class PolicyExecutor {
   PolicyExecutor({
     VariableVm? variableVm,
@@ -16,6 +61,10 @@ class PolicyExecutor {
         _ruleEvaluator = ruleEvaluator ?? RuleEvaluator(),
         _scorecardEvaluator = scorecardEvaluator ?? ScorecardEvaluator(),
         _decisionTableEvaluator = decisionTableEvaluator ?? DecisionTableEvaluator(ruleEvaluator: ruleEvaluator);
+
+  /// Matches `_MAX_WORKFLOW_DEPTH` in the Python executor.
+  static const int maxWorkflowDepth = 10;
+  static const int _loopHardCap = 10000;
 
   final VariableVm _variableVm;
   final RuleEvaluator _ruleEvaluator;
@@ -50,198 +99,438 @@ class PolicyExecutor {
     final startedAt = DateTime.now().millisecondsSinceEpoch;
     final executionId = resumeFrom?.executionId ?? _executionId();
     final effectivePayload = resumeFrom != null && resumeFrom.payload.isNotEmpty ? resumeFrom.payload : payload;
-    final variables = Map<String, dynamic>.from(resumeFrom?.variables ?? const <String, dynamic>{});
-    final ruleResults = (resumeFrom?.ruleResults ?? const <Map<String, dynamic>>[]).map((item) => Map<String, dynamic>.from(item)).toList();
-    final scorecardResults = (resumeFrom?.scorecardResults ?? const <String, Map<String, dynamic>>{})
-        .map((key, value) => MapEntry(key, Map<String, dynamic>.from(value)));
-    final transformOutputs = (resumeFrom?.transformOutputs ?? const <String, Map<String, dynamic>>{})
-        .map((key, value) => MapEntry(key, Map<String, dynamic>.from(value)));
-    final actionResults = (resumeFrom?.actionResults ?? const <Map<String, dynamic>>[]).map((item) => Map<String, dynamic>.from(item)).toList();
-    final pendingOperations = (resumeFrom?.pendingOperations ?? const <Map<String, dynamic>>[]).map((item) => Map<String, dynamic>.from(item)).toList();
-    final trace = (resumeFrom?.trace ?? const <Map<String, dynamic>>[]).map((item) => Map<String, dynamic>.from(item)).toList();
-    final skipped = (resumeFrom?.serverOnlyStepsSkipped ?? const <String>[]).toList();
-    final reviewResponse = Map<String, dynamic>.from(resumeFrom?.reviewResponse ?? const <String, dynamic>{});
-    var reviewTask = resumeFrom?.reviewTask == null ? null : Map<String, dynamic>.from(resumeFrom!.reviewTask!);
-    var currentStepIndex = resumeFrom?.currentStepIndex ?? 0;
-    var pausedAtStep = resumeFrom?.pausedAtStep;
-    var outcome = resumeFrom?.outcome ?? "pending";
-    var score = resumeFrom?.score;
-    var status = resumeFrom?.status ?? "running";
 
-    if (resumeFrom != null && reviewResponse.isNotEmpty) {
-      reviewResponse.forEach((key, value) {
+    final state = _RunState(bundle, effectivePayload, executionId);
+    if (resumeFrom != null) {
+      state.variables.addAll(resumeFrom.variables);
+      state.ruleResults.addAll(resumeFrom.ruleResults.map(Map<String, dynamic>.from));
+      state.scorecardResults.addAll(
+        resumeFrom.scorecardResults.map((key, value) => MapEntry(key, Map<String, dynamic>.from(value))),
+      );
+      state.transformOutputs.addAll(
+        resumeFrom.transformOutputs.map((key, value) => MapEntry(key, Map<String, dynamic>.from(value))),
+      );
+      state.actionResults.addAll(resumeFrom.actionResults.map(Map<String, dynamic>.from));
+      state.pendingOperations.addAll(resumeFrom.pendingOperations.map(Map<String, dynamic>.from));
+      state.trace.addAll(resumeFrom.trace.map(Map<String, dynamic>.from));
+      state.skipped.addAll(resumeFrom.serverOnlyStepsSkipped);
+      state.reviewResponse.addAll(resumeFrom.reviewResponse);
+      state.outcome = resumeFrom.outcome;
+      state.score = resumeFrom.score;
+      state.status = resumeFrom.status;
+      state.currentStepIndex = resumeFrom.currentStepIndex;
+      state.pausedAtStep = resumeFrom.pausedAtStep;
+      state.reviewTask = resumeFrom.reviewTask == null ? null : Map<String, dynamic>.from(resumeFrom.reviewTask!);
+    }
+    state.visitedWorkflows.add(policy.id);
+
+    if (resumeFrom != null && state.reviewResponse.isNotEmpty) {
+      state.reviewResponse.forEach((key, value) {
         if (key != "decision") {
-          variables[key] = value;
+          state.variables[key] = value;
         }
       });
-      switch (reviewResponse["decision"]?.toString()) {
+      switch (state.reviewResponse["decision"]?.toString()) {
         case "approve":
-          outcome = "approve";
-          break;
+          state.outcome = "approve";
         case "reject":
-          outcome = "reject";
-          break;
+          state.outcome = "reject";
       }
     }
 
     if (resumeFrom == null) {
       for (final variable in bundle.variables.where((item) => item.compilable && !bundle.serverOnlyVariables.contains(item.id))) {
-        variables[variable.id] = _variableVm.evaluate(variable, effectivePayload, variables);
+        state.variables[variable.id] = _variableVm.evaluate(variable, effectivePayload, state.variables);
       }
     }
 
-    for (var index = currentStepIndex; index < policy.steps.length; index += 1) {
-      final step = policy.steps[index];
-      currentStepIndex = index;
+    _runSteps(policy.steps, state, state.currentStepIndex, 0);
+
+    if (state.status == "running") {
+      state.status = "completed";
+      state.currentStepIndex = policy.steps.length;
+    }
+    if (state.outcome == "pending") {
+      state.outcome = policy.defaultOutcome ?? "review";
+    }
+
+    return Decision(
+      outcome: state.outcome,
+      score: state.score,
+      variables: state.variables,
+      ruleResults: state.ruleResults,
+      latencyMs: DateTime.now().millisecondsSinceEpoch - startedAt,
+      serverOnlyStepsSkipped: state.skipped.toSet().toList(),
+      executionId: executionId,
+      status: state.status,
+      trace: state.trace,
+      scorecardResults: state.scorecardResults,
+      actionResults: state.actionResults,
+      pendingOperations: state.pendingOperations,
+      reviewTask: state.reviewTask,
+      explainability: <String, dynamic>{
+        "rules": state.ruleResults,
+        "scorecards": state.scorecardResults,
+        "trace": state.trace,
+      },
+      auditSummary: <String, dynamic>{
+        "traceSteps": state.trace.length,
+        "pendingOperationCount": state.pendingOperations.where((item) => item["status"] != "delivered").length,
+        "actionCount": state.actionResults.length,
+        "reviewTaskId": state.reviewTask?["id"],
+      },
+      policyId: policy.id,
+      payload: effectivePayload,
+      transformOutputs: state.transformOutputs,
+      currentStepIndex: state.currentStepIndex,
+      pausedAtStep: state.pausedAtStep,
+      reviewResponse: state.reviewResponse,
+    );
+  }
+
+  /// Run a list of steps against the live context. Re-entered by `loop`, `branch` and `workflow`
+  /// at `depth + 1`; only the top level tracks `currentStepIndex` for durable resume.
+  void _runSteps(List<PolicyStep> steps, _RunState state, int startIndex, int depth) {
+    for (var index = startIndex; index < steps.length; index += 1) {
+      final step = steps[index];
+      if (depth == 0) {
+        state.currentStepIndex = index;
+      }
       final condition = step.config["condition"]?.toString();
-      final context = _contextView(effectivePayload, variables, scorecardResults, transformOutputs, outcome, executionId, reviewResponse);
-      if (condition != null && condition.isNotEmpty && !_evaluateCondition(condition, context)) {
-        trace.add(<String, dynamic>{"step": _traceStep(step), "skipped": true, "reason": "Condition not met: $condition"});
+      if (condition != null && condition.isNotEmpty && !_evaluateCondition(condition, _contextView(state))) {
+        state.trace.add(<String, dynamic>{"step": _traceStep(step), "skipped": true, "reason": "Condition not met: $condition"});
         continue;
       }
 
       final stepStarted = DateTime.now().millisecondsSinceEpoch;
       Map<String, dynamic>? result;
       String? error;
-
-      switch (step.type) {
-        case "connector":
-          final refId = step.refId ?? step.ref;
-          final payloadKeys = ((effectivePayload[refId] as Map?) ?? const <String, dynamic>{}).keys.map((item) => item.toString()).toList()..sort();
-          result = <String, dynamic>{
-            "status": "ok",
-            "payloadKeys": payloadKeys,
-          };
-          break;
-        case "rule":
-          final refId = step.refId ?? step.ref;
-          final rule = bundle.rules.firstWhere((item) => item.id == refId, orElse: () => _MissingRule.instance);
-          if (rule is _MissingRule) {
-            skipped.add(step.id ?? refId ?? step.type);
-            error = "Unknown rule: $refId";
-          } else {
-            result = _ruleEvaluator.evaluate(rule, variables);
-            ruleResults.add(result);
-            outcome = _mergeOutcome(outcome, result["outcome"]?.toString());
-          }
-          break;
-        case "decision_table":
-          final refId = step.refId ?? step.ref;
-          final table = bundle.decisionTables.cast<Map<String, dynamic>?>().firstWhere((item) => item?["id"] == refId, orElse: () => null);
-          if (table == null) {
-            skipped.add(step.id ?? refId ?? step.type);
-            error = "Unknown decision table: $refId";
-          } else {
-            result = _decisionTableEvaluator.evaluate(table, variables);
-            outcome = _mergeOutcome(outcome, result["outcome"]?.toString());
-          }
-          break;
-        case "scorecard":
-          final refId = step.refId ?? step.ref;
-          final scorecard = bundle.scorecards.firstWhere((item) => item.id == refId, orElse: () => _MissingScorecard.instance);
-          if (scorecard is _MissingScorecard) {
-            skipped.add(step.id ?? refId ?? step.type);
-            error = "Unknown scorecard: $refId";
-          } else {
-            result = _scorecardEvaluator.evaluate(scorecard, variables);
-            if (refId != null) {
-              scorecardResults[refId] = result;
-            }
-            score = (result["score"] as num?)?.toDouble();
-          }
-          break;
-        case "transform":
-          result = _executeTransform(step, context);
-          transformOutputs[step.config["outputKey"]?.toString() ?? "transformed"] = result;
-          break;
-        case "action":
-          final pending = _queueAction(step, context);
-          pendingOperations.add(pending);
-          result = <String, dynamic>{
-            "operationId": pending["id"],
-            "stepId": step.id ?? step.refId ?? step.ref ?? step.type,
-            "queued": true,
-            "success": false,
-            "status": "queued",
-            "blocking": pending["blocking"] == true,
-            "url": pending["url"],
-            "method": pending["method"],
-            "requestBody": pending["requestBody"],
-          };
-          actionResults.add(result);
-          if (pending["blocking"] == true) {
-            status = "pending_sync";
-            currentStepIndex = index + 1;
-          }
-          break;
-        case "review_gate":
-          reviewTask = _createReviewTask(step, variables, ruleResults, scorecardResults, outcome, executionId);
-          result = <String, dynamic>{"paused": true, "reviewTaskId": reviewTask["id"]};
-          status = "paused";
-          pausedAtStep = index;
-          break;
-        case "outcome":
-          outcome = _mergeOutcome(outcome, step.refId ?? step.ref ?? step.config["outcome"]?.toString() ?? step.label ?? outcome);
-          result = <String, dynamic>{"outcome": outcome};
-          break;
-        default:
-          skipped.add(step.id ?? step.refId ?? step.ref ?? step.type);
-          result = <String, dynamic>{"skipped": true};
+      try {
+        final body = _executeStepBody(step, state, depth);
+        result = body.result;
+        error = body.error;
+      } catch (failure) {
+        // A step that throws must not take the whole decision down, and must not vanish.
+        error = failure is UnsupportedStepException ? failure.message : failure.toString();
+        // Fail CLOSED on a decision GATE: a rule/scorecard/table that errored must never be
+        // treated as passed, so escalate to human review (parity with the Python core).
+        if (step.type == "rule" || step.type == "scorecard" || step.type == "decision_table") {
+          state.outcome = _mergeOutcome(state.outcome, "review");
+        }
+        if (step.config["onFailure"]?.toString() == "abort") {
+          state.status = "failed";
+        }
       }
 
-      trace.add(<String, dynamic>{
+      state.trace.add(<String, dynamic>{
         "step": _traceStep(step),
         "result": result,
         "error": error,
         "duration_ms": DateTime.now().millisecondsSinceEpoch - stepStarted,
       });
 
-      if (status == "paused" || status == "pending_sync") {
-        break;
+      if (state.status == "failed" || state.status == "paused" || state.status == "pending_sync") {
+        return;
       }
     }
-
-    if (status == "running") {
-      status = "completed";
-      currentStepIndex = policy.steps.length;
-    }
-    if (outcome == "pending") {
-      outcome = policy.defaultOutcome ?? "review";
-    }
-
-    return Decision(
-      outcome: outcome,
-      score: score,
-      variables: variables,
-      ruleResults: ruleResults,
-      latencyMs: DateTime.now().millisecondsSinceEpoch - startedAt,
-      serverOnlyStepsSkipped: skipped.toSet().toList(),
-      executionId: executionId,
-      status: status,
-      trace: trace,
-      scorecardResults: scorecardResults,
-      actionResults: actionResults,
-      pendingOperations: pendingOperations,
-      reviewTask: reviewTask,
-      explainability: <String, dynamic>{
-        "rules": ruleResults,
-        "scorecards": scorecardResults,
-        "trace": trace,
-      },
-      auditSummary: <String, dynamic>{
-        "traceSteps": trace.length,
-        "pendingOperationCount": pendingOperations.where((item) => item["status"] != "delivered").length,
-        "actionCount": actionResults.length,
-        "reviewTaskId": reviewTask?["id"],
-      },
-      policyId: policy.id,
-      payload: effectivePayload,
-      transformOutputs: transformOutputs,
-      currentStepIndex: currentStepIndex,
-      pausedAtStep: pausedAtStep,
-      reviewResponse: reviewResponse,
-    );
   }
+
+  /// Dispatch one step. Mirrors `_execute_step_body` in the Python core, including its final line:
+  /// an unrecognised step type is an ERROR, not a silent skip.
+  _StepOutcome _executeStepBody(PolicyStep step, _RunState state, int depth) {
+    final refId = step.refId ?? step.ref;
+    switch (step.type) {
+      case "connector":
+        final payloadKeys = ((state.payload[refId] as Map?) ?? const <String, dynamic>{})
+            .keys
+            .map((item) => item.toString())
+            .toList()
+          ..sort();
+        return _StepOutcome(<String, dynamic>{"status": "ok", "payloadKeys": payloadKeys});
+
+      case "rule":
+        final rule = _firstOrNull(state.bundle.rules, (item) => item.id == refId);
+        if (rule == null) {
+          state.skipped.add(step.id ?? refId ?? step.type);
+          return _StepOutcome(null, "Unknown rule: $refId");
+        }
+        final result = _ruleEvaluator.evaluate(rule, state.variables);
+        state.ruleResults.add(result);
+        state.outcome = _mergeOutcome(state.outcome, result["outcome"]?.toString());
+        return _StepOutcome(result);
+
+      case "decision_table":
+        final table = _firstOrNull(state.bundle.decisionTables, (item) => item["id"] == refId);
+        if (table == null) {
+          state.skipped.add(step.id ?? refId ?? step.type);
+          return _StepOutcome(null, "Unknown decision table: $refId");
+        }
+        final result = _decisionTableEvaluator.evaluate(table, state.variables);
+        state.outcome = _mergeOutcome(state.outcome, result["outcome"]?.toString());
+        return _StepOutcome(result);
+
+      case "scorecard":
+        final scorecard = _firstOrNull(state.bundle.scorecards, (item) => item.id == refId);
+        if (scorecard == null) {
+          state.skipped.add(step.id ?? refId ?? step.type);
+          return _StepOutcome(null, "Unknown scorecard: $refId");
+        }
+        final result = _scorecardEvaluator.evaluate(scorecard, state.variables, _variableLookup(state));
+        if (refId != null) {
+          state.scorecardResults[refId] = result;
+        }
+        state.score = (result["score"] as num?)?.toDouble();
+        return _StepOutcome(result);
+
+      case "transform":
+        final result = _executeTransform(step, _contextView(state));
+        state.transformOutputs[step.config["outputKey"]?.toString() ?? "transformed"] = result;
+        return _StepOutcome(result);
+
+      case "action":
+        final pending = _queueAction(step, _contextView(state));
+        state.pendingOperations.add(pending);
+        final result = <String, dynamic>{
+          "operationId": pending["id"],
+          "stepId": step.id ?? step.refId ?? step.ref ?? step.type,
+          "queued": true,
+          "success": false,
+          "status": "queued",
+          "blocking": pending["blocking"] == true,
+          "url": pending["url"],
+          "method": pending["method"],
+          "requestBody": pending["requestBody"],
+        };
+        state.actionResults.add(result);
+        if (pending["blocking"] == true) {
+          state.status = "pending_sync";
+          if (depth == 0) {
+            state.currentStepIndex += 1;
+          }
+        }
+        return _StepOutcome(result);
+
+      case "review_gate":
+        final task = _createReviewTask(step, state);
+        state.reviewTask = task;
+        state.status = "paused";
+        state.pausedAtStep = state.currentStepIndex;
+        return _StepOutcome(<String, dynamic>{"paused": true, "reviewTaskId": task["id"]});
+
+      case "outcome":
+        state.outcome = _mergeOutcome(
+          state.outcome,
+          step.refId ?? step.ref ?? step.config["outcome"]?.toString() ?? step.label ?? state.outcome,
+        );
+        return _StepOutcome(<String, dynamic>{"outcome": state.outcome});
+
+      case "loop":
+        return _StepOutcome(_executeLoop(step, state, depth));
+
+      case "branch":
+        return _StepOutcome(_executeBranch(step, state, depth));
+
+      case "workflow":
+        return _StepOutcome(_executeSubWorkflow(step, state, depth));
+
+      // `model` needs the model blob and an ML runtime that only the server has; `monitor` is
+      // post-decision server telemetry (audit events + alert webhooks + scheduled re-evaluation).
+      // Neither can be honoured offline. They FAIL LOUDLY here rather than being skipped, because
+      // a policy that silently drops its model step still returns a decision — one that was never
+      // scored by the model it was authored around.
+      case "model":
+        throw UnsupportedStepException(
+          "Model steps require the server runtime and cannot run offline: ${refId ?? step.id ?? "model"}",
+        );
+
+      case "monitor":
+        throw UnsupportedStepException(
+          "Monitor steps are server-side telemetry and cannot run offline: ${step.id ?? step.label ?? "monitor"}",
+        );
+
+      // Parity with `_execute_step_body`'s final line. Previously this branch marked the step
+      // "skipped" and moved on, so a policy carrying a step type this SDK version does not know
+      // produced a full decision with that step silently missing.
+      default:
+        return _StepOutcome(null, "Unknown step type: ${step.type}");
+    }
+  }
+
+  // ── Control flow ──
+
+  Map<String, dynamic> _executeLoop(PolicyStep step, _RunState state, int depth) {
+    if (depth >= maxWorkflowDepth) {
+      throw UnsupportedStepException("Max loop/workflow nesting depth ($maxWorkflowDepth) exceeded");
+    }
+    final config = step.config;
+    final asName = config["as"]?.toString() ?? "item";
+    final indexName = config["indexAs"]?.toString() ?? "index";
+    final subSteps = _toSteps(config["steps"]);
+    final maxIterations = min(_intConfig(config["maxIterations"], 1000), _loopHardCap);
+
+    final collection = _resolveCollection(config["over"] ?? config["items"], state);
+    final List<dynamic> items;
+    if (collection is Map) {
+      // A map iterates as {key, value} pairs; anything non-iterable is a no-op.
+      items = collection.entries
+          .map((entry) => <String, dynamic>{"key": entry.key?.toString(), "value": entry.value})
+          .toList();
+    } else if (collection is List) {
+      items = List<dynamic>.from(collection);
+    } else {
+      items = const <dynamic>[];
+    }
+
+    final outerScope = state.loopScope;
+    final truncated = items.length > maxIterations;
+    final sliced = items.take(maxIterations).toList();
+    final parallel = (config["mode"]?.toString().toLowerCase() ?? "sequential") == "parallel";
+    final entryOutcome = state.outcome;
+
+    final iterations = <Map<String, dynamic>>[];
+    var cumulative = entryOutcome;
+    var anyFailed = false;
+    for (var index = 0; index < sliced.length; index += 1) {
+      final item = sliced[index];
+      state.loopScope = <String, dynamic>{...outerScope, asName: item, indexName: index};
+      final outcomeBefore = parallel ? cumulative : state.outcome;
+      // The server runs a parallel loop on isolated per-iteration contexts that each START from
+      // the entry outcome and are merged back in index order. Reproducing that merge is what keeps
+      // the OUTCOME identical; there is no concurrency to win on-device.
+      if (parallel) {
+        state.outcome = entryOutcome;
+      }
+      final traceStart = state.trace.length;
+      _runSteps(subSteps, state, 0, depth + 1);
+      if (parallel) {
+        cumulative = _mergeOutcome(cumulative, state.outcome);
+        state.outcome = cumulative;
+      }
+      final failed = state.status == "failed";
+      anyFailed = anyFailed || failed;
+      iterations.add(<String, dynamic>{
+        "index": index,
+        "item": item,
+        "outcome_before": outcomeBefore,
+        "outcome_after": parallel ? cumulative : state.outcome,
+        "steps": state.trace.sublist(traceStart),
+        "paused": state.status == "paused",
+        "failed": failed,
+      });
+      if (parallel && state.status == "paused") {
+        // Same refusal as the server: a durable pause cannot be represented across concurrent
+        // iterations, so it is rejected rather than losing the resume point.
+        state.loopScope = outerScope;
+        throw UnsupportedStepException(
+          "Review gates / durable pauses are not supported inside a parallel loop; use sequential mode.",
+        );
+      }
+      if (!parallel && (state.status == "paused" || state.status == "failed")) {
+        break;
+      }
+      if (parallel && state.status == "failed") {
+        // A parallel loop runs every iteration; a failure is reported after the fact.
+        state.status = "running";
+      }
+    }
+    state.loopScope = outerScope;
+    if (parallel && anyFailed) {
+      state.status = "failed";
+    }
+
+    return <String, dynamic>{
+      "loop": step.id ?? step.label ?? "loop",
+      "over": config["over"],
+      "count": items.length,
+      "iterations_run": iterations.length,
+      "truncated": truncated,
+      "mode": parallel ? "parallel" : "sequential",
+      "iterations": iterations,
+    };
+  }
+
+  Map<String, dynamic> _executeBranch(PolicyStep step, _RunState state, int depth) {
+    final branches = (step.config["branches"] as List<dynamic>?) ?? const <dynamic>[];
+    for (var index = 0; index < branches.length; index += 1) {
+      final branch = branches[index];
+      if (branch is! Map) continue;
+      final condition = branch["condition"]?.toString();
+      if (condition == null || condition.isEmpty || _evaluateCondition(condition, _contextView(state))) {
+        _runSteps(_toSteps(branch["steps"]), state, 0, depth + 1);
+        return <String, dynamic>{"branch": index, "label": branch["label"] ?? index, "matched": true};
+      }
+    }
+    final defaultSteps = _toSteps(step.config["default"]);
+    if (defaultSteps.isNotEmpty) {
+      _runSteps(defaultSteps, state, 0, depth + 1);
+      return <String, dynamic>{"branch": "default", "matched": true};
+    }
+    return <String, dynamic>{"branch": null, "matched": false};
+  }
+
+  Map<String, dynamic> _executeSubWorkflow(PolicyStep step, _RunState state, int depth) {
+    if (depth >= maxWorkflowDepth) {
+      throw UnsupportedStepException("Max sub-workflow depth ($maxWorkflowDepth) exceeded");
+    }
+    final refId = step.refId ?? step.ref ?? "";
+    if (refId.isEmpty) {
+      throw UnsupportedStepException("Sub-workflow step missing ref_id");
+    }
+    if (state.visitedWorkflows.contains(refId)) {
+      throw UnsupportedStepException("Sub-workflow cycle detected: $refId");
+    }
+    final subPolicy = _firstOrNull(state.bundle.policies, (item) => item.id == refId);
+    if (subPolicy == null) {
+      throw UnsupportedStepException("Unknown sub-workflow: $refId");
+    }
+    state.visitedWorkflows.add(refId);
+    _runSteps(subPolicy.steps, state, 0, depth + 1);
+    return <String, dynamic>{"workflow": refId, "outcome": state.outcome};
+  }
+
+  /// Loop iterables: a literal list, a `$.`-path, or a dotted path into the context view.
+  dynamic _resolveCollection(dynamic over, _RunState state) {
+    if (over is List) return over;
+    if (over is! String || over.isEmpty) return null;
+    return _resolvePath(_contextView(state), over.startsWith(r"$.") ? over.substring(2) : over);
+  }
+
+  List<PolicyStep> _toSteps(dynamic raw) {
+    if (raw is! List) return const <PolicyStep>[];
+    return raw.whereType<Map>().map((item) {
+      final config = item["config"];
+      return PolicyStep(
+        id: item["id"]?.toString(),
+        type: item["type"]?.toString() ?? "",
+        ref: item["ref"]?.toString(),
+        refId: (item["refId"] ?? item["ref_id"])?.toString(),
+        label: (item["label"] ?? item["name"])?.toString(),
+        config: config is Map
+            ? config.map((key, value) => MapEntry(key.toString(), value))
+            : const <String, dynamic>{},
+      );
+    }).toList();
+  }
+
+  int _intConfig(dynamic value, int fallback) {
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value.trim()) ?? fallback;
+    return fallback;
+  }
+
+  Map<String, Map<String, dynamic>> _variableLookup(_RunState state) => <String, Map<String, dynamic>>{
+        for (final variable in state.bundle.variables)
+          variable.id: <String, dynamic>{"name": variable.name, "source_id": variable.sourceId},
+      };
+
+  static T? _firstOrNull<T>(List<T> items, bool Function(T) test) {
+    for (final item in items) {
+      if (test(item)) return item;
+    }
+    return null;
+  }
+
+  // ── Step helpers ──
 
   Map<String, dynamic> _executeTransform(PolicyStep step, Map<String, dynamic> context) {
     final mapping = (step.config["mapping"] as Map<dynamic, dynamic>?) ?? const <dynamic, dynamic>{};
@@ -278,56 +567,59 @@ class PolicyExecutor {
       "blocking": blocking,
       "status": "queued",
       "createdAt": DateTime.now().millisecondsSinceEpoch,
+      // A queued operation is a REQUEST TO A HOST, so it has to carry everything the host needs
+      // to perform the step as the author configured it. `mode: "poll"` means "call this until
+      // the condition holds, then fail closed" -- a host that only sees url/method/body fires it
+      // once and reports whatever the first response happened to contain, which for a job-status
+      // endpoint is `{"status": "pending"}` treated as final. The server executor fails that
+      // case CLOSED (review), so dropping these fields here would make the same policy decide
+      // differently on device: exactly the divergence the parity contract exists to prevent.
+      if (step.config["mode"]?.toString() == "poll") ...<String, dynamic>{
+        "mode": "poll",
+        "pollUntil": step.config["pollUntil"] ?? step.config["until"],
+        "maxPolls": step.config["maxPolls"],
+        "pollIntervalMs": step.config["pollIntervalMs"],
+        "onPollTimeout": step.config["onPollTimeout"] ?? "review_gate",
+      },
     };
   }
 
-  Map<String, dynamic> _createReviewTask(
-    PolicyStep step,
-    Map<String, dynamic> variables,
-    List<Map<String, dynamic>> ruleResults,
-    Map<String, Map<String, dynamic>> scorecardResults,
-    String outcome,
-    String executionId,
-  ) {
+  Map<String, dynamic> _createReviewTask(PolicyStep step, _RunState state) {
     return <String, dynamic>{
       "id": "local_review_${_operationId().substring(3)}",
-      "execution_id": executionId,
+      "execution_id": state.executionId,
       "step_id": step.id ?? step.refId ?? step.ref ?? step.type,
       "queue": step.config["assignTo"]?.toString() ?? "mobile_review",
       "status": "pending",
       "required_fields": ((step.config["requiredFields"] as List<dynamic>?) ?? const <dynamic>[]).map((item) => item.toString()).toList(),
       "context_snapshot": <String, dynamic>{
-        "variables": variables,
-        "rule_results": ruleResults,
-        "scorecard_results": scorecardResults,
-        "outcome_before_review": outcome,
+        "variables": state.variables,
+        "rule_results": state.ruleResults,
+        "scorecard_results": state.scorecardResults,
+        "outcome_before_review": state.outcome,
       },
     };
   }
 
-  Map<String, dynamic> _contextView(
-    Map<String, dynamic> payload,
-    Map<String, dynamic> variables,
-    Map<String, Map<String, dynamic>> scorecardResults,
-    Map<String, Map<String, dynamic>> transformOutputs,
-    String outcome,
-    String executionId,
-    Map<String, dynamic> reviewResponse,
-  ) {
-    final computed = transformOutputs["computed"] ??
-        transformOutputs.values.fold<Map<String, dynamic>>(<String, dynamic>{}, (acc, item) {
+  Map<String, dynamic> _contextView(_RunState state) {
+    final computed = state.transformOutputs["computed"] ??
+        state.transformOutputs.values.fold<Map<String, dynamic>>(<String, dynamic>{}, (acc, item) {
           acc.addAll(item);
           return acc;
         });
     return <String, dynamic>{
-      "payload": payload,
-      "variables": variables,
-      "scorecard": scorecardResults,
+      "payload": state.payload,
+      "variables": state.variables,
+      "scorecard": state.scorecardResults,
+      // Loop bindings live at the top level (referenceable by their `as`/`indexAs` names) plus
+      // under a stable `loop` key, exactly as the Python context view exposes them.
+      "loop": state.loopScope,
+      ...state.loopScope,
       "computed": computed,
-      "transforms": transformOutputs,
-      "outcome": outcome,
-      "execution_id": executionId,
-      "review": reviewResponse,
+      "transforms": state.transformOutputs,
+      "outcome": state.outcome,
+      "execution_id": state.executionId,
+      "review": state.reviewResponse,
     };
   }
 
@@ -468,7 +760,7 @@ class PolicyExecutor {
         return null;
       }
       final key = match.group(1)!;
-      current = current is Map<String, dynamic> ? current[key] : null;
+      current = current is Map<String, dynamic> ? current[key] : (current is Map ? current[key] : null);
       final indexGroup = match.group(3);
       if (indexGroup != null) {
         final list = current is List<dynamic> ? current : null;
@@ -496,36 +788,9 @@ class PolicyExecutor {
   String _operationId() => "op_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(100000)}";
 }
 
-class _MissingRule implements CompiledRule {
-  _MissingRule._();
-  static final _MissingRule instance = _MissingRule._();
+class _StepOutcome {
+  _StepOutcome(this.result, [this.error]);
 
-  @override
-  String get id => "";
-  @override
-  String get name => "";
-  @override
-  List<Map<String, dynamic>> get nodes => const <Map<String, dynamic>>[];
-  @override
-  String? get expression => null;
-  @override
-  String get ruleFormat => "v1";
-  @override
-  Map<String, dynamic>? get tree => null;
-}
-
-class _MissingScorecard implements Scorecard {
-  _MissingScorecard._();
-  static final _MissingScorecard instance = _MissingScorecard._();
-
-  @override
-  int get baseScore => 300;
-  @override
-  List<ScoreFactor> get bins => const <ScoreFactor>[];
-  @override
-  String get id => "";
-  @override
-  int get maxScore => 900;
-  @override
-  String get name => "";
+  final Map<String, dynamic>? result;
+  final String? error;
 }

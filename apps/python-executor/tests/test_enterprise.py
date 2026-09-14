@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+
+import sqlalchemy
 import sys
 import tempfile
 import unittest
@@ -24,10 +26,39 @@ class RuleMindEnterpriseTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.database_path = os.path.join(self.tempdir.name, "rulemind-test.db")
+        self._orig_storage = app_main.storage
         app_main.storage = Storage(path=self.database_path)
+        # These tests call route handlers as plain Python functions, so the tenant middleware
+        # never runs and the tenant contextvar is unset. active_tenant_id() now fails closed
+        # rather than silently serving the FIRST tenant (T3.4), so set the context the middleware
+        # would have set. Production requests get this from the middleware.
+        from app.context import set_current_tenant_id
+
+        self._tenant_token = set_current_tenant_id(app_main.storage.default_tenant_id)
 
     def tearDown(self) -> None:
+        from app.context import reset_current_tenant_id
+
+        reset_current_tenant_id(self._tenant_token)
         self.tempdir.cleanup()
+
+        # Restore the global, and release this test's engine. Placed at the END of tearDown so
+        # the teardown above still runs against THIS test's storage -- an earlier version put it
+        # first and silently redirected those statements at the restored global.
+        #
+        # The restore is the load-bearing half. Leaving app_main.storage pointed at a deleted
+        # tempdir made an UNRELATED module later fail with
+        # `sqlite3.OperationalError: unable to open database file`: the failure lands on whoever
+        # reads the global next, never on the test that leaked it, which is why it looked like a
+        # random flake for so long.
+        try:
+            app_main.storage.engine.dispose()
+        except Exception:  # pragma: no cover - teardown must not fail the test
+            pass
+        try:
+            app_main.storage = self._orig_storage
+        except Exception:  # pragma: no cover
+            pass
 
     def test_v2_rule_tree_evaluates_and_returns_group_results(self) -> None:
         created = app_main.create_rule(
@@ -123,10 +154,16 @@ class RuleMindEnterpriseTests(unittest.TestCase):
         self.assertEqual(updated["config"]["api_key"], "••••••••")
         self.assertEqual(updated["config"]["webhook_url"], "https://hooks.example/rulemind")
 
-        with sqlite3.connect(self.database_path) as connection:
+        # Read the raw column through the live engine rather than opening the SQLite file.
+        # The claim -- "the secret is not sitting in the database in plaintext" -- is about
+        # whatever database is actually in use, and sqlite3.connect() could only ever check one
+        # of them: on the Postgres lane it opened an empty file and the assertions below passed
+        # against a row that was never read.
+        with app_main.storage.engine.connect() as connection:
             encrypted_value = connection.execute(
-                "select encrypted_config from connectors where tenant_id = ? and public_id = ?",
-                (app_main.storage.default_tenant_id, "bureau"),
+                sqlalchemy.text("select encrypted_config from connectors "
+                                "where tenant_id = :tenant and public_id = :public_id"),
+                {"tenant": app_main.storage.default_tenant_id, "public_id": "bureau"},
             ).fetchone()[0]
 
         self.assertNotIn("rm_secret_value", encrypted_value)

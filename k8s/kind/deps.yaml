@@ -1,0 +1,82 @@
+# Postgres + Redis for the LOCAL kind cluster only.
+#
+# The Helm chart deliberately does not ship a database: `env.databaseUrl` and `env.redisUrl` are
+# REQUIRED values, because a chart that bundles its own Postgres encourages someone to run that
+# Postgres in production, where it has no backups, no failover and no storage guarantees.
+#
+# A local cluster still needs something to point at, so these two manifests exist beside the
+# chart rather than inside it. They are emptyDir-backed and single-replica on purpose: this is a
+# scratch cluster you throw away with `make k8s-down`, and making the storage durable would only
+# invite the confusion the chart is avoiding.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rulemind-postgres
+spec:
+  selector: { app: rulemind-postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rulemind-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: rulemind-postgres }
+  template:
+    metadata:
+      labels: { app: rulemind-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - { name: POSTGRES_USER, value: rulemind }
+            - { name: POSTGRES_PASSWORD, value: rulemind }
+            - { name: POSTGRES_DB, value: rulemind }
+            # postgres:16-alpine refuses to initdb into a non-empty dir; an emptyDir is empty,
+            # but PGDATA under a subdir keeps this working if the volume is ever swapped for a PVC.
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "rulemind"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+      volumes: [{ name: data, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rulemind-redis
+spec:
+  selector: { app: rulemind-redis }
+  ports: [{ port: 6379, targetPort: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rulemind-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: rulemind-redis }
+  template:
+    metadata:
+      labels: { app: rulemind-redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 250m, memory: 256Mi }

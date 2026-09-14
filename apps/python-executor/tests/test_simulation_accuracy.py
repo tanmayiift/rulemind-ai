@@ -34,6 +34,7 @@ POLICY = "policy_instant_personal_loan"
 class SimulationAccuracyTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "sim.db"))
         self.client = TestClient(app_main.app)
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
@@ -41,6 +42,24 @@ class SimulationAccuracyTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.tempdir.cleanup()
+
+        # Restore the global, and release this test's engine. Placed at the END of tearDown so
+        # the teardown above still runs against THIS test's storage -- an earlier version put it
+        # first and silently redirected those statements at the restored global.
+        #
+        # The restore is the load-bearing half. Leaving app_main.storage pointed at a deleted
+        # tempdir made an UNRELATED module later fail with
+        # `sqlite3.OperationalError: unable to open database file`: the failure lands on whoever
+        # reads the global next, never on the test that leaked it, which is why it looked like a
+        # random flake for so long.
+        try:
+            app_main.storage.engine.dispose()
+        except Exception:  # pragma: no cover - teardown must not fail the test
+            pass
+        try:
+            app_main.storage = self._orig_storage
+        except Exception:  # pragma: no cover
+            pass
 
     def _decide(self, payload):
         return self.client.post("/api/v1/decide", headers=self.headers,
@@ -115,13 +134,22 @@ class FastPathAccuracyTests(unittest.TestCase):
     def test_flat_field_overrides_sample_on_fast_path(self):
         # The scalable hot path (fast_decide) must apply the same field override.
         from app import fast_decide
+        # `schema_paths` and `seed_samples` are both required to reproduce a real bundle now.
+        # The override is driven by the source's DECLARED field set -- the same thing
+        # executor._payloads_by_source iterates -- rather than by whatever keys the sample
+        # happened to have; reading the sample made this silently depend on sample seeding, which
+        # production traffic no longer does (see tests/test_fast_path_sample_seeding_parity.py).
+        # The assertion below is unchanged: this is the fixture catching up to
+        # _build_serving_bundle, not the contract moving.
         bundle = {
             "connectors": {"loan": {"bureau_score": 756}},
+            "schema_paths": {"loan": ["bureau_score"]},
             "variables": [{"id": "loan_bureau_score", "source_id": "loan",
                            "code": "def run(payload, context):\n    return int(payload.get('bureau_score', 0))\n"}],
             "timeout_ms": 2000, "memory_mb": 128,
         }
-        values, _, _ = fast_decide._compute_variables(bundle, {"bureau_score": 590})
+        values, _, _ = fast_decide._compute_variables(
+            bundle, {"bureau_score": 590}, seed_samples=True)
         self.assertEqual(values["loan_bureau_score"], 590)  # not the sample 756
 
 

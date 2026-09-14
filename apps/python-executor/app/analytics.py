@@ -4,24 +4,25 @@ import math
 import os
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from .champion_challenger import analyze_champion_challenger
 from .runtime import cache_get_json, cache_set_json
 from .storage import Storage
+from . import env
 
 
 def _analytics_window_start() -> Optional[datetime]:
     """Start of the dashboard analytics window (naive UTC). Bounds the scanned decision set so
     the dashboards stay fast at scale; configurable via ANALYTICS_WINDOW_DAYS (default 90).
     Set to 0 to scan all history."""
-    days = int(os.getenv("ANALYTICS_WINDOW_DAYS", "90"))
+    days = env.env_int("ANALYTICS_WINDOW_DAYS", 90)
     if days <= 0:
         return None
     return datetime.utcnow() - timedelta(days=days)
 
 
-def _percentile(values: List[Union[int, float]], percentile: float) -> float:
+def _percentile(values: Sequence[Union[int, float]], percentile: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(float(value) for value in values)
@@ -121,7 +122,7 @@ def sdk_analytics(storage: Storage, tenant_id: str) -> Dict[str, Any]:
     if cached is not None:
         return cached
     events = storage.list_sdk_events(tenant_id=tenant_id)
-    version_counts = Counter()
+    version_counts: "Counter[str]" = Counter()
     sync_latencies: List[float] = []
     sync_success = 0
     sync_total = 0

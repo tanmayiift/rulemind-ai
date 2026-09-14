@@ -68,6 +68,7 @@ def _on_device_record(exec_id: str, outcome: str = "approve", *, score=810):
 class SdkOfflineRoundTripTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "offline.db"))
         self.client = TestClient(app_main.app)
         self.tenant = app_main.storage.default_tenant_id
@@ -76,6 +77,24 @@ class SdkOfflineRoundTripTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.tempdir.cleanup()
+
+        # Restore the global, and release this test's engine. Placed at the END of tearDown so
+        # the teardown above still runs against THIS test's storage -- an earlier version put it
+        # first and silently redirected those statements at the restored global.
+        #
+        # The restore is the load-bearing half. Leaving app_main.storage pointed at a deleted
+        # tempdir made an UNRELATED module later fail with
+        # `sqlite3.OperationalError: unable to open database file`: the failure lands on whoever
+        # reads the global next, never on the test that leaked it, which is why it looked like a
+        # random flake for so long.
+        try:
+            app_main.storage.engine.dispose()
+        except Exception:  # pragma: no cover - teardown must not fail the test
+            pass
+        try:
+            app_main.storage = self._orig_storage
+        except Exception:  # pragma: no cover
+            pass
 
     # ── helpers ─────────────────────────────────────────────────────────────
 

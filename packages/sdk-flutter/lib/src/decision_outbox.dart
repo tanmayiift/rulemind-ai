@@ -56,12 +56,25 @@ abstract class DecisionOutbox {
 
   /// Drop the OLDEST rows beyond [maxRows]; returns how many were dropped.
   Future<int> trimToCapacity(int maxRows);
+
+  /// Release any underlying resources. No-op for in-memory implementations.
+  ///
+  /// Safe to add because DecisionOutbox lives in src/ and is NOT exported from
+  /// lib/rulemind.dart (which re-exports only src/models.dart), so nothing outside this
+  /// package implements it. Worth stating explicitly: a concrete default body would NOT
+  /// have protected external implementers anyway -- InMemoryDecisionOutbox below uses
+  /// `implements`, and Dart requires an `implements` class to supply every member,
+  /// concrete or not.
+  Future<void> close() async {}
 }
 
 class InMemoryDecisionOutbox implements DecisionOutbox {
   final Map<String, PendingDecision> _rows = <String, PendingDecision>{};
   final Map<String, int> _order = <String, int>{};
   int _seq = 0;
+
+  @override
+  Future<void> close() async {}
 
   @override
   Future<void> enqueue(PendingDecision decision) async {

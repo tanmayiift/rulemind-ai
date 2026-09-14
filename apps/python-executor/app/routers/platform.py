@@ -3,6 +3,7 @@ mobile admin app's demo/login/session flows. Extracted verbatim from app/main.py
 helpers/models imported by value from app.main; direct storage calls use main.storage live."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
@@ -21,9 +22,67 @@ from ..main import (
     require_platform_admin_request,
     sanitize_admin_user,
 )
-from ..middleware import admin_cookie_secure
+from ..middleware import (
+    admin_cookie_secure,
+    clear_login_failures,
+    client_ip,
+    login_guard_status,
+    login_max_attempts,
+    record_login_failure,
+)
 
 router = APIRouter()
+
+LOGGER = logging.getLogger("rulemind.auth")
+
+# Both platform-admin logins hold the keys to every tenant, and both sat behind the two early
+# returns in TenantContextMiddleware.dispatch() where the rate limiter is unreachable. Neither
+# counted failures, so bcrypt's cost factor was the only thing between an attacker and an
+# unlimited online guessing attack. The middleware now throttles the surface per IP; this
+# counts failures per ACCOUNT, which is what stops a slow distributed spray that stays under
+# any single IP's budget.
+LOGIN_SCOPE_ADMIN = "platform_admin"
+
+
+def _login_locked_response(guard: Any) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail="Too many failed sign-in attempts. Try again in {0}s.".format(max(1, guard.retry_after)),
+        headers={"Retry-After": str(max(1, guard.retry_after))},
+    )
+
+
+def _audit_login_failure(scope: str, email: str, source_ip: str, guard: Any) -> None:
+    """Make a credential-stuffing run alertable rather than merely blocked.
+
+    Blocking without a signal means the first anyone hears of a campaign against the
+    superadmin account is a support ticket. Best-effort: an audit-store failure must never
+    turn into a login outage.
+
+    Filed against Storage.PLATFORM_TENANT_ID, not a workspace. The platform-admin account has
+    no tenant, so this used to resolve onto whatever tenant was in context (or the default one)
+    and a brute-force campaign against the superadmin landed in an unrelated customer's
+    tamper-evident chain.
+    """
+    LOGGER.warning("failed login: scope=%s email=%s ip=%s failures=%s locked=%s",
+                   scope, email, source_ip, guard.failures, guard.locked)
+    if not guard.should_alert:
+        return
+    try:
+        main.storage.add_audit_event({
+            "event_type": "login_failed_repeatedly",
+            "entity_type": "auth",
+            "entity_id": scope,
+            "detail": "{0} consecutive failed sign-in attempts for '{1}'{2}".format(
+                guard.failures, email, " — account locked" if guard.locked else ""),
+            "metadata": {
+                "scope": scope, "email": email, "source_ip": source_ip,
+                "failures": guard.failures, "locked": guard.locked,
+                "max_attempts": login_max_attempts(),
+            },
+        }, tenant_id=main.storage.PLATFORM_TENANT_ID)
+    except Exception:  # pragma: no cover - audit is best effort
+        pass
 
 
 # ── Mobile admin app ───────────────────────────────────────────────────────
@@ -42,9 +101,19 @@ def mobile_demo_access(request: Request) -> Dict[str, Any]:
 
 @router.post("/api/mobile/v1/auth/login")
 def mobile_admin_login(request: MobileAdminLoginRequest, http_request: Request) -> Dict[str, Any]:
+    email = (request.email or "").strip().lower()
+    source_ip = client_ip(http_request)
+    guard = login_guard_status(LOGIN_SCOPE_ADMIN, email)
+    if guard.locked:
+        raise _login_locked_response(guard)
     user = main.storage.get_platform_admin_user_by_email(request.email)
     if not user or not user.get("is_active") or not bcrypt_verify(request.password, user["password_hash"]):
+        # One counter shared with the web admin login (same credential, same account): an
+        # attacker must not get a fresh budget just by switching to the mobile endpoint.
+        _audit_login_failure(LOGIN_SCOPE_ADMIN, email, source_ip,
+                             record_login_failure(LOGIN_SCOPE_ADMIN, email))
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    clear_login_failures(LOGIN_SCOPE_ADMIN, email)
     tenant_id = request.tenantId or str(main.storage.default_tenant_id or "")
     token = create_admin_jwt(user["id"], user["email"])
     return mobile_session_payload(
@@ -76,10 +145,20 @@ def mobile_switch_tenant(tenant_id: str, request: Request) -> Dict[str, Any]:
 
 # ── Platform admin (tenant + key management) ───────────────────────────────
 @router.post("/api/admin/v1/auth/login")
-def admin_login(request: AdminLoginRequest, response: Response) -> Dict[str, Any]:
+def admin_login(request: AdminLoginRequest, response: Response, http_request: Request) -> Dict[str, Any]:
+    email = (request.email or "").strip().lower()
+    source_ip = client_ip(http_request)
+    guard = login_guard_status(LOGIN_SCOPE_ADMIN, email)
+    if guard.locked:
+        raise _login_locked_response(guard)
     user = main.storage.get_platform_admin_user_by_email(request.email)
     if not user or not user.get("is_active") or not bcrypt_verify(request.password, user["password_hash"]):
+        # Counted for a nonexistent email too: skipping the count for unknown accounts would
+        # answer "is this address a superadmin?" through the lockout's timing and status code.
+        _audit_login_failure(LOGIN_SCOPE_ADMIN, email, source_ip,
+                             record_login_failure(LOGIN_SCOPE_ADMIN, email))
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    clear_login_failures(LOGIN_SCOPE_ADMIN, email)
     token = create_admin_jwt(user["id"], user["email"])
     response.set_cookie(
         JWT_COOKIE_NAME,

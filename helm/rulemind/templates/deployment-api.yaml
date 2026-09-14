@@ -3,19 +3,47 @@ kind: Deployment
 metadata:
   name: rulemind-api
 spec:
+{{- if not .Values.hpa.enabled }}
+  # Only pinned when the HPA is off. Rendering `replicas` while an HPA owns this
+  # Deployment makes every `helm upgrade` reset the scale to replicaCount.api,
+  # after which the HPA scales back up — a pointless scale-down/scale-up on every
+  # release, mid-traffic.
   replicas: {{ .Values.replicaCount.api }}
+{{- end }}
   selector:
     matchLabels:
       app: rulemind-api
   template:
     metadata:
+      annotations:
+        # This chart ships no ServiceMonitor and the cluster may not run the Prometheus
+        # Operator, so these annotations are the portable way to actually get scraped --
+        # today nothing scrapes this service at all. /metrics is aggregated across uvicorn
+        # workers via PROMETHEUS_MULTIPROC_DIR (see configmap.yaml); without that a scrape
+        # returns whichever worker answered it and rate() is meaningless.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
       labels:
         app: rulemind-api
     spec:
+      {{- include "rulemind.podSecurityContext" . | nindent 6 }}
       containers:
         - name: api
           image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"
           imagePullPolicy: {{ .Values.image.api.pullPolicy }}
+          {{- include "rulemind.containerSecurityContext" . | nindent 10 }}
+          args:
+            - python3
+            - -m
+            - uvicorn
+            - app.main:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8080"
+            - --workers
+            - {{ .Values.api.uvicornWorkers | quote }}
           ports:
             - containerPort: 8080
           envFrom:
@@ -23,13 +51,53 @@ spec:
                 name: rulemind-config
             - secretRef:
                 name: rulemind-secrets
-          readinessProbe:
+          # Boot does a lot before it can serve: import the ML stack (xgboost,
+          # lightgbm, sklearn, pandas), create_all, take the advisory lock, seed,
+          # and bcrypt the admin password. startupProbe gives that up to
+          # 30 x 5s = 150s while holding liveness off, so a slow cold start is not
+          # mistaken for a hung process.
+          startupProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          # LIVENESS MUST NOT CHECK DEPENDENCIES. /health is the static endpoint;
+          # /ready is the one that talks to Postgres and Redis. Pointing liveness
+          # at the dependency check meant a 30s database failover restarted every
+          # API pod simultaneously — turning a recoverable blip into an outage,
+          # and then a thundering herd of cold starts against the recovering DB.
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          # Readiness keeps the dependency check: a pod that cannot reach Postgres
+          # should leave the Service endpoints, but must NOT be killed.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
           resources:
 {{ toYaml .Values.resources.api | indent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+      volumes:
+        # Present unconditionally so securityContext.readOnlyRootFilesystem can be
+        # flipped to true without also having to remember these. /app/data is where
+        # decision_wal.py writes when DECISION_WAL=1.
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}

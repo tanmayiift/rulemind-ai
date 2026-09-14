@@ -2,10 +2,21 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 
-const API_BASE = "http://127.0.0.1:8100";
+import { ALLOW_DESTRUCTIVE, API_BASE_URL, DESTRUCTIVE_SKIP } from "./env";
+
+// Was a hardcoded "http://127.0.0.1:8100". RM_E2E_API overrides it; the default is unchanged.
+const API_BASE = API_BASE_URL;
 
 // Shared state across tests (populated by "create a rule" test)
 let createdRuleIdShared: string | undefined;
+
+// Every test below that needs this id used to open with `if (!createdRuleIdShared) return;`.
+// A Playwright test that returns early PASSES, so if rule creation broke, six downstream tests
+// went green while asserting nothing at all -- the failure surfaced as one red test instead of
+// seven, and the six that silently stopped covering their endpoints looked healthy.
+// playwright.config.ts pins workers: 1 and fullyParallel: false, so file order is deterministic
+// and this is a genuine precondition, not a race.
+const PRECONDITION = "rule creation must have succeeded first (see 'create rule' above)";
 
 // ─────────────────────────────────────────────────────────────
 // 1. Health & Readiness
@@ -113,7 +124,7 @@ test("create a rule via API", async ({ request }) => {
 });
 
 test("evaluate rule with passing payload", async ({ request }) => {
-  if (!createdRuleIdShared) return;
+  expect(createdRuleIdShared, PRECONDITION).toBeTruthy();
   const res = await request.post(`${API_BASE}/api/v1/test/rule/${createdRuleIdShared}`, {
     data: { bureau: { score: 750 }, bank: { summary: { avgBalance: 45200 } } }
   });
@@ -125,7 +136,7 @@ test("evaluate rule with passing payload", async ({ request }) => {
 });
 
 test("evaluate rule with different payloads returns valid outcome", async ({ request }) => {
-  if (!createdRuleIdShared) return;
+  expect(createdRuleIdShared, PRECONDITION).toBeTruthy();
   const res = await request.post(`${API_BASE}/api/v1/test/rule/${createdRuleIdShared}`, {
     data: { bureau: { score: 500 }, bank: { summary: { avgBalance: 45200 } } }
   });
@@ -137,14 +148,21 @@ test("evaluate rule with different payloads returns valid outcome", async ({ req
 });
 
 test("promote rule endpoint responds correctly", async ({ request }) => {
-  if (!createdRuleIdShared) return;
+  expect(createdRuleIdShared, PRECONDITION).toBeTruthy();
+  // This used to accept [200, 422] and only assert inside `if (res.ok())`, which hid TWO
+  // bugs for as long as the test existed. It always 422'd, because the endpoint declared
+  // `request: PromoteRequest` with no Body default while both its fields have defaults --
+  // so an empty body was rejected even though it was the intended contract. And the
+  // assertion behind the guard was wrong anyway: the endpoint returns the rule, whose
+  // field is `status`, not `new_status`.
+  //
+  // The 422 also had a consequence three files away: the rule stayed status="dev", and
+  // since none of the 13 seeded rules are dev, it became the ONLY dev rule -- which pinned
+  // the rules builder to advanced mode and hung rulemind-v3.spec.ts (#166).
   const res = await request.post(`${API_BASE}/api/v1/rules/${createdRuleIdShared}/promote`);
-  // Promotion may succeed (200) or fail if already promoted (422)
-  expect([200, 422]).toContain(res.status());
-  if (res.ok()) {
-    const result = await res.json();
-    expect(result.new_status).toBe("uat");
-  }
+  expect(res.status()).toBe(200);
+  const result = await res.json();
+  expect(result.status).toBe("uat");
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -287,6 +305,13 @@ test("import/validate detects invalid rules with bad operators", async ({ reques
 });
 
 test("import with valid payload succeeds and returns report", async ({ request }) => {
+  // POST /api/v1/import replaces the WHOLE configuration -- connectors, variables, rules,
+  // scorecards, policies -- not just the objects this test created, and there is no undo. Against
+  // a local throwaway database that is free; against a deployment it overwrites whatever the
+  // people using it were in the middle of. Skipped rather than silently omitted so a remote run
+  // reports the gap instead of showing green for a check it never made.
+  test.skip(!ALLOW_DESTRUCTIVE, `POST /api/v1/import overwrites the entire configuration: ${DESTRUCTIVE_SKIP}`);
+
   const exportRes = await request.get(`${API_BASE}/api/v1/export?format=json`);
   const config = await exportRes.json();
 
@@ -372,7 +397,7 @@ test("decide endpoint runs full pipeline and returns outcome", async ({ request 
 // ─────────────────────────────────────────────────────────────
 
 test("rule evaluation with empty payload does not crash", async ({ request }) => {
-  if (!createdRuleIdShared) return;
+  expect(createdRuleIdShared, PRECONDITION).toBeTruthy();
   const res = await request.post(`${API_BASE}/api/v1/test/rule/${createdRuleIdShared}`, {
     data: {}
   });
@@ -384,7 +409,7 @@ test("rule evaluation with empty payload does not crash", async ({ request }) =>
 });
 
 test("rule evaluation with null fields handles gracefully", async ({ request }) => {
-  if (!createdRuleIdShared) return;
+  expect(createdRuleIdShared, PRECONDITION).toBeTruthy();
   const res = await request.post(`${API_BASE}/api/v1/test/rule/${createdRuleIdShared}`, {
     data: { bureau: null, bank: null }
   });
@@ -409,40 +434,33 @@ test("nonexistent policy returns 404", async ({ request }) => {
 // 13. UI — Navigation & Core Pages Load
 // ─────────────────────────────────────────────────────────────
 
-test("connectors page loads and shows connector list", async ({ page }) => {
-  await page.goto("/connectors");
-  await expect(page.getByText("Bureau")).toBeVisible({ timeout: 15000 });
-});
+// Each of these asserted `body` contained a word like /rule/i. The nav renders "Rules",
+// "Variables", "Scorecards", "Policies", "Exports" and "Audit" on EVERY route, and it renders
+// above the error banner too -- so all seven passed whatever the page did, including failing
+// to load. `page-<name>` is set only on rulemind-page.tsx's success branch (the loading and
+// error branches return early), so it means this page resolved its data. The second assertion
+// is a control on that: something only this page's own component puts on screen.
+const PAGE_LOADS: Array<{ route: string; marker: string; own: RegExp }> = [
+  { route: "/connectors", marker: "page-connectors", own: /bureau/i },
+  { route: "/variables", marker: "page-variables", own: /source|category/i },
+  { route: "/rules", marker: "page-rules", own: /condition|expression/i },
+  { route: "/scorecards", marker: "page-scorecards", own: /base score|bin|band/i },
+  { route: "/policies", marker: "page-policies", own: /step|pipeline/i },
+  { route: "/exports", marker: "page-exports", own: /json|csv|download/i },
+  { route: "/audit", marker: "page-audit", own: /event|chain|timestamp/i },
+];
 
-test("variables page loads", async ({ page }) => {
-  await page.goto("/variables");
-  await expect(page.locator("body")).toContainText(/variable/i, { timeout: 15000 });
-});
-
-test("rules page loads", async ({ page }) => {
-  await page.goto("/rules");
-  await expect(page.locator("body")).toContainText(/rule/i, { timeout: 15000 });
-});
-
-test("scorecards page loads", async ({ page }) => {
-  await page.goto("/scorecards");
-  await expect(page.locator("body")).toContainText(/scorecard/i, { timeout: 15000 });
-});
-
-test("policies page loads", async ({ page }) => {
-  await page.goto("/policies");
-  await expect(page.locator("body")).toContainText(/polic/i, { timeout: 15000 });
-});
-
-test("exports page loads and shows format options", async ({ page }) => {
-  await page.goto("/exports");
-  await expect(page.locator("body")).toContainText(/export/i, { timeout: 15000 });
-});
-
-test("audit page loads", async ({ page }) => {
-  await page.goto("/audit");
-  await expect(page.locator("body")).toContainText(/audit/i, { timeout: 15000 });
-});
+for (const { route, marker, own } of PAGE_LOADS) {
+  test(`${route} loads its own content`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto(route);
+    // Fails if the page errored, stayed loading, or 404'd -- all of which the old assertion passed.
+    await expect(page.getByTestId(marker)).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId(marker)).toContainText(own, { timeout: 15000 });
+    expect(errors, `uncaught page errors on ${route}`).toEqual([]);
+  });
+}
 
 // ─────────────────────────────────────────────────────────────
 // 14. UI — Export/Import Round-Trip
@@ -623,7 +641,7 @@ test("create and test WoE scorecard", async ({ request }) => {
 // ─────────────────────────────────────────────────────────────
 
 test("10 concurrent rule evaluations all return valid results", async ({ request }) => {
-  if (!createdRuleIdShared) return;
+  expect(createdRuleIdShared, PRECONDITION).toBeTruthy();
 
   const promises = Array.from({ length: 10 }, (_, i) =>
     request.post(`${API_BASE}/api/v1/test/rule/${createdRuleIdShared}`, {

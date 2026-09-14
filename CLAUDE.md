@@ -5,8 +5,16 @@ Open-source, source-agnostic **decisioning engine**. Teams plug in JSON data sou
 scorecards and multi-step policies in a web dashboard, then promote them
 `dev → uat → prod` with full audit trails. Apache 2.0.
 
-State as of the last push (2026-08-08, `main` @ `41ed11f`): 113 merged PRs, ~78k LOC,
-0 open issues, 0 open PRs. **Every one of the 75 remote branches is already merged into
+State as of 2026-09-14: ~78k LOC, **2 open issues** (#133 Android emulator, #123 live-AI
+validation) and **22 open Dependabot PRs** — all red because Actions will not start a job for this repo,
+not because they fail. The cause is a **billing block, not a consumed quota**: GitHub's own
+annotation on every failed job reads *"The job was not started because recent account payments
+have failed or your spending limit needs to be increased."* Jobs are assigned no runner and
+execute `steps: 0`, so **consumption is already ~0** — trimming workflows would save nothing.
+The fix is either settling billing or making the repo public (public repos get unlimited free
+GitHub-hosted minutes). (This line said "0 open issues, 0 open PRs" from a 2026-08-08 snapshot; it is
+the kind of count that is wrong the day after it is written, which is why the test numbers below
+now come from a generated `TEST_RESULTS.md`.) **Every one of the 75 remote branches is already merged into
 `main`** — verified by patch-id, not by branch name. Treat `main` as the single source
 of truth and do not go mining branches for lost work.
 
@@ -28,17 +36,21 @@ e2e/    Playwright     test/   Vitest (TS)     qa/   automated QA suite
 infra/ k8s/ helm/ observability/   deployment + Grafana/Prometheus/Tempo
 ```
 
-⚠️ **`README.md`'s architecture block is stale.** It lists `apps/api/` (legacy Fastify),
-`apps/worker/` and `packages/schemas/` — none exist. It also omits the two Rust packages.
+`README.md`'s `## Architecture` tree is accurate and includes both Rust packages. This note
+previously claimed it was stale and listed `apps/api/` — that was wrong; neither `apps/api/`
+nor `apps/worker/` appears anywhere in the README. The genuinely stale block was the SECOND,
+duplicate `## Project Structure` table, which named a nonexistent `packages/schemas/` and
+carried stale test counts; corrected 2026-09-03.
+
 `docker-compose.yml` is correct: its `api` and `worker` services both build from
 `apps/python-executor/Dockerfile`, with `worker` running `python3 -m app.worker`.
 
 ### Backend internals — `apps/python-executor/app/`
 
-`main.py` (1629 lines) wires 18 routers in `app/routers/` (ai, authoring, collab,
-evaluations, experiments, governance, identity, insights, models, onboarding, operations,
-platform, policies, reports, rules, runtime, sdk). `storage.py` is a 3515-line persistence
-monolith — the largest single file and the usual merge-conflict hotspot. Migrations are
+`main.py` (1972 lines) wires **23 routers** in `app/routers/` (ai, authoring, collab, debugger,
+evaluations, experiments, governance, identity, insights, journeys, models, modelsets,
+onboarding, operations, platform, policies, predictors, reports, rules, runtime, scim, sdk,
+webhook_subscriptions). `storage.py` is a **4979-line** persistence monolith — the largest single file and the usual merge-conflict hotspot. Migrations are
 Alembic under `apps/python-executor/alembic/`, run on container start via `entrypoint.sh`.
 
 ### Five engines, one semantics contract
@@ -65,7 +77,14 @@ make test                 # python unittest + vitest
 pnpm test:e2e             # Playwright
 ```
 
-Tests: 74 Python suites, 8 Vitest files, 2 Playwright specs, plus `qa/`.
+Tests: **4,624 across 11 lanes, all green** — 1928 Python SQLite + 1928 Python PostgreSQL 16,
+462 Vitest, 19 + 10 Rust, 163 Flutter, 68 Playwright, 46 Kotlin, plus the contract gates and
+`qa/`. **Do not hand-maintain these numbers here** — `make test-all` regenerates
+`TEST_RESULTS.md` from the runners' own output, and that file is the authority. The counts in
+this file were wrong by 500+ tests before that script existed. The Python suite runs in two lanes: SQLite by default, and real Postgres under
+`DATABASE_URL` + `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` (each test path gets its own Postgres
+schema — without that flag `Storage(path=...)` silently falls back to SQLite and the Postgres
+lane is a near-no-op).
 
 ## Configuration
 
@@ -89,12 +108,16 @@ Two gotchas worth keeping in mind:
   `RULEMIND_CONFIG_KEY`, `RULEMIND_ADMIN_JWT_SECRET`, `RULEMIND_ADMIN_PASSWORD` and
   `RULEMIND_DEV_API_KEY` all fall back to committed dev values if unset.
 
-`INTEGRATION.md` still advertises "the full environment-variable list" but covers only 14
-of them — treat `.env.example` as the authority.
+`INTEGRATION.md` §8 is correct as of 2026-09-05: it is titled "variables you are most likely
+to need" and says in bold that it is a selection covering 24 of ~97. This note previously
+claimed it still advertised "the full environment-variable list" — that was itself stale.
+`.env.example` remains the authority.
 
 ## AI layer (`app/ai.py`)
 
-BYO-key, dual-provider (Anthropic + OpenAI). Default is `claude-sonnet-5`. Three
+BYO-key, **three providers** (Anthropic + OpenAI + Gemini — `SUPPORTED_PROVIDERS` at
+`ai.py:24`, all three with a `_call_*` and a `_fetch_live_models_*`; this note said
+"dual-provider" until 2026-09-14). Default is `claude-sonnet-5`. Three
 model-list staleness bugs were **fixed on 2026-08-20**; described here so the shape of the
 problem is recognisable if the lists drift again:
 
@@ -119,7 +142,11 @@ problem is recognisable if the lists drift again:
 
 - Commits are Conventional Commits with a scope: `feat(engine):`, `fix(web):`,
   `refactor(api):`. Every change lands through a squash-merged PR referencing `(#NNN)`.
-- Docs are written eagerly alongside features and **drift** — `README.md`, `.env.example`
-  and `CHANGELOG.md` (still says "0.1.0 initial scaffold") are all behind the code.
-  Verify any doc claim against source before relying on it.
+- Docs are written eagerly alongside features and **drift**. So does this file: on 2026-09-05
+  three of its own claims were checked and all three were wrong — `INTEGRATION.md` (fixed
+  above), `CHANGELOG.md`'s "still says 0.1.0 initial scaffold" (it is a per-package index at
+  4.0.0), and, in `PLAN.md`, "PostgreSQL 16 → 18" (16 is what docker-compose, the Helm chart,
+  the k8s manifests and CI all pin). **Verify any doc claim against source before acting on
+  it, including the claims in this file** — a stale note here costs every session, because a
+  "known problem" that no longer exists is more expensive than an unknown one.
 - CI: `.github/workflows/ci.yml` and `sdk-verify.yml`.

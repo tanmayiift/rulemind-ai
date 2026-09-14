@@ -15,7 +15,9 @@ from typing import Any, Callable, Dict, List, Optional
 _SMTP_FACTORY: Optional[Callable[[Dict[str, Any]], Any]] = None
 
 
-def _default_smtp(config: Dict[str, Any]):  # pragma: no cover - real network
+def _default_smtp(config: Dict[str, Any]):
+    # Covered by tests/test_mailer_live_smtp.py against a real aiosmtpd server. The
+    # STARTTLS/SSL branches below are still uncovered -- that is stated rather than faked.
     host = config["host"]
     port = int(config.get("port", 587))
     if config.get("use_ssl"):
@@ -66,7 +68,9 @@ def send_text_email(
     message.set_content(body)
     factory = _SMTP_FACTORY or _default_smtp
     try:
-        client = factory(email_config)
+        # is_configured() above proves email_config is not None; a bool-returning helper
+        # cannot carry that narrowing.
+        client = factory(email_config)  # type: ignore[arg-type]
         try:
             client.send_message(message)
         finally:
@@ -96,10 +100,14 @@ def send_report_email(
         return {"delivered": False, "transport": "unconfigured", "recipients": recipients,
                 "note": "No SMTP configured — report queued; configure email to deliver."}
 
-    message = build_message(email_config, recipients, subject, body, csv_content, csv_filename)
+    # is_configured() above guarantees email_config is not None; mypy cannot carry that
+    # through a plain bool-returning helper.
+    message = build_message(email_config, recipients, subject, body, csv_content, csv_filename)  # type: ignore[arg-type]
     factory = _SMTP_FACTORY or _default_smtp
     try:
-        client = factory(email_config)
+        # is_configured() above proves email_config is not None; a bool-returning helper
+        # cannot carry that narrowing.
+        client = factory(email_config)  # type: ignore[arg-type]
         try:
             client.send_message(message)
         finally:

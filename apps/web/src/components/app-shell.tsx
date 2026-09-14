@@ -43,6 +43,14 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/scorecards" as Route, label: "Scorecards", icon: "scorecards" },
       { href: "/models" as Route, label: "ML Models", icon: "variables" },
       { href: "/evaluations" as Route, label: "Model Evaluation", icon: "testing" },
+      // Policies were reachable only by typing the URL, which is the worst possible gap: a
+      // policy is the thing that CHAINS connectors, variables, rules and scorecards into a
+      // decision, the dashboard counts them on its front page, and nothing linked to them.
+      { href: "/policies" as Route, label: "Policies", icon: "policies" },
+      { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
+      // In Build, not Operate: a journey is authored alongside the policy that decides it, and
+      // the screens ARE part of the decision's input contract.
+      { href: "/journeys" as Route, label: "Journeys", icon: "connectors" },
     ],
   },
   {
@@ -51,6 +59,7 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/test-console" as Route, label: "Test Console", icon: "testing" },
       { href: "/api-console" as Route, label: "API Console", icon: "connectors" },
       { href: "/simulation" as Route, label: "Simulation", icon: "testing" },
+      { href: "/ab-tests" as Route, label: "A/B Tests", icon: "testing" },
       { href: "/lifecycle" as Route, label: "Lifecycle", icon: "policies" },
       { href: "/collab" as Route, label: "Collab Editor", icon: "policies" },
       { href: "/deploy" as Route, label: "Deploy", icon: "deploy" },
@@ -60,6 +69,7 @@ const NAVIGATION: ReadonlyArray<{
     group: "Operate",
     items: [
       { href: "/decision-explorer" as Route, label: "Decision Explorer", icon: "audit" },
+      { href: "/debugger" as Route, label: "Debugger", icon: "testing" },
       { href: "/review-queue" as Route, label: "Review Queue", icon: "audit" },
       { href: "/schedules" as Route, label: "Schedules", icon: "deploy" },
       { href: "/audit" as Route, label: "Audit Logs", icon: "audit" },
@@ -102,6 +112,27 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/reports": { title: "Reports", subtitle: "Build reports over your decisions — dynamic columns from inputs/outputs, filters, timezone, and scheduled email delivery." },
   "/workflow-builder": { title: "Workflow Builder", subtitle: "Drag-and-drop canvas for policy steps — connectors, rules, branches, sub-workflows, monitors, and outcomes." },
   "/models": { title: "ML Models", subtitle: "Upload, host, test, and run Python models (.pkl / joblib) as policy steps." },
+  // Every route below was falling through to PAGE_COPY["/"], so the header showed
+  // "RuleMind — Generic decisioning engine…" while you stood on Decision Explorer or Approvals.
+  // A header that names the wrong page is worse than one that says nothing: it is the one part
+  // of the chrome a user trusts to tell them where they are.
+  "/decision-explorer": { title: "Decision Explorer", subtitle: "Find any decision and see exactly why it was made — node by node, with the inputs it saw." },
+  "/debugger": { title: "Step-through Debugger", subtitle: "Pause before a step, read what the policy knows there, then advance one step. Nothing is logged or billed." },
+  "/journeys": { title: "Journeys", subtitle: "The screens a customer fills in, and the policy that decides what they submit. Active ones ship to devices on the next sync." },
+  // Alias routes: these render another page outright, so the header names what you are
+  // actually looking at. They are deliberately NOT in the sidebar -- advertising
+  // "Approvals" and opening Deploy would be a broken promise.
+  "/approvals": { title: "Deploy", subtitle: "Promote tested assets through DEV, UAT, and PROD with audit-safe controls." },
+  "/segments": { title: "Dashboard", subtitle: "System overview, source health, and underwriting flow coverage." },
+  "/batch": { title: "Test Console", subtitle: "Single-run, batch simulation, and production API preview workflows." },
+  "/ab-tests": { title: "A/B Tests", subtitle: "Champion vs challenger experiments with traffic ramps, guardrails, and significance." },
+  "/workflows": { title: "Dashboard", subtitle: "System overview, source health, and underwriting flow coverage." },
+  "/simulation": { title: "Simulation", subtitle: "Replay historical payloads against a draft policy to see what would have changed." },
+  "/lifecycle": { title: "Lifecycle", subtitle: "What is in DEV, UAT and PROD right now, and what changed between them." },
+  "/collab": { title: "Collab Editor", subtitle: "Edit a draft with teammates in real time, with presence and version history." },
+  "/evaluations": { title: "Model Evaluation", subtitle: "Score a hosted model against a labelled set — accuracy, drift, and confusion matrix." },
+  "/model-sets": { title: "Model Sets", subtitle: "Group models into a versioned set, route between them by rule, and compare candidates on one input." },
+  "/predictors": { title: "Predictors", subtitle: "Track a number a decision already produces, and watch its population drift over time." },
   "/decision-tables": { title: "Decision Tables", subtitle: "Grid-authored decision logic — condition columns, rows, hit policies, with a live optimiser flagging conflicts, gaps, unreachable rows, and invalid values." },
 };
 

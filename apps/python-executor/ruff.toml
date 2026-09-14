@@ -39,8 +39,32 @@ extend-exclude = [".runtime", "alembic/versions"]
 # Widening comes next, one rule family at a time, each with its own green
 # commit. B (bugbear) is the obvious next step -- it reports 52 today, mostly
 # B008 function-call-in-default-argument, which is a genuine bug class.
-select = ["E9", "F"]
+select = ["E9", "F", "B"]
 
 [lint.per-file-ignores]
 # Test modules bind values for readability that assertions do not always consume.
 "tests/*" = ["F841"]
+
+[lint.flake8-bugbear]
+# B008 flags a function call in a parameter default. For FastAPI that IS the API: Body(),
+# Query(), Depends() and friends are how a route declares its inputs, and rewriting them into
+# the function body would change the generated OpenAPI schema -- the opposite of what the
+# contract gate exists to protect. So these are configured as immutable, not "fixed".
+#
+# The one case where B008 could be telling the truth is a MUTABLE default that a handler
+# mutates, which would leak across requests. Checked before adding this: every handler only
+# reads its request object (grep for assignment/update/pop on `.payload` returns nothing),
+# so the shared default instances are safe.
+extend-immutable-calls = [
+  "fastapi.Body",
+  "fastapi.Query",
+  "fastapi.Path",
+  "fastapi.Header",
+  "fastapi.Cookie",
+  "fastapi.Form",
+  "fastapi.File",
+  "fastapi.Depends",
+  "fastapi.Security",
+  "app.main.TestPayloadRequest",
+  "app.main.PromoteRequest",
+]

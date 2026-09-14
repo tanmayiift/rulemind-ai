@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 import jwt
 
+from . import env
 from .auth import utcnow
 
 STATE_ISSUER = "rulemind-sso"
@@ -38,14 +39,16 @@ class SsoError(Exception):
 
 
 # ── injectable network helpers (overridden in tests) ─────────────────────
-def _http_get_json(url: str, timeout: float = 8.0) -> Dict[str, Any]:  # pragma: no cover - network
+def _http_get_json(url: str, timeout: float = 8.0) -> Dict[str, Any]:
+    # Covered by tests/test_sso_live_oidc.py against a real in-process OIDC provider.
     with httpx.Client(timeout=timeout) as client:
         resp = client.get(url)
         resp.raise_for_status()
         return resp.json()
 
 
-def _http_post_form(url: str, data: Dict[str, str], timeout: float = 8.0) -> Dict[str, Any]:  # pragma: no cover - network
+def _http_post_form(url: str, data: Dict[str, str], timeout: float = 8.0) -> Dict[str, Any]:
+    # Covered by tests/test_sso_live_oidc.py against a real in-process OIDC provider.
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(url, data=data, headers={"Accept": "application/json"})
         resp.raise_for_status()
@@ -58,9 +61,11 @@ _POST_FORM: Callable[[str, Dict[str, str]], Dict[str, Any]] = _http_post_form
 
 # ── state token (stateless CSRF/nonce carrier) ───────────────────────────
 def _state_secret() -> str:
-    import os
-
-    return os.getenv("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
+    # env.env_str, not os.getenv: auth.create_admin_jwt/decode_admin_jwt read the SAME variable
+    # through env.env_str, so a set-but-EMPTY RULEMIND_ADMIN_JWT_SECRET made the two disagree —
+    # auth signed with the dev fallback while this signed the SSO state token with "", a key
+    # anyone can guess. A forgeable state token is a forgeable OIDC/SAML login nonce.
+    return env.env_str("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret")
 
 
 def issue_state(tenant_id: str, provider: str, nonce: str, redirect_uri: str, ttl_minutes: int = 10) -> str:
@@ -75,7 +80,7 @@ def verify_state(token: str) -> Dict[str, Any]:
     try:
         claims = jwt.decode(token, _state_secret(), algorithms=["HS256"], issuer=STATE_ISSUER)
     except jwt.PyJWTError as exc:
-        raise SsoError("Invalid or expired login state: {0}".format(exc))
+        raise SsoError("Invalid or expired login state: {0}".format(exc)) from exc
     return claims
 
 
@@ -131,7 +136,7 @@ def verify_oidc_id_token(id_token: str, jwks: Dict[str, Any], *, issuer: str, cl
     try:
         header = jwt.get_unverified_header(id_token)
     except jwt.PyJWTError as exc:
-        raise SsoError("Malformed ID token: {0}".format(exc))
+        raise SsoError("Malformed ID token: {0}".format(exc)) from exc
     keys = {k.get("kid"): k for k in (jwks.get("keys") or [])}
     jwk = keys.get(header.get("kid"))
     if jwk is None and jwks.get("keys"):
@@ -141,11 +146,12 @@ def verify_oidc_id_token(id_token: str, jwks: Dict[str, Any], *, issuer: str, cl
     try:
         public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
         claims = jwt.decode(
-            id_token, public_key, algorithms=["RS256"],
+            # jwt.decode wants the PUBLIC key; jwk_to_public_key returns the union type.
+            id_token, public_key, algorithms=["RS256"],  # type: ignore[arg-type]
             audience=client_id, issuer=issuer, leeway=leeway,
         )
     except jwt.PyJWTError as exc:
-        raise SsoError("ID token verification failed: {0}".format(exc))
+        raise SsoError("ID token verification failed: {0}".format(exc)) from exc
     if nonce is not None and claims.get("nonce") != nonce:
         raise SsoError("Nonce mismatch — possible replay.")
     if not claims.get("email"):
@@ -211,20 +217,129 @@ def saml_authn_request_url(config: Dict[str, Any], relay_state: str) -> str:
     return config["sso_url"] + ("&" if "?" in config["sso_url"] else "?") + urllib.parse.urlencode(params)
 
 
-def parse_and_verify_saml_response(config: Dict[str, Any], saml_response_b64: str) -> Dict[str, Any]:
+def _saml_parser():
+    """An XML parser that will not process external entities or DTDs.
+
+    ``etree.fromstring`` with the default parser resolves entities, and this runs PRE-AUTH on an
+    attacker-supplied document: a billion-laughs entity is a denial of service, and an external
+    entity is file disclosure from the API process. ``resolve_entities=False`` plus ``no_network``
+    and ``load_dtd=False`` closes both.
+    """
+    from lxml import etree
+
+    return etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False,
+                           dtd_validation=False, huge_tree=False)
+
+
+def _parse_saml_datetime(value: Optional[str]):
+    """Parse a SAML xs:dateTime into a naive UTC datetime, or None if absent/unparseable.
+
+    Normalised to naive-UTC because everything it is compared against (utcnow, the stored
+    not_on_or_after) is naive UTC; mixing aware and naive datetimes raises at comparison time,
+    which on this path would turn a malformed timestamp into a 500 instead of a rejected login.
+    """
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _validate_saml_conditions(assertion, config: Dict[str, Any], skew_seconds: int = 120) -> None:
+    """Enforce the assertion's own validity constraints.
+
+    NONE of this was checked. A verified signature only proves the IdP said it -- not that it
+    said it recently, to US, for THIS service. Concretely, without these checks:
+
+      * no NotBefore/NotOnOrAfter: an assertion is valid for as long as the IdP's certificate is,
+        so one captured a year ago still logs you in;
+      * no AudienceRestriction: an assertion the IdP minted for a DIFFERENT service provider is
+        accepted here -- so any other SP sharing the customer's IdP can impersonate its users;
+      * no SubjectConfirmationData Recipient: same problem at the endpoint level.
+
+    A 2-minute skew allowance is standard: IdP and SP clocks are not synchronised, and a stricter
+    window rejects legitimate logins.
+    """
+    from datetime import timedelta
+
+    now = utcnow().replace(tzinfo=None)
+    conditions = assertion.find("saml:Conditions", _SAML_NS)
+    if conditions is None:
+        raise SsoError("SAML assertion has no Conditions element (cannot establish validity).")
+
+    not_before = _parse_saml_datetime(conditions.get("NotBefore"))
+    not_on_or_after = _parse_saml_datetime(conditions.get("NotOnOrAfter"))
+    if not_before is None or not_on_or_after is None:
+        raise SsoError("SAML assertion Conditions must carry NotBefore and NotOnOrAfter.")
+    skew = timedelta(seconds=skew_seconds)
+    if now + skew < not_before:
+        raise SsoError("SAML assertion is not yet valid.")
+    if now - skew >= not_on_or_after:
+        raise SsoError("SAML assertion has expired.")
+
+    expected_audience = config.get("sp_entity_id") or ""
+    restrictions = conditions.findall("saml:AudienceRestriction", _SAML_NS)
+    if not restrictions:
+        raise SsoError("SAML assertion has no AudienceRestriction.")
+    audiences = {
+        (el.text or "").strip()
+        for restriction in restrictions
+        for el in restriction.findall("saml:Audience", _SAML_NS)
+    }
+    if expected_audience not in audiences:
+        raise SsoError("SAML assertion audience {0} does not include this service provider.".format(
+            sorted(audiences)))
+
+    # SubjectConfirmationData, when present, pins the assertion to our ACS URL and its own
+    # shorter expiry. Absent is tolerated (some IdPs omit it); present and WRONG is not.
+    expected_acs = (config.get("acs_url") or "").strip()
+    for data in assertion.findall(
+            "saml:Subject/saml:SubjectConfirmation/saml:SubjectConfirmationData", _SAML_NS):
+        recipient = (data.get("Recipient") or "").strip()
+        if recipient and expected_acs and recipient != expected_acs:
+            raise SsoError("SAML SubjectConfirmationData Recipient does not match this ACS URL.")
+        scd_expiry = _parse_saml_datetime(data.get("NotOnOrAfter"))
+        if scd_expiry is not None and now - skew >= scd_expiry:
+            raise SsoError("SAML SubjectConfirmation has expired.")
+
+
+def parse_and_verify_saml_response(
+    config: Dict[str, Any], saml_response_b64: str, storage: Any = None, tenant_id: Optional[str] = None
+) -> Dict[str, Any]:
     """Verify the IdP's XML-DSig signature over a SAML Response against the configured
-    certificate and return the asserted identity {email, name, attributes}."""
+    certificate and return the asserted identity {email, name, attributes}.
+
+    `storage`/`tenant_id` enable single-use enforcement. They are optional so the pure
+    verification logic stays testable without a database, but the ACS route always passes them --
+    without them a captured assertion replays for its whole validity window.
+    """
     from lxml import etree  # local import: SAML is optional at runtime
     from signxml import XMLVerifier
 
     try:
         xml_bytes = base64.b64decode(saml_response_b64)
     except Exception as exc:
-        raise SsoError("SAMLResponse is not valid base64: {0}".format(exc))
+        raise SsoError("SAMLResponse is not valid base64: {0}".format(exc)) from exc
     try:
-        root = etree.fromstring(xml_bytes)  # noqa: S320 - verified below
+        root = etree.fromstring(xml_bytes, parser=_saml_parser())  # noqa: S320 - entities disabled, signature verified below
     except Exception as exc:
-        raise SsoError("SAMLResponse is not valid XML: {0}".format(exc))
+        raise SsoError("SAMLResponse is not valid XML: {0}".format(exc)) from exc
+
+    # Destination, when the IdP sets it, must name our ACS endpoint -- it is the Response-level
+    # counterpart to SubjectConfirmationData's Recipient.
+    expected_acs = (config.get("acs_url") or "").strip()
+    destination = (root.get("Destination") or "").strip()
+    if destination and expected_acs and destination != expected_acs:
+        raise SsoError("SAMLResponse Destination does not match this ACS URL.")
 
     cert_pem = _cert_to_pem(config.get("idp_cert", ""))
     if not cert_pem or "BEGIN CERTIFICATE" not in cert_pem:
@@ -233,16 +348,39 @@ def parse_and_verify_saml_response(config: Dict[str, Any], saml_response_b64: st
         # require_x509=False: trust the pinned cert we were configured with, not one
         # embedded in the document. This is what actually authenticates the assertion.
         verified = XMLVerifier().verify(root, x509_cert=cert_pem, require_x509=False)
-        signed = verified.signed_xml
+        signed = verified.signed_xml  # type: ignore[union-attr]
     except Exception as exc:
-        raise SsoError("SAML signature verification failed: {0}".format(exc))
+        raise SsoError("SAML signature verification failed: {0}".format(exc)) from exc
 
-    # The signed element is the Assertion (or the Response wrapping it).
-    assertion = signed if signed.tag.endswith("}Assertion") else signed.find(".//saml:Assertion", _SAML_NS)
-    if assertion is None:
-        assertion = root.find(".//saml:Assertion", _SAML_NS)
+    # The assertion MUST come from inside the signed subtree. There used to be a fallback that
+    # pulled one out of `root` -- the UNVERIFIED document -- when the signed subtree had none.
+    # That is textbook XML Signature Wrapping: an attacker takes any genuinely signed assertion
+    # (so verification passes), moves it somewhere the signature still covers, and inserts their
+    # OWN unsigned assertion in the place this code reads from. The fallback made a valid
+    # signature over someone else's identity into a login as anyone.
+    #
+    # signxml types verify() as VerifyResult | list[VerifyResult]; a SAML Response carries
+    # exactly one signed assertion, so the single-result form is what comes back here.
+    if signed.tag.endswith("}Assertion"):  # type: ignore[union-attr]
+        assertion = signed
+    else:
+        assertion = signed.find(".//saml:Assertion", _SAML_NS)  # type: ignore[union-attr]
     if assertion is None:
         raise SsoError("No signed assertion found in SAMLResponse.")
+
+    _validate_saml_conditions(assertion, config)
+
+    # Single use. SAML has no built-in replay defence -- the assertion is a signed bearer token --
+    # so an assertion captured from a proxy log or a shared browser would otherwise work for its
+    # entire validity window, every time.
+    if storage is not None:
+        assertion_id = (assertion.get("ID") or "").strip()
+        if not assertion_id:
+            raise SsoError("SAML assertion has no ID, so single-use cannot be enforced.")
+        conditions = assertion.find("saml:Conditions", _SAML_NS)
+        expiry = _parse_saml_datetime(conditions.get("NotOnOrAfter")) if conditions is not None else None
+        if not storage.claim_saml_assertion(assertion_id, not_on_or_after=expiry, tenant_id=tenant_id):
+            raise SsoError("This SAML assertion has already been used.")
 
     attributes: Dict[str, str] = {}
     for attr in assertion.findall(".//saml:Attribute", _SAML_NS):

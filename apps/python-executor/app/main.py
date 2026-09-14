@@ -1,6 +1,5 @@
 import copy
 import asyncio
-import os
 import time
 import uuid
 from datetime import datetime
@@ -8,7 +7,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from fastapi.responses import JSONResponse
+from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import decode_admin_jwt
@@ -18,8 +18,9 @@ from .compiler import (
     compile_bundle,
 )
 from .context import get_current_api_key_id, get_current_role, get_current_tenant_id
+from .env import env_bool, env_int, env_str
 from .experience_studio import build_experience_manifest
-from .executor import ExecutionContext, PolicyExecutor
+from .executor import EvaluationBudgetExceeded, ExecutionContext, PolicyExecutor
 from .logic import (
     flatten_tree_to_nodes,
     generate_rule_expression_definition,
@@ -30,7 +31,12 @@ from .logic import (
     nodes_to_tree,
     slugify,
 )
-from .middleware import TenantContextMiddleware
+from .middleware import (
+    IdempotencyMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+    TenantContextMiddleware,
+)
 from .runtime import is_local_dev, redis_client
 from .security_config import verify_production_secrets
 from .sandbox import execute_variable
@@ -39,7 +45,10 @@ from .storage import Storage
 
 
 def parse_origins() -> List[str]:
-    raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+    # env_str, not os.getenv: the Helm chart renders `CORS_ORIGINS: ""` when no origins are
+    # configured, and os.getenv returns that empty string instead of the default — which
+    # produced ZERO allowed origins and a CORS rejection on every browser request.
+    raw = env_str("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     if "*" in origins:
         return ["*"]
@@ -79,15 +88,86 @@ def _install_ai_usage_recorder() -> None:
 _install_ai_usage_recorder()
 
 
-app = FastAPI(title="RuleMind V4 API", version="4.0.0")
+def _docs_enabled() -> bool:
+    """Whether to publish Swagger UI, ReDoc and the OpenAPI schema.
+
+    They were on unconditionally, so the deployed API served /docs, /redoc and /openapi.json to
+    anyone, unauthenticated -- the complete endpoint map, every request and response schema, and
+    the shape of the decisioning model, handed to whoever asks. That is reconnaissance a
+    credentialled attacker would otherwise have to guess at, and it is free.
+
+    Off in production, on everywhere else, because they are genuinely useful in development.
+    RULEMIND_ENABLE_DOCS=1 re-enables them for a deployment that wants a public API reference --
+    an explicit decision rather than an accident of the default.
+    """
+    if env_bool("RULEMIND_ENABLE_DOCS", False):
+        return True
+    return (env_str("RULEMIND_ENV", "").strip().lower()
+            not in ("production", "prod", "staging"))
+
+
+_DOCS_ON = _docs_enabled()
+app = FastAPI(
+    title="RuleMind V4 API",
+    version="4.0.0",
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url="/redoc" if _DOCS_ON else None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Without this the browser cannot READ these headers cross-origin, whatever the server
+    # sends: `allow_headers` governs the REQUEST, `expose_headers` the RESPONSE, and the default
+    # exposes only a handful of CORS-safelisted ones. So the rate-limit budget the API has always
+    # advertised has never been visible to the dashboard -- it could be throttled and had no way
+    # to see it coming or to back off. Same for the request id, which is what a user would quote
+    # in a support ticket.
+    expose_headers=[
+        "RateLimit-Limit",
+        "RateLimit-Remaining",
+        "RateLimit-Reset",
+        "RateLimit-Scope",
+        "Retry-After",
+        "X-Request-Id",
+    ],
 )
+# Registered BEFORE TenantContextMiddleware so it ends up INSIDE it: Starlette makes the
+# last-added middleware outermost, and idempotency must run after auth has passed and after
+# request.state.tenant_id is set (keys are scoped per tenant).
+app.add_middleware(IdempotencyMiddleware, storage=current_storage)
 app.add_middleware(TenantContextMiddleware, storage=current_storage)
+# Registered LAST so it is OUTERMOST (Starlette wraps in reverse order of registration). It has
+# to wrap the tenant middleware rather than sit inside it, or the 401/403/429 responses that
+# middleware returns early would carry no correlation id -- the exact responses worth tracing.
+app.add_middleware(RequestIdMiddleware)
+# Outermost of all, so its headers land on EVERY response -- including the 401/403/429 the
+# tenant middleware returns early, and including responses from exception handlers. A browser
+# needs nosniff and frame-ancestors on an error page just as much as on a success.
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+@app.exception_handler(EvaluationBudgetExceeded)
+def _evaluation_budget_handler(request: Request, exc: EvaluationBudgetExceeded) -> JSONResponse:
+    """504, not 500 -- the request is retryable and nothing is wrong with it.
+
+    Registered app-wide rather than per-route because every entry point that evaluates a policy
+    (/decide, /decide/batch, the console execute, simulations) funnels through the same
+    executor, and a budget that only one of them honoured would be worse than none.
+    """
+    return JSONResponse(
+        status_code=504,
+        content={
+            "detail": str(exc),
+            "error": "evaluation_budget_exceeded",
+            "budget_ms": exc.budget_ms,
+            "elapsed_ms": exc.elapsed_ms,
+            "stage": exc.stage,
+        },
+    )
 
 # Optional OpenTelemetry tracing (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set).
 try:
@@ -105,7 +185,10 @@ EVENTS_INGESTED_TOTAL = Counter("rulemind_events_ingested_total", "RuleMind SDK 
 DECISIONS_INGESTED_TOTAL = Counter("rulemind_sdk_decisions_ingested_total", "On-device decisions ingested", ["result"])
 
 # Max decisions accepted per /sdk/v1/decisions batch (config so limits move without code).
-SDK_DECISIONS_BATCH_MAX = int(os.getenv("SDK_DECISIONS_BATCH_MAX", "1000"))
+# env_int, not int(os.getenv(...)): this runs at MODULE IMPORT, so a set-but-blank value —
+# what a Helm chart renders for an unset override — raised ValueError before a single handler
+# was registered and killed the process at startup.
+SDK_DECISIONS_BATCH_MAX = env_int("SDK_DECISIONS_BATCH_MAX", 1000)
 
 
 ALLOWED_NODE_TYPES = {"condition", "and", "or", "approve", "review", "reject"}
@@ -160,6 +243,10 @@ class VariableUpsertRequest(BaseModel):
     code: str
     description: Optional[str] = None
     status: str = "dev"
+
+
+class VariableLintRequest(BaseModel):
+    code: str = ""
 
 
 class VariableDraftTestRequest(BaseModel):
@@ -321,6 +408,10 @@ class SettingsRequest(BaseModel):
     engine_config: Optional[Dict[str, Any]] = None
     source_defaults: Optional[Dict[str, Any]] = None
     audit_retention_days: Optional[int] = None
+    # See governance.DataProtectionRequest: months is the unit retention is actually specified
+    # in. GET already returns it (this route returns get_settings() verbatim); without this
+    # field PUT silently dropped it, so it could be read but never written here.
+    audit_retention_months: Optional[int] = None
     theme_mode: Optional[str] = None
     branding: Optional[Dict[str, Any]] = None
 
@@ -550,10 +641,22 @@ def payload_map(payload: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return normalized
 
 
+def _as_int(value: Any, default: int) -> int:
+    """A stored engine-config override, or `default` when it is absent or unparseable."""
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def engine_limits() -> Dict[str, int]:
+    # The env fallbacks go through env_int so a blank PYTHON_SANDBOX_TIMEOUT / _MEMORY falls
+    # back to the documented default instead of raising ValueError out of every decision.
     settings = storage.get_settings().get("engine_config", {})
-    timeout_ms = int(settings.get("timeout_ms", os.getenv("PYTHON_SANDBOX_TIMEOUT", "2000")))
-    memory_mb = int(settings.get("memory_mb", os.getenv("PYTHON_SANDBOX_MEMORY", "128")))
+    timeout_ms = _as_int(settings.get("timeout_ms"), env_int("PYTHON_SANDBOX_TIMEOUT", 2000))
+    memory_mb = _as_int(settings.get("memory_mb"), env_int("PYTHON_SANDBOX_MEMORY", 128))
     return {"timeout_ms": timeout_ms, "memory_mb": memory_mb}
 
 
@@ -596,7 +699,7 @@ def compute_variable_values(
             for source_id, group_vars in source_groups.items()
         }
         for future in as_completed(futures):
-            for variable, execution, group_computed in future.result():
+            for variable, execution, _ in future.result():
                 computed_values[variable["id"]] = execution.get("value")
                 results.append(
                     {
@@ -723,8 +826,14 @@ def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
             raise HTTPException(status_code=422, detail="Unknown rule in policy: {0}".format(ref_id))
         if step_type == "scorecard" and ref_id not in scorecards_map:
             raise HTTPException(status_code=422, detail="Unknown scorecard in policy: {0}".format(ref_id))
-        if step_type == "workflow" and not ref_id:
-            raise HTTPException(status_code=422, detail="Sub-workflow step requires a ref_id (target policy).")
+        # A sub-workflow may name its child by ALIAS instead of by raw id -- that is the whole
+        # point of aliases, so a policy can be promoted dev -> uat -> prod without rewriting
+        # every parent that calls it. Requiring ref_id unconditionally made an alias-only step
+        # unauthorable through the API, so an author had to carry a stale id alongside the alias.
+        if step_type == "workflow" and not (ref_id or (step.get("config") or {}).get("alias") or step.get("alias")):
+            raise HTTPException(
+                status_code=422,
+                detail="Sub-workflow step requires a ref_id (target policy) or an alias.")
         if step_type not in {"connector", "rule", "scorecard", "decision_table", "outcome", "transform", "action", "review_gate", "model", "branch", "loop", "workflow", "monitor"}:
             raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
 
@@ -836,10 +945,14 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
             "source_icon": connectors.get(variable_lookup.get(variable_id, {}).get("source_id", ""), {}).get("icon"),
             "source_active": connectors.get(variable_lookup.get(variable_id, {}).get("source_id", ""), {}).get("is_active", False),
             "value": value,
-            "error": None,
+            # These three were hardcoded, so the API reported every variable as having
+            # succeeded even when it had timed out and its value was a silent null. A caller
+            # inspecting the response could not tell a real null from a failure -- the response
+            # actively asserted there wasn't one.
+            "error": ctx.variable_errors.get(variable_id),
             "latency_ms": 0,
             "variable_name": variable_lookup.get(variable_id, {}).get("name", variable_id),
-            "passed": True,
+            "passed": variable_id not in ctx.variable_errors,
         }
         for variable_id, value in ctx.variables.items()
     ]
@@ -853,17 +966,28 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
         "status": ctx.status,
         "execution_id": ctx.execution_id,
     }
-    last_test_result = {
-        "passed": outcome["outcome"] in {"approve", "review", "reject"},
-        "outcome": outcome["outcome"],
-        "latency_ms": latency_ms,
-        "tested_at": now_iso(),
-    }
-    updated = storage.update_policy(policy["id"], {"last_test_result": last_test_result}, bump_version=False)
+    # `last_test_result` is a CONSOLE artifact -- it renders the "last tested" badge in the
+    # authoring UI. It used to be written on every call, including production /decide, which
+    # meant every decision UPDATEd the policy row. Postgres serializes those on the row lock,
+    # so concurrency on a single hot policy -- the normal shape of this workload -- collapsed
+    # to roughly one decision at a time. The console tests one policy by hand; contention there
+    # is not a thing, so the write stays on that path and leaves the hot path alone.
+    updated = None
+    if source == "test_console":
+        last_test_result = {
+            "passed": outcome["outcome"] in {"approve", "review", "reject"},
+            "outcome": outcome["outcome"],
+            "latency_ms": latency_ms,
+            "tested_at": now_iso(),
+        }
+        updated = storage.update_policy(policy["id"], {"last_test_result": last_test_result}, bump_version=False)
     return {
         "policy": updated or policy,
         "variable_results": variable_results,
         "values": ctx.variables,
+        # Kept separate from "values" because a failed variable's value is None, and None is a
+        # legitimate value -- the two are indistinguishable without this map.
+        "variable_errors": dict(ctx.variable_errors),
         "result": outcome,
         "latency_ms": latency_ms,
     }
@@ -1030,11 +1154,31 @@ def maybe_compile_bundle(tenant_id: str, background_tasks: Optional[BackgroundTa
 
 
 def active_tenant_id(request: Optional[Request] = None) -> str:
+    """Resolve the tenant for the current request.
+
+    The last resort used to be `storage.default_tenant_id` unconditionally, which is a
+    cross-tenant fail-open: any code path that reaches here without a tenant context -- a route
+    outside the middleware's prefix guard, a background task, a WebSocket -- silently read AND
+    WROTE the FIRST tenant's data. On a multi-tenant deployment that is one tenant's data served
+    to whoever asked.
+
+    The fallback is kept for exactly one case: auth deliberately disabled. With AUTH_MODE=none the
+    middleware returns before establishing any tenant, and the deployment is single-tenant by
+    definition -- the default tenant IS the answer there, and removing it would break every
+    auth-disabled dev and self-hosted setup. Any other unresolved tenant is a bug, and raising
+    turns a silent cross-tenant read into a 500 that gets fixed.
+    """
     if request is not None and getattr(request.state, "tenant_id", None):
         return str(request.state.tenant_id)
     if get_current_tenant_id():
         return str(get_current_tenant_id())
-    return str(storage.default_tenant_id or "")
+    if env_str("AUTH_MODE") == "none":
+        return str(storage.default_tenant_id or "")
+    raise HTTPException(
+        status_code=500,
+        detail="No tenant context for this request. This is a server-side bug: the route is "
+               "outside the tenant middleware, or is running detached from a request.",
+    )
 
 
 def active_role(request: Optional[Request] = None) -> str:
@@ -1053,7 +1197,7 @@ def active_actor(request: Optional[Request] = None) -> str:
 
 
 def public_api_base_url(request: Optional[Request] = None) -> str:
-    configured = os.getenv("RULEMIND_PUBLIC_API_BASE_URL")
+    configured = env_str("RULEMIND_PUBLIC_API_BASE_URL")
     if configured:
         return configured.rstrip("/")
     if request is not None:
@@ -1165,7 +1309,9 @@ def build_sdk_response(
         experiment = {"id": ctx.experiment_id, "variant": ctx.experiment_variant}
     return {
         "outcome": ctx.outcome,
-        "score": next(iter(scorecard_results.values()), {}).get("score") if scorecard_results else None,
+        # The {} default narrows to dict[Never, Never] for mypy, making .get("score") look
+        # impossible; the guard means it is never actually reached.
+        "score": next(iter(scorecard_results.values()), {}).get("score") if scorecard_results else None,  # type: ignore[call-overload]
         "variables": copy.deepcopy(ctx.variables),
         "ruleResults": rule_results,
         "experiment": experiment,
@@ -1285,6 +1431,23 @@ def sync_sdk_review_task(request: SdkExecutionSyncRequest, tenant_id: str) -> Op
 
 @app.on_event("startup")
 async def startup() -> None:
+    # Outbound webhook subscriptions listen on the audit stream. Registered here rather than at
+    # import time so a test that swaps `storage` does not end up with a listener bound to a
+    # different one, and so the registration is visible in the startup path next to the other
+    # side effects it belongs with.
+    try:
+        from . import webhook_dispatch
+
+        from .storage import register_audit_listener, register_decision_listener
+
+        register_audit_listener(webhook_dispatch.on_audit_event)
+        register_decision_listener(webhook_dispatch.on_decision)
+
+        from . import predictors as predictors_module
+
+        register_decision_listener(predictors_module.on_decision)
+    except Exception:  # pragma: no cover - a listener must never block startup
+        pass
     # Fail closed: refuse to serve in production with default/unset critical secrets.
     verify_production_secrets()
     # Durable decision outbox: replay any WAL entries a previous process appended but was killed
@@ -1294,14 +1457,27 @@ async def startup() -> None:
 
         if decision_wal.enabled():
             result = decision_wal.recover(storage)
-            if result.get("replayed"):
-                import logging
+            import logging
 
-                logging.getLogger("rulemind.decision_wal").warning(
+            wal_log = logging.getLogger("rulemind.decision_wal")
+            if result.get("replayed"):
+                wal_log.warning(
                     "decision WAL recovery: replayed %s orphaned decision(s) %s", result["replayed"], result)
+            if result.get("dead_lettered"):
+                # ERROR, and logged on EVERY boot rather than only when something was replayed.
+                # A dead-lettered record is a decision that was returned to a caller and is not
+                # in the database, and unlike a quarantined one nothing will retry it -- it sits
+                # there until a human looks. Logging it only alongside a successful replay would
+                # mean the quiet boots, which is most of them, say nothing at all.
+                wal_log.error(
+                    "decision WAL: %s decision(s) in the dead letter and NOT in the database. "
+                    "They exhausted DECISION_WAL_MAX_REPLAY_ATTEMPTS; inspect with "
+                    "decision_wal.dead_letter_entries() and retry with "
+                    "decision_wal.replay_dead_letter(storage) once the cause is fixed.",
+                    result["dead_lettered"])
     except Exception:  # pragma: no cover - recovery must never block startup
         pass
-    if not (is_local_dev() or os.getenv("RULEMIND_RUN_API_SCHEDULER") == "1"):
+    if not (is_local_dev() or env_bool("RULEMIND_RUN_API_SCHEDULER")):
         return
     try:
         init_scheduler(storage)
@@ -1318,6 +1494,17 @@ async def shutdown() -> None:
         from . import decision_log
 
         decision_log.shutdown()
+    except Exception:  # pragma: no cover - best effort
+        pass
+    # Reap the sandbox's worker PROCESSES. decision_log above is a thread pool and dies with the
+    # interpreter; these are spawned children that outlive their parent unless something kills
+    # them. On this developer machine that had left 159 orphans over three weeks, one of them
+    # spinning at 99% CPU since 2026-08-29. A container's PID namespace makes this impossible in
+    # production -- it is a host-only leak, and this is where it gets closed.
+    try:
+        from . import sandbox
+
+        sandbox.shutdown_pool()
     except Exception:  # pragma: no cover - best effort
         pass
     # Relinquish scheduler leadership on graceful shutdown so a surviving replica
@@ -1340,12 +1527,22 @@ def _dependency_status() -> Dict[str, Any]:
     configured and cannot be reached is an error.
     """
     try:
-        with storage.connect():
-            db_status = "ok"
+        # `SELECT 1`, not a bare `with storage.connect()`. SessionLocal() builds a Session
+        # LAZILY -- it acquires no DBAPI connection until a statement runs, and the commit on an
+        # unused session is a no-op -- so the bare form reported "ok" with Postgres stopped, and
+        # the readiness probe had never once detected a database outage. That is the entire job
+        # of this probe: take the pod out of rotation while its database is unreachable, and
+        # rejoin on its own when it comes back, with no restart. Caught by
+        # scripts/smoke_compose.sh, which stops the database and re-probes.
+        from sqlalchemy import text
+
+        with storage.connect() as session:
+            session.execute(text("SELECT 1"))
+        db_status = "ok"
     except Exception:
         db_status = "error"
 
-    if not (os.getenv("REDIS_URL") or "").strip():
+    if not env_str("REDIS_URL"):
         redis_status = "not_configured"
     else:
         try:
@@ -1354,26 +1551,60 @@ def _dependency_status() -> Dict[str, Any]:
         except Exception:
             redis_status = "error"
 
-    healthy = db_status == "ok" and redis_status in ("ok", "not_configured")
-    return {
-        "status": "ok" if healthy else "degraded",
+    # The sandbox is a dependency in every sense that matters: user-authored Python variables are
+    # what a policy is written around, and if the runtime forbids `spawn` -- some serverless and
+    # hardened container platforms do -- every one of them fails. Decisions still come back,
+    # because T1.2 makes a failed variable fail CLOSED, but they are decided without the inputs
+    # the policy is about, and until now nothing upstream said so: the probe checked the database
+    # and Redis, answered 200, and the load balancer sent traffic to a pod that could not run the
+    # product. One trivial expression through the real path, so this answers "did a worker start
+    # and return a value", not "does a pool object exist".
+    from .sandbox import probe as sandbox_probe
+
+    sandbox = sandbox_probe()
+    sandbox_status = sandbox["status"]
+
+    healthy = (db_status == "ok" and redis_status in ("ok", "not_configured")
+               and sandbox_status != "error")
+    payload = {
+        "status": "ok" if healthy and sandbox_status == "ok" else "degraded",
         "db": db_status,
         "redis": redis_status,
+        # `degraded` is not `error`: SANDBOX_FALLBACK_MODE=inline works, but runs untrusted
+        # customer Python in the API process with no RLIMIT and no process boundary. That is a
+        # deliberate, configured trade, so it must not take the pod out of rotation -- and it
+        # must not read as plain "ok" either.
+        "sandbox": sandbox_status,
+        "sandbox_mode": sandbox["mode"],
         "version": "4.0.0",
         "healthy": healthy,
     }
+    if sandbox.get("detail"):
+        payload["sandbox_detail"] = sandbox["detail"]
+    return payload
 
 
 @app.get("/health")
 @app.get("/api/v1/health")
-def health(response: Response) -> Dict[str, Any]:
-    """Liveness. Returns 503 when a hard dependency is down so an orchestrator's
-    HTTP check can actually fail — it inspects the status code, not the body."""
-    state = _dependency_status()
-    healthy = state.pop("healthy")
-    if not healthy:
-        response.status_code = 503
-    return state
+async def health() -> Dict[str, Any]:
+    """Liveness. Deliberately static: no database, no Redis, no I/O of any kind.
+
+    This used to call _dependency_status() and answer 503 whenever Postgres was unreachable,
+    and the Helm chart points its LIVENESS probe here. The two together mean a 30-second DB
+    failover — a survivable event — fails liveness on every replica at once and kubelet
+    restarts the entire API fleet, turning a brief dependency blip into a full outage with a
+    cold-start thundering herd on the database that just came back.
+
+    It was also a sync `def`, so FastAPI ran it on the same bounded threadpool as /decide: a
+    saturated sandbox pool could time the probe out and trigger the same mass restart with
+    every dependency perfectly healthy. `async def` keeps it on the event loop, where nothing
+    a request handler does can starve it.
+
+    Liveness answers one question — is this process still able to serve? — and only a restart
+    fixes a "no". Whether the dependencies are reachable is READINESS, and it stays on /ready,
+    where a "no" takes the pod out of the load-balancer rotation and puts it back by itself.
+    """
+    return {"status": "ok", "version": "4.0.0", "check": "liveness"}
 
 
 # /health/ready is the path k8s/rulemind.yaml probes; without it the probe 404s
@@ -1381,8 +1612,13 @@ def health(response: Response) -> Dict[str, Any]:
 @app.get("/ready")
 @app.get("/health/ready")
 def ready(response: Response) -> Dict[str, Any]:
-    """Readiness. A readinessProbe only looks at the status code, so returning 200
-    with {"ready": false} — as this used to — meant the gate never fired."""
+    """Readiness — the ONLY probe that touches the dependencies.
+
+    A readinessProbe only looks at the status code, so returning 200 with {"ready": false}
+    — as this used to — meant the gate never fired. Failing here is safe in a way failing
+    /health is not: the pod leaves the service endpoints and rejoins on its own the moment
+    the dependency recovers, with no restart and no lost warm state.
+    """
     state = _dependency_status()
     is_ready = state.pop("healthy")
     if not is_ready:
@@ -1392,7 +1628,13 @@ def ready(response: Response) -> Dict[str, Any]:
 
 @app.get("/metrics")
 def metrics() -> Response:
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    # Routed through metrics_registry so a multiprocess deployment aggregates across workers.
+    # generate_latest() on the default registry reports only the worker that happened to serve
+    # the scrape, so with N workers counters appear to move backwards and rate() is garbage.
+    from .metrics_registry import render
+
+    payload, content_type = render()
+    return Response(content=payload, media_type=content_type)
 
 
 # ── AI Copilot (BYO key, server-side, drafts only) ─────────────────────────────
@@ -1595,7 +1837,7 @@ def list_excel_functions() -> Dict[str, Any]:
         "text": [], "lookup_reference": [], "date_time": [], "information": [],
         "engineering": [], "database": [],
     }
-    for name, func in sorted(EXCEL_FUNCTIONS.items()):
+    for name in sorted(EXCEL_FUNCTIONS):
         # Categorize by function name patterns
         if name in {"SUM", "SUMIF", "SUMIFS", "SUMPRODUCT", "SUMSQ", "ABS", "ACOS", "ACOSH", "ASIN", "ASINH", "ATAN", "ATAN2", "ATANH", "CEILING", "COMBIN", "COMBINA", "COS", "COSH", "COT", "CSC", "DEGREES", "EVEN", "EXP", "FACT", "FACTDOUBLE", "FLOOR", "FLOOR_MATH", "GCD", "INT", "LCM", "LN", "LOG", "LOG10", "MOD", "MROUND", "MULTINOMIAL", "ODD", "PI", "POWER", "PRODUCT", "QUOTIENT", "RADIANS", "RAND", "RANDBETWEEN", "ROUND", "ROUNDDOWN", "ROUNDUP", "SEC", "SIGN", "SIN", "SINH", "SQRT", "SQRTPI", "SUBTOTAL", "TAN", "TANH", "TRUNC"}:
             categories["math_trig"].append(name)
@@ -1654,6 +1896,7 @@ class ModelEvalRequest(BaseModel):
 # call time (see app/routers/__init__.py) so they honour the test harness's
 # per-test storage swaps, exactly as these in-line endpoints did.
 from .routers.governance import router as governance_router  # noqa: E402
+from .routers.scim import router as scim_router  # noqa: E402
 from .routers import insights as _insights  # noqa: E402
 from .routers.insights import router as insights_router  # noqa: E402
 from .routers import authoring as _authoring  # noqa: E402
@@ -1673,6 +1916,11 @@ from .routers.platform import router as platform_router  # noqa: E402
 from .routers.sdk import router as sdk_router  # noqa: E402
 from .routers import runtime as _runtime  # noqa: E402
 from .routers.runtime import router as runtime_router  # noqa: E402
+from .routers.debugger import router as debugger_router  # noqa: E402
+from .routers.journeys import router as journeys_router  # noqa: E402
+from .routers.modelsets import router as modelsets_router  # noqa: E402
+from .routers.predictors import router as predictors_router  # noqa: E402
+from .routers.webhook_subscriptions import router as webhook_subscriptions_router  # noqa: E402
 from .routers.collab import router as collab_router  # noqa: E402
 from .routers.evaluations import router as evaluations_router  # noqa: E402
 # Re-exported on purpose: app/routers/operations.py reads main.trigger_webhook
@@ -1681,6 +1929,7 @@ from .routers.evaluations import router as evaluations_router  # noqa: E402
 # which is exactly what noqa is for.
 from .webhooks import trigger_webhook  # noqa: F401
 
+app.include_router(scim_router)
 app.include_router(governance_router)
 app.include_router(insights_router)
 app.include_router(authoring_router)
@@ -1696,6 +1945,11 @@ app.include_router(models_router)
 app.include_router(platform_router)
 app.include_router(sdk_router)
 app.include_router(runtime_router)
+app.include_router(debugger_router)
+app.include_router(journeys_router)
+app.include_router(modelsets_router)
+app.include_router(predictors_router)
+app.include_router(webhook_subscriptions_router)
 app.include_router(collab_router)
 app.include_router(evaluations_router)
 

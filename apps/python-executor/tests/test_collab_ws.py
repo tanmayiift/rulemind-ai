@@ -32,7 +32,14 @@ class CollabWebSocketTests(unittest.TestCase):
         collab_router.hub = CollabHub()
         self.hub = collab_router.hub
         self.client = TestClient(app_main.app)
-        self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
+        self.api_key = app_main.storage.default_api_key or ""
+        self.headers = {"x-api-key": self.api_key}
+        self.tenant = app_main.storage.default_tenant_id
+
+    def _ws(self, doc, actor):
+        """The WebSocket now authenticates before accept() (T3.1), so the handshake carries a
+        credential. A browser cannot set headers on a WS handshake, hence the query-param form."""
+        return "/ws/v1/collab/{0}?actor={1}&api_key={2}".format(doc, actor, self.api_key)
 
     def tearDown(self):
         import app.routers.collab as collab_router
@@ -56,10 +63,10 @@ class CollabWebSocketTests(unittest.TestCase):
 
     def test_two_clients_live_sync_presence_and_convergence(self):
         doc = "policy-doc-1"
-        with self.client.websocket_connect(f"/ws/v1/collab/{doc}?actor=alice") as alice:
+        with self.client.websocket_connect(self._ws(doc, "alice")) as alice:
             init_a = alice.receive_json()
             self.assertEqual(init_a["type"], "init")
-            with self.client.websocket_connect(f"/ws/v1/collab/{doc}?actor=bob") as bob:
+            with self.client.websocket_connect(self._ws(doc, "bob")) as bob:
                 init_b = bob.receive_json()
                 self.assertEqual(init_b["type"], "init")
                 # alice sees bob join (presence broadcast).
@@ -78,14 +85,14 @@ class CollabWebSocketTests(unittest.TestCase):
                 self.assertEqual(edit_a["doc"]["name"], "Loan Policy v2")  # not lost
 
         # Both clients converged on the same authoritative state.
-        state = self.hub.state(doc)
+        state = self.hub.state(self.tenant, doc)
         self.assertEqual(state["doc"], {"name": "Loan Policy v2", "threshold": 750})
 
     def test_concurrent_same_field_edits_converge_deterministically(self):
         doc = "policy-doc-2"
-        with self.client.websocket_connect(f"/ws/v1/collab/{doc}?actor=alice") as alice:
+        with self.client.websocket_connect(self._ws(doc, "alice")) as alice:
             alice.receive_json()
-            with self.client.websocket_connect(f"/ws/v1/collab/{doc}?actor=bob") as bob:
+            with self.client.websocket_connect(self._ws(doc, "bob")) as bob:
                 bob.receive_json()
                 self._drain(alice, "presence")
                 # Both edit the SAME field; server assigns increasing Lamport ts -> last one wins,
@@ -94,11 +101,11 @@ class CollabWebSocketTests(unittest.TestCase):
                 self._drain(bob, "edit")
                 bob.send_json({"type": "edit", "changes": {"threshold": 800}})
                 self._drain(alice, "edit")
-        self.assertEqual(self.hub.state(doc)["doc"]["threshold"], 800)
+        self.assertEqual(self.hub.state(self.tenant, doc)["doc"]["threshold"], 800)
 
     def test_time_travel_history_and_restore(self):
         doc = "policy-doc-3"
-        with self.client.websocket_connect(f"/ws/v1/collab/{doc}?actor=alice") as alice:
+        with self.client.websocket_connect(self._ws(doc, "alice")) as alice:
             alice.receive_json()
             alice.send_json({"type": "edit", "changes": {"threshold": 700}})
             self._drain(alice, "edit")
@@ -120,9 +127,9 @@ class CollabWebSocketTests(unittest.TestCase):
 
     def test_presence_drops_on_disconnect(self):
         doc = "policy-doc-4"
-        with self.client.websocket_connect(f"/ws/v1/collab/{doc}?actor=alice") as alice:
+        with self.client.websocket_connect(self._ws(doc, "alice")) as alice:
             alice.receive_json()
-            with self.client.websocket_connect(f"/ws/v1/collab/{doc}?actor=bob") as bob:
+            with self.client.websocket_connect(self._ws(doc, "bob")) as bob:
                 bob.receive_json()
                 self._drain(alice, "presence")  # bob joined
             # bob disconnected -> alice gets a presence update with only alice.

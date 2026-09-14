@@ -5,8 +5,12 @@ import json
 import multiprocessing
 import os
 import time
+import threading
 from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Dict, Optional
+
+from . import env
 
 
 MAX_EXECUTION_MS = 2000
@@ -60,27 +64,220 @@ try:
 except ImportError:
     pass  # Graceful fallback if excel_functions not available
 
+class _BoundedCache(Dict[str, Any]):
+    """A dict that evicts the oldest entry once it exceeds a capacity.
+
+    The four code caches below were plain module-level dicts: global, unbounded, and shared
+    across tenants. Every distinct variable body a tenant ever submits added a permanent entry,
+    so a tenant authoring in a loop -- or simply a busy multi-tenant deployment over weeks --
+    was a slow memory leak with no ceiling. Bounding them is the containment; insertion order is
+    a good-enough approximation of LRU for a validation cache and needs no per-get bookkeeping.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        super().__init__()
+        self._capacity = capacity
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key not in self and len(self) >= self._capacity:
+            # dicts preserve insertion order, so the first key is the oldest.
+            oldest = next(iter(self))
+            del self[oldest]
+        super().__setitem__(key, value)
+
+
+# Bound chosen so a large tenant's whole variable catalog fits (the demo tenant has ~55), with
+# generous headroom, while still being a hard ceiling. Override for pathological catalogs.
+_CODE_CACHE_CAPACITY = env.env_int("SANDBOX_CODE_CACHE_SIZE", 2048)
+
 # Cache for validated+compiled code to avoid re-parsing on every call
-_validated_code_cache: Dict[str, bool] = {}
-_compiled_code_cache: Dict[str, Any] = {}
-_param_count_cache: Dict[str, int] = {}
+_validated_code_cache: Dict[str, bool] = _BoundedCache(_CODE_CACHE_CAPACITY)
+_compiled_code_cache: Dict[str, Any] = _BoundedCache(_CODE_CACHE_CAPACITY)
+_param_count_cache: Dict[str, int] = _BoundedCache(_CODE_CACHE_CAPACITY)
 # Cache of the *resolved callable* per source hash. A variable is a pure function
 # of (payload, variables); after the first exec we keep the function object and
 # reuse it on every subsequent call — no re-parse, no re-exec, no re-resolve.
 # This is the single biggest per-request win on the inline path.
-_function_cache: Dict[str, Any] = {}
+_function_cache: Dict[str, Any] = _BoundedCache(_CODE_CACHE_CAPACITY)
 
-# Pre-warmed process pool (lazy-initialized)
+
+def _source_key(source: str) -> str:
+    """Content-address a code body for the caches.
+
+    SHA-256, not MD5. The cache stored "this exact source already passed validation" under the
+    hash, and validate_source returns EARLY on a hit -- so with a hash an attacker can collide,
+    the attack is: submit a benign body, let it populate the cache, then submit a MALICIOUS body
+    that hashes to the same key and validation is skipped entirely. Chosen-prefix MD5 collisions
+    are cheap and public; SHA-256 has no such construction. usedforsecurity is set so a
+    FIPS-restricted build does not refuse the digest.
+    """
+    return hashlib.sha256(source.encode()).hexdigest()
+
+# Pre-warmed process pool (lazy-initialized). Guarded by a lock because the pool is a module
+# global shared by every Starlette threadpool thread, and recycling it (below) races with both
+# concurrent submits and concurrent recycles.
 _pool: Optional[ProcessPoolExecutor] = None
-_POOL_SIZE = int(os.getenv("SANDBOX_POOL_SIZE", "4"))
+_pool_lock = threading.Lock()
+_POOL_SIZE = env.env_int("SANDBOX_POOL_SIZE", 4)
+# Pool-wide address-space cap, applied once per worker at spawn (see _worker_init). It is
+# pool-wide and not per-tenant ON PURPOSE: workers are reused across tenants, and RLIMIT_AS can
+# only be lowered, so a per-call setrlimit in a reused worker meant the FIRST caller's cap stuck
+# for every later caller in that worker -- tenant A's 64MB silently applied to tenant B. A
+# uniform cap set at spawn is the only correct model for a shared pool.
+_POOL_MEMORY_MB = env.env_int("SANDBOX_MEMORY_MB", MAX_MEMORY_MB)
+
+
+# Environment variables an isolated worker must never be able to read. Sandbox workers run
+# untrusted author code (variables) and untrusted uploaded pickles (models), and a spawned
+# worker inherits the parent's whole environment -- including the master encryption key and the
+# database credentials. Scrubbing them in the child means that even code executing inside a
+# worker cannot exfiltrate them; the worker legitimately needs none of these.
+_WORKER_SCRUBBED_ENV = (
+    "RULEMIND_CONFIG_KEY", "RULEMIND_ADMIN_JWT_SECRET", "RULEMIND_ADMIN_PASSWORD",
+    "RULEMIND_DEV_API_KEY", "DATABASE_URL", "REDIS_URL",
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+    "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN",
+)
+
+
+def _scrub_worker_env() -> None:
+    for name in _WORKER_SCRUBBED_ENV:
+        os.environ.pop(name, None)
+
+
+def _worker_init(memory_mb: int) -> None:
+    """Runs once in each freshly spawned worker: drop inherited secrets, then cap memory."""
+    _scrub_worker_env()
+    try:
+        import resource  # type: ignore
+
+        bytes_limit = int(memory_mb) * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
+    except (ImportError, ValueError, OSError):
+        # RLIMIT_AS is unsettable on some platforms (darwin refuses it outright). The PROCESS
+        # boundary -- a separate spawned interpreter that can be killed -- still holds; only the
+        # in-process memory ceiling is absent, and it is absent uniformly rather than leaking one
+        # tenant's cap onto another.
+        pass
+
+
+def _new_pool() -> ProcessPoolExecutor:
+    mp_context = multiprocessing.get_context("spawn")
+    return ProcessPoolExecutor(
+        max_workers=_POOL_SIZE, mp_context=mp_context,
+        initializer=_worker_init, initargs=(_POOL_MEMORY_MB,))
 
 
 def _get_pool() -> ProcessPoolExecutor:
     global _pool
-    if _pool is None:
-        mp_context = multiprocessing.get_context("spawn")
-        _pool = ProcessPoolExecutor(max_workers=_POOL_SIZE, mp_context=mp_context)
-    return _pool
+    with _pool_lock:
+        # A pool that broke (a worker died mid-task, e.g. OOM-killed or terminated by recycle)
+        # stays broken for the process lifetime and raises BrokenProcessPool on every submit --
+        # the original code cached it and never rebuilt, so one crash disabled the sandbox until
+        # a redeploy. Rebuild it here instead.
+        if _pool is None or getattr(_pool, "_broken", False):
+            _pool = _new_pool()
+        return _pool
+
+
+def probe() -> Dict[str, Any]:
+    """Can this runtime actually execute a sandboxed variable? {"status", "mode", "detail"}.
+
+    The readiness probe checked the database and Redis and nothing else, so on a runtime that
+    forbids `spawn` -- some serverless and hardened container platforms do -- the process
+    reported READY while every Python variable failed. The decisions still come back, because
+    T1.2 makes a failed variable fail closed rather than fail open, but they are decided without
+    the variables the policy is written around, and nothing upstream says so. A load balancer
+    routes traffic to it, and the deploy looks successful.
+
+    Runs one trivial expression through the real path, so it answers the question that matters:
+    not "is the pool object present" but "did a worker start and return a value".
+    """
+    mode = "inline" if env.env_str("SANDBOX_MODE", "pool") == "inline" else "pool"
+    try:
+        result = execute_variable(
+            "def rulemind_readiness_probe(payload, variables):\n    return 1\n",
+            {}, {}, timeout_ms=5000)
+    except Exception as exc:  # noqa: BLE001 - a probe must report, never raise
+        return {"status": "error", "mode": mode, "detail": str(exc)}
+    if result.get("error"):
+        return {"status": "error", "mode": mode, "detail": str(result["error"])}
+    if result.get("value") != 1:
+        return {"status": "error", "mode": mode,
+                "detail": "sandbox returned {0!r}, expected 1".format(result.get("value"))}
+    detail = ""
+    if result.get("sandbox_fallback"):
+        # SANDBOX_FALLBACK_MODE=inline: it worked, but NOT in a subprocess. Untrusted customer
+        # Python is running in the API process with no RLIMIT and no process boundary, which is
+        # a materially different security posture and must not read as plain "ok".
+        return {"status": "degraded", "mode": "inline_fallback",
+                "detail": "the pool is unavailable and SANDBOX_FALLBACK_MODE=inline is running "
+                          "untrusted code in the API process: {0}".format(result.get("sandbox_error"))}
+    return {"status": "ok", "mode": mode, "detail": detail}
+
+
+def shutdown_pool() -> None:
+    """Terminate the sandbox's worker processes. Wired into FastAPI's shutdown event.
+
+    WHY THIS IS NEEDED AT ALL. Unlike decision_log's THREAD pool, this one spawns child
+    PROCESSES, and a child process outlives its parent unless something reaps it.
+    ProcessPoolExecutor registers its own atexit handler, but that only runs on a clean
+    interpreter exit -- not when the parent is SIGKILLed, and not when a dev server or a test
+    run is interrupted.
+
+    The symptom, measured 2026-09-14: **159 orphaned sandbox workers** on this machine, dating
+    back three weeks, all reparented to launchd. Mostly harmless at 32KB each -- but one of them
+    had been spinning at 99% CPU since 2026-08-29, which is a full core burned continuously, and
+    it corrupted a performance baseline badly enough to look like an 83% regression.
+
+    IN A CONTAINER THIS CANNOT HAPPEN and that is worth stating, so nobody reads this as a
+    production leak: the PID namespace reaps every child when the container dies, whatever the
+    signal. This matters on a developer's host, where there is no such boundary.
+
+    Best-effort by design: a shutdown path that raises is worse than one that leaks.
+    """
+    global _pool
+    with _pool_lock:
+        pool = _pool
+        _pool = None
+    if pool is None:
+        return
+    for process in list(getattr(pool, "_processes", {}).values()):
+        try:
+            process.terminate()
+        except Exception:  # pragma: no cover - best-effort kill
+            pass
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:  # pragma: no cover
+        pass
+
+
+def _recycle_pool(pool: ProcessPoolExecutor) -> None:
+    """Terminate a pool's workers and drop it so the next call builds a fresh one.
+
+    This is the fix for the wedging bug. future.result(timeout=) times out the WAIT, not the
+    task -- the worker keeps running the timed-out code. For `while True: pass` that slot is gone
+    permanently, and _POOL_SIZE of them kill the pool for good. Since a ProcessPoolExecutor gives
+    no way to cancel a running task or target one worker, the whole pool is recycled: the wedged
+    worker is guaranteed dead, and concurrent in-flight decisions fail closed to review (T1.2)
+    rather than fail open. Timeouts must therefore stay rare -- keep the per-variable timeout and
+    the evaluation budget (T1.3) above legitimate compute time, or this becomes a churn loop.
+    """
+    global _pool
+    with _pool_lock:
+        if _pool is not pool:
+            return  # another thread already recycled; don't kill the fresh pool
+        for process in list(getattr(pool, "_processes", {}).values()):
+            try:
+                process.terminate()
+            except Exception:  # pragma: no cover - best-effort kill
+                pass
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:  # pragma: no cover
+            pass
+        _pool = None
 
 
 def variable(func=None, **metadata):
@@ -96,7 +293,7 @@ def variable(func=None, **metadata):
 
 
 def validate_source(source: str) -> None:
-    code_hash = hashlib.md5(source.encode()).hexdigest()
+    code_hash = _source_key(source)
     if code_hash in _validated_code_cache:
         return
 
@@ -150,17 +347,15 @@ def resolve_callable(namespace: Dict[str, Any]):
 
 
 def _execute_in_process(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any], timeout_ms: int, memory_mb: int) -> Dict[str, Any]:
-    """Execute variable code in a pool worker process with sandboxing."""
+    """Execute variable code in a pool worker process with sandboxing.
+
+    The memory cap is NOT set here anymore. It used to call setrlimit(RLIMIT_AS) per invocation
+    inside a reused worker, which both (a) silently no-op'd after the first call, since RLIMIT_AS
+    cannot be raised again, and (b) leaked one tenant's cap onto the next tenant's call in the
+    same worker. It now lives in _worker_init, applied once at spawn (see _POOL_MEMORY_MB).
+    """
     started = time.perf_counter()
     try:
-        try:
-            import resource  # type: ignore
-
-            bytes_limit = int(memory_mb) * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
-        except Exception:
-            pass
-
         validate_source(code)
         namespace = {
             "__builtins__": dict(SAFE_BUILTINS, __import__=restricted_import),
@@ -190,7 +385,7 @@ def _execute_inline(code: str, payload: Dict[str, Any], variables_map: Dict[str,
     """
     started = time.perf_counter()
     try:
-        code_hash = hashlib.md5(code.encode()).hexdigest()
+        code_hash = _source_key(code)
         cached = _function_cache.get(code_hash)
         if cached is not None:
             function, parameter_count = cached
@@ -239,14 +434,34 @@ def execute_variable(code: str, payload: Dict[str, Any], variables_map: Optional
         future = pool.submit(_execute_in_process, code, payload, context, timeout_ms, memory_mb)
         return future.result(timeout=timeout_seconds)
     except FuturesTimeoutError:
+        # The worker is still running the timed-out task. Recycle the pool so that wedged worker
+        # is killed rather than pinning a slot forever (see _recycle_pool).
+        _recycle_pool(pool)
         return {"value": None, "error": "Variable execution timed out.", "latency_ms": float(timeout_ms), "variable_name": None}
+    except BrokenProcessPool as exc:
+        # A worker died (OOM kill, a segfaulting C extension, a prior recycle). Drop the broken
+        # pool so the NEXT call rebuilds, then fall back per policy for THIS one.
+        _recycle_pool(pool)
+        return _fallback_or_fail(exc, code, payload, context)
     except Exception as exc:
-        if os.getenv("SANDBOX_FALLBACK_MODE", "inline") == "inline":
-            fallback = _execute_inline(code, payload, context)
-            fallback["sandbox_fallback"] = "inline"
-            fallback["sandbox_error"] = str(exc)
-            return fallback
-        return {"value": None, "error": "Sandbox execution unavailable: {0}".format(exc), "latency_ms": 0.0, "variable_name": None}
+        return _fallback_or_fail(exc, code, payload, context)
+
+
+def _fallback_or_fail(exc: Exception, code: str, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """Decide what to do when the sandboxed path is unavailable.
+
+    Default is FAIL, not inline. The old default silently ran untrusted customer Python in the
+    API process -- no timeout, no RLIMIT, no process boundary -- exactly when the sandbox was
+    already unhealthy. Combined with the null-flips-gates bug (T1.2), a wedged pool under peak
+    load meant "run everything unsandboxed and approve what errors." SANDBOX_FALLBACK_MODE=inline
+    reinstates the old behaviour for anyone who has accepted that trade explicitly.
+    """
+    if os.getenv("SANDBOX_FALLBACK_MODE", "fail") == "inline":
+        fallback = _execute_inline(code, payload, context)
+        fallback["sandbox_fallback"] = "inline"
+        fallback["sandbox_error"] = str(exc)
+        return fallback
+    return {"value": None, "error": "Sandbox execution unavailable: {0}".format(exc), "latency_ms": 0.0, "variable_name": None}
 
 
 # Legacy API preserved for backward compatibility

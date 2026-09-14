@@ -69,7 +69,7 @@ def create_evaluation(request: EvaluationCreateRequest) -> Dict[str, Any]:
     try:
         result = run_evaluation(request.rows, config)
     except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=422, detail=f"Evaluation failed: {exc}")
+        raise HTTPException(status_code=422, detail=f"Evaluation failed: {exc}") from exc
     return _persist(request.name, request.description, request.status, result, model_id=None)
 
 
@@ -85,7 +85,7 @@ def backtest_evaluation(request: EvaluationCreateRequest) -> Dict[str, Any]:
     try:
         result = run_evaluation(request.rows, config)
     except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=422, detail=f"Backtest failed: {exc}")
+        raise HTTPException(status_code=422, detail=f"Backtest failed: {exc}") from exc
     return _persist(request.name, request.description, request.status, result, model_id=None)
 
 
@@ -106,7 +106,7 @@ def evaluate_hosted_model(model_id: str, request: ModelEvalRequest) -> Dict[str,
         config = {**(request.config or {}), "task": "binary", "score_col": "score", "label_col": "label"}
         result = run_evaluation(scored, config)
     except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=422, detail=f"Evaluation failed: {exc}")
+        raise HTTPException(status_code=422, detail=f"Evaluation failed: {exc}") from exc
     return _persist(request.name, request.description, request.status, result, model_id=model_id)
 
 

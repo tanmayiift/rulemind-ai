@@ -233,7 +233,10 @@ def d6_ai_grounding() -> Domain:
                     for vid in ids]
             payload = json.dumps({"name": "sc", "bins": bins})
 
-            async def fake(api_key, model, system, user, max_tokens, temperature, _p=payload):
+            # **kwargs so an added provider parameter (e.g. workspace_id) does not break
+            # this stub -- pinning it to an exact signature turns every additive change
+            # to ai.complete into 60 spurious matrix failures.
+            async def fake(api_key, model, system, user, max_tokens, temperature, _p=payload, **kwargs):
                 return _p
             ai._PROVIDERS["anthropic"] = fake
             try:

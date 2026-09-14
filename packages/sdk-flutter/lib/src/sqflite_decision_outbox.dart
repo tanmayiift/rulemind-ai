@@ -125,5 +125,6 @@ class SqfliteDecisionOutbox implements DecisionOutbox {
     return deleted;
   }
 
+  @override
   Future<void> close() => _db.close();
 }
