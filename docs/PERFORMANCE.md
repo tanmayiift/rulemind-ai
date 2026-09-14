@@ -43,6 +43,40 @@ Verified beyond the size number: the container serves `/` and a deep link at 200
 10001, and the CSS and JS the HTML references both resolve 200 (referenced is not the same as
 served). `scripts/smoke_compose.sh` is 14/14 with the new image.
 
+## A flake that was the environment, not the code
+
+Worth recording next to the benchmark story, because it is the same mistake in a different
+place: a measurement degraded by machine state, diagnosed as a code problem.
+
+`sqlite3.OperationalError: unable to open database file` started hitting a RANDOM test in an
+unrelated module — never the test that caused it. Three consecutive runs failed on three
+different tests, each of which passed cleanly alone. I capped `db._engine_cache` at 64 to fix it.
+Measured across full runs on the same tree:
+
+| | errors per run |
+|---|---:|
+| no cap (before) | ~1, intermittent |
+| cap, FIFO eviction | 3 |
+| cap, LRU eviction | 4 |
+| cap removed again | 8 |
+| **stale temp dirs cleared, no cap** | **1** |
+
+The cap was never the variable. The actual cause is **leftover temp directories accumulating
+across runs** — 73 of them by that point — until SQLite cannot open new files. Clearing them took
+the same tree from 8 errors to 1.
+
+And they were not leaked by the fixtures: only 10 of 112 temp-dir fixtures pass
+`ignore_cleanup_errors=True`, and all 10 dispose their engine first. They came from runs I
+**interrupted** — killed suites, timed-out jobs — where no teardown runs at all. So the fix
+belongs in `scripts/run_all_tests.sh`, which now sweeps stale ones before starting, and not in
+112 test modules.
+
+The cap also introduced a bug of its own: FIFO evicts the oldest engine, which is
+`app_main.storage`'s — created at import, used by most of the suite — so past 64 entries it
+disposed the shared engine out from under live tests. LRU fixed that specific case and still did
+not fix the flake. The general lesson is in `dispose_engine`'s docstring now: **the cache cannot
+know what is still referenced, so every eviction policy is a guess.**
+
 ## What the P09 outbox costs
 
 Every decision now writes an outbox row inside its own transaction. That is not free, so it is

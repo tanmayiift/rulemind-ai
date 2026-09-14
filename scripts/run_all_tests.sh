@@ -45,6 +45,33 @@ SUMMARY="$OUT/summary.tsv"
 # same per-lane logs, and the second `: > "$SUMMARY"` truncates the first one's results mid-run
 # -- so the report silently describes a mixture of two runs. Same reasoning as
 # smoke_compose.sh's port pre-flight: better to refuse than to grade the wrong thing.
+# Clear temp directories this suite leaked on PREVIOUS runs, before starting.
+#
+# THIS IS NOT HOUSEKEEPING, IT IS CORRECTNESS. Leftover temp dirs accumulate until SQLite cannot
+# open new files, which surfaces as `sqlite3.OperationalError: unable to open database file` on a
+# RANDOM test in an unrelated module -- never on the test that leaked.
+#
+# Where they come from, checked rather than assumed: NOT from fixtures swallowing cleanup errors.
+# Only 10 of 112 temp-dir fixtures pass `ignore_cleanup_errors=True`, and all 10 of those dispose
+# their engine first. The leftovers are from runs that were INTERRUPTED -- a killed suite, a
+# timed-out job, a Ctrl-C -- where no teardown runs at all. That is normal during development and
+# is the runner's problem to absorb, not something to fix in 112 test modules.
+#
+# Measured 2026-09-14, same tree, same commit, back to back:
+#     73 leftover temp dirs  ->  8 errors in the run
+#     0 leftover temp dirs   ->  1 error
+#
+# Only OUR pattern is touched, and only when it is more than a day old, so a concurrent run's
+# directories and anything else using the system temp dir are left alone.
+_TMP="$(python3 -c 'import tempfile;print(tempfile.gettempdir())' 2>/dev/null || echo /tmp)"
+if [ -n "$_TMP" ] && [ -d "$_TMP" ]; then
+  stale=$(find "$_TMP" -maxdepth 1 -type d -name 'tmp*' -mtime +0 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${stale:-0}" -gt 0 ]; then
+    printf '  clearing %s stale temp dir(s) left by earlier runs\n' "$stale"
+    find "$_TMP" -maxdepth 1 -type d -name 'tmp*' -mtime +0 -exec rm -rf {} + 2>/dev/null
+  fi
+fi
+
 LOCK="$OUT/.run.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "another scripts/run_all_tests.sh is already running (lock: $LOCK)." >&2
