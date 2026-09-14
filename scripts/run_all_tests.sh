@@ -65,6 +65,8 @@ count_tests() {
       n=$(grep -oE "test result: ok\. [0-9]+ passed" "$log" | grep -oE "[0-9]+" | paste -sd+ - | bc 2>/dev/null) ;;
     web)
       n=$(grep -oE "Tests +[0-9]+ passed" "$log" | grep -oE "[0-9]+" | tail -1) ;;
+    e2e)
+      n=$(grep -oE "[0-9]+ passed" "$log" | grep -oE "[0-9]+" | tail -1) ;;
     flutter)
       n=$(grep -oE "\+[0-9]+: All tests passed" "$log" | grep -oE "[0-9]+" | tail -1) ;;
     kotlin)
@@ -137,6 +139,14 @@ has flutter && command -v flutter >/dev/null 2>&1 \
 # have not changed and still reports BUILD SUCCESSFUL -- so the lane recorded "pass" having
 # executed nothing at all, which is the one thing a test report must never do. cleanTest scopes
 # the invalidation to the test task rather than --rerun-tasks rebuilding the world.
+# Playwright is OPT-IN (`scripts/run_all_tests.sh e2e`), not part of the default set: it boots a
+# FastAPI server and a Next dev server, so it is the one lane that cannot run alongside anything
+# holding ports 8100/3100. PYTHON_BIN is not optional -- the webServer block shells out to
+# `python3`, which on a machine with a newer Homebrew Python fails with "No module named uvicorn"
+# before a single test runs.
+has e2e && run_lane e2e "Playwright (e2e)" bash -c \
+  "cd '$ROOT' && PYTHON_BIN='$VENV' RM_E2E_ALLOW_DESTRUCTIVE=1 npx playwright test"
+
 has kotlin && run_lane kotlin "Kotlin — rulemind-core" bash -c "cd '$ROOT/packages/sdk-android' && ./gradlew :rulemind-core:cleanTest :rulemind-core:test --console=plain"
 
 if has contracts; then

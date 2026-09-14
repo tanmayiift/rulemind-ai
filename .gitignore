@@ -32,6 +32,11 @@ packages/flutter-ui/pubspec.lock
 
 # Test artifacts
 test-results/
+# Playwright's HTML report. It only started existing on 2026-09-14 -- before that no `reporter:`
+# was configured, so CI's default (`dot`) produced nothing and sdk-verify.yml uploaded a path
+# that could never have been there. Now that it is real, keep it out of the repo: it is ~500KB
+# of generated HTML per run.
+playwright-report/
 
 # IDE
 *.iml

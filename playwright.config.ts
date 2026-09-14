@@ -90,6 +90,11 @@ export default defineConfig({
   // `playwright-report` as an artifact, and that directory could never exist, because the html
   // reporter never ran. A green run published nothing and a red one published half of what the
   // step claimed.
+  // Scoped to its own subdirectory. Playwright CLEANS outputDir at the start of every run, and
+  // the default is `test-results/` -- the same directory scripts/run_all_tests.sh writes its
+  // per-lane logs into. The e2e lane therefore deleted its own log mid-run, and the report could
+  // not count the tests that had just passed.
+  outputDir: "test-results/playwright",
   reporter: process.env.CI || process.env.RULEMIND_TEST_REPORT
     ? [["list"], ["junit", { outputFile: "test-results/playwright-junit.xml" }],
        ["html", { outputFolder: "playwright-report", open: "never" }]]
