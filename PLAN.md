@@ -824,7 +824,7 @@ serially and races only the seeding.
 - [ ] **J12** Baseline FIRST — `bench.py` p50/p99, both k6 scripts, `docker stats`, image sizes
 - [ ] **J13** Instrument real query count per decision (documented as "8+N")
 - [ ] **J14** Fix the hotspots the measurements name, each with a before/after number
-- [ ] **J15** Web image is **2.54 GB** (`COPY . .`) — multi-stage build, target under 500 MB
+- [x] **J15** Web image is **2.54 GB** (`COPY . .`) — multi-stage build, target under 500 MB — **2.54 GB -> 232 MB (-91%)** via a 3-stage build on Next `output: "standalone"`. Verified serving, not just small: `/` and a deep link 200, referenced CSS+JS both resolve 200, uid 10001, smoke_compose 14/14
 - [ ] **J16** Trim API image; check whether the ML stack can import lazily
 - [ ] **J17** Re-run baseline, publish before/after in `docs/PERFORMANCE.md`. Parity corpus must
   not regress — accuracy is not traded for speed
