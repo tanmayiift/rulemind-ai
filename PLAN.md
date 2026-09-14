@@ -870,12 +870,16 @@ at J24.
 **Plan audit 2026-09-14 — four steps were not actually complete when first reported.** Checked
 against the repo rather than memory, after being asked "everything done?":
 
-1. **J14 (fix the hotspots)** — the hotspot was measured and documented but NOT fixed.
-   `_needed_variable_ids` now walks connector steps via `_collect_connector_sources` (nested
-   ones included), taking `COMPUTE_ONLY_USED_VARS=1` from **16 failures to 7**. It is still
-   unsafe: decision-table inputs and loop-nested steps are the remaining blind spots, both named
-   in `docs/PERFORMANCE.md`. The flag stays off. A partially correct reachability analysis is
-   worse than none — it makes the flag look safe while still skipping a variable.
+1. **J14 (fix the hotspots)** — **reachability now complete; one non-reachability blocker left.**
+   `_needed_variable_ids` is a recursive walk over rule conditions, scorecard bins,
+   decision-table inputs, connector sources and nested steps in loops / branch arms /
+   sub-workflows, plus variables named in STRING expressions (`over: "variables.applicants"`,
+   `"app['score'] < 600"`). Failures with the flag on: **16 → 7 → 3**. Three assumptions were
+   wrong and each was caught by a test, not by reading: top-level steps are not enough,
+   `inputs` is a LIST not a map (reuses `decision_tables._input_index` now), and conditions are
+   sometimes plain strings. The last 3 failures are a single cause — `fast_decide` still
+   computes the whole bundle, so fast and slow disagree, which is the FAST_DECIDE divergence
+   class fixed three times already. The flag stays OFF until that is closed.
 2. **J18 (Kafka in compose AND the Helm chart)** — only compose was done. The chart now has
    `env.kafkaBootstrapServers`, rendered into the ConfigMap **only when set**, matching how
    `REDIS_URL` degrades: unset means the outbox records every event and simply does not deliver.

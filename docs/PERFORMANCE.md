@@ -246,33 +246,32 @@ therefore skips variables the decision genuinely depends on. That is the same cl
 codebase has already been bitten by three times: **a performance flag that changes correctness**
 (`FAST_DECIDE` skipping input validation, then the evaluation budget, then sample seeding).
 
-**Partially fixed 2026-09-14, and still not safe.** `_needed_variable_ids` now walks connector
-steps too — via `_collect_connector_sources`, so nested ones inside a branch or loop are found,
-which a first attempt at a flat top-level loop missed. That took the failures from **16 to 7**.
+**Reachability completed 2026-09-14. One blocker remains, and it is not reachability.**
 
-The seven that remain are the same bug in other step types. `_needed_variable_ids` walks rule
-conditions, scorecard bins and now connector sources; it still cannot see a variable referenced
-by a **decision table** input (`inputs[].variable_id`) or reached inside a **loop** step's nested
-`config.steps`. The surviving failures name exactly those:
+`_needed_variable_ids` is now a recursive walk over every step type that can name a variable —
+rule conditions, scorecard bins, decision-table inputs, connector sources, and **nested** steps
+inside loops, branch arms and sub-workflows, plus variables named in *string* expressions (a
+loop's `over: "variables.applicants"`, a branch's `"app['score'] < 600"`). Failures with the flag
+on went **16 → 7 → 3**.
 
-```
-test_decision_tables.test_decision_table_runs_inside_a_policy
-test_fastpath_dt_parallel.test_fast_and_heavy_paths_agree
-test_workflow_loops.test_loop_inside_policy
-test_fast_path_sample_seeding_parity  (x2)
-...
-```
+Three shapes had to be learned the hard way, each found by a test rather than by reading:
 
-So the flag stays **off**, and this is deliberately not finished in a hurry. Completing it means
-a reachability analysis over every step type that can reach a variable, each with its own
-lookup — and a *partially* correct analysis is worse than none, because it makes the flag look
-safer than it is while still silently skipping a variable the decision depends on. That is the
-FAST_DECIDE failure mode exactly: this repo has already fixed three bugs where a performance
-flag changed correctness, and the way to avoid a fourth is not to ship a reachability walk that
-covers most step types.
+| Assumed | Actually |
+|---|---|
+| top-level steps are enough | a connector inside a branch is the *common* case, not the exotic one |
+| `inputs` is a map | it is a **list**; `decision_tables._input_index` normalises it, so that is reused |
+| conditions are `{type: condition}` nodes | a loop's `over` and a branch's condition are plain **strings** |
 
-What is safe to conclude: the mechanism is right, the win is ~48.7%, the connector half is done
-and tested, and the remaining work is bounded and named.
+**The remaining 3 failures are one cause, and it is the important one:** with the flag on the
+executor correctly computes nothing for a policy that reads no variables, while `fast_decide`
+still computes the whole bundle — so the fast and slow paths **disagree**. That is precisely the
+FAST_DECIDE divergence class this repo has already fixed three times (input validation, the
+evaluation budget, sample seeding).
+
+So the flag stays **off**, and closing it means teaching `fast_decide` the same restriction —
+a change to the hottest, most-bitten path in the codebase, which is not something to do at the
+end of a long session to enable an opt-in flag. What changed is that the remaining work is now
+**one well-defined item** instead of an open-ended "the analysis is incomplete".
 
 There is a second, smaller tradeoff even once that is fixed: the decision record shrinks from 55
 computed variables to 6. Nothing about the *decision* changes, but anything reading

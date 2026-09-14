@@ -540,47 +540,29 @@ class PolicyExecutor:
     def _needed_variable_ids(self, policy: Dict[str, Any], rules: Dict[str, Any], scorecards: Dict[str, Any], tenant_id: str) -> set:
         """Variable ids the policy uses, closed over inter-variable dependencies.
 
-        Over-inclusive by design (a substring match on variable code counts as a
-        dependency) so we never skip a variable a computation relies on.
+        Over-inclusive by design (a substring match on variable code counts as a dependency) so
+        we never skip a variable a computation relies on.
+
+        THIS IS A REACHABILITY ANALYSIS AND IT HAS TO BE COMPLETE. `COMPUTE_ONLY_USED_VARS=1`
+        restricts `_compute_variables` to what this returns, so a step type missed here is a
+        variable that is never computed -- `ctx.variables` has no key at all and the decision is
+        made without it. That is a PERFORMANCE FLAG CHANGING CORRECTNESS, the same class as the
+        three FAST_DECIDE bugs this codebase has already fixed.
+
+        It was incomplete twice, and both gaps were found by the flag failing tests rather than
+        by reading:
+          - rule + scorecard only        -> 16 failures (connector-supplied variables dropped)
+          - + connector, top level only  ->  7 failures (decision tables, loops, nested steps)
+
+        So the walk is now RECURSIVE over every step type that can reach a variable, sharing its
+        shape with `_collect_connector_sources` -- which had to learn the same lesson about
+        nesting, for the same reason.
         """
         by_id = {v["id"]: v for v in self._catalog_for(tenant_id)["variables"]}
         direct: set = set()
-        for step in policy.get("steps", []):
-            ref_id = str(step.get("ref_id") or step.get("ref") or "")
-            if step.get("type") == "rule" and ref_id in rules:
-                rule = rules[ref_id]
-                self._collect_condition_variable_ids(rule.get("tree"), direct)
-                self._collect_condition_variable_ids(rule.get("nodes"), direct)
-            elif step.get("type") == "scorecard" and ref_id in scorecards:
-                for factor in scorecards[ref_id].get("bins", []):
-                    if factor.get("variable_id"):
-                        direct.add(str(factor["variable_id"]))
-        # A CONNECTOR STEP NAMES A SOURCE, NOT A VARIABLE, and that asymmetry is what made
-        # COMPUTE_ONLY_USED_VARS unusable. The loop above finds variables the policy READS
-        # through a rule condition or a scorecard bin; it cannot see a variable whose data
-        # arrives because a connector step fetched its source. Those were dropped, so
-        # `_compute_variables` never ran them and `ctx.variables` had no key at all — 16 tests
-        # failed with KeyError, every one in test_connector_fetch.
-        #
-        # Same shape as the three FAST_DECIDE bugs: a PERFORMANCE FLAG CHANGING CORRECTNESS. The
-        # flag is only safe once this exists.
-        #
-        # `_collect_connector_sources` rather than a loop over `policy["steps"]`, and that is
-        # load-bearing: a first attempt walked only the top level and still failed the NESTED
-        # case. A conditional pull — "only hit the bureau when amount > X" — is exactly why a
-        # connector step sits inside a branch, so nested is the common shape. That helper already
-        # handles branches, loops and sub-workflows with a cycle guard, and its docstring
-        # documents the same fail-open being re-introduced by an incomplete walk.
-        connector_sources: set = set()
-        self._collect_connector_sources(policy.get("steps", []) or [], connector_sources,
-                                        tenant_id, set())
-        if connector_sources:
-            # source -> variables; `_sources_in_use` does the reverse. Over-inclusive to match
-            # this method's docstring: computing a variable nothing reads costs one sandbox call,
-            # while skipping one the decision depends on changes the outcome.
-            for vid, variable in by_id.items():
-                if str(variable.get("source_id") or "") in connector_sources:
-                    direct.add(vid)
+        self._collect_step_variable_ids(policy.get("steps", []) or [], rules, scorecards,
+                                        by_id, direct, tenant_id, set())
+
         needed: set = set()
         stack = list(direct)
         while stack:
@@ -593,6 +575,109 @@ class PolicyExecutor:
                 if other != vid and other not in needed and other in code:
                     stack.append(other)
         return needed
+
+    def _collect_step_variable_ids(self, steps: Any, rules: Dict[str, Any],
+                                   scorecards: Dict[str, Any], by_id: Dict[str, Any],
+                                   out: set, tenant_id: str, seen: set) -> None:
+        """Every variable reachable from `steps`, INCLUDING nested ones.
+
+        One branch per step type that can name a variable, and a recursive call for every type
+        that can contain other steps. The recursion is the point: a rule inside a loop, or a
+        decision table inside a branch arm, is just as reachable as one at the top level, and a
+        conditional block is the normal way to express "only score this when X".
+        """
+        if not isinstance(steps, list):
+            return
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            step_type = step.get("type")
+            ref = str(step.get("ref_id") or step.get("ref") or "")
+            config = step.get("config") if isinstance(step.get("config"), dict) else {}
+
+            if step_type == "rule" and ref in rules:
+                rule = rules[ref]
+                self._collect_condition_variable_ids(rule.get("tree"), out)
+                self._collect_condition_variable_ids(rule.get("nodes"), out)
+            elif step_type == "scorecard" and ref in scorecards:
+                for factor in scorecards[ref].get("bins", []) or []:
+                    if isinstance(factor, dict) and factor.get("variable_id"):
+                        out.add(str(factor["variable_id"]))
+            elif step_type == "decision_table":
+                # `inputs` is a LIST of {id, variable_id, ...}, not a map -- a first version
+                # assumed a map and collected nothing, so the table's variables were never
+                # computed and the policy fell through to its default outcome ('review' instead
+                # of 'approve'). `_input_index` is decision_tables.py's own normaliser, reused
+                # here so the two cannot disagree about the shape.
+                #
+                # The `or input_id` fallback matches _evaluate_row: with neither variable_id nor
+                # variable set, the input's own id IS the variable reference.
+                from .decision_tables import _input_index
+
+                table = getattr(self, "_decision_tables", {}).get(ref) or {}
+                for input_id, spec in _input_index(table).items():
+                    spec = spec if isinstance(spec, dict) else {}
+                    out.add(str(spec.get("variable_id") or spec.get("variable") or input_id))
+            elif step_type == "connector" and ref:
+                # A connector step names a SOURCE, not a variable. Everything reading that source
+                # is needed, because the step exists to supply exactly those.
+                for vid, variable in by_id.items():
+                    if str(variable.get("source_id") or "") == ref:
+                        out.add(vid)
+            elif step_type == "loop":
+                self._collect_step_variable_ids(config.get("steps"), rules, scorecards,
+                                                by_id, out, tenant_id, seen)
+            elif step_type == "branch":
+                for branch in config.get("branches", []) or []:
+                    if isinstance(branch, dict):
+                        self._collect_step_variable_ids(branch.get("steps"), rules, scorecards,
+                                                        by_id, out, tenant_id, seen)
+                        self._collect_condition_variable_ids(branch.get("condition"), out)
+                self._collect_step_variable_ids(config.get("default"), rules, scorecards,
+                                                by_id, out, tenant_id, seen)
+                self._collect_condition_variable_ids(config.get("condition"), out)
+            elif step_type == "workflow":
+                # A sub-workflow's steps are as reachable as this policy's own. `seen` guards the
+                # same cycle _execute_workflow guards at run time; here a cycle would hang during
+                # payload assembly, before any budget check has run.
+                if not ref or ref in seen:
+                    continue
+                seen.add(ref)
+                try:
+                    child = self.storage.get_policy(ref, tenant_id=tenant_id)
+                except Exception:  # pragma: no cover - a missing child fails later, in the step
+                    child = None
+                if child:
+                    self._collect_step_variable_ids(child.get("steps"), rules, scorecards,
+                                                    by_id, out, tenant_id, seen)
+            # Conditions can sit directly on any step (a guarded step), so check regardless of
+            # type -- missing one silently drops the variable the guard reads.
+            if config.get("condition") is not None:
+                self._collect_condition_variable_ids(config.get("condition"), out)
+            if step.get("condition") is not None:
+                self._collect_condition_variable_ids(step.get("condition"), out)
+
+            # STRING EXPRESSIONS, which the condition-node walk above cannot see. A loop's
+            # `over` is `"variables.applicants"` and a branch condition is Python source like
+            # `"app['score'] < 600"` -- both name variables as TEXT, not as a {type: condition}
+            # node. Missing them left the loop test deciding on an empty collection and falling
+            # through to its default outcome.
+            #
+            # Substring matching, deliberately: it is what the inter-variable dependency closure
+            # in _needed_variable_ids already does, and this method's docstring commits to being
+            # over-inclusive. A false positive costs one sandbox call; a false negative changes
+            # the decision.
+            for text in (config.get("over"), config.get("condition"), step.get("condition")):
+                if isinstance(text, str) and text:
+                    for vid in by_id:
+                        if vid in text:
+                            out.add(vid)
+            for branch in (config.get("branches") or []):
+                cond = branch.get("condition") if isinstance(branch, dict) else None
+                if isinstance(cond, str) and cond:
+                    for vid in by_id:
+                        if vid in cond:
+                            out.add(vid)
 
     # ------------------------------------------------------------- decision-time source fetch
     #
