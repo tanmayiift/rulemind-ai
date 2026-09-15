@@ -51,7 +51,7 @@ green. It surfaced only by scraping `/metrics` on a running stack after driving 
 through it. Fixed, labelled `source=api` vs `api_fast`, wrapped so a metrics failure can never
 break a decision, and pinned by `tests/test_decide_emits_metrics.py` (mutation-checked).
 
-### Alerting — nothing paged anyone
+### Alerting — nothing paged anyone, and then briefly still didn't
 
 `observability/` had a dashboard and **no `alerting` block and no `rule_files`**. Six rules now
 exist, each with a runbook anchor, validated three ways: `promtool check rules`, loaded into a
@@ -62,6 +62,15 @@ The one that matters most for this product is `RuleMindOutcomeMixShifted`. Every
 return 200 in 15 ms while the engine approves everything it should reject — a bureau returning
 nulls, a variable erroring to `None`, a policy promoted by mistake. Latency and error-rate
 alerts are all silent for that.
+
+**A correction worth keeping.** `alertmanager.yml` was committed with the claim that it "closes
+the paging gap". It did not: `prometheus.yml` had no `alerting:` block and Alertmanager was not
+in `docker-compose.yml`, so the rules evaluated, turned red on Prometheus's own page, and
+reached nobody — indistinguishable from "everything is fine". A monitoring config that looks
+present and does nothing is the exact failure this stack exists to prevent, reproduced inside
+the monitoring stack itself. Now wired and verified:
+`/api/v1/alertmanagers` reports one **active** endpoint,
+`http://alertmanager:9093/api/v2/alerts`.
 
 ### Capacity — measured, and it degrades rather than collapsing
 

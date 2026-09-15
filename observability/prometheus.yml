@@ -7,6 +7,17 @@ global:
 rule_files:
   - /etc/prometheus/alerts.yml
 
+# WITHOUT THIS BLOCK THE RULES ABOVE REACH NOBODY. Prometheus evaluates them, marks alerts
+# firing, shows them red on its own /alerts page -- and that is the end of it. alertmanager.yml
+# existed for a day before anyone noticed nothing was pointed at it, which is the whole failure
+# mode this stack is supposed to prevent, reproduced inside the monitoring config itself.
+#
+# Check it is live: http://localhost:9090/api/v1/alertmanagers should list one ACTIVE endpoint.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   - job_name: rulemind-api
     metrics_path: /metrics

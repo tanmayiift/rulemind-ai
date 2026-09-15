@@ -240,6 +240,23 @@ services:
       - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
       - "${RULEMIND_PROM_PORT:-9090}:9090"
+    depends_on:
+      - alertmanager
+
+  # Where the alert rules actually GO. Without this, prometheus.yml's `alerting` block points at
+  # nothing, rules evaluate, alerts turn red on Prometheus's own page, and no human is told --
+  # which is indistinguishable from "everything is fine". alertmanager.yml shipped a day before
+  # anyone noticed nothing was wired to it.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["observability"]
+    volumes:
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    ports:
+      - "${RULEMIND_ALERTMANAGER_PORT:-9093}:9093"
 
   grafana:
     image: grafana/grafana:11.2.0
