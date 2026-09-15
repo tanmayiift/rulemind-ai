@@ -24,11 +24,11 @@
   "dependencies": {
     "@rulemind/rule-engine": "workspace:*",
     "@rulemind/shared": "workspace:*",
-    "react": "^18.3.1",
+    "react": "^19.3.0",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@types/react": "^18.3.18",
+    "@types/react": "^19.3.0",
     "@types/react-dom": "^18.3.5",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
