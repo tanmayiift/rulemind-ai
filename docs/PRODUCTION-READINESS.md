@@ -141,12 +141,38 @@ cd ~/actions-runner        # runner 2.337.0 already downloaded and extracted
 Then: Actions → *self-hosted tests* → Run workflow. Remove it later with
 `./config.sh remove --token <removal-token>`.
 
-### 2. Zero production hours
+### 2. Zero production hours — the monitoring chain is now proven; real traffic is not
 
-Nobody has run this against real traffic. The previous deployment cycle found **four bugs that
-1,400 passing tests could not see**, including a readiness probe that never checked the
-database. The two findings in this document — metrics and alerting — are the same species: both
-needed a running system, not a test suite.
+Nobody has run this against real users. That part cannot be closed from here.
+
+What **was** closed is the specific gap those hours stood for: whether the observability chain
+actually works end to end, as opposed to each piece validating on its own. Proven under
+sustained load on 2026-09-15 — **53,760 requests at concurrency 48, ~44 decisions/sec**:
+
+```
+rule state: FIRING
+alerts received: 1
+  RuleMindDecisionLatencyHigh severity=warning state=active
+     summary: p95 decision latency above 250ms on api
+     runbook: docs/runbooks/production.md#latency
+```
+
+The whole path: app emits → Prometheus scrapes → rule evaluates → the 600s `for` elapses →
+alert fires → **delivered to Alertmanager**, carrying its severity, its `source` label and the
+runbook link. `RuleMindDecisionLatencyCritical` stayed `inactive` throughout at p95 ~0.5 s, so
+both directions are verified: it fires when it should and stays quiet when it should not.
+
+**That exercise found a defect nothing else did.** Prometheus was never connected to
+Alertmanager — no `alerting:` block, no service in compose. `promtool` passed the rules.
+`amtool` passed the receiver config. Every component was valid and the chain was broken, so
+alerts would have reached nobody while looking configured. It was found by *using* the pipeline,
+not by testing its parts.
+
+**Why this still is not "production ready":** three findings this session — absent `/decide`
+metrics, absent alert rules, and the unwired Alertmanager — were each invisible to 4,642 passing
+tests. Synthetic load found them. Real traffic finds a different class again: cardinality from
+real tenant counts, connectors that time out under load rather than on a laptop, payload shapes
+nobody modelled. The method is proven; the exposure has not happened.
 
 ### 3. Thresholds — calibrated 2026-09-15, against measurement rather than instinct
 
