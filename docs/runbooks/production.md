@@ -171,11 +171,35 @@ exercises `pg_dump -Fc` / `pg_restore` rather than a file copy.
 
 ## What this runbook does not cover, honestly
 
-- **No on-call rotation or paging integration is configured.** These rules define *what* is
-  worth waking someone for; routing them to a human is still to be wired (Alertmanager is not
-  deployed).
+- **Alertmanager is deployed and wired, but has NO REAL DESTINATION.** It runs in the
+  `observability` profile and Prometheus delivers to it — verified, not assumed:
+  `curl -s localhost:9090/api/v1/alertmanagers` lists one **active** endpoint. The default
+  receiver is an explicit black hole, because a committed Slack webhook is a leaked credential.
+  **Uncomment one receiver in `observability/alertmanager.yml`, add the real credential, and
+  change `receiver: "null"` in both places** — the top-level route *and* the critical sub-route.
+  Until then alerts group, inhibit and resolve correctly, and go nowhere.
+- **No on-call rotation.** The rules say what is worth waking someone for; who gets woken, and
+  in what order, is not defined anywhere.
 - **No incident severity ladder or comms template.**
-- **No load-shedding or rate-limit playbook** beyond the per-workspace quota.
-- **The thresholds are reasoned, not calibrated.** They are derived from laptop measurements and
-  the product's own SLO defaults. Re-derive them from your own traffic after the first month —
-  a threshold nobody has tuned against real data is a guess written down confidently.
+- **No load-shedding playbook** beyond the per-workspace quota (1000 rpm, shedding with a 429 and
+  a retry hint in ~44 ms — verified under load).
+- **Thresholds are calibrated against a laptop, not your traffic.** Derivation is at the top of
+  `observability/alerts.yml`, including the finding that ramp latency and steady-state latency at
+  the same concurrency differ by more than 2x. Re-derive after the first month.
+
+### Verifying the alert pipeline actually works
+
+Component checks pass individually while the chain is broken — that happened here:
+`alertmanager.yml` was valid per `amtool`, the rules were valid per `promtool`, and nothing was
+connected, so alerts reached nobody. Check the **chain**, not the parts:
+
+```bash
+promtool check rules observability/alerts.yml         # rules parse
+curl -s localhost:9090/api/v1/alertmanagers           # Prometheus -> Alertmanager: ACTIVE?
+curl -s localhost:9090/api/v1/rules | grep -o '"state":"[a-z]*"' | sort -u   # inactive/pending/firing
+curl -s localhost:9093/api/v2/alerts                  # did anything actually ARRIVE?
+```
+
+The last one is the only check that proves delivery. Allow a few seconds after a Prometheus
+restart — the alertmanagers endpoint reads empty at first, which looks exactly like a broken
+config.
