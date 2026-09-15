@@ -1,0 +1,114 @@
+# The full regression, on a self-hosted runner.
+#
+# WHY THIS EXISTS. GitHub-hosted Actions will not start jobs for this repository: every workflow
+# has zero successes, and the annotation on each failed job reads "The job was not started
+# because recent account payments have failed or your spending limit needs to be increased." It
+# is a BILLING BLOCK, not an exhausted quota — jobs are assigned no runner and execute `steps: 0`,
+# so consumption is already ~0 and trimming workflows saves nothing.
+#
+# That left every test result in this repository as one person's local run on one machine. A
+# self-hosted runner is free even on a private repo, and closes that gap without publishing the
+# source.
+#
+# ── SECURITY: `workflow_dispatch` ONLY. NEVER `pull_request`. ─────────────────────────────────
+#
+# This runs on someone's actual machine with their credentials and their filesystem. A
+# `pull_request` trigger would execute code from any PR branch — and this repo has 15 open
+# bot-authored dependency PRs. `push` is excluded for the same reason plus a duller one: a
+# 30-minute suite on every commit makes the machine unusable.
+#
+# If you add a trigger here, the question to answer first is "whose code runs, and who can
+# change it" — not "would this be convenient".
+#
+# ── SETUP (one time) ──────────────────────────────────────────────────────────────────────────
+#
+#   cd ~/actions-runner
+#   ./config.sh --url https://github.com/<owner>/<repo> \
+#     --token "$(gh api -X POST /repos/<owner>/<repo>/actions/runners/registration-token --jq .token)" \
+#     --name rulemind-local --labels self-hosted,macos,arm64,rulemind --unattended
+#   ./run.sh                      # foreground; or ./svc.sh install && ./svc.sh start
+#
+# Then: Actions -> "self-hosted tests" -> Run workflow.
+#
+# The runner is a long-lived agent that executes workflow code as your user. Remove it with
+# `./config.sh remove --token <removal-token>` when you no longer want that.
+
+name: self-hosted tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      lanes:
+        description: 'Lanes to run (space-separated), or blank for all'
+        required: false
+        default: ''
+
+concurrency:
+  group: self-hosted-tests
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    runs-on: [self-hosted, rulemind]
+    # The full suite is ~30 minutes (the Postgres lane alone is ~17). No job here has ever had a
+    # timeout; without one a wedged lane holds the runner until the 6-hour default.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately NOT setting up Python/Node/Java here. A self-hosted runner has the
+      # developer's own toolchain, and scripts/run_all_tests.sh already encodes the traps that
+      # matter (PYTHON_BIN for Playwright's webServer, cargo --no-default-features, cleanTest
+      # for Gradle). Re-provisioning would test a different environment than the one people
+      # actually develop against, which is the opposite of what this is for.
+
+      - name: Preconditions
+        run: |
+          set -u
+          command -v docker >/dev/null || { echo "docker is required (Postgres lane + smoke)"; exit 1; }
+          test -x .venv-rulemind/bin/python || { echo ".venv-rulemind missing — see CLAUDE.md"; exit 1; }
+          docker compose up -d db redis
+          # The PG lane shares this database with `make up`. If the app has written to the public
+          # schema under a different RULEMIND_CONFIG_KEY, every test touching the default schema
+          # dies on InvalidToken ~16 minutes in. run_all_tests.sh guards this, but resetting here
+          # keeps a CI run reproducible rather than dependent on what was run locally before it.
+          docker compose exec -T db psql -U rulemind -d rulemind \
+            -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO rulemind;"
+
+      - name: Full regression
+        run: bash scripts/run_all_tests.sh ${{ inputs.lanes }}
+
+      - name: Publish the summary
+        if: always()
+        run: |
+          # $GITHUB_STEP_SUMMARY renders on the run page itself — the cheapest reporting there is,
+          # and it means a result is readable without downloading an artifact.
+          {
+            echo "## Regression"
+            echo
+            cat TEST_RESULTS.md 2>/dev/null || echo "TEST_RESULTS.md was not generated."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            TEST_RESULTS.md
+            test-results/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Fail the run if any lane failed
+        if: always()
+        run: |
+          # run_all_tests.sh writes a per-lane TSV. Grading from that rather than from the
+          # script's exit code means a lane that fails late still fails the run.
+          if grep -qiE '\tfail' test-results/summary.tsv 2>/dev/null; then
+            echo "::error::one or more lanes failed"
+            grep -iE '\tfail' test-results/summary.tsv
+            exit 1
+          fi
+          echo "all lanes green"
