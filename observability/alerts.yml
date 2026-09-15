@@ -55,6 +55,20 @@
 #   critical  p95 > 1000 ms  only seen beyond 4x the knee; 10x the SLO; still 10x clear of the
 #                            evaluation budget, so it fires long before callers see 504s
 #
+# ONE CAVEAT ON THAT TABLE, found while soak-testing these very thresholds: it was measured
+# during a RAMP (1 -> 4 -> 8 -> 16 -> 32 -> 64 in sequence), so each row carries queue buildup
+# from the step before it. Held at a STEADY concurrency of 32 instead, p95 settles at ~242ms,
+# not the 547ms the ramp row shows -- less than half. Ramp latency and steady-state latency are
+# different measurements of different things, and the ramp figure is the pessimistic one.
+#
+# It was NOT decision volume: the steady-state run had 22,925 rows in `decisions` against the
+# ramp's 11,801, i.e. nearly twice the data and half the latency. Worth knowing before blaming
+# table growth for a latency change.
+#
+# The practical consequence: 250ms sits close to steady-state p95 at concurrency 32 (242ms). It
+# is deliberately a tripwire rather than a comfort zone -- but if it proves noisy in production,
+# the fix is to raise it with a recorded reason, not to silence the rule.
+#
 # RE-DERIVE THESE FROM YOUR OWN TRAFFIC after the first month. The table above is a laptop, and
 # a threshold calibrated against someone else's hardware is still a guess.
 
