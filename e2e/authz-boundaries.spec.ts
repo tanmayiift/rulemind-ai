@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
 
 import {
   ALLOW_DESTRUCTIVE,
@@ -96,47 +96,53 @@ test.afterAll(async ({ request }) => {
 });
 
 /**
- * Attempt a WebSocket handshake from the browser and report whether it ever opened.
+ * Attempt a WebSocket handshake and report whether it ever opened.
  *
- * Driven from `about:blank` deliberately. The page carries no cookies for the API origin, so
- * "unauthenticated" means unauthenticated — running this from the dashboard origin would leave
- * it ambiguous whether an `rm_session` cookie had ridden along and quietly authenticated the
- * handshake we are trying to prove gets refused.
+ * DRIVEN FROM NODE, NOT FROM A BROWSER PAGE, and that is the point rather than a convenience.
+ *
+ * What this test has to guarantee is that "unauthenticated" really means unauthenticated — no
+ * cookie may ride along and quietly authenticate the handshake we are proving gets refused.
+ * This previously ran `new WebSocket(...)` inside `page.evaluate` from `about:blank`, chosen
+ * because that page carries no cookies for the API origin. Node's WebSocket carries no cookie
+ * jar AT ALL, so the guarantee is strictly stronger, not weaker.
+ *
+ * It also removes a browser dependency that broke: Chromium 153 (shipped with
+ * @playwright/test 1.63) refuses the connection to ws://127.0.0.1 client-side — the server never
+ * logged the request — so the POSITIVE CONTROL below started failing and took the whole security
+ * test with it. Pinning a security assertion to a browser's local-network policy means the test
+ * breaks on browser upgrades for reasons that have nothing to do with the contract.
  *
  * `opened` is the assertion that matters, not the close code. The endpoint closes with 1008
- * BEFORE `accept()`, which fails the HTTP upgrade itself; browsers surface that as an error and
- * a synthetic 1006, so pinning the code would be pinning a browser implementation detail rather
- * than the contract.
+ * BEFORE `accept()`, which fails the HTTP upgrade itself; clients surface that as an error and a
+ * synthetic 1006, so pinning the code would pin an implementation detail rather than the
+ * contract.
  */
-async function handshake(page: Page, url: string): Promise<{ opened: boolean; code: number | null }> {
-  return page.evaluate(
-    (target) =>
-      new Promise<{ opened: boolean; code: number | null }>((resolve) => {
-        const socket = new WebSocket(target);
-        let opened = false;
-        let settled = false;
-        const finish = (code: number | null) => {
-          if (settled) return;
-          settled = true;
-          try {
-            socket.close();
-          } catch {
-            /* already closing */
-          }
-          resolve({ opened, code });
-        };
-        socket.onopen = () => {
-          opened = true;
-          finish(null);
-        };
-        socket.onclose = (event) => finish(event.code);
-        socket.onerror = () => {
-          /* onclose always follows; the timeout is the real backstop */
-        };
-        setTimeout(() => finish(null), 8000);
-      }),
-    url
-  );
+async function handshake(url: string): Promise<{ opened: boolean; code: number | null }> {
+  return new Promise<{ opened: boolean; code: number | null }>((resolve) => {
+    // Node 22+ ships a standards-compliant WebSocket global, so this needs no extra dependency.
+    const socket = new WebSocket(url);
+    let opened = false;
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.close();
+      } catch {
+        /* already closing */
+      }
+      resolve({ opened, code });
+    };
+    socket.onopen = () => {
+      opened = true;
+      finish(null);
+    };
+    socket.onclose = (event) => finish(event.code ?? null);
+    socket.onerror = () => {
+      /* onclose always follows; the timeout is the real backstop */
+    };
+    setTimeout(() => finish(null), 8000);
+  });
 }
 
 // ── The tenant boundary ───────────────────────────────────────────────────────────────────────
@@ -238,24 +244,25 @@ test("a viewer key cannot reach the platform admin surface", async ({ request })
 
 // ── The collaborative-editing WebSocket ───────────────────────────────────────────────────────
 
-test("the collab WebSocket refuses an unauthenticated handshake", async ({ page, request }) => {
+test("the collab WebSocket refuses an unauthenticated handshake", async ({ request }) => {
   const doc = `authz-e2e-${Date.now()}`;
   const key = await mintKey(request, "policy_maker", "e2e-ws-author");
 
-  await page.goto("about:blank");
-
   // Positive control FIRST, and it is doing real work here: if the port were wrong, the route
   // renamed, or the backend down, the unauthenticated case below would "pass" for the wrong
-  // reason — which is precisely the bug class this file exists to catch.
-  const authenticated = await handshake(page, `${WS}/ws/v1/collab/${doc}?api_key=${key}`);
+  // reason — which is precisely the bug class this file exists to catch. It earned its keep on
+  // 2026-09-15: a Playwright bump changed the bundled Chromium, the browser began blocking the
+  // connection outright, and this control is what surfaced that instead of the suite quietly
+  // reporting a passing security test.
+  const authenticated = await handshake(`${WS}/ws/v1/collab/${doc}?api_key=${key}`);
   expect(authenticated.opened, "a credentialed handshake must still open the socket").toBe(true);
 
-  const anonymous = await handshake(page, `${WS}/ws/v1/collab/${doc}`);
+  const anonymous = await handshake(`${WS}/ws/v1/collab/${doc}`);
   expect(
     anonymous.opened,
     "an uncredentialed handshake must be refused before accept() -- it used to receive a full document snapshot"
   ).toBe(false);
 
-  const badKey = await handshake(page, `${WS}/ws/v1/collab/${doc}?api_key=rm_live_notarealkey00000000000000000`);
+  const badKey = await handshake(`${WS}/ws/v1/collab/${doc}?api_key=rm_live_notarealkey00000000000000000`);
   expect(badKey.opened, "an invalid key must be refused too, not merely a missing one").toBe(false);
 });
