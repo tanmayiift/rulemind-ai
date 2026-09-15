@@ -109,8 +109,28 @@ honest description of the evidence, however green it is.
 
 Three ways out: settle billing; make the repo public (public repos get unlimited free
 GitHub-hosted minutes — `docs/PRE-PUBLICATION-AUDIT.md` establishes that would be safe); or a
-self-hosted runner, which is free even on a private repo but should be wired to
-`workflow_dispatch` only, never `pull_request`, with 20 open bot-authored dependency PRs.
+**self-hosted runner**, which is free even on a private repo.
+
+**The self-hosted path is prepared and needs one command from the repo owner.**
+`.github/workflows/self-hosted-tests.yml` runs the full regression, publishes `TEST_RESULTS.md`
+to the run summary, uploads the logs, and grades from the per-lane TSV so a late failure still
+fails the run. It is `workflow_dispatch` **only** — never `pull_request`, never `push` — because
+it executes on a real machine with real credentials and this repo has 15 open bot-authored
+dependency PRs.
+
+What remains is registering the runner, which installs a long-lived agent that executes workflow
+code as that user. That is the owner's decision to make, not an assistant's:
+
+```bash
+cd ~/actions-runner        # runner 2.337.0 already downloaded and extracted
+./config.sh --url https://github.com/tanmayiift/rulemind-ai \
+  --token "$(gh api -X POST /repos/tanmayiift/rulemind-ai/actions/runners/registration-token --jq .token)" \
+  --name rulemind-local --labels self-hosted,macos,arm64,rulemind --unattended
+./run.sh
+```
+
+Then: Actions → *self-hosted tests* → Run workflow. Remove it later with
+`./config.sh remove --token <removal-token>`.
 
 ### 2. Zero production hours
 
