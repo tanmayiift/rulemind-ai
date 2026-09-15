@@ -149,15 +149,19 @@ laptop, and a threshold calibrated against someone else's hardware is still a gu
 The rules define what is worth waking someone for. **Alertmanager is not deployed**, so nothing
 routes them to a human. No on-call rotation, no severity ladder, no comms template.
 
-### 5. A known Next.js vulnerability is pinned, and Dependabot has not flagged it
+### ~~5. A known Next.js vulnerability is pinned~~ — CLOSED 2026-09-15
 
-The web dev server prints, on every start:
+`next@14.2.34` carried a published advisory; the dev server said so on every start, and **none
+of the 20 Dependabot PRs upgraded Next**. Fixed to **14.2.35**, the patched release on the same
+line — 14.2.34 is deprecated on npm, 14.2.35 is not, so this was a patch bump rather than a
+major migration.
 
-> `WARN deprecated next@14.2.34: This version has a security vulnerability. Please upgrade to a
-> patched version. See https://nextjs.org/blog/security-update-2025-12-11`
+Verified: `pnpm install` emits **zero** security warnings, and the dev server reports
+`▲ Next.js 14.2.35 / ✓ Ready in 1012ms`. Full regression green afterwards (4,642 tests).
 
-**None of the 20 Dependabot PRs is a Next.js upgrade.** This is the most concrete security item
-on the list and it needs a deliberate upgrade with the e2e lane run against it.
+One trap worth recording: PR #145 predates the bump and carries `next: 14.2.34`, so resolving
+its merge conflict "theirs" would have **silently reintroduced the advisory**. Version conflicts
+in a security fix need reading, not auto-resolving.
 
 ### 6. Dependency posture — triaged 2026-09-15
 
