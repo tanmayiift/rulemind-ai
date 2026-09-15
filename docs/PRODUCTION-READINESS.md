@@ -119,11 +119,30 @@ Nobody has run this against real traffic. The previous deployment cycle found **
 database. The two findings in this document — metrics and alerting — are the same species: both
 needed a running system, not a test suite.
 
-### 3. Thresholds are reasoned, not calibrated
+### 3. Thresholds — calibrated 2026-09-15, against measurement rather than instinct
 
-Alert thresholds derive from laptop measurements and the product's own SLO defaults. Re-derive
-them from real traffic after the first month. A threshold nobody has tuned against real data is
-a guess written down confidently.
+The first version used round numbers (p95 > 500 ms / > 2 s) chosen because they sounded
+reasonable. They are now derived from the measured latency curve and the product's two fixed
+points — its own SLO default (p95 ≤ 100 ms) and the evaluation budget (10 s, past which callers
+get 504s):
+
+| | was | now | why |
+|---|---|---|---|
+| warning | p95 > 500 ms | **p95 > 250 ms** | just above the measured knee (212 ms at concurrency 16), so it means "past the point where this scales" rather than "busy" |
+| critical | p95 > 2 s | **p95 > 1 s** | only seen beyond 4× the knee; 10× the SLO; still 10× clear of the budget, so it fires long before 504s |
+
+**The uncomfortable result, recorded rather than smoothed over: the product's own default SLO is
+met only at concurrency 1, and is at the line by concurrency 4.** Maximum throughput (~94 rps)
+arrives at roughly *twice* the SLO latency. So **SLO-respecting capacity (~60 rps) and maximum
+capacity (~94 rps) are different numbers**, and the first is the one to size against. The
+thresholds are deliberately not set at the SLO value — alerting at 100 ms would fire
+continuously on reference hardware and be silenced within a week.
+
+The derivation table lives at the top of `observability/alerts.yml`, because a threshold whose
+origin nobody can reconstruct gets "tuned" during the first incident by whoever is most tired.
+
+**Still to do:** re-derive from real production traffic after the first month. The table is a
+laptop, and a threshold calibrated against someone else's hardware is still a guess.
 
 ### 4. No paging path
 

@@ -18,9 +18,45 @@
 #   rulemind_bundle_syncs_total{status}                counter
 #   up{job}                                            the scrape itself
 #
-# Thresholds deliberately mirror the product's own SLO object (`/api/v1/settings/slo`:
-# latency_p95_ms, error_rate_pct) rather than inventing a second, competing definition of
-# "healthy". Where a workspace overrides its SLO, treat these as the platform floor.
+# ── THRESHOLD CALIBRATION ─────────────────────────────────────────────────────────────────────
+#
+# These were guesses in the first version of this file (p95 > 500ms / > 2s, round numbers chosen
+# because they sounded reasonable). They are now derived from MEASURED data plus the product's
+# own stated objective. The derivation is here because a threshold whose origin nobody can
+# reconstruct gets "tuned" during the first incident by whoever is most tired.
+#
+# Two fixed points:
+#   * the product's default SLO         p95 <= 100 ms   (app/slo.py default_slo_config)
+#   * the evaluation budget            10,000 ms        (executor DEFAULT_BUDGET_MS) -- past this
+#                                                       the caller gets a 504, so alerts must
+#                                                       fire well before it
+#
+# Measured on reference hardware (2 uvicorn workers, laptop, Colima VM; rate limiting disabled
+# so the engine is what is being measured — see docs/PERFORMANCE.md):
+#
+#     conc    p95        rps     meets the 100ms SLO?
+#     1       51.6 ms    32.8    yes
+#     4      102.8 ms    59.7    no (at the line)
+#     8      164.8 ms    78.1    no
+#     16     212.2 ms    93.5    no   <- max-throughput knee
+#     32     547.1 ms    87.3    no
+#     64    1401.0 ms    82.1    no
+#
+# THE UNCOMFORTABLE RESULT, recorded rather than smoothed over: the product's own default SLO is
+# only met at concurrency 1, and is already at the line by concurrency 4. Max throughput (~94
+# rps) arrives at roughly TWICE the SLO latency. So "SLO-respecting capacity" (~60 rps) and
+# "maximum capacity" (~94 rps) are different numbers, and the first is the one to size against.
+#
+# Hence the thresholds below are NOT set at the SLO value: alerting at 100 ms would fire
+# continuously on reference hardware and be silenced within a week. They are set where genuine
+# degradation begins, above the measured knee:
+#
+#   warning   p95 > 250 ms   just past the knee's 212 ms — real degradation, no flapping
+#   critical  p95 > 1000 ms  only seen beyond 4x the knee; 10x the SLO; still 10x clear of the
+#                            evaluation budget, so it fires long before callers see 504s
+#
+# RE-DERIVE THESE FROM YOUR OWN TRAFFIC after the first month. The table above is a laptop, and
+# a threshold calibrated against someone else's hardware is still a guess.
 
 groups:
   - name: rulemind-availability
@@ -62,18 +98,20 @@ groups:
           histogram_quantile(
             0.95,
             sum by (le, source) (rate(rulemind_decision_latency_seconds_bucket[5m]))
-          ) > 0.5
+          ) > 0.25
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "p95 decision latency above 500ms on {{ $labels.source }}"
+          summary: "p95 decision latency above 250ms on {{ $labels.source }}"
           description: >-
-            Measured p95 on a developer laptop is ~20ms at concurrency 1 (docs/PERFORMANCE.md),
-            so 500ms is a generous ceiling rather than a target. Split by `source`: `api` is the
-            executor path and `api_fast` the serving path — if api_fast disappears while api
-            rises, traffic has fallen off the fast path rather than the engine getting slower,
-            and those two causes have completely different fixes.
+            250ms sits just above the measured capacity knee (p95 212ms at concurrency 16), so
+            this means the system is past the point where it scales — not merely busy. Note it
+            is deliberately NOT the product's 100ms SLO, which reference hardware cannot hold
+            past concurrency ~4; see the calibration table at the top of this file. Split by
+            `source`: `api` is the executor path and `api_fast` the serving path — if api_fast
+            disappears while api rises, traffic has fallen off the fast path rather than the
+            engine getting slower, and those have completely different fixes.
           runbook: docs/runbooks/production.md#latency
 
       - alert: RuleMindDecisionLatencyCritical
@@ -81,16 +119,18 @@ groups:
           histogram_quantile(
             0.95,
             sum by (le, source) (rate(rulemind_decision_latency_seconds_bucket[5m]))
-          ) > 2
+          ) > 1
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "p95 decision latency above 2s on {{ $labels.source }}"
+          summary: "p95 decision latency above 1s on {{ $labels.source }}"
           description: >-
-            At this point the evaluation budget (engine_config.evaluation_budget_ms) is likely
-            firing and callers are getting 504s. The usual cause is the sandbox pool: each
-            variable has its own timeout, and a saturated pool serialises them.
+            1s p95 was only ever measured beyond 4x the capacity knee — it means severe
+            overload, not a busy afternoon. It is set 10x below the 10s evaluation budget
+            deliberately, so it fires long BEFORE callers start seeing 504
+            evaluation_budget_exceeded. The usual cause is the sandbox pool: each variable has
+            its own timeout, and a saturated pool serialises them.
           runbook: docs/runbooks/production.md#latency
 
   - name: rulemind-correctness
