@@ -2,7 +2,7 @@
 
 Fills RuleMind's gap: it could host/serve models and run outcome A/B, but not answer
 "is this model good?" against ground truth. These endpoints compute the credit-risk metric
-suite (Gini/AUC/KS/PR-AUC/calibration/PSI/decile), plus multi-label (propensity) and uplift
+suite (Gini/AUC/KS/PR-AUC/calibration/confusion/decile), plus multi-label (propensity) and uplift
 (cross-sell) metrics, a temporal (vintage) backtest, and a promotion-gate verdict.
 
 Only metrics + a dataset summary are persisted — never the raw scored rows.
@@ -68,7 +68,7 @@ def create_evaluation(request: EvaluationCreateRequest) -> Dict[str, Any]:
     config = {**(request.config or {}), "task": request.task}
     try:
         result = run_evaluation(request.rows, config)
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=f"Evaluation failed: {exc}") from exc
     return _persist(request.name, request.description, request.status, result, model_id=None)
 
@@ -84,7 +84,7 @@ def backtest_evaluation(request: EvaluationCreateRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=422, detail="backtest requires config.date_col")
     try:
         result = run_evaluation(request.rows, config)
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=f"Backtest failed: {exc}") from exc
     return _persist(request.name, request.description, request.status, result, model_id=None)
 
@@ -105,7 +105,7 @@ def evaluate_hosted_model(model_id: str, request: ModelEvalRequest) -> Dict[str,
         scored = score_rows_with_model(blob, request.rows, request.features, request.label_col)
         config = {**(request.config or {}), "task": "binary", "score_col": "score", "label_col": "label"}
         result = run_evaluation(scored, config)
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=f"Evaluation failed: {exc}") from exc
     return _persist(request.name, request.description, request.status, result, model_id=model_id)
 

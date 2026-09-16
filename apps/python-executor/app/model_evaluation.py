@@ -175,7 +175,15 @@ def decile_table(y_true: ArrayLike, y_score: ArrayLike, n_bands: int = 10) -> Di
         event_rate = float(yc.mean())
         dist_pos = events / total_pos
         dist_neg = non_events / total_neg
-        woe = float(np.log(max(dist_neg, 1e-12) / max(dist_pos, 1e-12)))
+        # None, not a clamped sentinel. `max(dist, 1e-12)` turns a band with no events (or no
+        # non-events) into log(1e12) ~= +-27.6, and the UI printed those straight into the "WoE"
+        # column -- bands reading -26.33 and 25.79 on screen. Real weight-of-evidence lives in
+        # roughly [-3, 3], so an analyst cannot tell a clamped infinity from an absurd real
+        # value. Undefined is the honest answer, and the renderer can show it as such.
+        if dist_pos <= 0.0 or dist_neg <= 0.0:
+            woe: Optional[float] = None
+        else:
+            woe = float(np.log(dist_neg / dist_pos))
         bands.append(
             {
                 "band": i,

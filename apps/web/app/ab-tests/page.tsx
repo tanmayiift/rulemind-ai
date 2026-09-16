@@ -10,12 +10,27 @@ type Policy = { id: string; name: string };
 type Variant = { id: string; role: string; weight: number };
 type Experiment = { id: string; name: string; description?: string; status: string; variants: Variant[]; target_policy_id?: string; hash_key?: string };
 type VariantRow = { id: string; role: string; users: number; approved: number; rejected: number; reviewed: number; approvalRate: number; rejectRate: number; avgLatencyMs: number };
-type ChallengerRow = { id: string; liftPct: number; pValue: number; significant: boolean; recommendation?: { action?: string; reason?: string } };
+// `recommendation` is a plain STRING -- champion_challenger.recommend_action() returns
+// "promote" | "hold" | "rollback". It was typed as an object and read as `.action`, which is
+// always undefined, so the recommendation block below rendered for nobody.
+type Recommendation = "promote" | "hold" | "rollback";
+type ChallengerRow = {
+  id: string;
+  liftPct: number;
+  pValue: number;
+  significant: boolean;
+  recommendation?: Recommendation;
+  guardrails?: { breached?: boolean; reason?: string };
+};
 type Analytics = {
   experiment: { id: string; name: string; status: string };
   variants: VariantRow[];
   significance: { pValue: number; significant: boolean };
-  champion_challenger?: { champion?: { id: string } | null; challengers: ChallengerRow[] };
+  // camelCase, matching analytics.py's `"championChallenger": champion_challenger`. This was
+  // `champion_challenger` and therefore ALWAYS undefined: the lift figure beside each approval
+  // rate and the whole recommendation block silently rendered nothing, on a page whose subtitle
+  // promises "watch approval lift and significance, then promote the winner".
+  championChallenger?: { champion?: { id: string } | null; challengers: ChallengerRow[] };
 };
 
 const STATUS_TONE: Record<string, "success" | "warning" | "danger" | "neutral" | "accent"> = {
@@ -31,6 +46,9 @@ export default function AbTestsPage() {
   const [analytics, setAnalytics] = React.useState<Analytics | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  // The promotion gate's refusal, held so it can be shown and deliberately overridden rather
+  // than bypassed unconditionally in the request body.
+  const [blocked, setBlocked] = React.useState<{ variantId: string; reason: string } | null>(null);
 
   // create form
   const [name, setName] = React.useState("");
@@ -111,14 +129,31 @@ export default function AbTestsPage() {
     }
   };
 
-  const promote = async (variantId: string) => {
+  // `force` defaults to FALSE. It was hardcoded `true` on every row, which permanently disabled
+  // the promotion gate: the backend refuses to promote a variant whose recommendation is "hold"
+  // or "rollback", AND refuses to promote the champion at all — but BOTH checks live inside
+  // `if not request.force:` (experiments.py), so one hardcoded flag removed both. Every Promote
+  // click rewrote live rules with the safety check off, including promoting the champion over
+  // itself.
+  //
+  // Now the refusal is surfaced and overriding it is a separate, deliberate click. A gate that
+  // is always bypassed is not a gate; a gate that cannot be bypassed gets bypassed in the code,
+  // which is what happened here.
+  const promote = async (variantId: string, force = false) => {
     if (!selected) return;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setBlocked(null);
     try {
-      await apiJson(apiBaseUrl, `/api/v1/experiments/${selected.id}/promote`, { method: "POST", body: JSON.stringify({ variant_id: variantId, force: true }) }, apiKey);
+      await apiJson(apiBaseUrl, `/api/v1/experiments/${selected.id}/promote`, { method: "POST", body: JSON.stringify({ variant_id: variantId, force }) }, apiKey);
       await loadExperiments();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not promote the variant.");
+      const message = e instanceof Error ? e.message : "Could not promote the variant.";
+      // The gate's own refusal, as opposed to a transport or permission failure. Only the former
+      // is overridable, so only the former offers the override.
+      if (!force && /Promotion blocked|Only a challenger/i.test(message)) {
+        setBlocked({ variantId, reason: message });
+      } else {
+        setError(message);
+      }
     } finally {
       setBusy(false);
     }
@@ -240,7 +275,7 @@ export default function AbTestsPage() {
                         </thead>
                         <tbody>
                           {analytics.variants.map((v) => {
-                            const challenger = analytics.champion_challenger?.challengers.find((c) => c.id === v.id);
+                            const challenger = analytics.championChallenger?.challengers.find((c) => c.id === v.id);
                             return (
                               <tr key={v.id}>
                                 <td style={{ padding: "8px 10px", fontWeight: 600, color: "var(--rm-text)" }}>{v.id}</td>
@@ -262,11 +297,29 @@ export default function AbTestsPage() {
                         </tbody>
                       </table>
                     </div>
-                    {analytics.champion_challenger?.challengers.some((c) => c.recommendation?.action) ? (
-                      <div style={{ marginTop: 14, display: "grid", gap: 8 }}>
-                        {analytics.champion_challenger.challengers.map((c) => c.recommendation?.action ? (
+                    {blocked ? (
+                      <div data-testid="ab-promote-blocked" style={{ marginTop: 14, padding: 12, borderRadius: 10, background: "var(--rm-danger-bg)", color: "var(--rm-danger)", fontSize: 13, display: "grid", gap: 10 }}>
+                        <div>{blocked.reason}</div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <Button data-testid="ab-promote-anyway" variant="secondary" size="sm" disabled={busy}
+                            onClick={() => promote(blocked.variantId, true)}>
+                            Promote anyway
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => setBlocked(null)}>Cancel</Button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {analytics.championChallenger?.challengers.some((c) => c.recommendation) ? (
+                      <div data-testid="ab-recommendations" style={{ marginTop: 14, display: "grid", gap: 8 }}>
+                        {analytics.championChallenger.challengers.map((c) => c.recommendation ? (
                           <div key={c.id} style={{ fontSize: 12.5, color: "var(--rm-muted)" }}>
-                            <strong style={{ color: "var(--rm-text)" }}>{c.id}</strong>: {c.recommendation.action}{c.recommendation.reason ? ` — ${c.recommendation.reason}` : ""}
+                            <strong style={{ color: "var(--rm-text)" }}>{c.id}</strong>:{" "}
+                            <Badge tone={c.recommendation === "promote" ? "success" : c.recommendation === "rollback" ? "danger" : "neutral"}>
+                              {c.recommendation}
+                            </Badge>
+                            {/* The reason lives on the guardrail result, not on the recommendation --
+                                "rollback" is only ever returned because a guardrail breached. */}
+                            {c.guardrails?.breached && c.guardrails.reason ? ` — ${c.guardrails.reason}` : ""}
                           </div>
                         ) : null)}
                       </div>

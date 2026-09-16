@@ -131,35 +131,67 @@ class ComputedButUnrenderedTests(unittest.TestCase):
         self.assertTrue(metrics["calibration_curve"])
 
 
-class DecileWoeSentinelTests(unittest.TestCase):
-    """A band with zero events yields WoE ~ +25.8 -- an infinity rendered as a real number.
+class DecileWoeUndefinedBandTests(unittest.TestCase):
+    """A band with no events (or no non-events) has UNDEFINED weight of evidence, not a number.
 
-    The UI prints this straight into the 'WoE' column. Real weight-of-evidence lives in
-    roughly [-3, 3], so a displayed 25.79 is indistinguishable from a genuine value.
+    This class originally recorded the defect: `max(dist, 1e-12)` clamped the division, so an
+    infinity came back as a finite +-26 and the UI printed it straight into the "WoE" column.
+    Real weight-of-evidence lives in roughly [-3, 3], so a displayed 25.79 was indistinguishable
+    from a genuine (absurd) value, and a client had no way to detect the sentinel -- it was
+    finite, so `isfinite` said it was fine.
+
+    FIXED in model_evaluation.decile_table: an undefined band now returns None, which the
+    dashboard's `fmt` helper already renders as a dash. The assertions below are inverted from
+    what they were, deliberately -- pinning a sentinel as correct is how it becomes permanent.
     """
 
-    def test_zero_event_band_emits_large_positive_sentinel(self):
-        # Top half all events, bottom half none -> the bottom bands have zero events.
+    def _bands(self):
+        # Top half all events, bottom half none -> bands at both extremes are undefined.
         y = [1] * 50 + [0] * 50
         s = [0.9 - i * 0.001 for i in range(100)]
-        bands = me.decile_table(y, s)["bands"]
-        empty = [b for b in bands if b["events"] == 0]
-        self.assertTrue(empty, "expected at least one zero-event band")
-        self.assertGreater(max(b["woe"] for b in empty), 20.0)
+        return me.decile_table(y, s)["bands"]
 
-    def test_zero_non_event_band_emits_large_negative_sentinel(self):
-        y = [1] * 50 + [0] * 50
-        s = [0.9 - i * 0.001 for i in range(100)]
-        bands = me.decile_table(y, s)["bands"]
+    def test_a_zero_event_band_reports_undefined_rather_than_a_sentinel(self):
+        empty = [b for b in self._bands() if b["events"] == 0]
+        self.assertTrue(empty, "expected at least one zero-event band")
+        for band in empty:
+            self.assertIsNone(
+                band["woe"],
+                "a band with no events has no weight of evidence; a finite number here is an "
+                "infinity in disguise")
+
+    def test_an_all_event_band_reports_undefined_rather_than_a_sentinel(self):
+        bands = self._bands()
         full = [b for b in bands if b["events"] == b["count"]]
         self.assertTrue(full, "expected at least one all-event band")
-        self.assertLess(min(b["woe"] for b in full), -20.0)
+        for band in full:
+            self.assertIsNone(band["woe"])
 
-    def test_sentinel_is_finite_so_a_client_cannot_detect_it(self):
-        y = [1] * 50 + [0] * 50
-        s = [0.9 - i * 0.001 for i in range(100)]
-        for b in me.decile_table(y, s)["bands"]:
-            self.assertTrue(np.isfinite(b["woe"]))
+    def test_every_defined_woe_is_a_plausible_finite_value(self):
+        """The other half of the fix: defined bands must still produce real numbers.
+
+        Without this, returning None unconditionally would pass the two tests above -- which is
+        the failure mode where a fix for a display bug quietly deletes the metric.
+
+        NOTE the different fixture. `_bands()` is PERFECTLY separated, so every one of its bands
+        is all-events or no-events and every WoE is legitimately undefined -- this control
+        written against that data asserted on an empty list and failed, which is the control
+        working. A realistic model has overlap, so its middle bands carry both classes.
+        """
+        # An imperfect ranker: the label is mostly-but-not-always ordered by score.
+        y = [(i * 7) % 10 < 4 for i in range(200)]
+        y = [int(v) for v in y]
+        s = [1.0 - i * 0.004 for i in range(200)]
+        bands = me.decile_table(y, s)["bands"]
+        defined = [b["woe"] for b in bands if b["woe"] is not None]
+        self.assertTrue(
+            defined,
+            "a model with class overlap must still produce real WoE values; blanking them all "
+            "would mean the fix deleted the metric rather than guarding it")
+        for woe in defined:
+            self.assertTrue(np.isfinite(woe))
+            self.assertLess(abs(woe), 20.0,
+                            "a defined WoE of +-26 means the clamp is back")
 
 
 class PromotionGateSampleFloorTests(unittest.TestCase):

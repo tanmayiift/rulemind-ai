@@ -585,6 +585,7 @@ def _preflight_promotion(items) -> None:
 def deploy_promote(request: DeployPromoteRequest) -> Dict[str, Any]:
     """Promote a batch of assets one stage each. All-or-nothing as far as preflight can see —
     see `_preflight_promotion` for why a half-applied batch is worse than a rejected one."""
+    _preflight_promotion(request.items)
     promoted = []
     for item in request.items:
         promoted.append(promote_entity(item.entity_type, item.entity_id, item.promoted_by, item.reason))
@@ -751,7 +752,27 @@ def get_settings() -> Dict[str, Any]:
 
 @router.put("/api/v1/settings")
 def update_settings(request: SettingsRequest) -> Dict[str, Any]:
-    return main.storage.update_settings(request.model_dump())
+    """Patch the workspace settings.
+
+    `engine_config` is MERGED, not replaced. Every field on SettingsRequest is Optional and
+    storage drops the None ones, so the request already reads as a patch -- but `update_settings`
+    merges only at the top level, which meant a patch naming `engine_config` swapped the entire
+    blob. That blob is where the governance settings live: `require_dual_control`,
+    `pii_redact_keys`, the `slo` objective and the shadow registry, each owned by its own
+    endpoint. Saving the generic Settings page from a stale load therefore turned two-person
+    control off as a side effect -- no audit event, no diff, and the governance page reads `false`
+    afterwards as though it had never been armed. One field on a request behaving as replace while
+    every sibling behaves as patch is the whole bug; merging makes the shape consistent.
+
+    A true replace is still available where it is meant: `/api/v1/import` goes through
+    `storage.replace_all`, which is a wholesale swap by definition.
+    """
+    patch = request.model_dump()
+    if patch.get("engine_config") is not None:
+        merged = dict(main.storage.get_settings().get("engine_config", {}) or {})
+        merged.update(patch["engine_config"])
+        patch["engine_config"] = merged
+    return main.storage.update_settings(patch)
 
 
 @router.get("/api/v1/bootstrap")

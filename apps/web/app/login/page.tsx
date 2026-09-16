@@ -12,6 +12,35 @@ type OtpReq = { requested: boolean; delivered?: boolean; debug_code?: string };
 type SsoStart = { provider: string; redirect_url: string };
 type SsoConfig = { enabled?: boolean; provider?: string };
 
+/**
+ * Turn a thrown API error into a sentence a person can read.
+ *
+ * `apiJson` rejects with the raw response TEXT as the message (src/lib/api.ts:57-59), so a 401
+ * arrives here as the literal string `{"detail":"Invalid email or password."}`. Rendering
+ * `e.message` therefore printed that JSON on the sign-in screen -- the first screen a new user
+ * sees. Deliberately local rather than a change to `apiJson`: at least one caller
+ * (decision-tables/page.tsx:274) parses `e.message` as JSON on purpose to recover a per-row
+ * `problems` list, so changing the shared contract would break it.
+ */
+function humanMessage(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : "";
+  if (!raw) return fallback;
+  try {
+    const detail = (JSON.parse(raw) as { detail?: unknown })?.detail;
+    if (typeof detail === "string" && detail) return detail;
+    // FastAPI validation errors are a list of {loc, msg} objects, not a string.
+    if (Array.isArray(detail)) {
+      const parts = detail
+        .map((d) => (d && typeof (d as { msg?: unknown }).msg === "string" ? (d as { msg: string }).msg : null))
+        .filter((m): m is string => Boolean(m));
+      if (parts.length) return parts.join("; ");
+    }
+  } catch {
+    /* Not JSON -- e.g. apiJson's own "Unable to reach the API server…". Show it as-is. */
+  }
+  return raw;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const { apiBaseUrl, setSession, member } = useRuleMindStore();
@@ -51,7 +80,7 @@ export default function LoginPage() {
         finish(await apiJson<LoginResp>(apiBaseUrl, "/api/v1/auth/sso/oidc/callback", {
           method: "POST", body: JSON.stringify({ code, state }),
         }));
-      } catch (e) { setError(e instanceof Error ? e.message : "SSO sign-in failed."); } finally { setBusy(false); }
+      } catch (e) { setError(humanMessage(e, "SSO sign-in failed.")); } finally { setBusy(false); }
     })();
   }, [apiBaseUrl, finish]);
 
@@ -60,7 +89,7 @@ export default function LoginPage() {
     try {
       const r = await apiJson<SsoStart>(apiBaseUrl, "/api/v1/auth/sso/start", {}, "");
       window.location.href = r.redirect_url;
-    } catch (e) { setError(e instanceof Error ? e.message : "SSO isn't available."); setBusy(false); }
+    } catch (e) { setError(humanMessage(e, "SSO isn't available.")); setBusy(false); }
   };
 
   const loginPassword = async () => {
@@ -69,7 +98,7 @@ export default function LoginPage() {
       finish(await apiJson<LoginResp>(apiBaseUrl, "/api/v1/auth/login", {
         method: "POST", body: JSON.stringify({ email, password }),
       }));
-    } catch (e) { setError(e instanceof Error ? e.message : "Sign-in failed."); } finally { setBusy(false); }
+    } catch (e) { setError(humanMessage(e, "Sign-in failed.")); } finally { setBusy(false); }
   };
 
   const requestOtp = async () => {
@@ -82,7 +111,7 @@ export default function LoginPage() {
       if (r.debug_code) { setCode(r.debug_code); setHint(`Dev mode: your code is ${r.debug_code} (email delivery isn't configured).`); }
       else if (r.delivered) setHint("We emailed you a 6-digit code. It expires in 10 minutes.");
       else setHint("If that email belongs to a member, a code is on its way.");
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not send code."); } finally { setBusy(false); }
+    } catch (e) { setError(humanMessage(e, "Could not send code.")); } finally { setBusy(false); }
   };
 
   const verifyOtp = async () => {
@@ -91,7 +120,7 @@ export default function LoginPage() {
       finish(await apiJson<LoginResp>(apiBaseUrl, "/api/v1/auth/otp/verify", {
         method: "POST", body: JSON.stringify({ email, code }),
       }));
-    } catch (e) { setError(e instanceof Error ? e.message : "Invalid or expired code."); } finally { setBusy(false); }
+    } catch (e) { setError(humanMessage(e, "Invalid or expired code.")); } finally { setBusy(false); }
   };
 
   return (

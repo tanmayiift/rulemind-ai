@@ -128,7 +128,7 @@ export default function EvaluationsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Model Evaluation"
-        subtitle="Gini / AUC / KS / calibration / PSI, multi-label & uplift, temporal backtest, and a promotion-gate verdict — scored against ground-truth labels."
+        subtitle="Gini / AUC / KS / PR-AUC / calibration / confusion, multi-label & uplift, temporal backtest, and a promotion-gate verdict — scored against ground-truth labels. Population drift (PSI) lives on Predictors, which has the baseline to compare against."
       />
 
       {error && <Card><div style={{ color: "var(--danger, #b42318)" }}>{error}</div></Card>}
@@ -209,6 +209,76 @@ export default function EvaluationsPage() {
               <Stat label="Qini coefficient" value={fmt(m.qini_coefficient, 2)} tone="accent" />
               <Stat label="Treatment" value={fmt(m.n_treatment, 0)} />
               <Stat label="Control" value={fmt(m.n_control, 0)} />
+            </div>
+          )}
+
+          {/* The confusion matrix, accuracy and calibration were COMPUTED AND PERSISTED and never
+              rendered — while the sidebar entry for this page promises "accuracy, drift, and
+              confusion matrix". Everything below reads keys already on the wire
+              (model_evaluation.confusion_at / calibration_curve); no backend change was needed,
+              which is what made the gap invisible. */}
+          {detail.task === "binary" && m.confusion && (
+            <div className="mt-4" data-testid="eval-confusion">
+              <SectionTitle right={<Badge tone="neutral">threshold {fmt(m.confusion.threshold, 2)}</Badge>}>
+                Confusion matrix
+              </SectionTitle>
+              <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", marginBottom: 10 }}>
+                <Stat label="Accuracy" value={fmt(m.confusion.accuracy)} tone="accent" />
+                <Stat label="Precision" value={fmt(m.confusion.precision)} />
+                <Stat label="Recall" value={fmt(m.confusion.recall)} />
+                <Stat label="F1" value={fmt(m.confusion.f1)} />
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ fontSize: 13, borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: "4px 10px" }} />
+                      <th style={{ padding: "4px 10px", color: "var(--rm-dim)" }}>Predicted 1</th>
+                      <th style={{ padding: "4px 10px", color: "var(--rm-dim)" }}>Predicted 0</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {/* Rows are ACTUAL, columns PREDICTED, and each cell is labelled with its own
+                        name — a confusion matrix whose orientation you have to guess is worse than
+                        none, because a transposed reading swaps precision and recall. */}
+                    <tr style={{ borderTop: "1px solid var(--rm-border)" }}>
+                      <td style={{ padding: "4px 10px", color: "var(--rm-dim)" }}>Actual 1</td>
+                      <td style={{ padding: "4px 10px", fontVariantNumeric: "tabular-nums" }}>{fmt(m.confusion.tp, 0)} <span style={{ color: "var(--rm-dim)" }}>TP</span></td>
+                      <td style={{ padding: "4px 10px", fontVariantNumeric: "tabular-nums" }}>{fmt(m.confusion.fn, 0)} <span style={{ color: "var(--rm-dim)" }}>FN</span></td>
+                    </tr>
+                    <tr style={{ borderTop: "1px solid var(--rm-border)" }}>
+                      <td style={{ padding: "4px 10px", color: "var(--rm-dim)" }}>Actual 0</td>
+                      <td style={{ padding: "4px 10px", fontVariantNumeric: "tabular-nums" }}>{fmt(m.confusion.fp, 0)} <span style={{ color: "var(--rm-dim)" }}>FP</span></td>
+                      <td style={{ padding: "4px 10px", fontVariantNumeric: "tabular-nums" }}>{fmt(m.confusion.tn, 0)} <span style={{ color: "var(--rm-dim)" }}>TN</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {Array.isArray(m.calibration_curve) && m.calibration_curve.length > 0 && (
+            <div className="mt-4" data-testid="eval-calibration">
+              <SectionTitle>Calibration</SectionTitle>
+              <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    {["Bin", "Mean predicted", "Observed", "Count"].map((h) => (
+                      <th key={h} style={{ textAlign: "left", padding: "4px 8px", color: "var(--rm-dim)" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {m.calibration_curve.map((c: any, i: number) => (
+                    <tr key={i} style={{ borderTop: "1px solid var(--rm-border)" }}>
+                      <td style={{ padding: "4px 8px" }}>{i + 1}</td>
+                      <td style={{ padding: "4px 8px", fontVariantNumeric: "tabular-nums" }}>{fmt(c.mean_predicted)}</td>
+                      <td style={{ padding: "4px 8px", fontVariantNumeric: "tabular-nums" }}>{fmt(c.fraction_positive)}</td>
+                      <td style={{ padding: "4px 8px", fontVariantNumeric: "tabular-nums" }}>{fmt(c.count, 0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 

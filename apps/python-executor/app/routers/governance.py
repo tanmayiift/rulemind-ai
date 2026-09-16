@@ -130,8 +130,27 @@ def update_governance(request: Request, body: GovernanceRequest) -> Dict[str, An
     if body.require_dual_control is not None:
         settings = main.storage.get_settings(tenant_id=tenant_id)
         engine = dict(settings.get("engine_config", {}) or {})
-        engine["require_dual_control"] = bool(body.require_dual_control)
+        was = bool(engine.get("require_dual_control", False))
+        now = bool(body.require_dual_control)
+        engine["require_dual_control"] = now
         main.storage.update_settings({"engine_config": engine}, tenant_id=tenant_id)
+        # Disarming two-person control is itself a change-management event, and it was the one
+        # change this workspace could make that left no trace: the promotions it stops gating are
+        # recorded, the decision to stop gating them was not. An auditor reconstructing "who
+        # could approve their own promotion, and from when" had nothing to read.
+        if was != now:
+            main.storage.add_audit_event(
+                {
+                    "tenant_id": tenant_id,
+                    "event_type": "governance_changed",
+                    "entity_type": "settings",
+                    "entity_id": "governance",
+                    "detail": "Dual control {0}.".format("enabled" if now else "DISABLED"),
+                    "metadata": {"setting": "require_dual_control", "from": was, "to": now,
+                                 "by": main.active_actor(request)},
+                },
+                tenant_id=tenant_id,
+            )
     return _governance_view(tenant_id)
 
 
