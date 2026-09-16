@@ -748,7 +748,20 @@ GENERATED from the Python. Every fix mutation-checked.
   they correctly have nothing to add — writing an empty Unreleased heading into each
   would be noise, not coverage. Entries are prose explaining WHY, matching the existing
   convention, rather than a `git log` dump.
-- [ ] **I5** Vercel GitHub App access revoked (needs the user's 2FA)
+- [ ] **I5** Vercel GitHub App access revoked — **needs the owner's 2FA; re-confirmed
+  2026-09-16.** Evidence it still matters: `vercel[bot]` created **5 deployments** on this repo,
+  the most recent **2026-09-04**, so the App held write access and nothing since has removed it.
+  (The Vercel *project* is gone; the *installation* is a separate thing and outlives it.)
+
+  Verified unreachable from here, twice: `gh api /user/installations` returns 403 with
+  `X-Accepted-Oauth-Scopes:` **empty** — no OAuth scope grants it — and the body says
+  *"You must authenticate with an access token authorized to a GitHub App"*, which `gh` cannot
+  mint. `gh auth refresh` does not help. `/repos/{owner}/{repo}/installation` needs an App JWT
+  and returns 401.
+
+  One click, in a browser with 2FA:
+  **Settings → Applications → Installed GitHub Apps → Vercel → Configure → Uninstall**
+  (`github.com/settings/installations/157614895`).
 - [x] **I6** CI — **CLOSED 2026-09-16 by a different route than this item assumed.** GitHub-hosted
   runners are still blocked (a billing failure, not minutes: the annotation on every failed job
   reads *"recent account payments have failed or your spending limit needs to be increased"*, and
