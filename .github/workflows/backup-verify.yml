@@ -60,11 +60,28 @@ jobs:
 
       # pg_dump/pg_restore must match the SERVER major version; a mismatch fails at RESTORE time,
       # which is exactly the silent-until-the-incident failure this job exists to catch.
-      - name: Check the postgres client
+      # THE CLIENT MAJOR MUST MATCH THE SERVER MAJOR, and this is the one job that proves it.
+      # Homebrew's `libpq` installs the LATEST client (18.x). A dump taken with 18 against this
+      # 16 server restores with:
+      #     ERROR: unrecognized configuration parameter "transaction_timeout"
+      # because pg_dump 18 emits `SET transaction_timeout = 0` and that parameter arrived in
+      # PostgreSQL 17. Caught for real on 2026-09-16 — which is exactly the failure mode this
+      # workflow's original comment predicted. So: postgresql@16, explicitly, and fail loudly
+      # rather than warn if the majors disagree.
+      - name: Put a matching postgres 16 client on PATH
         run: |
-          docker compose exec -T db pg_dump --version
-          command -v pg_dump >/dev/null 2>&1 && pg_dump --version \
-            || echo "::warning::no host pg_dump; backup_verify.py needs the client on PATH"
+          set -eu
+          for d in /opt/homebrew/opt/postgresql@16/bin /usr/local/opt/postgresql@16/bin; do
+            [ -x "$d/pg_dump" ] && { echo "$d" >> "$GITHUB_PATH"; export PATH="$d:$PATH"; break; }
+          done
+          command -v pg_dump >/dev/null 2>&1 || {
+            echo "::error::no pg_dump. Install with: brew install postgresql@16"; exit 1; }
+          CLIENT=$(pg_dump --version | grep -oE '[0-9]+' | head -1)
+          SERVER=$(docker compose exec -T db psql --version | grep -oE '[0-9]+' | head -1)
+          echo "client major=$CLIENT  server major=$SERVER"
+          [ "$CLIENT" = "$SERVER" ] || {
+            echo "::error::pg_dump $CLIENT against a postgres $SERVER server — the restore will fail"
+            exit 1; }
 
       - name: Create schema and seed a chained audit trail
         working-directory: apps/python-executor

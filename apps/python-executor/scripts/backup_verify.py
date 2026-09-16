@@ -159,16 +159,36 @@ def _storage_for(url: str):
 
 
 def audit_chains_verify(url: str) -> List[str]:
-    """Re-walk every tenant's audit chain in the RESTORED copy. Returns failure descriptions."""
+    """Re-walk every tenant's audit chain in the RESTORED copy. Returns failure descriptions.
+
+    DISPOSES THE ENGINE BEFORE RETURNING, and that is not tidiness. `Storage` opens a SQLAlchemy
+    connection POOL against the scratch database; the caller's next move is to DROP that
+    database, and Postgres refuses to drop one that still has a session attached:
+
+        psql failed: ERROR: database "rulemind_restore_check" is being accessed by other users
+        DETAIL: There is 1 other session using the database.
+
+    So without this the Postgres path cannot clean up after itself and leaves a scratch database
+    behind on every run. SQLite never showed it -- there is no server to refuse the drop -- and
+    this workflow has never had a green run, so nothing surfaced it until 2026-09-16.
+    """
     storage = _storage_for(url)
     problems = []
-    for tenant in storage.list_tenants():
-        tenant_id = tenant.get("id")
-        if not tenant_id:
-            continue
-        report = storage.verify_audit_chain(tenant_id=tenant_id)
-        if not report["ok"]:
-            problems.append(f"tenant {tenant_id}: {report['breaks'][:3]}")
+    try:
+        for tenant in storage.list_tenants():
+            tenant_id = tenant.get("id")
+            if not tenant_id:
+                continue
+            report = storage.verify_audit_chain(tenant_id=tenant_id)
+            if not report["ok"]:
+                problems.append(f"tenant {tenant_id}: {report['breaks'][:3]}")
+    finally:
+        # `finally`, so a mid-walk failure still releases the pool -- otherwise a chain problem
+        # (the thing this script exists to find) would ALSO leave an undroppable database.
+        try:
+            storage.engine.dispose()
+        except Exception:  # pragma: no cover - cleanup must not mask the real result
+            pass
     return problems
 
 
