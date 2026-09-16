@@ -137,7 +137,11 @@ jobs:
             "GHSA-xwg4-73v4-xw9w": "nanoid, transitive.",
 
             "GHSA-4r6h-8v6p-xvw6": "xlsx (SheetJS) 0.18.5. NO npm fix exists - SheetJS left the npm registry, advisory says 'patched versions: <0.0.0'. Real fix is to install from cdn.sheetjs.com or drop the dependency.",
-            "GHSA-5pgg-2g8v-p4x9": "xlsx (SheetJS) 0.18.5. Same: no npm fix available."
+            "GHSA-5pgg-2g8v-p4x9": "xlsx (SheetJS) 0.18.5. Same: no npm fix available.",
+
+            "_next15_comment": "The two below are CRITICAL and BOTH need Next >= 15.5.24 -- a MAJOR upgrade from 14.2.x, not a patch. Triaged 2026-09-16 with evidence, not dismissed: each was checked against how this app is actually built and run. The upgrade is real remediation work and is tracked; these entries are why it is not an emergency, and they must be deleted the moment Next moves to 15.5.24+.",
+            "GHSA-p293-qw3h-jr36": "next: unauthenticated RCE on WINDOWS-HOSTED servers. Not applicable: apps/web/Dockerfile is node:20-alpine, so every shipped image is Linux. Fixed by Next >= 15.5.24.",
+            "GHSA-2xp9-vwfh-vxw4": "next: unauthenticated RCE in the Image Optimization API via AVIF. Surface is closed by configuration here -- there are ZERO next/image imports in apps/web, no images.remotePatterns or images.domains block in next.config.js, and /_next/image answers HTTP 400 for a remote URL (probed on the running container 2026-09-16). Fixed by Next >= 15.5.24."
           }
           JSON
           node -e '
