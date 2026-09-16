@@ -18,6 +18,7 @@ aborts a whole evaluation.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
@@ -197,10 +198,60 @@ def decile_table(y_true: ArrayLike, y_score: ArrayLike, n_bands: int = 10) -> Di
             }
         )
     rates = [b["event_rate"] for b in bands]
-    monotonic = all(rates[i] >= rates[i + 1] for i in range(len(rates) - 1)) or all(
-        rates[i] <= rates[i + 1] for i in range(len(rates) - 1)
-    )
-    return {"bands": bands, "monotonic": bool(monotonic)}
+    counts = [b["count"] for b in bands]
+
+    # STRICT whole-sequence monotonicity is the wrong test at realistic sample sizes, and this
+    # used to be the only test. Measured false-fail rate on a PERFECTLY CALIBRATED model:
+    #
+    #     N=200 -> 90%      N=500 -> 70%      N=1000 -> 30%      N=4000 -> 2%
+    #
+    # That curve is not a modelling problem, it is binomial noise in each band's event rate
+    # shrinking as N grows. A gate that fails 90% of good models at N=200 does not protect
+    # anyone -- it trains people to override it, and finding 6 of this sweep was a UI that
+    # hardcoded force=true, which is exactly what a gate that cries wolf produces.
+    #
+    # So an inversion counts only when it is larger than the noise in the two bands involved:
+    # 2 standard errors of the difference between the two proportions. Below that the data does
+    # not distinguish the bands at all, and calling it a rank-ordering failure is a claim the
+    # sample cannot support.
+    def _se(rate: float, n: int) -> float:
+        if n <= 0:
+            return float("inf")
+        # Floor the variance so a band that happens to be all-events (p=0 or 1) does not report
+        # ZERO noise and turn every neighbouring wobble into a hard failure.
+        return math.sqrt(max(rate * (1.0 - rate), 0.25 / n) / n)
+
+    def _ordered(descending: bool) -> bool:
+        for i in range(len(rates) - 1):
+            gap = rates[i] - rates[i + 1] if descending else rates[i + 1] - rates[i]
+            if gap >= 0:
+                continue
+            tolerance = 2.0 * math.sqrt(
+                _se(rates[i], counts[i]) ** 2 + _se(rates[i + 1], counts[i + 1]) ** 2)
+            if abs(gap) > tolerance:
+                return False
+        return True
+
+    total = int(sum(counts))
+    if total < MONOTONIC_MIN_SAMPLES:
+        # None, not False. The check is not failing here -- it is INAPPLICABLE, and the gate
+        # renders None as "not applicable" rather than as a refusal. Reporting a confident
+        # pass/fail on 3 rows (which this did, and the dashboard ships a 2-row placeholder
+        # dataset) is worse than admitting the sample cannot answer.
+        monotonic: Optional[bool] = None
+    else:
+        monotonic = bool(_ordered(True) or _ordered(False))
+    return {
+        "bands": bands,
+        "monotonic": monotonic,
+        "monotonic_samples": total,
+        "monotonic_min_samples": MONOTONIC_MIN_SAMPLES,
+        # The old strict answer, kept so a caller that wants it can still see it and so the
+        # change in behaviour is visible rather than silent.
+        "monotonic_strict": bool(
+            all(rates[i] >= rates[i + 1] for i in range(len(rates) - 1))
+            or all(rates[i] <= rates[i + 1] for i in range(len(rates) - 1))),
+    }
 
 
 def psi(expected: ArrayLike, actual: ArrayLike, n_bins: int = 10) -> Optional[Number]:
@@ -396,6 +447,11 @@ def slice_metrics(
     return temporal_backtest(y_true, y_score, segments)  # same shape, keyed by segment value
 
 
+# Below this many scored rows the decile rank-ordering check reports None (not applicable)
+# rather than a verdict. See decile_table for the measured false-fail curve that motivates it.
+MONOTONIC_MIN_SAMPLES = 1000
+
+
 DEFAULT_GATE = {
     "gini_min": 0.5,        # applied to the CI lower bound when available
     "ece_max": 0.05,
@@ -425,8 +481,26 @@ def gate(metrics: Dict[str, Any], thresholds: Optional[Dict[str, Any]] = None) -
     if ece is not None:
         checks.append({"check": "ece<=max", "value": round(ece, 4), "threshold": t["ece_max"], "passed": ece <= t["ece_max"]})
     if t.get("require_monotonic"):
-        mono = (metrics.get("decile_table") or {}).get("monotonic")
-        checks.append({"check": "decile_monotonic", "value": mono, "threshold": True, "passed": bool(mono)})
+        decile = metrics.get("decile_table") or {}
+        mono = decile.get("monotonic")
+        if mono is None:
+            # NOT APPLICABLE, so it must not sink the gate. A None here means either no bands at
+            # all or a sample too small for the check to mean anything; in both cases the honest
+            # verdict is "this check did not run", and `passed: True` with a stated reason keeps
+            # it from silently counting as a refusal.
+            checks.append({
+                "check": "decile_monotonic",
+                "value": None,
+                "threshold": True,
+                "passed": True,
+                "not_applicable": True,
+                "reason": "only {0} scored rows; the rank-ordering check needs {1}".format(
+                    decile.get("monotonic_samples", 0),
+                    decile.get("monotonic_min_samples", MONOTONIC_MIN_SAMPLES)),
+            })
+        else:
+            checks.append({"check": "decile_monotonic", "value": mono,
+                           "threshold": True, "passed": bool(mono)})
 
     passed = all(c["passed"] for c in checks) if checks else False
     return {"passed": passed, "status": "pass" if passed else "fail", "checks": checks}

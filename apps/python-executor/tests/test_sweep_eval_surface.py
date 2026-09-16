@@ -10,6 +10,29 @@ Covers:
   * app/analytics.py         -- the response key the web dashboard fails to read
   * app/champion_challenger.py -- recommendation is a string, not an object
   * app/storage.py + app/models.py -- promotion provenance silently dropped on write
+
+
+FIVE TESTS WERE REMOVED FROM THIS FILE ON 2026-09-16, and that needs saying rather than
+discovering by `git log`. They were CHARACTERISATION tests -- each asserted the DEFECT it had
+found, so that the gap was recorded and attributable:
+
+    test_promotion_fields_are_dropped_on_write
+    test_experiment_orm_has_no_promotion_columns
+    test_experiment_results_are_cached_without_decision_invalidation
+    test_monotonic_check_has_no_tolerance_for_one_adjacent_inversion
+    test_small_clean_samples_fail_the_monotonic_check_most_of_the_time
+
+All five defects are fixed, so each assertion was now backwards -- a test asserting that
+promotion provenance IS discarded would, from here on, fail whenever the code was right. They are
+replaced by tests that assert the corrected behaviour AND keep a control against over-correction:
+
+    tests/test_sweep_experiment_promotion_record.py
+    tests/test_sweep_analytics_significance.py
+    tests/test_sweep_gate_sample_floor.py
+
+Deleting a test is normally the wrong move. It is right here only because each one's subject is
+covered by a strictly stronger test -- in particular `test_a_genuinely_bad_ranker_still_fails`,
+which guards the direction the monotonic fix could have gone wrong in.
 """
 from __future__ import annotations
 
@@ -211,33 +234,6 @@ class PromotionGateSampleFloorTests(unittest.TestCase):
         self.assertNotIn("min_sample", checks)
         self.assertNotIn("n>=min", checks)
 
-    def test_monotonic_check_has_no_tolerance_for_one_adjacent_inversion(self):
-        # Ten bands, perfectly ordered except one adjacent pair swapped by a hair.
-        rates = [1.0, 0.9, 0.8, 0.7, 0.6, 0.45, 0.50, 0.3, 0.2, 0.1]
-        y, s = [], []
-        for band, rate in enumerate(rates):
-            events = int(round(rate * 20))
-            y.extend([1] * events + [0] * (20 - events))
-            s.extend([1.0 - band * 0.1 - j * 0.0001 for j in range(20)])
-        table = me.decile_table(y, s)
-        self.assertFalse(table["monotonic"], "a single 0.05 inversion must be what trips this")
-        verdict = me.gate({"gini": 0.8, "ece": 0.01, "decile_table": table})
-        self.assertEqual(verdict["status"], "fail")
-
-    def test_small_clean_samples_fail_the_monotonic_check_most_of_the_time(self):
-        """Quantifies the false-fail rate on a PERFECTLY calibrated model at N=200."""
-        fails = 0
-        trials = 20
-        for seed in range(trials):
-            result = me.run_evaluation(_clean_rows(200, seed=seed), BINARY_CFG)
-            checks = {c["check"]: c["passed"] for c in result["gate_result"]["checks"]}
-            if not checks.get("decile_monotonic", True):
-                fails += 1
-        self.assertGreater(
-            fails, trials // 2,
-            "expected the un-toleranced monotonic check to false-fail a majority of clean N=200 samples",
-        )
-
     def test_large_clean_samples_do_pass(self):
         """The counterpart: the gate is NOT broken in general, only sample-size sensitive."""
         result = me.run_evaluation(_clean_rows(4000, seed=1), BINARY_CFG)
@@ -304,16 +300,6 @@ class AnalyticsContractTests(unittest.TestCase):
         source = inspect.getsource(analytics_mod.experiment_analytics)
         self.assertIn("variant_rows[0], variant_rows[1]", source)
 
-    def test_experiment_results_are_cached_without_decision_invalidation(self):
-        """A 300s TTL with no bust on new decisions: fresh traffic reads as zero for 5 minutes."""
-        import inspect
-
-        from app import analytics as analytics_mod
-
-        source = inspect.getsource(analytics_mod.experiment_analytics)
-        self.assertIn("ttl_seconds=300", source)
-
-
 class PromotionProvenanceTests(unittest.TestCase):
     """promote_experiment writes promotion provenance that storage silently discards."""
 
@@ -323,47 +309,6 @@ class PromotionProvenanceTests(unittest.TestCase):
 
         cls.storage = app_main.storage
         cls.tenant_id = cls.storage.default_tenant_id
-
-    def test_promotion_fields_are_dropped_on_write(self):
-        exp_id = "sweep_promo_" + uuid.uuid4().hex[:8]
-        self.storage.create_or_update_experiment(
-            {
-                "id": exp_id,
-                "name": "sweep promo probe",
-                "status": "draft",
-                "variants": [{"id": "champion", "role": "champion", "weight": 100}],
-            },
-            tenant_id=self.tenant_id,
-        )
-        # Exactly the payload routers/experiments.py::promote_experiment persists.
-        written = self.storage.create_or_update_experiment(
-            {
-                "id": exp_id,
-                "name": "sweep promo probe",
-                "status": "completed",
-                "variants": [{"id": "champion", "role": "champion", "weight": 100}],
-                "promoted_variant_id": "challenger",
-                "promoted_by": "audit@example.com",
-                "promoted_at": "2026-09-16T00:00:00Z",
-            },
-            tenant_id=self.tenant_id,
-        )
-        # The status change survives...
-        self.assertEqual(written["status"], "completed")
-        # ...but every promotion field is gone, and the write reported success.
-        read_back = self.storage.get_experiment(exp_id, tenant_id=self.tenant_id)
-        for field in ("promoted_variant_id", "promoted_by", "promoted_at"):
-            with self.subTest(field=field):
-                self.assertIsNone(written.get(field))
-                self.assertIsNone(read_back.get(field))
-
-    def test_experiment_orm_has_no_promotion_columns(self):
-        from app.models import Experiment
-
-        columns = set(Experiment.__table__.columns.keys())
-        for field in ("promoted_variant_id", "promoted_by", "promoted_at"):
-            self.assertNotIn(field, columns)
-
 
 if __name__ == "__main__":
     unittest.main()
