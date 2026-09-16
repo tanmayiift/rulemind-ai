@@ -171,6 +171,16 @@ jobs:
             -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO rulemind;"
 
       - name: Full regression
+        # RULEMIND_REQUIRE_ALL_LANES: a SKIPPED lane fails the run here.
+        #
+        # The grading step below greps the per-lane TSV for "fail", and a skip is not a failure --
+        # so a lane whose environment was not provisioned reported as a green regression. A local
+        # run skipped BOTH the Postgres lane and the QA suites (port 8080 was occupied, and the
+        # shared schema was contaminated) and still exited 0 with everything else green. On a
+        # laptop a skip is reasonable; in CI, which provisions Postgres, Redis and the ports
+        # itself, a skip means that provisioning broke and must be loud.
+        env:
+          RULEMIND_REQUIRE_ALL_LANES: "1"
         run: bash scripts/run_all_tests.sh ${{ inputs.lanes }}
 
       - name: Publish the summary

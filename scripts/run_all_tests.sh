@@ -114,7 +114,25 @@ esac
 : > "$SUMMARY"
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$1"; }
-record() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$SUMMARY"; }
+# STRICT MODE: a skipped lane is a lane that did not run, and CI grades on "\tfail" alone -- so a
+# lane that skipped for an environmental reason was reported as a green regression. That is not
+# hypothetical: a local run skipped BOTH the Postgres lane and the QA suites (something was on
+# 8080, and the shared schema was contaminated) and still exited 0 with every other lane green.
+# On a developer laptop a skip is legitimate -- not everyone has Postgres up. In CI, which
+# provisions all of it, a skip means the provisioning broke and must fail loudly.
+#
+#   RULEMIND_REQUIRE_ALL_LANES=1   turn every skip into a failure
+STRICT_LANES="${RULEMIND_REQUIRE_ALL_LANES:-0}"
+
+record() {
+  local status="$3"
+  if [ "$STRICT_LANES" = "1" ] && [ "$status" = "skipped" ]; then
+    printf '  \033[31mfail\033[0m  lane %s SKIPPED under RULEMIND_REQUIRE_ALL_LANES=1\n' "$1"
+    printf '        A skip here means the environment this lane needs was not provisioned.\n'
+    status="FAIL (skipped)"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$status" "$4" "$5" >> "$SUMMARY"
+}
 
 count_tests() {
   local lane="$1" log="$2" n=""
