@@ -38,7 +38,7 @@ export SANDBOX_POOL_SIZE="${SANDBOX_POOL_SIZE:-2}"
 # Playwright binds 8100/3100 while compose binds 8080/3000 -- they do not collide, and a test
 # report that silently omits the 68 browser tests is the kind of partial-coverage claim this
 # script exists to prevent. It adds ~30s.
-LANES="${*:-python python-pg web rust flutter kotlin e2e contracts}"
+LANES="${*:-python python-pg web rust flutter kotlin e2e contracts lint migrations}"
 SUMMARY="$OUT/summary.tsv"
 
 # Refuse to run concurrently with another invocation. Both would write the same summary and the
@@ -327,6 +327,50 @@ if has contracts; then
       printf '  FAIL — %s\n' "$(basename "$gate")"
     fi
   done
+fi
+
+# ── lint ──────────────────────────────────────────────────────────────────────────────────────
+# Was ci.yml's `pnpm lint`, which is billing-blocked and had been RED SINCE 2026-09-02 without
+# anyone seeing it. It is in the gate now so it cannot hide again. Two failures were stacked
+# there: ruff was not on PATH (so locally the lint never ran at all) and 17 real errors sat
+# underneath, one of them an undefined name that raised NameError under get_type_hints.
+if has lint; then
+  say "Lint"
+  if (cd "$ROOT" && pnpm -r lint) > "$OUT/lint.log" 2>&1; then
+    record lint "Lint (ruff + tsc)" "pass" "—" "—"
+    printf '  pass — pnpm -r lint\n'
+  else
+    record lint "Lint (ruff + tsc)" "FAIL" "—" "—"
+    printf '  FAIL — pnpm -r lint (see %s)\n' "$OUT/lint.log"
+  fi
+fi
+
+# ── migrations ────────────────────────────────────────────────────────────────────────────────
+# Was ci.yml's `migrations` job. `alembic check` compares the MODELS against the migration chain
+# and fails when someone edits a model without generating a migration -- a drift the 1937-test
+# suite does not catch, because the tests create their schema from the models directly and never
+# replay the chain. Needs the compose Postgres; recorded as skipped, honestly, when it is absent.
+if has migrations; then
+  say "Migrations"
+  if (cd "$ROOT/apps/python-executor" && RULEMIND_CONFIG_KEY=rulemind-test-key \
+        DATABASE_URL="${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}" \
+        "$VENV" -c "import sqlalchemy,os;sqlalchemy.create_engine(os.environ['DATABASE_URL']).connect()" \
+        >/dev/null 2>&1); then
+    if (cd "$ROOT/apps/python-executor" && RULEMIND_CONFIG_KEY=rulemind-test-key \
+          DATABASE_URL="${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}" \
+          "$VENV" -m alembic upgrade head && RULEMIND_CONFIG_KEY=rulemind-test-key \
+          DATABASE_URL="${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}" \
+          "$VENV" -m alembic check) > "$OUT/migrations.log" 2>&1; then
+      record migrations "Migrations (alembic check)" "pass" "—" "—"
+      printf '  pass — alembic upgrade head + check\n'
+    else
+      record migrations "Migrations (alembic check)" "FAIL" "—" "—"
+      printf '  FAIL — alembic (see %s)\n' "$OUT/migrations.log"
+    fi
+  else
+    record migrations "Migrations (alembic check)" "skipped" "—" "0s"
+    printf '  skipped — no Postgres at 127.0.0.1:55432 (docker compose up -d db)\n'
+  fi
 fi
 
 say "Report"
