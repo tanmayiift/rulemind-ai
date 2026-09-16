@@ -38,7 +38,7 @@ export SANDBOX_POOL_SIZE="${SANDBOX_POOL_SIZE:-2}"
 # Playwright binds 8100/3100 while compose binds 8080/3000 -- they do not collide, and a test
 # report that silently omits the 68 browser tests is the kind of partial-coverage claim this
 # script exists to prevent. It adds ~30s.
-LANES="${*:-python python-pg web rust flutter kotlin e2e contracts lint migrations}"
+LANES="${*:-python python-pg web rust flutter kotlin e2e contracts lint migrations qa}"
 # `smoke` is NOT in the default set: smoke_compose.sh builds and tears down the whole stack and
 # refuses to run when 8080/3000/55432/6380 are busy — which they are during a normal regression,
 # because the python-pg lane is using the database. Run it on its own: `run_all_tests.sh smoke`.
@@ -321,7 +321,11 @@ has kotlin && run_lane kotlin "Kotlin — rulemind-core" bash -c "cd '$ROOT/pack
 
 if has contracts; then
   say "Contract gates"
-  for gate in "docs/parity/check_parity.py" "scripts/verify_chart.py" "scripts/check_audit_ignores.py"; do
+  # openapi_gate.py was only ever run by sdk-verify's repo-validation job, which is
+  # billing-blocked and has never executed. It checks the PUBLIC API CONTRACT -- an endpoint
+  # changing shape without anyone noticing is exactly what it catches, and nothing else does.
+  for gate in "docs/parity/check_parity.py" "scripts/verify_chart.py" "scripts/check_audit_ignores.py" \
+              "apps/python-executor/scripts/openapi_gate.py"; do
     if env -u DATABASE_URL "$VENV" "$ROOT/$gate" > "$OUT/$(basename "$gate").log" 2>&1; then
       record "$(basename "$gate" .py)" "$(basename "$gate")" "pass" "—" "—"
       printf '  pass — %s\n' "$(basename "$gate")"
@@ -390,6 +394,50 @@ if has smoke; then
   else
     record smoke "Compose smoke" "FAIL" "—" "—"
     printf '  FAIL — smoke_compose.sh (see %s)\n' "$OUT/smoke.log"
+  fi
+fi
+
+# ── qa ────────────────────────────────────────────────────────────────────────────────────────
+# suite_core (31 cases) and suite_sandbox (21) -- the sandbox ESCAPE MATRIX among them, which is
+# the strongest security assertion in this repo. They only ever ran in sdk-verify's
+# repo-validation job, which is billing-blocked and has never executed once, so in practice they
+# have been a manual ritual with a date in PLAN.md.
+#
+# They need a live API. qa/mobile_e2e/start_fastapi.sh brings up a self-contained SQLite-backed
+# server on 8080 and wait_for_health.sh blocks until it answers, so the lane owns its own
+# dependency instead of assuming one is running.
+if has qa; then
+  say "QA suites"
+  if lsof -nP -iTCP:8080 -sTCP:LISTEN >/dev/null 2>&1; then
+    record qa "QA suites (core + sandbox)" "skipped" "—" "0s"
+    printf '  skipped — something is already listening on 8080; the suites would grade it\n'
+  else
+    _qa_ok=1
+    # RULEMIND_PYTHON_BIN, for the same reason PYTHON_BIN exists for Playwright's webServer a few
+    # lanes up: start_fastapi.sh otherwise resolves bare `python3`, which on this machine is
+    # Homebrew 3.14 with no uvicorn installed. It fails as "No module named uvicorn" inside a
+    # background log, and the visible symptom is only "timed out waiting for backend health".
+    if RULEMIND_PYTHON_BIN="$VENV" bash "$ROOT/qa/mobile_e2e/start_fastapi.sh" > "$OUT/qa-server.log" 2>&1 \
+       && bash "$ROOT/qa/mobile_e2e/wait_for_health.sh" >> "$OUT/qa-server.log" 2>&1; then
+      for suite in core sandbox; do
+        if (cd "$ROOT/qa/e2e-full" && "$VENV" run.py "$suite") > "$OUT/qa-$suite.log" 2>&1; then
+          n=$(grep -cE '^\s*(PASS|ok)' "$OUT/qa-$suite.log" 2>/dev/null || echo "—")
+          printf '  pass — suite_%s\n' "$suite"
+        else
+          _qa_ok=0
+          printf '  FAIL — suite_%s (see %s)\n' "$suite" "$OUT/qa-$suite.log"
+        fi
+      done
+    else
+      _qa_ok=0
+      printf '  FAIL — could not start the QA backend (see %s)\n' "$OUT/qa-server.log"
+    fi
+    pkill -f 'uvicorn app.main:app' >/dev/null 2>&1 || true
+    if [ "$_qa_ok" -eq 1 ]; then
+      record qa "QA suites (core + sandbox)" "pass" "52" "—"
+    else
+      record qa "QA suites (core + sandbox)" "FAIL" "—" "—"
+    fi
   fi
 fi
 

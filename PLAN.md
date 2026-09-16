@@ -1113,7 +1113,7 @@ via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak
 - [ ] **R3.2** A4 — delete the 11 stale deployments and 4 environments (`scripts/github_deployments_cleanup.sh`, `--dry-run` first).
 - [ ] **R3.3** A6 — fix the vitest count in `run_all_tests.sh` (CI reported `?` and undercounted the total by 462).
 - [ ] **R3.4** B1 — run `qa/e2e-full/run.py core` (31 cases) and `sandbox` (21 cases) against compose.
-- [ ] **R3.5** B2 — wire both QA suites into `run_all_tests.sh` as lanes.
+- [x] **R3.5** B2 — wire both QA suites into `run_all_tests.sh` as lanes.
 - [ ] **R3.6** B3 — run `web_sweep.mjs` across all 39 routes; refresh its stale 36-route results.
 - [ ] **R3.7** C5 — resolve `/model-sets` and `/predictors`: nav entries point at routes that do not exist.
 - [ ] **R3.8** C1-C4 — multi-agent sweep: UI/UX, backend, orchestration, evaluations.
