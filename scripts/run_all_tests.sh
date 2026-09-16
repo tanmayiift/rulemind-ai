@@ -126,7 +126,18 @@ count_tests() {
       # cargo prints one line per target; SUM them, and the empty doctest target contributes 0.
       n=$(grep -oE "test result: ok\. [0-9]+ passed" "$log" | grep -oE "[0-9]+" | paste -sd+ - | bc 2>/dev/null) ;;
     web)
-      n=$(grep -oE "Tests +[0-9]+ passed" "$log" | grep -oE "[0-9]+" | tail -1) ;;
+      # From the JUnit XML, not the console output. The CI run recorded "Vitest pass ?" and a
+      # total 462 short, because vitest KEEPS ANSI COLOUR under CI and the old regex
+      # (Tests +[0-9]+ passed) cannot match across escape sequences:
+      #     ^[[2m      Tests ^[[22m ^[[1m^[[32m462 passed^[[39m
+      # Locally the colour is stripped, so the parser worked on a laptop and silently
+      # undercounted in the one place the number is published. vitest.config.ts already turns on
+      # the junit reporter whenever CI or RULEMIND_TEST_REPORT is set, so the file is there.
+      n=$(awk 'match($0, /tests="[0-9]+"/) { print substr($0, RSTART+7, RLENGTH-8); exit }' \
+            "$OUT/vitest-junit.xml" 2>/dev/null)
+      # Fall back to the log with the escapes removed, for a run with no XML.
+      [ -z "$n" ] && n=$(sed 's/\x1b\[[0-9;]*m//g' "$log" 2>/dev/null \
+            | grep -oE "Tests +[0-9]+ passed" | grep -oE "[0-9]+" | tail -1) ;;
     e2e)
       n=$(grep -oE "[0-9]+ passed" "$log" | grep -oE "[0-9]+" | tail -1) ;;
     flutter)

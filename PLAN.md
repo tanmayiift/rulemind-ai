@@ -1111,7 +1111,7 @@ via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak
 
 - [x] **R3.1** Port `sdk-verify.yml` to the self-hosted runner, `workflow_dispatch` only.
 - [x] **R3.2** A4 — delete the 11 stale deployments and 4 environments (`scripts/github_deployments_cleanup.sh`, `--dry-run` first).
-- [ ] **R3.3** A6 — fix the vitest count in `run_all_tests.sh` (CI reported `?` and undercounted the total by 462).
+- [x] **R3.3** A6 — fix the vitest count in `run_all_tests.sh`. Cause: vitest KEEPS ANSI colour under CI, so `Tests +[0-9]+ passed` could not match across the escape sequences; it parsed on a laptop and silently undercounted in CI. Now reads `tests=` from `test-results/vitest-junit.xml`, with an ANSI-stripped log fallback.
 - [ ] **R3.4** B1 — run `qa/e2e-full/run.py core` (31 cases) and `sandbox` (21 cases) against compose.
 - [x] **R3.5** B2 — wire both QA suites into `run_all_tests.sh` as lanes.
 - [ ] **R3.6** B3 — run `web_sweep.mjs` across all 39 routes; refresh its stale 36-route results.
