@@ -292,7 +292,12 @@ export default function SimulationPage() {
               {fileName ? <div style={{ marginTop: 12, fontSize: 12, color: "var(--rm-muted)" }}>Loaded <strong>{fileName}</strong></div> : null}
             </div>
           ) : mode === "synthetic" ? (
-            <Field label="Number of synthetic cases (customer_id + 20 vars)">
+            /* The count comes from the POLICY's real schema, which is what makeCase populates.
+               This label used to read "(customer_id + 20 vars)" hardcoded, sitting directly
+               beside a badge correctly reporting "8 fields" -- two numbers about the same thing,
+               on the same screen, disagreeing. A braced JSX comment is not valid in a ternary
+               arm, so this is a plain block comment. */
+            <Field label={`Number of synthetic cases (customer_id + ${schemaFields.length} field${schemaFields.length === 1 ? "" : "s"})`}>
               <div style={{ display: "flex", gap: 8 }}>
                 <input className="rm-input" type="number" min={1} max={5000} value={count} onChange={(e) => setCount(parseInt(e.target.value || "1", 10))} style={{ maxWidth: 140 }} />
                 <span style={{ alignSelf: "center", fontSize: 12, color: "var(--rm-dim)" }}>up to 5,000</span>
@@ -363,9 +368,16 @@ export default function SimulationPage() {
 
           {rows && drivers && drivers.length > 0 ? (
             <Card>
-              <SectionTitle>Top rejection drivers</SectionTitle>
+              <SectionTitle right={<Badge tone="neutral">whole decision log</Badge>}>Top rejection drivers</SectionTitle>
+              {/* SCOPE, stated. This panel is called with {policy_id, limit: 1000} — the last
+                  1000 decisions for the policy, NOT the cases just simulated. Sitting inside the
+                  run results with no qualifier, it read as a breakdown of this run: after a
+                  20-case simulation it showed "325 fails · 100% of rejects" directly above
+                  "Cases · 20". The numbers were right; what they described was not what the
+                  surrounding panel implied. */}
               <div style={{ fontSize: 12.5, color: "var(--rm-dim)", marginBottom: 12 }}>
                 Conditions failing most often on non-approved decisions — exact counts from the decision log (no AI).
+                <strong style={{ color: "var(--rm-text)" }}> Across this policy&rsquo;s recent decisions, not only the {rows.length} case{rows.length === 1 ? "" : "s"} above.</strong>
               </div>
               <div style={{ display: "grid", gap: 8 }}>
                 {drivers.map((d, i) => (

@@ -54,18 +54,23 @@ the trace).
 
 ---
 
+## Closed since this ledger was written
+
+| # | Finding | Fix |
+|---|---|---|
+| A | Promotion provenance silently discarded | Three columns + migration 0030, and `_as_datetime` on the way in because the router writes an ISO **string** into a DateTime column — which SQLite accepts and hands back, so the round-trip "works" until Postgres. |
+| B | The promotion gate had no sample-size floor | An inversion now counts only when it exceeds 2 SE of the difference between the two bands; below 1000 rows the check reports **not applicable** rather than a verdict. Guarded against over-correction by a test that a genuinely bad (humped) ranker still fails. |
+| C | Experiment analytics cached 300s with no invalidation | 30s. The other three `ttl_seconds=300` in that file are deliberately untouched — a near-identical literal appears four times, which is how an earlier attempt at this edit changed the wrong function. |
+| D | The headline p-value was positional | Selected by **role**, and the response now names the pair (`control`, `treatment`, `comparedVariants`, `totalVariants`). |
+| E | `/simulation` showed log-wide rejection drivers inside per-run results | The panel now says so, with a "whole decision log" badge and the run's own case count for contrast. |
+| F | Contradictory field counts on `/simulation` | The label reads the policy's real schema instead of a hardcoded "20 vars". |
+
 ## Open — found, verified, not yet fixed
 
-These are recorded rather than silently carried. Each was reproduced.
+Each was reproduced.
 
 | # | Finding | Severity | Note |
 |---|---|---|---|
-| A | **Promotion provenance is silently discarded.** `promote_experiment` writes `promoted_variant_id`, `promoted_by`, `promoted_at`; the `Experiment` ORM has no such columns and `create_or_update_experiment` copies only known fields. After a 200, `GET /experiments/{id}` returns `promoted_variant_id: None`. | Medium-high | The write reports success and the record of *what was promoted and by whom* survives only in the audit event. Needs three columns and a migration. |
-| B | **The promotion gate has no sample-size floor.** `decile_monotonic` demands strict whole-sequence monotonicity. Measured false-fail rate on a *perfectly calibrated* model: N=200 → 90%, N=500 → 70%, N=1000 → 30%, N=4000 → 2%. It emits a confident pass/fail on 3 rows with no warning, and the UI ships a 2-row placeholder dataset. | Medium | The gate is not broken in general (20/20 pass at N=4000) — it is sample-size sensitive and says so nowhere. This plausibly *explains* finding 6: a gate that cries wolf is why someone hardcoded `force: true`. |
-| C | **Experiment analytics cached 300s with no invalidation on new decisions.** The page's own hint says "run traffic through the target policy to populate these", so a user seeing zeros runs more traffic and still sees zeros for five minutes. | Medium | |
-| D | **The headline p-value covers only the first two variants.** `control, treatment = variant_rows[0], variant_rows[1]` — positional, not by role. With three or more variants the single "P-VALUE" stat describes one arbitrary pair while appearing to describe the experiment; if the champion is not first, "control" is simply wrong. | Low-medium | |
-| E | **`/simulation` shows log-wide rejection drivers inside per-run results.** Called with `{policy_id, limit: 1000}`, unscoped to the run: after a 20-case simulation the panel read "325 fails · 100% of rejects" directly above "Cases · 20". | Low | |
-| F | **Contradictory labels on `/simulation`.** A hardcoded "(customer_id + 20 vars)" label sits beside a badge correctly reading "8 fields". | Low | |
 | G | **A transform mapping that is not a `$.` path is stored verbatim.** Literal passthrough is intentional, but the one-character typo `"$variables.x"` writes that string into the output and nothing validates mappings at author time. | Low-medium | Pinned as characterisation, not asserted as a bug. |
 
 ## Not swept
