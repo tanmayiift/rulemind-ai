@@ -585,8 +585,10 @@ on, and it is now answered by a curl rather than a guess.
   Python variable fails closed and the product does not work.
 - [x] **W7.4** Dashboard deployed + `CORS_ORIGINS` — on **Render as a static site**, not Vercel
   (this line said "Vercel import" and contradicted the checked W7.4 above it; the Vercel project
-  is deleted). · [x] **W7.5** deployed-environment smoke, 21/21 · [ ] **W7.6** push without
-  `[skip ci]` — still blocked on the Actions quota.
+  is deleted). · [x] **W7.5** deployed-environment smoke, 21/21 · [x] **W7.6** CI runs — on a
+  **self-hosted runner** (2026-09-16). GitHub-hosted runners remain blocked by a billing
+  failure, not a quota, and that turned out not to matter: a self-hosted runner is free on a
+  private repo and runs the same suite.
 
 
 ---
