@@ -1109,8 +1109,8 @@ via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak
 
 ## R3. Round 3 execution — 2026-09-16
 
-- [ ] **R3.1** Port `sdk-verify.yml` to the self-hosted runner, `workflow_dispatch` only.
-- [ ] **R3.2** A4 — delete the 11 stale deployments and 4 environments (`scripts/github_deployments_cleanup.sh`, `--dry-run` first).
+- [x] **R3.1** Port `sdk-verify.yml` to the self-hosted runner, `workflow_dispatch` only.
+- [x] **R3.2** A4 — delete the 11 stale deployments and 4 environments (`scripts/github_deployments_cleanup.sh`, `--dry-run` first).
 - [ ] **R3.3** A6 — fix the vitest count in `run_all_tests.sh` (CI reported `?` and undercounted the total by 462).
 - [ ] **R3.4** B1 — run `qa/e2e-full/run.py core` (31 cases) and `sandbox` (21 cases) against compose.
 - [x] **R3.5** B2 — wire both QA suites into `run_all_tests.sh` as lanes.
