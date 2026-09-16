@@ -180,6 +180,21 @@ class SinkAvailabilityTest(unittest.TestCase):
         self.assertIn("DECISION_ARCHIVE_SINK", reason)
 
     def test_parquet_without_pyarrow_is_reported(self):
+        # TWO optional dependencies gate this branch, and the test only ever guarded one.
+        #
+        # `archiving_available` reports the most fundamental missing piece first: without boto3
+        # there is no S3 sink at all, so it never gets as far as the parquet writer and the
+        # reason talks about boto3, not pyarrow. Guarding pyarrow alone made this test depend on
+        # boto3 happening to be installed -- true in a developer venv, false in a clean one.
+        #
+        # It passed locally on every run and failed on the FIRST CI run in a fresh environment:
+        #   AssertionError: 'pyarrow' not found in 'boto3 is not installed, ...'
+        # Neither package is in requirements.txt; both are genuinely optional. So skip on either,
+        # which is the same stance the pyarrow guard below already takes.
+        try:
+            import boto3  # noqa: F401
+        except ImportError:
+            self.skipTest("boto3 is missing, so archiving fails before the parquet branch")
         try:
             import pyarrow  # noqa: F401
         except ImportError:

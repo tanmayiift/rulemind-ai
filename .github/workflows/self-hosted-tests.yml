@@ -111,9 +111,34 @@ jobs:
           # was already in the venv — exactly how PR #170's un-installable numpy was first
           # reported as passing.
           "$VENV/bin/pip" install -q -r apps/python-executor/requirements.txt
-          "$VENV/bin/pip" install -q unittest-xml-reporting
+
+          # pip-audit is NOT in requirements.txt (it is CI tooling, not a runtime dep), and
+          # scripts/check_audit_ignores.py shells out to `<venv>/bin/python -m pip_audit`. Without
+          # it that gate fails with "No module named pip_audit", which reads like a broken audit
+          # rather than a missing tool. The first CI run failed exactly there.
+          "$VENV/bin/pip" install -q pip-audit
+
+          # The Rust core's Python binding. Without it, 3 tests SKIP instead of running, and CI
+          # silently covers less than a developer's machine -- found by diffing skip reasons
+          # between the two (CI skipped 29, local 26, and this was the whole difference). The
+          # Rust engine is one of the five held to the parity corpus, so those 3 are not
+          # optional coverage.
+          if ! "$VENV/bin/python" -c "import rulemind_core_rs" >/dev/null 2>&1; then
+            if command -v cargo >/dev/null 2>&1; then
+              "$VENV/bin/pip" install -q maturin
+              ( cd packages/rulemind-core-rs && "$VENV/bin/maturin" build --release -q \
+                  -i "$VENV/bin/python" -o /tmp/rm-wheels ) \
+                && "$VENV/bin/pip" install -q --force-reinstall /tmp/rm-wheels/*.whl \
+                || echo "::warning::rulemind_core_rs failed to build; 3 Rust-core tests will skip"
+            else
+              echo "::warning::cargo not found; rulemind_core_rs unavailable, 3 tests will skip"
+            fi
+          fi
+
           ln -sfn "$VENV" .venv-rulemind
           .venv-rulemind/bin/python -V
+          .venv-rulemind/bin/python -c "import rulemind_core_rs; print('rulemind_core_rs: ok')" \
+            2>/dev/null || echo "rulemind_core_rs: NOT available (3 tests will skip)"
 
       - name: Provision node_modules
         run: |
