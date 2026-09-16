@@ -50,6 +50,14 @@ def resolve_jsonpath(path: str, context: Dict[str, Any]) -> Any:
             index_buffer += char
         else:
             token += char
+    if index_mode:
+        # An unterminated '[' -- "$.payload.bureau.scores[0" with no closing bracket. The ']'
+        # branch is what consumes the index, so without it the loop simply ends and `current` is
+        # still whatever it was when '[' was seen: the WHOLE LIST. A malformed path that silently
+        # binds an entire array is worse than one that fails, because the value flows on to a
+        # comparison that then behaves nothing like the author intended. Every other malformed
+        # form here already yields None; this one did not.
+        return None
     if token:
         current = _resolve_attr(current, token)
     return current

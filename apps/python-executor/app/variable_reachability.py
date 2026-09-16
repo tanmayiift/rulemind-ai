@@ -150,7 +150,36 @@ def collect_step_variable_ids(
         # in needed_variable_ids already does, and this module commits to being
         # over-inclusive. A false positive costs one sandbox call; a false negative changes
         # the decision.
-        for text in (config.get("over"), config.get("condition"), step.get("condition")):
+        # MAPPINGS name variables as text too, and missing them is worse than missing a
+        # condition. A `transform` step's config.mapping is {target: "$.variables.x"} and a
+        # `model` step's config.inputMapping is the same shape (executor.py `_execute_transform`
+        # / `_execute_model`); a policy whose ONLY variable reader is a transform previously
+        # produced an EMPTY reachable set -- not a subset, empty.
+        #
+        # What that cost: with the filter active the variable is never computed, so the JSONPath
+        # resolves to None. It is SKIPPED, not failed, so ctx.variable_errors stays empty and
+        # _fail_closed_on_variable_errors never fires -- the decision is made on None with no
+        # signal anywhere. And it was not confined to the opt-in flag: executor.py filters when
+        # `simulate or <flag>`, so EVERY BACKTEST took the filtered path and silently did not
+        # predict production.
+        #
+        # This is the fifth instance of the divergence class this module was extracted to
+        # prevent, which is the argument for scanning mappings here rather than special-casing
+        # them at the two call sites.
+        mapping_texts = []
+        for mapping_key in ("mapping", "inputMapping"):
+            mapping = config.get(mapping_key)
+            if not isinstance(mapping, dict):
+                continue
+            for source_expr in mapping.values():
+                if isinstance(source_expr, str):
+                    mapping_texts.append(source_expr)
+                elif isinstance(source_expr, dict) and isinstance(source_expr.get("expr"), str):
+                    # The {"expr": "..."} form is a math expression over the same context.
+                    mapping_texts.append(source_expr["expr"])
+
+        for text in (config.get("over"), config.get("condition"), step.get("condition"),
+                     *mapping_texts):
             if isinstance(text, str) and text:
                 for vid in by_id:
                     if vid in text:

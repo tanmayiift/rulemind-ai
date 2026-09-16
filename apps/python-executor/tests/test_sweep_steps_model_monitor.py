@@ -120,8 +120,8 @@ class ModelAndMonitorStepTests(unittest.TestCase):
                          "rule could read it")
         self.assertEqual(ctx.outcome, "approve")
 
-    def test_DEFECT_a_model_step_that_cannot_run_does_not_fail_closed(self):
-        """A model step naming a model that does not exist is SILENTLY SKIPPED.
+    def test_regression_a_model_step_that_cannot_run_fails_closed(self):
+        """A model step naming a model that does not exist must NOT be silently skipped.
 
         `_execute_model` raises `ValueError("Unknown model: ...")`, and its own code comment
         (executor.py:2016-2019) states the intent plainly -- inventing a prediction "or silently
@@ -137,11 +137,11 @@ class ModelAndMonitorStepTests(unittest.TestCase):
         fail-open shape `_fail_closed_on_variable_errors` exists to prevent, reached by a route
         that guard does not cover.
 
-        This test asserts TODAY'S behaviour so the gap is recorded and attributable rather than
-        invisible. The fix is to add "model" to the gate-set tuple at executor.py:846 -- it is a
-        one-word change, but it converts approvals into reviews for any tenant with a broken
-        model step, so it is a deliberate decision for the maintainers rather than a drive-by
-        edit from an audit.
+        FIXED by adding "model" to the gate-set tuple in `_run_steps`. A model step is not
+        itself a gate, but it PRODUCES the value a gate reads, so skipping it silently is the
+        same fail-open one step removed. The change converts approvals into REVIEWS for any
+        tenant whose model step is broken -- which is the correct answer: a review is a person
+        looking at a case the model that was meant to score it never scored.
         """
         ctx = self._run([
             {"type": "model", "id": "mdl", "ref_id": "model_that_does_not_exist", "config": {
@@ -153,11 +153,16 @@ class ModelAndMonitorStepTests(unittest.TestCase):
         self.assertIn("Unknown model", entry["error"] or "")
         self.assertNotIn("risk_score", ctx.variables,
                          "no prediction should have been invented")
-        # The two assertions that record the defect:
-        self.assertEqual(ctx.outcome, "approve",
-                         "if this is no longer 'approve', the model step now fails closed -- "
-                         "delete this test and move the assertion to the happy path")
+        # The assertion the fix exists for: an unrunnable model escalates rather than approving.
+        self.assertEqual(ctx.outcome, "review",
+                         "a model step that raised must fail CLOSED -- approving here is a "
+                         "decision made on a score no model produced")
+        # Fail-closed, not crash: the run still completes and the case lands in review, which is
+        # what makes it visible to a person rather than a 500 the caller retries.
         self.assertEqual(ctx.status, "completed")
+        self.assertTrue(
+            any("model" in str(e.get("step", {}).get("type", "")) for e in ctx.step_trace),
+            "the failing step must still appear in the trace, or the review is unexplainable")
 
     # --------------------------------------------------------------------- monitor
 

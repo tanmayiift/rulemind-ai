@@ -373,6 +373,14 @@ class PolicyExecutor:
         scorecards = {
             scorecard_id: result for scorecard_id, result in ctx.scorecard_results.items()
         }
+        # PRESENCE, not truthiness. A transform that explicitly writes outputKey "computed" with
+        # an empty result must CLEAR $.computed -- under `computed or combined` an empty dict is
+        # falsy, so it fell back to a flat merge of every OTHER transform's fields instead.
+        # Concretely: a guarded transform writes `computed` only when its condition holds; on the
+        # other branch a downstream rule reading $.computed.limit saw an unrelated step's `limit`
+        # and approved on it. Same shape as the core/engine.py fail-open closed in K0 -- "empty"
+        # and "absent" are different answers and must not share a branch.
+        has_computed = "computed" in ctx.transform_outputs
         computed = copy.deepcopy(ctx.transform_outputs.get("computed", {}))
         combined = {key: value for output in ctx.transform_outputs.values() for key, value in output.items()}
         return {
@@ -384,7 +392,7 @@ class PolicyExecutor:
             # names) plus under a stable `loop` key for JSONPath resolution.
             "loop": dict(ctx.loop_scope),
             **ctx.loop_scope,
-            "computed": computed or combined,
+            "computed": computed if has_computed else combined,
             "transforms": ctx.transform_outputs,
             "outcome": ctx.outcome,
             "execution_id": ctx.execution_id,
@@ -858,7 +866,19 @@ class PolicyExecutor:
                 # simply absent, which is the fail-open the child was composed in to prevent.
                 # (A step failing INSIDE the child is caught by the child's own _run_steps at
                 # depth+1 and handled there, so this only escalates whole-child failures.)
-                if step.get("type") in ("rule", "scorecard", "decision_table", "workflow"):
+                # `model` belongs here too, and did not used to. It is not itself a gate, but it
+                # PRODUCES the value a gate reads, so skipping it silently is the same fail-open
+                # one step removed: with `[model -> risk_score, rule: reject if risk_score > 0.8,
+                # outcome approve]` and a stale model id, _execute_model raises, risk_score is
+                # never set, every comparison against a missing variable is False, and the policy
+                # returns APPROVE at HTTP 200. _execute_model's own comment already states the
+                # intent -- "silently skipping the step would let the policy decide on a value no
+                # model gave" -- the gate set just never matched it.
+                #
+                # This converts approvals to REVIEWS for any tenant whose model step is broken.
+                # That is the point: a review is a person looking at it, which is the correct
+                # answer when the model that was supposed to score it did not run.
+                if step.get("type") in ("rule", "scorecard", "decision_table", "workflow", "model"):
                     ctx.outcome = _merge_outcome(ctx.outcome, "review")
                     self._record_gate_error(ctx, step, error)
                 if config.get("onFailure") == "abort":

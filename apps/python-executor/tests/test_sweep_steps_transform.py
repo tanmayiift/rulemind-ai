@@ -287,10 +287,15 @@ class TransformStepTests(unittest.TestCase):
                     self.assertFalse(is_fast_servable(policy))
                     self.assertFalse(fast_path_eligible(self.storage, policy, self.tenant_id))
 
-    # ---------------------------------------------------------------- PROVEN DEFECTS
+    # ------------------------------------------- REGRESSIONS: defects this audit found,
+    #                                              now FIXED. Each body already asserted the
+    #                                              correct behaviour; they were marked
+    #                                              expectedFailure only while the bug stood.
+    #                                              Pinning a bug as correct is how it becomes
+    #                                              permanent, so they were never written as
+    #                                              assertions of the broken behaviour.
 
-    @unittest.expectedFailure
-    def test_DEFECT_transform_mapping_variables_are_not_reachable(self):
+    def test_regression_transform_mapping_variables_are_not_reachable(self):
         """A transform's mapping is invisible to the reachability walk.
 
         `variable_reachability.collect_step_variable_ids` has an arm for rule, scorecard,
@@ -306,7 +311,10 @@ class TransformStepTests(unittest.TestCase):
         signal anywhere. That is the FAST_DECIDE/flag divergence class this repo has fixed four
         times, in a fifth place.
 
-        THE FIX (app/variable_reachability.py, alongside the existing step-type arms):
+        FIXED in app/variable_reachability.py, by extending the generic string scan to
+        `config.mapping` and `config.inputMapping` values (rather than adding a
+        `transform` arm) -- `model`'s inputMapping has the identical shape and the
+        identical gap, so one scan closes both:
 
             elif step_type == "transform":
                 for source_expr in (config.get("mapping") or {}).values():
@@ -333,8 +341,7 @@ class TransformStepTests(unittest.TestCase):
             "on vs {1!r} with it off".format(on, off))
         self.assertEqual(on, EXPECTED_BUREAU_SCORE)
 
-    @unittest.expectedFailure
-    def test_DEFECT_the_reachable_set_for_a_transform_policy_is_empty(self):
+    def test_regression_the_reachable_set_for_a_transform_policy_is_empty(self):
         """The root cause of the two flag/simulate defects, asserted at the fix site.
 
         This is the unit-level statement of the same gap: `needed_variable_ids` returns the
@@ -342,7 +349,7 @@ class TransformStepTests(unittest.TestCase):
         Every variable the transform names is dropped.
 
         Verified against the patch quoted in
-        test_DEFECT_transform_mapping_variables_are_not_reachable: with it applied, this policy's
+        test_regression_transform_mapping_variables_are_not_reachable: with it applied, this policy's
         reachable set becomes {bureau_score, loan_dti_ratio}, including the `{"expr": ...}` form.
         """
         from app import variable_reachability
@@ -363,8 +370,7 @@ class TransformStepTests(unittest.TestCase):
         self.assertIn("loan_dti_ratio", needed,
                       "the transform's `expr` mapping variable is unreachable")
 
-    @unittest.expectedFailure
-    def test_DEFECT_simulation_diverges_from_production_for_a_transform_policy(self):
+    def test_regression_simulation_diverges_from_production_for_a_transform_policy(self):
         """The same gap, but with NO flag set -- so it is not opt-in.
 
         executor.py:1320 filters variables when `simulate or COMPUTE_ONLY_USED_VARS=1`. Every
@@ -385,8 +391,7 @@ class TransformStepTests(unittest.TestCase):
                          live.transform_outputs["computed"]["score"],
                          "a backtest and a live decision disagree about the transform's input")
 
-    @unittest.expectedFailure
-    def test_DEFECT_an_empty_computed_output_is_aliased_to_other_transform_outputs(self):
+    def test_regression_an_empty_computed_output_is_aliased_to_other_transform_outputs(self):
         """`_context_view` conflates "wrote an empty dict" with "wrote nothing".
 
         executor.py:376-377 builds two views and then exposes
@@ -418,8 +423,7 @@ class TransformStepTests(unittest.TestCase):
             ctx.transform_outputs["probe"]["seen"],
             "an explicitly-empty `computed` leaked another transform's field")
 
-    @unittest.expectedFailure
-    def test_DEFECT_an_unterminated_bracket_returns_the_whole_list(self):
+    def test_regression_an_unterminated_bracket_returns_the_whole_list(self):
         """`resolve_jsonpath` (app/jsonpath.py:14) never closes an open `[`.
 
         The `]` branch is what consumes the index and advances `current`; with no `]` in the
