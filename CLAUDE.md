@@ -77,9 +77,9 @@ make test                 # python unittest + vitest
 pnpm test:e2e             # Playwright
 ```
 
-Tests: **4,624 across 11 lanes, all green** — 1928 Python SQLite + 1928 Python PostgreSQL 16,
-462 Vitest, 19 + 10 Rust, 163 Flutter, 68 Playwright, 46 Kotlin, plus the contract gates and
-`qa/`. **Do not hand-maintain these numbers here** — `make test-all` regenerates
+Tests: **4,906 across 15 graded rows, all green** (2026-09-16) — 2033 Python SQLite + 2033
+Python PostgreSQL 16, 462 Vitest, 19 + 10 Rust, 163 Flutter, 88 Playwright, 46 Kotlin, 52 QA,
+plus the contract gates. **Do not hand-maintain these numbers here** — `make test-all` regenerates
 `TEST_RESULTS.md` from the runners' own output, and that file is the authority. The counts in
 this file were wrong by 500+ tests before that script existed. The Python suite runs in two lanes: SQLite by default, and real Postgres under
 `DATABASE_URL` + `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` (each test path gets its own Postgres
@@ -149,4 +149,15 @@ problem is recognisable if the lists drift again:
   the k8s manifests and CI all pin). **Verify any doc claim against source before acting on
   it, including the claims in this file** — a stale note here costs every session, because a
   "known problem" that no longer exists is more expensive than an unknown one.
-- CI: `.github/workflows/ci.yml` and `sdk-verify.yml`.
+- CI: **`.github/workflows/self-hosted-tests.yml` is the gate.** `ci.yml`, `sdk-verify.yml` and
+  `test-report.yml` were retired on 2026-09-16 — every non-emulator job they ran is folded into
+  that one workflow, which runs the same `scripts/run_all_tests.sh` a developer runs.
+  `backup-verify.yml`, `load-test.yml` and `security.yml` remain, all self-hosted.
+  **Every self-hosted workflow is `workflow_dispatch` only, never `pull_request` or `push`** —
+  the runner executes as the maintainer's user and there are open bot-authored dependency PRs.
+  That constraint is the one most likely to be casually reversed; do not.
+- A SKIPPED lane is not a passing lane. `RULEMIND_REQUIRE_ALL_LANES=1` (set in CI) turns a skip
+  into a failure. Locally a skip is legitimate — the Postgres lane needs `docker compose up -d db`
+  and the QA lane needs port 8080 free, and **the two conflict with a full `make up`**: the app
+  writes the shared public schema under the dev key while the test lane uses the test key. Run
+  `db`+`redis` only, or reset the schema first.

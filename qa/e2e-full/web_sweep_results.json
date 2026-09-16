@@ -85,12 +85,10 @@
   },
   {
     "route": "/collab",
-    "status": "warn",
+    "status": "ok",
     "detail": "",
     "pageErrors": [],
-    "consoleErrors": [
-      "WebSocket connection to 'ws://localhost:8080/ws/v1/collab/policy-shared-draft?actor=editor-u4fa' failed: Error during WebSocket handshake: Unexpected response code: 403"
-    ],
+    "consoleErrors": [],
     "failedReqs": []
   },
   {
@@ -174,6 +172,14 @@
     "failedReqs": []
   },
   {
+    "route": "/model-sets",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
     "route": "/models",
     "status": "ok",
     "detail": "",
@@ -191,6 +197,14 @@
   },
   {
     "route": "/policies",
+    "status": "ok",
+    "detail": "",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "failedReqs": []
+  },
+  {
+    "route": "/predictors",
     "status": "ok",
     "detail": "",
     "pageErrors": [],
