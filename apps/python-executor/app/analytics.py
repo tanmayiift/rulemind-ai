@@ -208,7 +208,20 @@ def experiment_analytics(storage: Storage, tenant_id: str, experiment_id: str) -
 
     significance = {"pValue": 1.0, "significant": False}
     if len(variant_rows) >= 2:
-        control, treatment = variant_rows[0], variant_rows[1]
+        # BY ROLE, not by position. This was `variant_rows[0], variant_rows[1]`, which is wrong
+        # in two ways at once: with three or more variants the single headline p-value silently
+        # described one arbitrary pair while appearing to describe the experiment, and if the
+        # champion was not listed first then "control" was not the champion at all -- the sign of
+        # the effect flips and nothing says so.
+        #
+        # The response now names the pair it measured, so a screenshot of the number is
+        # self-describing and a reader with four variants can see that it covers two of them.
+        champion = next((row for row in variant_rows if row.get("role") == "champion"), None)
+        challenger = next(
+            (row for row in variant_rows if row.get("role") != "champion" and row is not champion),
+            None)
+        control = champion or variant_rows[0]
+        treatment = challenger or next(row for row in variant_rows if row is not control)
         n1 = max(control["users"], 1)
         n2 = max(treatment["users"], 1)
         p1 = control["approved"] / n1
@@ -217,7 +230,16 @@ def experiment_analytics(storage: Storage, tenant_id: str, experiment_id: str) -
         denominator = math.sqrt(max(pooled * (1 - pooled) * ((1 / n1) + (1 / n2)), 1e-9))
         z_score = (p2 - p1) / denominator if denominator else 0
         p_value = math.erfc(abs(z_score) / math.sqrt(2))
-        significance = {"pValue": round(p_value, 6), "significant": p_value < 0.05}
+        significance = {
+            "pValue": round(p_value, 6),
+            "significant": p_value < 0.05,
+            # Which two arms the number is about. Without these a 4-variant experiment shows one
+            # p-value that looks like a verdict on the whole test.
+            "control": control["id"],
+            "treatment": treatment["id"],
+            "comparedVariants": 2,
+            "totalVariants": len(variant_rows),
+        }
 
     champion_challenger = analyze_champion_challenger(experiment.get("variants", []), variant_stats)
 
@@ -227,7 +249,15 @@ def experiment_analytics(storage: Storage, tenant_id: str, experiment_id: str) -
         "significance": significance,
         "championChallenger": champion_challenger,
     }
-    cache_set_json(cache_key, result, ttl_seconds=300)
+    # 30s, not 300. This is a LIVE TRAFFIC rollup, and the page's own hint tells the reader to
+    # "run traffic through the target policy with a userId to populate these" -- so at five
+    # minutes a user follows that instruction, sees zeros, and runs more traffic, for five
+    # minutes. Observed during the sweep: 300 decisions were sent and the page kept showing 0
+    # assigned users until the TTL expired.
+    #
+    # The underlying query is an exact SQL GROUP BY rather than a scan, so the cache is here to
+    # absorb repeated polling of one page, which 30s does just as well.
+    cache_set_json(cache_key, result, ttl_seconds=30)
     return result
 
 

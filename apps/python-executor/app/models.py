@@ -543,6 +543,17 @@ class Experiment(Base, TimestampMixin):
     target_policy_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     start_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     end_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Promotion provenance. `promote_experiment` has always WRITTEN these three -- there were no
+    # columns to receive them, and `create_or_update_experiment` copies only known fields, so the
+    # write reported success and the record of what was promoted and by whom was dropped. A later
+    # GET returned promoted_variant_id: None on an experiment whose status was "completed".
+    #
+    # The audit event still carries it, but an audit log answers "what happened" and this answers
+    # "what is true now" -- reconstructing the live champion by replaying audit rows is not a
+    # reasonable thing to ask of a caller.
+    promoted_variant_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    promoted_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    promoted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class WorkflowExecution(Base, TimestampMixin):

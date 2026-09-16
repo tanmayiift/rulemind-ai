@@ -125,6 +125,19 @@ def _parse_client_datetime(value: Any) -> Optional[datetime]:
     return parsed
 
 
+def _as_datetime(value: Any) -> Optional[datetime]:
+    """Coerce whatever a caller passed for a DateTime column into a naive-UTC datetime.
+
+    Routers hand these over as ISO strings (`promote_experiment` writes `now_iso()`), while
+    internal callers pass a datetime. Assigning a STRING to a DateTime column is the quiet
+    version of this bug: SQLite accepts it and hands back a string on read, so the round-trip
+    "works" until Postgres -- which rejects it -- or until something does date arithmetic on it.
+    """
+    if value is None or isinstance(value, datetime):
+        return value
+    return _parse_client_datetime(value)
+
+
 def serialize_datetime(value: Optional[datetime]) -> Optional[str]:
     if value is None:
         return None
@@ -3636,6 +3649,9 @@ class Storage:
                     target_policy_id=payload.get("target_policy_id"),
                     start_date=payload.get("start_date"),
                     end_date=payload.get("end_date"),
+                    promoted_variant_id=payload.get("promoted_variant_id"),
+                    promoted_by=payload.get("promoted_by"),
+                    promoted_at=_as_datetime(payload.get("promoted_at")),
                 )
                 session.add(model)
             else:
@@ -3647,6 +3663,10 @@ class Storage:
                 model.target_policy_id = payload.get("target_policy_id", model.target_policy_id)
                 model.start_date = payload.get("start_date", model.start_date)
                 model.end_date = payload.get("end_date", model.end_date)
+                model.promoted_variant_id = payload.get("promoted_variant_id", model.promoted_variant_id)
+                model.promoted_by = payload.get("promoted_by", model.promoted_by)
+                if "promoted_at" in payload:
+                    model.promoted_at = _as_datetime(payload.get("promoted_at"))
                 model.updated_at = datetime.utcnow()
             session.flush()
             return self._experiment_to_dict(model)
@@ -3675,6 +3695,9 @@ class Storage:
             "target_policy_id": model.target_policy_id,
             "start_date": serialize_datetime(model.start_date),
             "end_date": serialize_datetime(model.end_date),
+            "promoted_variant_id": model.promoted_variant_id,
+            "promoted_by": model.promoted_by,
+            "promoted_at": serialize_datetime(model.promoted_at),
             "created_at": serialize_datetime(model.created_at),
             "updated_at": serialize_datetime(model.updated_at),
         }
