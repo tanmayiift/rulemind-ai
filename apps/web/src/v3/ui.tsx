@@ -29,16 +29,23 @@ export function Card({
   className = "",
   style,
   children,
+  // Forwarded explicitly rather than by spreading the rest of the props, to keep this
+  // component's API deliberately narrow. It has to be here at all because React's JSX typing
+  // accepts `data-*` on a custom component WITHOUT the component declaring it, so
+  // `<Card data-testid="x">` type-checks and is then silently dropped at runtime -- a test
+  // written against it fails with "waiting for locator" on an element that is plainly on screen.
+  "data-testid": testId,
 }: {
   pad?: boolean;
   hover?: boolean;
   className?: string;
   style?: React.CSSProperties;
   children: React.ReactNode;
+  "data-testid"?: string;
 }) {
   const cls = ["rm-card", pad ? "rm-card-pad" : "", hover ? "rm-card-hover" : "", className].filter(Boolean).join(" ");
   return (
-    <div className={cls} style={style}>
+    <div className={cls} style={style} data-testid={testId}>
       {children}
     </div>
   );

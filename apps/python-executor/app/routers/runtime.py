@@ -29,9 +29,12 @@ from ..main import (
     ImportRequest,
     SettingsRequest,
     TestPayloadRequest,
+    active_actor,
     active_tenant_id,
     current_connectors,
     ensure_exists,
+    ensure_promotable,
+    next_status,
     payload_map,
     promote_entity,
     record_error,
@@ -243,10 +246,34 @@ def test_action(request: ActionTestRequest) -> Dict[str, Any]:
     method = str(action.get("method", "GET")).upper()
     headers = resolve_template(action.get("headers", {}) or {}, view)
     body = resolve_template(action.get("bodyTemplate", action.get("body", {})) or {}, view)
-    timeout = min(max(int(action.get("timeoutMs", 5000)), 100), 15000) / 1000
 
+    # `action` is a raw Dict[str, Any] -- the request model declares no shape for it, so every
+    # field here is whatever the console sent. These two used to be coerced with bare builtins
+    # (`int(...)`, `dict(...)`), which turned the two most ordinary console mistakes into 500s:
+    # a cleared numeric field serialises as null (`int(None)` -> TypeError) and a duration typed
+    # as text (`int("5s")` -> ValueError), while a pasted header LINE rather than an object
+    # (`dict("Authorization: x")` -> ValueError) did the same. A test console answering 500 is
+    # the worst case of all: it exists to tell an author what is wrong with their step, and
+    # instead it says the server is broken. Validation runs before the url check so a malformed
+    # action is reported whichever field is wrong.
     if not isinstance(url, str) or not url:
         raise HTTPException(status_code=422, detail="Action url is required.")
+    if headers is not None and not isinstance(headers, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Action headers must be an object of header name -> value, not {0}.".format(
+                type(headers).__name__))
+    raw_timeout = action.get("timeoutMs", 5000)
+    if raw_timeout is None:
+        raw_timeout = 5000
+    try:
+        timeout_ms = int(raw_timeout)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail="Action timeoutMs must be a number of milliseconds; got {0!r}.".format(raw_timeout),
+        ) from None
+    timeout = min(max(timeout_ms, 100), 15000) / 1000
 
     # Same SSRF guard as the real action path (executor), not the old substring blocklist: resolve
     # + range-check the host and pin the vetted IP. follow_redirects stays False so a 302 to an
@@ -497,8 +524,67 @@ def deploy_status() -> Dict[str, Any]:
     }
 
 
+_PROMOTABLE_GETTERS = {
+    "variable": "get_variable",
+    "rule": "get_rule",
+    "scorecard": "get_scorecard",
+    "policy": "get_policy",
+}
+
+
+def _preflight_promotion(items) -> None:
+    """Check every item BEFORE promoting any of them.
+
+    This loop used to promote as it went and raise on the first bad item, which made a rejected
+    batch a *partially applied* one -- and promotion is a state machine, not an idempotent set.
+    Each successful item advances one stage (dev -> uat -> prod), the error body names no
+    survivors, and the deploy board simply shows a failure. The operator's only move is to fix
+    the batch and press Promote again, at which point everything that already succeeded advances
+    a SECOND stage. That is how a four-asset batch with one failing item puts the other three
+    into production, on a surface whose entire job is controlling what reaches production.
+
+    Preflight cannot be a transaction -- each storage call opens its own session -- but it
+    removes every failure this endpoint actually returns: a missing entity (404), an entity whose
+    latest test did not pass (409), one already in prod (409), an unsupported entity type (422),
+    and the same asset listed twice in one batch, which otherwise walks it two stages in a single
+    request. The dual-control 403 is re-checked here for the same reason, reading the same ledger
+    `promote_entity` reads; the authoritative check still runs inside `promote_entity`, so a
+    preflight that ever drifts fails safe (a missed pre-check, never a missed check).
+    """
+    seen = set()
+    for item in items:
+        key = (item.entity_type, item.entity_id)
+        if key in seen:
+            raise HTTPException(
+                status_code=422,
+                detail="{0} '{1}' appears twice in this batch; one promotion advances one "
+                       "stage.".format(item.entity_type, item.entity_id))
+        seen.add(key)
+
+        getter_name = _PROMOTABLE_GETTERS.get(item.entity_type)
+        if getter_name is None:
+            raise HTTPException(status_code=422, detail="Unsupported entity type for promotion.")
+        entity = ensure_exists(getattr(main.storage, getter_name)(item.entity_id),
+                               item.entity_type, item.entity_id)
+        ensure_promotable(entity)
+        target_status = next_status(entity["status"])
+        if target_status == "prod":
+            tenant_id = active_tenant_id()
+            if main.storage.dual_control_enabled(tenant_id):
+                maker = main.storage.last_promotion_actor(
+                    item.entity_type, item.entity_id, "uat", tenant_id=tenant_id)
+                if maker is not None and maker == active_actor():
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Dual control: promotion to production must be approved by a "
+                               "different member than the one who promoted it to UAT.",
+                    )
+
+
 @router.post("/api/v1/deploy/promote")
 def deploy_promote(request: DeployPromoteRequest) -> Dict[str, Any]:
+    """Promote a batch of assets one stage each. All-or-nothing as far as preflight can see —
+    see `_preflight_promotion` for why a half-applied batch is worse than a rejected one."""
     promoted = []
     for item in request.items:
         promoted.append(promote_entity(item.entity_type, item.entity_id, item.promoted_by, item.reason))

@@ -42,6 +42,11 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/decision-tables" as Route, label: "Decision Tables", icon: "rules" },
       { href: "/scorecards" as Route, label: "Scorecards", icon: "scorecards" },
       { href: "/models" as Route, label: "ML Models", icon: "variables" },
+      // Model Sets sits directly under ML Models because it is a grouping OF them. It had a
+      // PAGE_COPY entry and no route or link at all, so a fully tested 7-endpoint backend
+      // (routing between candidate models, and comparing them on one input) was reachable only
+      // by calling the API by hand.
+      { href: "/model-sets" as Route, label: "Model Sets", icon: "variables" },
       { href: "/evaluations" as Route, label: "Model Evaluation", icon: "testing" },
       // Policies were reachable only by typing the URL, which is the worst possible gap: a
       // policy is the thing that CHAINS connectors, variables, rules and scorecards into a
@@ -72,6 +77,10 @@ const NAVIGATION: ReadonlyArray<{
       { href: "/debugger" as Route, label: "Debugger", icon: "testing" },
       { href: "/review-queue" as Route, label: "Review Queue", icon: "audit" },
       { href: "/schedules" as Route, label: "Schedules", icon: "deploy" },
+      // Operate, not Build: a predictor observes what PRODUCTION decisions produce, and the
+      // question it answers ("has the population moved?") is an operational one. Same story as
+      // Model Sets — page metadata existed, the route did not.
+      { href: "/predictors" as Route, label: "Predictors", icon: "audit" },
       { href: "/audit" as Route, label: "Audit Logs", icon: "audit" },
       { href: "/reports" as Route, label: "Reports", icon: "exports" },
       { href: "/exports" as Route, label: "Exports", icon: "exports" },

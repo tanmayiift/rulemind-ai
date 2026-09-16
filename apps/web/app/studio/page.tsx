@@ -67,7 +67,15 @@ export default function BuildStudioPage() {
     return ps;
   }, [apiBaseUrl, apiKey]);
 
-  React.useEffect(() => { void loadRefs().then((ps) => { if (ps[0]) selectPolicy(ps[0].id, ps); }); /* eslint-disable-next-line */ }, [apiBaseUrl, apiKey]);
+  // Has the author done anything on this canvas yet? The initial load resolves SEVEN parallel
+  // GETs and then auto-selects policies[0]. Without this guard that late `.then` overwrites
+  // whatever the author started in the meantime: click "+ New", type a name, and when the list
+  // lands the picker silently jumps to the first policy and replaces the name and steps with
+  // its own -- and `policyId` is now set, so the next Save writes over THAT policy instead of
+  // creating one.
+  const touched = React.useRef(false);
+
+  React.useEffect(() => { void loadRefs().then((ps) => { if (!touched.current && ps[0]) selectPolicy(ps[0].id, ps); }); /* eslint-disable-next-line */ }, [apiBaseUrl, apiKey]);
 
   const selectPolicy = (id: string, list = policies) => {
     const p = list.find((x) => x.id === id);
@@ -75,9 +83,9 @@ export default function BuildStudioPage() {
     setSteps((p?.steps ?? []).map((s) => ({ ...s, id: s.id || newId(s.type) })));
     setSelected(null); setDirty(false); setStatus(null); setMece(null);
   };
-  const newPolicy = () => { setPolicyId(""); setName(""); setSteps([]); setSelected(null); setDirty(false); setMece(null); setStatus(null); };
+  const newPolicy = () => { touched.current = true; setPolicyId(""); setName(""); setSteps([]); setSelected(null); setDirty(false); setMece(null); setStatus(null); };
 
-  const mutate = (next: Step[]) => { setSteps(next); setDirty(true); setStatus(null); };
+  const mutate = (next: Step[]) => { touched.current = true; setSteps(next); setDirty(true); setStatus(null); };
   const addNode = (type: string) => {
     const step: Step = { id: newId(type), type, label: PALETTE.find((p) => p.type === type)?.label ?? type };
     if (type === "outcome") step.outcome = "review";
@@ -94,17 +102,27 @@ export default function BuildStudioPage() {
     setError(null); setStatus(null);
     if (!name.trim()) { setError("Name the policy."); return; }
     try {
-      const body = JSON.stringify({ name, steps });
+      // PUT is a FULL REPLACE assembled from PolicyUpsertRequest, whose `status` defaults to
+      // "dev" (main.py:348). Sending only {name, steps} therefore does not leave the other
+      // fields alone -- it resets them. Studio lists PROD policies on purpose (see the picker
+      // comment above), so a partial body here silently dropped a live policy out of
+      // production on a rename. Spread the loaded record, exactly as /workflow-builder does.
+      const existing = policyId ? policies.find((p) => p.id === policyId) : undefined;
+      const body = JSON.stringify(existing ? { ...existing, name, steps } : { name, steps });
       const saved = policyId
         ? await apiJson<Policy>(apiBaseUrl, `/api/v1/policies/${policyId}`, { method: "PUT", body }, apiKey)
         : await apiJson<Policy>(apiBaseUrl, "/api/v1/policies", { method: "POST", body }, apiKey);
-      setStatus(`Saved "${saved.name}".`); setDirty(false);
+      setDirty(false);
       const ps = await loadRefs(); selectPolicy(saved.id, ps);
+      // AFTER selectPolicy, which clears `status` -- setting it first made the only
+      // confirmation of a successful write a flash lasting one network round trip.
+      setStatus(`Saved "${saved.name}".`);
     } catch (e) { setError(e instanceof Error ? e.message : "Save failed."); }
   };
   const analyze = async () => {
     setError(null);
-    try { setMece(await apiJson<Mece>(apiBaseUrl, `/api/v1/policies/${policyId || "draft"}/analyze-mece`, { method: "POST", body: JSON.stringify({ steps }) }, apiKey)); }
+    if (!policyId) { setError("Save the policy before analyzing it."); return; }
+    try { setMece(await apiJson<Mece>(apiBaseUrl, `/api/v1/policies/${policyId}/analyze-mece`, { method: "POST", body: JSON.stringify({ steps }) }, apiKey)); }
     catch (e) { setMece({ valid: false, message: e instanceof Error ? e.message : "Validation failed." }); }
   };
 
@@ -114,7 +132,7 @@ export default function BuildStudioPage() {
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)", minHeight: 520 }}>
       {/* top bar */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", paddingBottom: 12, borderBottom: `1px solid ${theme.border}` }}>
-        <select value={policyId} onChange={(e) => selectPolicy(e.target.value)} style={sel(theme)}>
+        <select value={policyId} onChange={(e) => { touched.current = true; selectPolicy(e.target.value); }} style={sel(theme)}>
           <option value="">— new policy —</option>
           {/* Each option names its environment. Studio deliberately lists policies from EVERY
               environment -- it is the canvas you assemble on, and hiding a PROD policy here would
@@ -129,9 +147,15 @@ export default function BuildStudioPage() {
           ))}
         </select>
         <button onClick={newPolicy} style={ghost(theme)}>+ New</button>
-        <input value={name} onChange={(e) => { setName(e.target.value); setDirty(true); }} placeholder="Policy name" style={{ ...inp(theme), flex: 1, minWidth: 180 }} />
+        <input value={name} onChange={(e) => { touched.current = true; setName(e.target.value); setDirty(true); }} placeholder="Policy name" style={{ ...inp(theme), flex: 1, minWidth: 180 }} />
         {dirty ? <span style={{ fontSize: 12, color: theme.warning }}>unsaved</span> : null}
-        <button onClick={analyze} disabled={!steps.length} style={ghost(theme)}>Analyze MECE</button>
+        {/* Requires a SAVED policy. `analyze-mece` accepts posted steps so unsaved EDITS can be
+            checked, but it still resolves the policy id first -- so the old `policyId || "draft"`
+            fallback was a guaranteed 404 whose body ("Policy not found.") landed in the validation
+            banner where a MECE verdict belongs. */}
+        <button onClick={analyze} disabled={!steps.length || !policyId}
+          title={!policyId ? "Save the policy first — MECE analysis runs against a stored policy." : undefined}
+          style={ghost(theme)}>Analyze MECE</button>
         <button onClick={save} style={cta(theme)}>Save</button>
       </div>
 

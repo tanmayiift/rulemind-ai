@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .. import main
@@ -65,7 +65,9 @@ def analytics_sdk(request: Request) -> Dict[str, Any]:
 
 # ── Audit trail ────────────────────────────────────────────────────────────
 @router.get("/api/v1/audit")
-def audit_events(request: Request, limit: int = 200, offset: int = 0,
+def audit_events(request: Request,
+                 limit: int = Query(default=200, ge=1, le=1000),
+                 offset: int = Query(default=0, ge=0),
                  event_type: Optional[str] = None, entity_type: Optional[str] = None,
                  entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """The authoring audit trail: who changed which rule/variable/scorecard/policy, when.
@@ -74,6 +76,13 @@ def audit_events(request: Request, limit: int = 200, offset: int = 0,
     for every authoring entity -- but nothing read them back over HTTP, so the compliance
     artifact this product exists to produce could only be reached by opening the database. An
     auditor asking "show me every change to this rule" had no answer.
+
+    limit/offset are BOUNDED HERE, not in storage. `list_audit_events` deliberately applies them
+    raw -- its internal callers pass limit=None to mean "every matching event" -- so this route is
+    the only place that can reject a nonsense page. Untyped, `?limit=-1` reached Postgres as
+    `LIMIT -1` and answered 500 (`InvalidRowCountInLimitClause`) on the one endpoint an auditor's
+    tooling drives; on SQLite the same request was quieter and worse, because `LIMIT -1` means NO
+    limit there and the unbounded fetch this signature exists to prevent came back silently.
 
     Tenant is passed explicitly rather than relying on the storage layer's fallback chain
     (`tenant_id or contextvar or default_tenant_id`). On an authenticated request the contextvar

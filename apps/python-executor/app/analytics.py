@@ -21,6 +21,18 @@ def _analytics_window_start() -> Optional[datetime]:
     return datetime.utcnow() - timedelta(days=days)
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    """Coerce a device-supplied number, treating an uncoercible one as `default`.
+
+    Telemetry fields arrive as whatever JSON a client sent. A dashboard read must not be the
+    thing that discovers that -- dropping one nonsense measurement is right, and 500ing the
+    whole workspace's SDK-health page over it is not."""
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def _percentile(values: Sequence[Union[int, float]], percentile: float) -> float:
     if not values:
         return 0.0
@@ -126,14 +138,25 @@ def sdk_analytics(storage: Storage, tenant_id: str) -> Dict[str, Any]:
     sync_success = 0
     sync_total = 0
     for event in events:
-        payload = event.get("payload", {})
-        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        # Every field here is DEVICE-SUPPLIED and unvalidated: /sdk/v1/events declares
+        # `events: List[Dict[str, Any]]` and storage persists the dict verbatim, so `data` may
+        # be a string and `latencyMs` may be "fast". Reading those shapes optimistically made
+        # one misbehaving device a stored poison pill -- the row stays in sdk_events, so every
+        # later GET /api/v1/analytics/sdk for that workspace 500s, not just the request that
+        # ingested it. The guard was half-applied before: `payload` was isinstance-checked for
+        # `data` and then `.get` was called on it unconditionally two lines later.
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
         sdk_version = data.get("sdkVersion") or payload.get("sdkVersion")
         if sdk_version:
             version_counts[str(sdk_version)] += 1
         if payload.get("type") == "bundle.synced":
             sync_total += 1
-            sync_latencies.append(float(data.get("latencyMs", 0)))
+            sync_latencies.append(_as_float(data.get("latencyMs")))
             if not data.get("error"):
                 sync_success += 1
     result = {
