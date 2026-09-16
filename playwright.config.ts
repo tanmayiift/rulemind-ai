@@ -37,6 +37,12 @@ export default defineConfig({
     // they passed only because AUTH_MODE=none disabled the check. One line here beats
     // editing 33 call sites, and a per-request `headers:` still overrides it (which the
     // negative tests in authz.spec.ts depend on).
+    // CAVEAT for WebSocket tests: Playwright applies these headers to the UPGRADE request too,
+    // which NO REAL BROWSER CAN DO (the WebSocket API cannot set headers). So a browser test of a
+    // WS handshake authenticates here in a way a user never would, and cannot fail when the client
+    // sends no credential -- which is exactly how a broken /collab page passed a test written for
+    // it. Any spec asserting on a handshake must `test.use({ extraHTTPHeaders: {} })`; see
+    // e2e/collab-ws-auth.spec.ts.
     extraHTTPHeaders: { "x-api-key": e2eApiKey },
     trace: "on-first-retry",
     screenshot: "only-on-failure",

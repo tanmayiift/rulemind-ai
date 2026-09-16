@@ -77,7 +77,19 @@ export default function CollabEditorPage() {
     if (!actorRef.current) return;
     wsRef.current?.close();
     setError(null);
-    const url = wsUrlFrom(apiBaseUrl, `/ws/v1/collab/${encodeURIComponent(docId)}?actor=${encodeURIComponent(actorRef.current)}`);
+    // The credential MUST go on the query string when we have one. The browser WebSocket API
+    // cannot set request headers, so the `x-api-key` this page sends on every other call is
+    // simply unavailable here -- and `authenticate_websocket` rejects before accept(), so the
+    // handshake fails with 403 and the page shows "WebSocket error -- is the backend running?",
+    // which points at the wrong thing entirely. Found by the route sweep, then confirmed against
+    // the running server: no credential -> 403, `?api_key=` -> an `init` frame.
+    //
+    // Only when the store HAS a key. A cookie-authenticated dashboard sends its session cookie
+    // on the handshake by itself, and appending nothing keeps the credential out of the URL --
+    // query strings reach access logs, so this is the fallback, not the default. ws_auth.py
+    // checks the explicit api_key first by design, so the two never race.
+    const cred = apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : "";
+    const url = wsUrlFrom(apiBaseUrl, `/ws/v1/collab/${encodeURIComponent(docId)}?actor=${encodeURIComponent(actorRef.current)}${cred}`);
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
@@ -109,7 +121,7 @@ export default function CollabEditorPage() {
         setPresence(msg.presence || []);
       }
     };
-  }, [apiBaseUrl, docId, loadHistory]);
+  }, [apiBaseUrl, apiKey, docId, loadHistory]);
 
   React.useEffect(() => {
     // Defer the connect a tick so React StrictMode's throw-away first mount cancels before any

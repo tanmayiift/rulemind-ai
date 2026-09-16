@@ -1112,9 +1112,9 @@ via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak
 - [x] **R3.1** Port `sdk-verify.yml` to the self-hosted runner, `workflow_dispatch` only.
 - [x] **R3.2** A4 — delete the 11 stale deployments and 4 environments (`scripts/github_deployments_cleanup.sh`, `--dry-run` first).
 - [x] **R3.3** A6 — fix the vitest count in `run_all_tests.sh`. Cause: vitest KEEPS ANSI colour under CI, so `Tests +[0-9]+ passed` could not match across the escape sequences; it parsed on a laptop and silently undercounted in CI. Now reads `tests=` from `test-results/vitest-junit.xml`, with an ANSI-stripped log fallback.
-- [ ] **R3.4** B1 — run `qa/e2e-full/run.py core` (31 cases) and `sandbox` (21 cases) against compose.
+- [x] **R3.4** B1 — ran both QA suites against the compose stack after seeding: **core 31/31, sandbox 21/21**, exit 0. The sandbox-escape matrix (16 techniques + timeout, memory bomb, deep recursion, ReDoS) all refused.
 - [x] **R3.5** B2 — wire both QA suites into `run_all_tests.sh` as lanes.
-- [ ] **R3.6** B3 — run `web_sweep.mjs` across all 39 routes; refresh its stale 36-route results.
+- [x] **R3.6** B3 — swept all **38** discovered routes against compose: 35 clean, 3 findings. `/admin` and `/branding` log an expected 401 for an unauthenticated visitor. `/collab` was a REAL BUG and is fixed: the page never sent a credential on its WebSocket, and a browser cannot put `x-api-key` in a header, so the socket could not open in the shipped API-key configuration. Results refreshed in `qa/e2e-full/web_sweep_results.json`.
 - [ ] **R3.7** C5 — resolve `/model-sets` and `/predictors`: nav entries point at routes that do not exist.
 - [ ] **R3.8** C1-C4 — multi-agent sweep: UI/UX, backend, orchestration, evaluations.
 - [ ] **R3.9** C3 — cover the `transform` step type (implemented, zero execution tests).
