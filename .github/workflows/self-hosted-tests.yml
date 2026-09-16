@@ -74,9 +74,36 @@ jobs:
         run: |
           set -eu
           VENV="$HOME/.cache/rulemind-ci-venv"
+
+          # NOT bare `python3`. On this host that is Homebrew 3.14, which has no
+          # psycopg2-binary wheel, so pip falls back to a SOURCE build, needs pg_config, and
+          # dies with "Failed to build 'psycopg2-binary'" — a libpq error message for what is
+          # really a wrong-interpreter problem. The second CI run failed exactly there.
+          #
+          # The project targets 3.11 (Docker image, CLAUDE.md, and the developer venv is
+          # 3.11.16). Pick the first interpreter that the pinned wheels actually support, and
+          # say so loudly if there is none rather than silently building from source.
+          PY=""
+          for c in python3.11 python3.12 "$HOME/.local/opt/python311/bin/python3"; do
+            if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then PY="$c"; break; fi
+          done
+          if [ -z "$PY" ]; then
+            echo "::error::no python3.11/3.12 found. Bare python3 is $(python3 -V 2>&1), whose"
+            echo "::error::wheels this project does not pin for. Install python@3.11."
+            exit 1
+          fi
+          echo "using $PY ($("$PY" -V 2>&1))"
+
+          # Rebuild if the cached venv is on a different interpreter than the one selected --
+          # otherwise a host Python upgrade leaves a stale venv that fails in confusing ways.
+          if [ -x "$VENV/bin/python" ] && \
+             [ "$("$VENV/bin/python" -V 2>&1)" != "$("$PY" -V 2>&1)" ]; then
+            echo "cached venv is $("$VENV/bin/python" -V 2>&1); rebuilding"
+            rm -rf "$VENV"
+          fi
           if [ ! -x "$VENV/bin/python" ]; then
             echo "creating $VENV"
-            python3 -m venv "$VENV"
+            "$PY" -m venv "$VENV"
           fi
           "$VENV/bin/pip" install -q --upgrade pip
           # NOT `|| true`: if the requirements cannot be installed, the run must fail HERE with
