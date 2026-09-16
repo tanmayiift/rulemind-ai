@@ -3,19 +3,13 @@ name: security
 # The repo had no security scanning of any kind -- no CodeQL, no Dependabot,
 # no semgrep, trivy, bandit, pip-audit or pnpm audit -- and .github/ had no
 # CODEOWNERS. This is the first thing an enterprise security review asks for.
+# SELF-HOSTED, so: workflow_dispatch + schedule ONLY. No push, no pull_request -- this executes
+# on the maintainer's machine as their user, and the repo has 16 open bot-authored dependency
+# PRs. The weekly cron is kept deliberately: a scheduled audit is the only thing that catches a
+# NEW advisory filed against code that has not changed, which no commit-triggered run would.
 on:
-  push:
-    branches: ["main"]
-    # CodeQL cannot find anything in a markdown diff, and this repo pushes a lot
-    # of plan/doc commits.
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "design/**"
-  pull_request:
+  workflow_dispatch:
   schedule:
-    # CodeQL finds new patterns as its queries update, so a weekly run catches
-    # issues in code that has not changed.
     - cron: "0 4 * * 1"
 
 permissions:
@@ -26,51 +20,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  codeql:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      security-events: write
-      actions: read
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [python, javascript-typescript]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
-        with:
-          language: ${{ matrix.language }}
-          queries: security-and-quality
-      - uses: github/codeql-action/analyze@v3
-        with:
-          category: /language:${{ matrix.language }}
+  # THE CodeQL JOB WAS REMOVED 2026-09-16, because it can never succeed on this repository.
+  #
+  # Verified against the API rather than assumed:
+  #   GET   /repos/.../code-scanning/alerts        -> "Code scanning is not enabled"
+  #   PATCH /repos/... advanced_security=enabled   -> 422 "Advanced security has not been purchased."
+  #
+  # CodeQL on a PRIVATE repo needs GitHub Advanced Security, a paid add-on. Without it the
+  # analyze step has nowhere to upload its SARIF, so the job does all the work and then fails.
+  # It ran 85 times and succeeded zero times.
+  #
+  # To bring it back: buy GHAS, or make the repository public (public repos get code scanning
+  # free). Until one is true, a check that always fails is worse than no check -- it teaches
+  # everyone to ignore a red security result.
 
   dependencies:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, rulemind]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.0
-          run_install: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip pip-audit
-          pip install -r apps/python-executor/requirements.txt
+          set -eu
+          # Pinned to 3.11: bare python3 here is Homebrew 3.14, which has no psycopg2-binary
+          # wheel and falls back to a source build needing pg_config.
+          VENV="$HOME/.cache/rulemind-security-venv"
+          PY=""
+          for c in python3.11 python3.12 "$HOME/.local/opt/python311/bin/python3"; do
+            if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then PY="$c"; break; fi
+          done
+          [ -n "$PY" ] || { echo "::error::no python3.11/3.12 found"; exit 1; }
+          [ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV"
+          "$VENV/bin/pip" install -q --upgrade pip pip-audit
+          "$VENV/bin/pip" install -q -r apps/python-executor/requirements.txt
+          echo "$VENV/bin" >> "$GITHUB_PATH"
+          corepack enable >/dev/null 2>&1 || true
           pnpm install --frozen-lockfile
 
       # ---------------------------------------------------------------------
