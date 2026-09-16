@@ -39,6 +39,9 @@ export SANDBOX_POOL_SIZE="${SANDBOX_POOL_SIZE:-2}"
 # report that silently omits the 68 browser tests is the kind of partial-coverage claim this
 # script exists to prevent. It adds ~30s.
 LANES="${*:-python python-pg web rust flutter kotlin e2e contracts lint migrations}"
+# `smoke` is NOT in the default set: smoke_compose.sh builds and tears down the whole stack and
+# refuses to run when 8080/3000/55432/6380 are busy — which they are during a normal regression,
+# because the python-pg lane is using the database. Run it on its own: `run_all_tests.sh smoke`.
 SUMMARY="$OUT/summary.tsv"
 
 # Refuse to run concurrently with another invocation. Both would write the same summary and the
@@ -370,6 +373,23 @@ if has migrations; then
   else
     record migrations "Migrations (alembic check)" "skipped" "—" "0s"
     printf '  skipped — no Postgres at 127.0.0.1:55432 (docker compose up -d db)\n'
+  fi
+fi
+
+# ── smoke ─────────────────────────────────────────────────────────────────────────────────────
+# Was ci.yml's `compose-smoke`. 14 checks that nothing else covers: liveness surviving the
+# database being down, readiness correctly reporting 503, the sandbox spawning INSIDE the
+# container, the API running as non-root, and a real decision through the built images. Opt-in
+# (see the note by LANES) because it needs the ports to itself.
+if has smoke; then
+  say "Compose smoke"
+  if bash "$ROOT/scripts/smoke_compose.sh" > "$OUT/smoke.log" 2>&1; then
+    passed=$(grep -cE 'PASS' "$OUT/smoke.log" 2>/dev/null || echo 0)
+    record smoke "Compose smoke" "pass" "$passed" "—"
+    printf '  pass — %s checks\n' "$passed"
+  else
+    record smoke "Compose smoke" "FAIL" "—" "—"
+    printf '  FAIL — smoke_compose.sh (see %s)\n' "$OUT/smoke.log"
   fi
 fi
 
