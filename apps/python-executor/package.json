@@ -5,7 +5,7 @@
   "scripts": {
     "build": "python3 -m compileall -q app && echo python-build-ok",
     "dev": "python3 -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8080",
-    "lint": "ruff check app tests",
+    "lint": "if [ -x ../../.venv-rulemind/bin/ruff ]; then ../../.venv-rulemind/bin/ruff check app tests; else ruff check app tests; fi",
     "migrate": "alembic -c alembic.ini upgrade head",
     "openapi": "python3 -c \"from app.main import app; import json, pathlib; pathlib.Path('openapi.json').write_text(json.dumps(app.openapi(), indent=2)); print('python-openapi-ok')\"",
     "start": "python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8080",
