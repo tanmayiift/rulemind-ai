@@ -88,6 +88,27 @@ class SignificancePairTests(unittest.TestCase):
             "one p-value cannot describe four arms; the response must say it covers two")
         self.assertEqual(significance["control"], "a")
 
+    def test_variants_with_no_declared_roles_still_compare_two_different_arms(self):
+        """The case my first attempt at this fix broke, caught by test_platform, not by me.
+
+        Plenty of experiments declare no `role` at all -- `[{"id": "control"}, {"id":
+        "treatment"}]`. The first version of the role-based selection read "the first row whose
+        role is not champion AND which is not the champion"; with no roles anywhere, `champion`
+        is None, `row is not None` excludes nothing, and control and treatment resolved to THE
+        SAME ROW. p1 == p2, z == 0, p-value == 1, and every such experiment reported "not
+        significant" -- a fix for a labelling bug silently disabling the statistic.
+        """
+        variants = [{"id": "control", "weight": 50}, {"id": "treatment", "weight": 50}]
+        rollup = {"control": _stats(1000, 200), "treatment": _stats(1000, 400)}
+        significance = self._run(variants, rollup)["significance"]
+        self.assertNotEqual(
+            significance["control"], significance["treatment"],
+            "control and treatment must be different variants; comparing a row with itself "
+            "always yields p=1")
+        self.assertEqual(significance["control"], "control")
+        self.assertEqual(significance["treatment"], "treatment")
+        self.assertTrue(significance["significant"])
+
     def test_a_real_difference_is_still_reported_as_significant(self):
         """The positive control: the pair selection must not break the statistic itself."""
         variants = [

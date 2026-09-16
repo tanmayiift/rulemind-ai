@@ -1,5 +1,6 @@
 import copy
 import asyncio
+import re
 import time
 import uuid
 from datetime import datetime
@@ -836,6 +837,43 @@ def validate_policy_steps(steps: List[Dict[str, Any]]) -> None:
                 detail="Sub-workflow step requires a ref_id (target policy) or an alias.")
         if step_type not in {"connector", "rule", "scorecard", "decision_table", "outcome", "transform", "action", "review_gate", "model", "branch", "loop", "workflow", "monitor"}:
             raise HTTPException(status_code=422, detail="Unsupported policy step type: {0}".format(step_type))
+        _validate_step_mappings(step, step_type)
+
+
+# `$variables.score` -- a JSONPath missing the dot after the dollar. `_execute_transform` tests
+# `startswith("$.")`, so this falls through to the LITERAL branch and the string itself is written
+# into the output; a downstream rule then compares against the text "$variables.score". Nothing
+# fails, nothing is logged, and the decision is simply wrong.
+#
+# Deliberately narrow. A leading `$` is not enough to call it a typo -- "$100" and "$USD" are
+# ordinary literals someone may genuinely want. What is not ordinary is `$` followed by an
+# identifier followed by a DOT, which is a path and nothing else.
+_JSONPATH_TYPO = re.compile(r"^\$[A-Za-z_][A-Za-z0-9_]*\.")
+
+
+def _validate_step_mappings(step: Dict[str, Any], step_type: Optional[str]) -> None:
+    """Reject a mapping that looks like a mistyped JSONPath, at AUTHORING time.
+
+    Author time is the only place this can be caught cheaply: at decision time the value is a
+    perfectly valid literal, so there is nothing for the executor to complain about.
+    """
+    config = step.get("config") if isinstance(step.get("config"), dict) else {}
+    for key in ("mapping", "inputMapping"):
+        mapping = config.get(key)
+        if not isinstance(mapping, dict):
+            continue
+        for target, source in mapping.items():
+            text = source.get("expr") if isinstance(source, dict) else source
+            if isinstance(text, str) and _JSONPATH_TYPO.match(text):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Step {0} {1}.{2} looks like a mistyped JSONPath: {3!r}. "
+                        "A path must start with '$.' -- did you mean {4!r}? "
+                        "As written it is stored as a literal string, and any step reading it "
+                        "would compare against that text.".format(
+                            step.get("id") or step_type, key, target, text,
+                            "$." + text[1:])))
 
 
 def record_error(scope: str, stage: str, message: str, entity_type: Optional[str] = None, entity_id: Optional[str] = None, details: Optional[Dict[str, Any]] = None) -> None:

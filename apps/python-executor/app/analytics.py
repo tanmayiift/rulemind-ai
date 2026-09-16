@@ -216,12 +216,22 @@ def experiment_analytics(storage: Storage, tenant_id: str, experiment_id: str) -
         #
         # The response now names the pair it measured, so a screenshot of the number is
         # self-describing and a reader with four variants can see that it covers two of them.
-        champion = next((row for row in variant_rows if row.get("role") == "champion"), None)
-        challenger = next(
-            (row for row in variant_rows if row.get("role") != "champion" and row is not champion),
-            None)
-        control = champion or variant_rows[0]
-        treatment = challenger or next(row for row in variant_rows if row is not control)
+        # Pick the control FIRST, then a treatment that is not it. The obvious phrasing --
+        # "first row whose role is not champion, and which is not the champion" -- is wrong when
+        # no variant declares a role at all: `champion` is None, `row is not None` excludes
+        # nothing, and control and treatment end up being THE SAME ROW. p1 == p2, z == 0, and
+        # every experiment reports "not significant". Variants without roles are not exotic;
+        # test_platform's z-test fixture uses plain {"id": "control"} / {"id": "treatment"}, and
+        # that suite is what caught this.
+        control = next(
+            (row for row in variant_rows if row.get("role") == "champion"), variant_rows[0])
+        treatment = next(
+            (row for row in variant_rows
+             if row is not control and row.get("role") == "challenger"), None)
+        if treatment is None:
+            # No declared challenger: fall back to the next variant in order, which is the
+            # pre-existing positional behaviour and the right answer for a role-less experiment.
+            treatment = next(row for row in variant_rows if row is not control)
         n1 = max(control["users"], 1)
         n2 = max(treatment["users"], 1)
         p1 = control["approved"] / n1

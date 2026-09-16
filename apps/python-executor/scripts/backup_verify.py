@@ -77,8 +77,22 @@ def dump(url: str, out_dir: Path) -> Path:
     target = out_dir / f"rulemind-{stamp}.dump"
     # Custom format (-Fc): compressed, and restorable selectively with pg_restore, which
     # matters when a recovery needs one table rather than the whole database.
+    #
+    # --schema=public, because the application's data lives in public and NOTHING ELSE IN THIS
+    # DATABASE IS OURS TO BACK UP. The Postgres test lane runs with
+    # RULEMIND_TEST_PG_SCHEMA_PER_PATH=1, which creates one schema per test path; on a shared
+    # database those accumulate. When this was unscoped, pg_dump opened a single transaction and
+    # tried to LOCK TABLE across all of them -- 453 leaked schemas, 18573 tables -- and died with
+    # "out of shared memory / you might need to increase max_locks_per_transaction". That error
+    # names a Postgres tuning knob and says nothing about test detritus, so it reads as a
+    # database capacity problem rather than as "the backup is dumping somebody else's tables".
+    #
+    # The leak is fixed at its source too (scripts/run_all_tests.sh drops its schemas), but this
+    # is the half that makes the backup CORRECT rather than merely working: a restore rehearsal
+    # should prove the app's data comes back, and test schemas were never part of that claim.
     result = subprocess.run(
-        ["pg_dump", "--format=custom", "--no-owner", "--no-acl", "--file", str(target), url],
+        ["pg_dump", "--format=custom", "--no-owner", "--no-acl", "--schema=public",
+         "--file", str(target), url],
         capture_output=True, text=True)
     if result.returncode != 0:
         raise BackupError(f"pg_dump failed: {result.stderr.strip()[:400]}")
@@ -98,6 +112,14 @@ def _psql_admin(url: str, statement: str) -> None:
         raise BackupError(f"psql failed: {result.stderr.strip()[:400]}")
 
 
+def _psql_admin_on(target_url: str, statement: str) -> None:
+    """Run a statement against a SPECIFIC database, rather than against `postgres`."""
+    result = subprocess.run(["psql", "--quiet", "--no-psqlrc", "-c", statement, target_url],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise BackupError(f"psql failed: {result.stderr.strip()[:400]}")
+
+
 def restore(url: str, dump_path: Path, scratch_name: str) -> Tuple[str, callable]:
     """Restore `dump_path` into a scratch database. Returns (url, cleanup)."""
     if _is_sqlite(url):
@@ -109,6 +131,12 @@ def restore(url: str, dump_path: Path, scratch_name: str) -> Tuple[str, callable
     _psql_admin(url, f'DROP DATABASE IF EXISTS "{scratch_name}"')
     _psql_admin(url, f'CREATE DATABASE "{scratch_name}"')
     target = _scratch_url(url, scratch_name)
+    # A schema-scoped dump carries its own `CREATE SCHEMA public`, and every freshly created
+    # database already has one -- so the restore's very first statement collides and pg_restore
+    # exits non-zero having "ignored 1 error". Dropping it first makes the dump's own CREATE the
+    # authoritative one, which is what a restore rehearsal should be testing: that the backup
+    # rebuilds the schema, not that it merges into whatever was already there.
+    _psql_admin_on(target, "DROP SCHEMA IF EXISTS public CASCADE")
     result = subprocess.run(
         ["pg_restore", "--no-owner", "--no-acl", "--dbname", target, str(dump_path)],
         capture_output=True, text=True)
