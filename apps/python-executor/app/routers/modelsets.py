@@ -125,7 +125,11 @@ def model_set_drift(set_id: str, request: Request) -> Dict[str, Any]:
 
 @router.post("/api/v1/model-sets/{set_id}/compare")
 def compare_model_set(set_id: str, request: Request,
-                      body: CompareRequest = Body(default=CompareRequest())) -> Dict[str, Any]:
+                      # default_factory, not default=CompareRequest(): a bare default builds ONE
+                      # instance at import and shares it across every request that omits a body.
+                      # CompareRequest.features is a mutable dict, so anything that mutated it
+                      # would leak into later requests. A factory hands each request its own.
+                      body: CompareRequest = Body(default_factory=CompareRequest)) -> Dict[str, Any]:
     """Run EVERY member on the same input and return the predictions side by side.
 
     Routing is deliberately bypassed: the point of a comparison is to see what each candidate

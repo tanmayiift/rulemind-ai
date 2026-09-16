@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import os
 import socket
 import uuid
 from datetime import datetime, timedelta

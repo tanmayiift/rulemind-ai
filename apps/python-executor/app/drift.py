@@ -25,7 +25,7 @@ time.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Sequence
 
 # Floor for an empty bin's proportion. 1e-6 rather than something larger because it has to be
 # small enough that a vanished bin produces a visibly large term, and large enough that the log
@@ -119,7 +119,10 @@ def psi(baseline: Sequence[float], current: Sequence[float], bins: int = 10) -> 
 
     total = 0.0
     detail: List[Dict[str, Any]] = []
-    for index, (expected, actual) in enumerate(zip(baseline_props, current_props)):
+    # strict=True: a length mismatch means the two histograms disagree on bin count, so PSI
+    # would be computed over a truncated tail -- a SMALLER, healthier-looking drift than
+    # reality. Failing loudly beats under-reporting drift.
+    for index, (expected, actual) in enumerate(zip(baseline_props, current_props, strict=True)):
         # Floored, never skipped: a bin that was 20% of the baseline and is now empty is the
         # strongest drift signal there is, and skipping it would report stability.
         safe_expected = max(expected, EPSILON)

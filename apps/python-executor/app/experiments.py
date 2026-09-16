@@ -106,7 +106,10 @@ def assign_variant(
     hash_input = "{0}:{1}".format(experiment_id, user_id)
     hash_val = int(hashlib.md5(hash_input.encode("utf-8")).hexdigest(), 16) % 100
     cumulative = 0
-    for variant, weight in zip(variants, _weights_for(variants, elapsed_days)):
+    # strict=True: _weights_for returns one weight PER VARIANT by contract, so a mismatch is a
+    # bug in that function rather than an input condition. Zipping short would assign live
+    # traffic using the wrong weights.
+    for variant, weight in zip(variants, _weights_for(variants, elapsed_days), strict=True):
         cumulative += weight
         if hash_val < cumulative:
             return copy.deepcopy(variant)

@@ -140,7 +140,10 @@ class BackfillRequest(BaseModel):
 
 @router.post("/api/v1/predictors/{predictor_id}/backfill")
 def backfill_predictor(predictor_id: str, request: Request,
-                       body: BackfillRequest = Body(default=BackfillRequest())) -> Dict[str, Any]:
+                       # default_factory for the same reason as model-sets/compare: one shared
+                       # instance per process is a latent cross-request leak the moment a field
+                       # stops being immutable. `limit` is an int today; that is not a guarantee.
+                       body: BackfillRequest = Body(default_factory=BackfillRequest)) -> Dict[str, Any]:
     """Replay historical decisions through this predictor (parity P12's "backfill it").
 
     `predictors.observe` runs on the decision path, so it is forward-only: a predictor created

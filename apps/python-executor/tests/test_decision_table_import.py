@@ -35,7 +35,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.main as app_main  # noqa: E402
 from app.decision_table_import import ImportError_, build_table, parse_cell  # noqa: E402
-from app.decision_tables import analyze_decision_table, evaluate_decision_table  # noqa: E402
+from app.decision_tables import evaluate_decision_table  # noqa: E402
 from app.storage import Storage  # noqa: E402
 from tests._storage_global import preserve_storage_global  # noqa: E402
 

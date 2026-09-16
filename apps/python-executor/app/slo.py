@@ -13,7 +13,6 @@ reject / error / …), not anything domain-specific.
 from __future__ import annotations
 
 import logging
-import os
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple

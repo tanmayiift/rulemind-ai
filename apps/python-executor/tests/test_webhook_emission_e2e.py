@@ -38,7 +38,6 @@ os.environ.pop("AUTH_MODE", None)
 
 import app.main as app_main  # noqa: E402
 from app import storage as storage_module  # noqa: E402
-import asyncio  # noqa: E402
 from app import webhook_dispatch  # noqa: E402
 from app.auth import verify_hmac_signature  # noqa: E402
 from app.storage import Storage  # noqa: E402

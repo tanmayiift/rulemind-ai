@@ -21,7 +21,6 @@ os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
 os.environ.setdefault("RULEMIND_SEED_DEMO", "1")
 os.environ.pop("AUTH_MODE", None)
 
-import app.main as app_main  # noqa: E402
 from app.archiver import MemoryArchiver, archiving_enabled, get_archiver  # noqa: E402
 from app.storage import Storage  # noqa: E402
 
