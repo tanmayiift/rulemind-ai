@@ -33,6 +33,13 @@
 # The runner is a long-lived agent that executes workflow code as your user. Remove it with
 # `./config.sh remove --token <removal-token>` when you no longer want that.
 
+# SUPERSEDES test-report.yml, deleted 2026-09-16. That workflow ran the same
+# scripts/run_all_tests.sh with the same `lanes` input and produced the same
+# TEST_RESULTS.md — two files driving one script, which is the drift this session has
+# spent its time finding elsewhere. This one has the provisioning that actually works
+# (3.11 pin, pip-audit, the Rust binding, the Playwright browser), the schema reset, and
+# grading from the per-lane TSV rather than the script's exit code.
+
 name: self-hosted tests
 
 on:
