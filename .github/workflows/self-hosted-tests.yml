@@ -57,17 +57,52 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Deliberately NOT setting up Python/Node/Java here. A self-hosted runner has the
-      # developer's own toolchain, and scripts/run_all_tests.sh already encodes the traps that
-      # matter (PYTHON_BIN for Playwright's webServer, cargo --no-default-features, cleanTest
-      # for Gradle). Re-provisioning would test a different environment than the one people
-      # actually develop against, which is the opposite of what this is for.
+      # LANGUAGE TOOLCHAINS come from the host (node, java, flutter, cargo). That part is
+      # deliberate: a self-hosted runner already has the versions the team develops against, and
+      # re-provisioning them would test something else.
+      #
+      # THE PYTHON VENV AND node_modules DO NOT. `actions/checkout` makes a FRESH CLONE in
+      # _work/, and both are gitignored — the first run of this workflow failed here in three
+      # seconds with ".venv-rulemind missing", which is the precondition doing its job. An
+      # earlier version of this comment claimed provisioning was unnecessary; that assumed the
+      # runner worked inside the developer's own checkout. It does not, and a CI run that
+      # depends on a pre-existing venv is not reproducible, which is the point of having CI.
+      #
+      # The venv is built OUTSIDE the workspace and symlinked in, so it survives between runs
+      # (pip then has almost nothing to do) while the checkout stays clean.
+      - name: Provision the Python venv
+        run: |
+          set -eu
+          VENV="$HOME/.cache/rulemind-ci-venv"
+          if [ ! -x "$VENV/bin/python" ]; then
+            echo "creating $VENV"
+            python3 -m venv "$VENV"
+          fi
+          "$VENV/bin/pip" install -q --upgrade pip
+          # NOT `|| true`: if the requirements cannot be installed, the run must fail HERE with
+          # that reason. A swallowed install failure means the suite silently tests whatever
+          # was already in the venv — exactly how PR #170's un-installable numpy was first
+          # reported as passing.
+          "$VENV/bin/pip" install -q -r apps/python-executor/requirements.txt
+          "$VENV/bin/pip" install -q unittest-xml-reporting
+          ln -sfn "$VENV" .venv-rulemind
+          .venv-rulemind/bin/python -V
+
+      - name: Provision node_modules
+        run: |
+          set -eu
+          corepack enable >/dev/null 2>&1 || true
+          pnpm install --frozen-lockfile
+          # Playwright's browser build is pinned to its package version; a bumped
+          # @playwright/test needs the matching browser or every browser test errors with
+          # "Executable doesn't exist".
+          npx playwright install chromium
 
       - name: Preconditions
         run: |
           set -u
           command -v docker >/dev/null || { echo "docker is required (Postgres lane + smoke)"; exit 1; }
-          test -x .venv-rulemind/bin/python || { echo ".venv-rulemind missing — see CLAUDE.md"; exit 1; }
+          test -x .venv-rulemind/bin/python || { echo ".venv-rulemind missing after provisioning"; exit 1; }
           docker compose up -d db redis
           # The PG lane shares this database with `make up`. If the app has written to the public
           # schema under a different RULEMIND_CONFIG_KEY, every test touching the default schema
