@@ -2,12 +2,12 @@ name: backup-verify
 
 # The point of running this on a schedule is that the SCRIPT stays exercised. A backup
 # procedure first used during an incident is a procedure nobody knows is broken.
+# workflow_dispatch ONLY. This runs on a SELF-HOSTED runner -- the maintainer's own machine, as
+# their user. A `pull_request` trigger would execute code from any PR branch, and this repo has
+# 16 open bot-authored dependency PRs. Do not widen it without answering "whose code runs, and
+# who can change it".
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "apps/python-executor/scripts/backup_verify.py"
-      - ".github/workflows/backup-verify.yml"
 
 concurrency:
   group: backup-verify-${{ github.ref }}
@@ -15,41 +15,56 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # SELF-HOSTED: GitHub-hosted runners are billing-blocked for this repo -- every job starts
+    # with 0 steps -- which is why this workflow has never had a green run.
+    runs-on: [self-hosted, rulemind]
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: rulemind
-        options: >-
-          --health-cmd pg_isready --health-interval 10s
-          --health-timeout 5s --health-retries 5
-        ports:
-          - 5432:5432
+    # NO `services:` BLOCK: service containers are a Linux-runner feature and do not work on a
+    # self-hosted macOS runner. The repo's own compose Postgres is used instead (also
+    # postgres:16, so pg_dump/pg_restore still match the server major version).
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rulemind
+      DATABASE_URL: postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind
       RULEMIND_CONFIG_KEY: ci-backup-verify-key
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
-      # pg_dump/pg_restore must match the SERVER major version. The runner image ships an
-      # older client by default, and a version mismatch fails at restore time -- exactly the
-      # silent-until-the-incident failure this job exists to catch.
-      - name: Install postgres 16 client
+      - name: Start the database
         run: |
-          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-16
-          pg_dump --version
+          set -eu
+          docker compose up -d db
+          for _ in $(seq 1 30); do
+            docker compose exec -T db pg_isready -U rulemind >/dev/null 2>&1 && break
+            sleep 2
+          done
+          # A clean schema each run. This database is SHARED with `make up` and with the Python
+          # test lane, and those use DIFFERENT RULEMIND_CONFIG_KEY values -- rows encrypted under
+          # one key fail to decrypt under another, and it surfaces as a DecryptionError that
+          # reads like a crypto bug rather than "wrong key". Seen for real on 2026-09-16.
+          docker compose exec -T db psql -U rulemind -d rulemind \
+            -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO rulemind;"
 
-      - name: Install dependencies
-        run: pip install -r apps/python-executor/requirements.txt
+      - name: Provision Python
+        run: |
+          set -eu
+          # Pinned to 3.11: bare `python3` on this runner is Homebrew 3.14, which has no
+          # psycopg2-binary wheel and falls back to a source build needing pg_config.
+          VENV="$HOME/.cache/rulemind-backup-venv"
+          PY=""
+          for c in python3.11 python3.12 "$HOME/.local/opt/python311/bin/python3"; do
+            if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then PY="$c"; break; fi
+          done
+          [ -n "$PY" ] || { echo "::error::no python3.11/3.12 found"; exit 1; }
+          [ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV"
+          "$VENV/bin/pip" install -q -r apps/python-executor/requirements.txt
+          echo "$VENV/bin" >> "$GITHUB_PATH"
+
+      # pg_dump/pg_restore must match the SERVER major version; a mismatch fails at RESTORE time,
+      # which is exactly the silent-until-the-incident failure this job exists to catch.
+      - name: Check the postgres client
+        run: |
+          docker compose exec -T db pg_dump --version
+          command -v pg_dump >/dev/null 2>&1 && pg_dump --version \
+            || echo "::warning::no host pg_dump; backup_verify.py needs the client on PATH"
 
       - name: Create schema and seed a chained audit trail
         working-directory: apps/python-executor
