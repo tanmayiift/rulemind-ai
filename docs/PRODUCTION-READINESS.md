@@ -199,10 +199,24 @@ origin nobody can reconstruct gets "tuned" during the first incident by whoever 
 **Still to do:** re-derive from real production traffic after the first month. The table is a
 laptop, and a threshold calibrated against someone else's hardware is still a guess.
 
-### 4. No paging path
+### 4. Paging — delivery works; the last hop is one uncommented line
 
-The rules define what is worth waking someone for. **Alertmanager is not deployed**, so nothing
-routes them to a human. No on-call rotation, no severity ladder, no comms template.
+**Alertmanager is deployed and receiving** (compose `observability` profile), with two inhibit
+rules so one outage pages once rather than five times. Proven under load: an alert fired and
+arrived carrying its severity, `source` label and runbook link.
+
+`scripts/k8s_alerts.sh` ships the same rules to a cluster from the **same file** — no second
+copy to drift, which matters because a stale duplicate fails as *"the alert that would have
+caught it was the old one"*.
+
+**What is still open is deliberate and is one edit:** the default receiver is an explicit black
+hole, because a committed Slack webhook is a leaked credential. Uncomment one receiver in
+`observability/alertmanager.yml`, add the real credential, and change `receiver: "null"` in
+**both** places — the top-level route *and* the critical sub-route. Missing the second means
+criticals silently go nowhere while warnings work, which is worse than neither working.
+
+Still genuinely absent: **no on-call rotation, no severity ladder, no comms template.** The
+system knows what is worth waking someone for; the organisation around it does not yet say who.
 
 ### ~~5. A known Next.js vulnerability is pinned~~ — CLOSED 2026-09-15
 
