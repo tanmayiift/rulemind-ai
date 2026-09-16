@@ -572,9 +572,13 @@ on, and it is now answered by a curl rather than a guess.
   than a build error.
 - [x] **W7.5** ~~deployed-environment e2e + k6~~ — **closed by removal 2026-09-14.** The deployed environment is gone (see section J); the same coverage now runs locally — `suite_sandbox` 21/21 and `suite_core` 31/31 against compose, plus `smoke_compose` 14/14 and `smoke_k8s` 16/16. Original text: partially done unauthenticated; the authenticated
   half needs the API key, which is deliberately only readable from the Render dashboard.
-- [ ] **W7.6** CI — **blocked, and not by `[skip ci]`**. Every recent run failed in 3-12s with
-  **0 steps executed**, which is an exhausted Actions quota, not a test failure. Local runs
-  remain the only signal until the quota resets.
+- [x] **W7.6** CI — **UNBLOCKED 2026-09-16 with a self-hosted runner.** The diagnosis in the
+  original text was wrong twice over: it is a **billing block, not an exhausted quota** (jobs
+  get no runner and execute `steps: 0`, so consumption is already ~0), and it did not need the
+  quota to reset at all. A self-hosted runner is free on a private repo.
+  `.github/workflows/self-hosted-tests.yml` now runs the full regression on
+  `workflow_dispatch` — never `pull_request`, since it executes on a real machine and there are
+  15 open bot-authored dependency PRs.
 - [x] **W7.1 (superseded)** Supabase project + Alembic chain · **W7.2** Upstash · **W7.3** Koyeb, with fresh
   `RULEMIND_CONFIG_KEY`/`RULEMIND_ADMIN_JWT_SECRET` (the production gate refuses the committed
   dev defaults). **Prove the sandbox spawns there** — if the runtime blocks `spawn`, every
@@ -743,7 +747,15 @@ GENERATED from the Python. Every fix mutation-checked.
   would be noise, not coverage. Entries are prose explaining WHY, matching the existing
   convention, rather than a `git log` dump.
 - [ ] **I5** Vercel GitHub App access revoked (needs the user's 2FA)
-- [ ] **I6** CI: one commit without `[skip ci]` — **tried 2026-09-14 (`8043957`); still blocked.** That push created ZERO runs; Dependabot's commits created runs that executed `steps: 0`. **Needs the BILLING BLOCK cleared (or the repo made public), not minutes** — GitHub's annotation on every failed job says payments failed / spending limit; jobs get no runner, so consumption is already ~0.
+- [x] **I6** CI — **CLOSED 2026-09-16 by a different route than this item assumed.** GitHub-hosted
+  runners are still blocked (a billing failure, not minutes: the annotation on every failed job
+  reads *"recent account payments have failed or your spending limit needs to be increased"*, and
+  jobs get no runner at all). The fix was not to unblock them: a **self-hosted runner** is free
+  on a private repo and executes the same suite. Registered, online, and running the full
+  regression. Three attempts were needed, and each failure was a real defect in the workflow that
+  only running it could surface — a missing venv (`actions/checkout` makes a fresh clone), then
+  `psycopg2-binary` building from source because bare `python3` here is Homebrew 3.14 while the
+  project targets 3.11.
 
 ## J. Local-only, optimise, close P09 — 2026-09-14
 
