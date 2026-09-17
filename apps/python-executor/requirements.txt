@@ -46,7 +46,25 @@ unittest-xml-reporting==3.2.0
 # @rpath/libomp.dylib" and ML model hosting is silently unavailable. Install it with
 #   brew install libomp
 # (Linux wheels bundle their own OpenMP, so the Docker image needs nothing extra.)
-numpy==2.2.1
+# numpy: the ceiling is a PYTHON-VERSION fact, so it is expressed as one rather than left as a
+# note in a doc. numpy 2.5.x requires Python >= 3.12; this project runs 3.11 (Dockerfile:
+# python:3.11-slim), where the newest installable release is 2.4.6.
+#
+# Written as markers because the failure it prevents is loud but misleading: a bare `numpy==2.5.3`
+# makes pip abort the ENTIRE install with "Could not find a version that satisfies the
+# requirement", which reads as a broken requirements file rather than "this pin needs a newer
+# interpreter". Dependabot has now proposed exactly that twice -- PR #170 and PR #171 -- and the
+# first was initially reported as PASSING 1937 tests, because the verification harness used `;`
+# instead of `&&` after pip install and the suite ran against the numpy already in the venv.
+#
+# Same shape as the scipy pins below, and self-correcting: if this project moves to 3.12+, the
+# second line takes over with no edit here.
+#
+# BE CLEAR ABOUT WHAT IS TESTED. Only the first line is: every lane runs 3.11. The 3.12 line is
+# the documented forward path, not a verified configuration -- whoever moves the runtime has to
+# re-check it, along with scikit-learn, which pins its own supported numpy range.
+numpy==2.4.6; python_version < "3.12"
+numpy==2.5.3; python_version >= "3.12"
 # scipy: 1.15.1 is the version tested on Linux CI/prod (compatible with scikit-learn 1.6.1).
 # On modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to dlopen, so newer interpreters
 # take 1.18.0 there. BOTH sides need a python_version guard: 1.18.0 itself requires >=3.12, so a
