@@ -484,19 +484,46 @@ class EvaluationBudgetOnTheFastPathTest(_Base):
         self.assertEqual(caught.exception.budget_ms, 50)
         self.assertEqual(caught.exception.stage, "variable computation")
 
-    def test_it_bounds_the_actual_wall_clock(self):
-        """Not 'the caller stops waiting' -- the WORK stops. 55 variables x 50ms is ~2.75s
-        unbounded."""
-        self.set_budget(300)
+    def _timed_decide(self, budget_ms, per_variable_seconds=0.05):
+        """One decide under `budget_ms`, returning (status_code, elapsed_ms)."""
+        self.set_budget(budget_ms)
         started = time.perf_counter()
         with mock.patch.object(fast_decide_module, "execute_variable",
-                               side_effect=self._slow_variable(0.05)):
+                               side_effect=self._slow_variable(per_variable_seconds)):
             response = self.decide_http(bank_payload(), fast=True)
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        self.assertEqual(response.status_code, 504)
-        self.assertLess(elapsed_ms, 1500,
-                        "the request returned 504 but the evaluation kept running "
-                        "({0:.0f}ms for a 300ms budget)".format(elapsed_ms))
+        return response.status_code, (time.perf_counter() - started) * 1000
+
+    def test_it_bounds_the_actual_wall_clock(self):
+        """Not 'the caller stops waiting' -- the WORK stops. 55 variables x 50ms is ~2.75s
+        unbounded.
+
+        MEASURED RELATIVE TO AN UNBOUNDED RUN, not against a fixed millisecond ceiling.
+
+        This used to assert `elapsed < 1500`. The work it measures is 55 sleeps, and a sleep
+        stretches under CPU contention -- so on a busy machine a CORRECTLY bounded run blows the
+        ceiling. It did: CI reported `1633ms for a 300ms budget` while the same commit passed
+        locally, and nothing was wrong with the budget.
+
+        Both runs happen on the same machine moments apart, so load scales them together and
+        cancels out. That is the property a fixed ceiling does not have, and the reason this
+        test could fail for a reason that had nothing to do with the code under test.
+        """
+        # The control, first: what this costs with a budget too large to bite. Also proves the
+        # fixture is actually slow -- if the sleeps stopped happening, the ratio below would be
+        # meaningless and would pass.
+        unbounded_status, unbounded_ms = self._timed_decide(60_000)
+        self.assertEqual(unbounded_status, 200,
+                         "the control must COMPLETE; a 504 here means the budget still bit")
+        self.assertGreater(unbounded_ms, 1000,
+                           "the unbounded run must actually be slow ({0:.0f}ms) or this test "
+                           "measures nothing".format(unbounded_ms))
+
+        bounded_status, bounded_ms = self._timed_decide(300)
+        self.assertEqual(bounded_status, 504)
+        self.assertLess(
+            bounded_ms, unbounded_ms * 0.6,
+            "the request returned 504 but the evaluation kept running: {0:.0f}ms bounded vs "
+            "{1:.0f}ms unbounded, for a 300ms budget".format(bounded_ms, unbounded_ms))
 
     def test_one_variable_cannot_overshoot_the_budget(self):
         """The clamp. Without it a variable started with 5ms of budget left still runs its full

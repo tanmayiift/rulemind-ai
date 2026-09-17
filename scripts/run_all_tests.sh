@@ -380,9 +380,24 @@ has rust   && run_lane rust-decide "Rust — decide-service" bash -c \
 # machine form is what lets a report count and attribute failures rather than grep for a word.
 # Written to a file rather than stdout, because --reporter json REPLACES the console output and a
 # lane whose log is a single JSON blob is unreadable when it fails.
+# `pub get` FIRST, with one retry, and only then `flutter test`.
+#
+# `flutter test` resolves packages implicitly, so a transient pub.dev blip fails the lane with
+# "Got socket error trying to find package sqflite at https://pub.dev" and a count of 0 -- which
+# in the report is indistinguishable from "the Flutter suite is broken". A CI run failed exactly
+# that way while the same commit passed locally.
+#
+# Deliberately NOT a retry around `flutter test` itself: re-running a failed TEST until it passes
+# is how a real failure gets buried. This retries only dependency RESOLUTION, which is network
+# and not code. `--offline` first, because when the pub cache already has everything (the normal
+# case on a warm machine) it cannot fail for network reasons at all.
 has flutter && command -v flutter >/dev/null 2>&1 \
   && run_lane flutter "Flutter SDK" bash -c \
-    "cd '$ROOT/packages/sdk-flutter' && flutter test --machine > '$OUT/flutter-machine.json' 2> '$OUT/flutter-stderr.log'; rc=\$?; tail -40 '$OUT/flutter-stderr.log' >&2; exit \$rc"
+    "cd '$ROOT/packages/sdk-flutter' \
+     && { flutter pub get --offline >/dev/null 2>&1 \
+          || flutter pub get >/dev/null 2>&1 \
+          || { sleep 5; flutter pub get; }; } \
+     && flutter test --machine > '$OUT/flutter-machine.json' 2> '$OUT/flutter-stderr.log'; rc=\$?; tail -40 '$OUT/flutter-stderr.log' >&2; exit \$rc"
 # `cleanTest test`, not plain `test`. Gradle's up-to-date check skips a test task whose inputs
 # have not changed and still reports BUILD SUCCESSFUL -- so the lane recorded "pass" having
 # executed nothing at all, which is the one thing a test report must never do. cleanTest scopes
