@@ -2,7 +2,10 @@ import java.util.Base64
 
 plugins {
     id("com.android.application")
-    kotlin("android")
+    id("org.jetbrains.kotlin.plugin.compose")
+    // No kotlin("android"): AGP 9 has Kotlin support BUILT IN and registers its own
+    // `kotlin` extension, so declaring the plugin too fails with "Cannot add extension with name
+    // 'kotlin'". AGP's own error names this file and this fix.
 }
 
 val sampleKeystoreBase64 = providers.environmentVariable("ANDROID_SAMPLE_KEYSTORE_BASE64").orNull
@@ -68,8 +71,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 

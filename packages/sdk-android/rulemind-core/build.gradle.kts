@@ -14,7 +14,7 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation("org.json:json:20240303")
     // runBlocking for the suspend-based DecisionSyncer/outbox tests.
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
 }
 
 // The conformance suites read their corpora from packages/shared at RUNTIME, by relative path,
