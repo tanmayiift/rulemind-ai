@@ -1,8 +1,6 @@
 package com.rulemind.android
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -18,13 +16,11 @@ class EventLogger(
     private val config: RuleMindConfig,
     private val networkClient: NetworkClient,
 ) {
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "rulemind.events.store",
-        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    // See SecurePrefs: security-crypto 1.1.0 deprecates EncryptedSharedPreferences and the
+    // Jetpack Security crypto library has no successor, so this talks to the Keystore directly.
+    private val prefs = SecurePrefs(context, STORE_NAME).also {
+        LegacySecureStoreMigration.migrateIfNeeded(context, STORE_NAME, it)
+    }
     private val pending = CopyOnWriteArrayList(loadPersisted())
 
     @Synchronized
@@ -68,7 +64,7 @@ class EventLogger(
                     .put("data", JSONObject(event.data)),
             )
         }
-        prefs.edit().putString(KEY_EVENTS, json.toString()).apply()
+        prefs.putString(KEY_EVENTS, json.toString())
     }
 
     private fun loadPersisted(): List<SdkEvent> {
@@ -91,6 +87,7 @@ class EventLogger(
     }
 
     companion object {
+        private const val STORE_NAME = "rulemind.events.store"
         private const val KEY_EVENTS = "events.pending"
     }
 }

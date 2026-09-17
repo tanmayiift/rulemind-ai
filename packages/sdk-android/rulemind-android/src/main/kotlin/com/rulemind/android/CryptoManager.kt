@@ -2,8 +2,6 @@ package com.rulemind.android
 
 import android.content.Context
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.rulemind.core.models.BundleEnvelope
 import com.rulemind.core.models.RuleMindConfig
 import java.security.KeyFactory
@@ -22,13 +20,14 @@ class CryptoManager(
     private val config: RuleMindConfig,
 ) {
     private val applicationContext = context.applicationContext
-    private val prefs = EncryptedSharedPreferences.create(
-        applicationContext,
-        "rulemind.crypto.store",
-        MasterKey.Builder(applicationContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    // SecurePrefs, not EncryptedSharedPreferences -- see SecurePrefs for why the Jetpack wrapper
+    // had to go. This store holds the DEVICE'S RSA PRIVATE KEY, whose public half the server
+    // already has, so the migration in LegacySecureStoreMigration is not optional housekeeping:
+    // regenerating it silently produces a device that can no longer decrypt bundles addressed to
+    // it, and the symptom shows up later and somewhere else.
+    private val prefs = SecurePrefs(applicationContext, STORE_NAME).also {
+        LegacySecureStoreMigration.migrateIfNeeded(applicationContext, STORE_NAME, it)
+    }
     @Volatile private var cachedKeyPair: KeyPair? = null
 
     fun publicKeyBase64(): String {
@@ -85,16 +84,17 @@ class CryptoManager(
             val generator = KeyPairGenerator.getInstance("RSA")
             generator.initialize(2048)
             val keyPair = generator.generateKeyPair()
-            prefs.edit()
-                .putString(KEY_PUBLIC, Base64.encodeToString(keyPair.public.encoded, Base64.NO_WRAP))
-                .putString(KEY_PRIVATE, Base64.encodeToString(keyPair.private.encoded, Base64.NO_WRAP))
-                .apply()
+            prefs.edit {
+                putString(KEY_PUBLIC, Base64.encodeToString(keyPair.public.encoded, Base64.NO_WRAP))
+                putString(KEY_PRIVATE, Base64.encodeToString(keyPair.private.encoded, Base64.NO_WRAP))
+            }
             cachedKeyPair = keyPair
             return keyPair
         }
     }
 
     companion object {
+        private const val STORE_NAME = "rulemind.crypto.store"
         private const val KEY_PUBLIC = "client_public"
         private const val KEY_PRIVATE = "client_private"
     }

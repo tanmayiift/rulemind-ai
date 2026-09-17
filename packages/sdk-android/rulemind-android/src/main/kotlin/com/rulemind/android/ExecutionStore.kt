@@ -1,29 +1,26 @@
 package com.rulemind.android
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.rulemind.core.models.Decision
 import org.json.JSONArray
 import org.json.JSONObject
 
 internal class ExecutionStore(context: Context) {
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "rulemind.executions.store",
-        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    // SecurePrefs, not EncryptedSharedPreferences: security-crypto 1.1.0 deprecates the latter
+    // and Google has deprecated the Jetpack Security crypto library outright, so there is no
+    // newer version to move to. Same guarantee, held by an AndroidKeyStore AES-256-GCM key.
+    private val prefs = SecurePrefs(context, STORE_NAME).also {
+        LegacySecureStoreMigration.migrateIfNeeded(context, STORE_NAME, it)
+    }
 
     fun save(decision: Decision) {
         val executionId = decision.executionId ?: return
         val ids = loadIds().toMutableSet()
         ids += executionId
-        prefs.edit()
-            .putString(keyFor(executionId), DecisionCodec.toJson(decision).toString())
-            .putString(KEY_IDS, JSONArray(ids.toList()).toString())
-            .apply()
+        prefs.edit {
+            putString(keyFor(executionId), DecisionCodec.toJson(decision).toString())
+            putString(KEY_IDS, JSONArray(ids.toList()).toString())
+        }
     }
 
     /**
@@ -51,10 +48,10 @@ internal class ExecutionStore(context: Context) {
     fun delete(executionId: String) {
         val ids = loadIds().toMutableSet()
         ids.remove(executionId)
-        prefs.edit()
-            .remove(keyFor(executionId))
-            .putString(KEY_IDS, JSONArray(ids.toList()).toString())
-            .apply()
+        prefs.edit {
+            remove(keyFor(executionId))
+            putString(KEY_IDS, JSONArray(ids.toList()).toString())
+        }
     }
 
     private fun loadIds(): Set<String> {
@@ -73,5 +70,6 @@ internal class ExecutionStore(context: Context) {
 
     companion object {
         private const val KEY_IDS = "execution.ids"
+        private const val STORE_NAME = "rulemind.executions.store"
     }
 }

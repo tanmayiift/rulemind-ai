@@ -1,8 +1,6 @@
 package com.rulemind.android
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.rulemind.core.models.Bundle
 import com.rulemind.core.models.RuleMindConfig
 import java.util.concurrent.locks.ReentrantReadWriteLock
@@ -16,13 +14,11 @@ class BundleManager(
     private val cryptoManager: CryptoManager = CryptoManager(context, config),
 ) {
     private val lock = ReentrantReadWriteLock()
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "rulemind.bundle.store",
-        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    // See SecurePrefs: security-crypto 1.1.0 deprecates EncryptedSharedPreferences and the
+    // Jetpack Security crypto library has no successor, so this talks to the Keystore directly.
+    private val prefs = SecurePrefs(context, STORE_NAME).also {
+        LegacySecureStoreMigration.migrateIfNeeded(context, STORE_NAME, it)
+    }
 
     @Volatile private var bundle: Bundle? = loadPersisted()
 
@@ -46,14 +42,14 @@ class BundleManager(
 
     fun clear() = lock.write {
         bundle = null
-        prefs.edit().clear().apply()
+        prefs.edit { clear() }
     }
 
     private fun persist(bundle: Bundle, rawJson: String) {
-        prefs.edit()
-            .putString(KEY_BUNDLE_JSON, rawJson)
-            .putInt(KEY_BUNDLE_VERSION, bundle.bundleVersion)
-            .apply()
+        prefs.edit {
+            putString(KEY_BUNDLE_JSON, rawJson)
+            putInt(KEY_BUNDLE_VERSION, bundle.bundleVersion)
+        }
     }
 
     private fun loadPersisted(): Bundle? {
@@ -62,6 +58,7 @@ class BundleManager(
     }
 
     companion object {
+        private const val STORE_NAME = "rulemind.bundle.store"
         private const val KEY_BUNDLE_JSON = "bundle.json"
         private const val KEY_BUNDLE_VERSION = "bundle.version"
     }
