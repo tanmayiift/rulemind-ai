@@ -748,8 +748,13 @@ GENERATED from the Python. Every fix mutation-checked.
   they correctly have nothing to add — writing an empty Unreleased heading into each
   would be noise, not coverage. Entries are prose explaining WHY, matching the existing
   convention, rather than a `git log` dump.
-- [ ] **I5** Vercel GitHub App access revoked — **needs the owner's 2FA; re-confirmed
-  2026-09-16.** Evidence it still matters: `vercel[bot]` created **5 deployments** on this repo,
+- [x] **I5** Vercel GitHub App access revoked — **done by the owner on 2026-09-16** at
+  `github.com/settings/installations/157614895`. Evidence it held: the Deployments and
+  Environments cleanup ran *after* the uninstall and both remain at **0** — a still-installed App
+  would have recreated a `Production` deployment on the pushes since. Original note kept below,
+  because the reasoning for why this needed the owner is still the reasoning:
+
+  ~~needs the owner's 2FA; re-confirmed 2026-09-16.~~ Evidence it still matters: `vercel[bot]` created **5 deployments** on this repo,
   the most recent **2026-09-04**, so the App held write access and nothing since has removed it.
   (The Vercel *project* is gone; the *installation* is a separate thing and outlives it.)
 

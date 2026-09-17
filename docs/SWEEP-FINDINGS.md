@@ -67,7 +67,13 @@ the trace).
 
 ## Open — found, verified, not yet fixed
 
-Each was reproduced.
+**None.** Finding G, the last one, was closed by adding author-time validation of transform and
+model mappings: a string shaped `$identifier.` is a mistyped JSONPath and is now refused with a
+422 naming the correction. Deliberately narrow — `"$100"` and `"$USD"` stay ordinary literals,
+because refusing those would be a worse bug than the one being fixed. See
+`tests/test_sweep_mapping_typo_validation.py`, whose negative cases are the point.
+
+Each finding below was reproduced before being recorded; the table is kept for the history.
 
 | # | Finding | Severity | Note |
 |---|---|---|---|
