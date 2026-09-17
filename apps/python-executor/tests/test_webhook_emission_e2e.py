@@ -43,6 +43,12 @@ from app.auth import verify_hmac_signature  # noqa: E402
 from app.storage import Storage  # noqa: E402
 
 
+# Long and distinctive ON PURPOSE. The previous leak assertion searched for b"410" -- the score
+# in the fixture -- and three digits collide with random UUIDs and timestamps often enough to
+# false-fail about 1 run in 100. A sentinel this shape cannot appear unless the payload leaked.
+PII_SENTINEL = "PII-SENTINEL-DO-NOT-SHIP-8f2a1c7d4e"
+
+
 class _Receiver:
     """A stub receiver that records exactly what arrived. Stands in for the partner endpoint;
     `build_pinned_request` refuses loopback, so a real local server is not reachable from the
@@ -312,7 +318,10 @@ class TheParityRowsStatedFlowTest(_Base):
     def decide(self, outcome="reject", policy_id="pol_loan"):
         return self.storage.add_decision(
             {"id": "dec_{0}".format(outcome), "tenant_id": self.tenant, "policy_id": policy_id,
-             "outcome": outcome, "payload": {"score": 410}, "source": "api"},
+             "outcome": outcome,
+             # PII_SENTINEL alongside the score, because the leak assertion below needs a value
+             # that CANNOT appear by chance. See test_the_payload_data_is_not_shipped.
+             "payload": {"score": 410, "bureau_ref": PII_SENTINEL}, "source": "api"},
             tenant_id=self.tenant)
 
     def run_decision_and_wait(self, receiver, timeout=5.0, **kwargs):
@@ -363,12 +372,44 @@ class TheParityRowsStatedFlowTest(_Base):
 
     def test_the_payload_data_is_not_shipped_to_the_subscriber(self):
         """A subscription is a standing feed to a third party. The outcome and an id are enough
-        to act on; the applicant's bureau and bank data are not the webhook's to send."""
+        to act on; the applicant's bureau and bank data are not the webhook's to send.
+
+        THIS TEST USED TO BE FLAKY, and the flake was in the assertion rather than the code: it
+        searched the raw body for b"410", the score in the fixture payload. Three digits is short
+        enough to occur by chance -- it failed on a run whose tenant UUID was
+        `9c0baaa6-1cb9-4100-83cb-...`, where "4100" contains it. Roughly a 1-in-100 false
+        failure, on a SECURITY test, which is the worst place for one: a test that cries wolf on
+        a leak assertion is a test people learn to re-run.
+
+        So the leak check now uses a sentinel that cannot collide, and the structural assertion
+        does the real work -- walking the parsed body for anything from the payload rather than
+        grepping bytes.
+        """
         self.subscribe(event_types=["decision.rejected"])
         received = self.run_decision_and_wait(_Receiver())
         body = json.loads(received[0]["content"])
         self.assertNotIn("payload", body["data"])
-        self.assertNotIn(b"410", received[0]["content"])
+
+        # Structural: nothing anywhere in the delivered document may come from the payload.
+        def _values(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield key
+                    yield from _values(value)
+            elif isinstance(node, list):
+                for item in node:
+                    yield from _values(item)
+            else:
+                yield node
+
+        delivered = list(_values(body))
+        self.assertNotIn("bureau_ref", delivered, "a payload FIELD NAME reached the subscriber")
+        self.assertNotIn(PII_SENTINEL, delivered, "a payload VALUE reached the subscriber")
+        self.assertNotIn(410, delivered, "the score reached the subscriber")
+
+        # And on the raw bytes, which catches a leak that structural walking would miss -- a
+        # value serialised into a string somewhere. Collision-proof, unlike b"410".
+        self.assertNotIn(PII_SENTINEL.encode(), received[0]["content"])
 
     def test_a_review_outcome_fires_its_own_type(self):
         self.subscribe(event_types=["decision.review_required"])
