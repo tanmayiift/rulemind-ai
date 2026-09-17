@@ -1,3 +1,12 @@
+// Ad-hoc route sweep. THE GATE'S VERSION OF THIS IS e2e/route-health.spec.ts, which runs every
+// route on every regression and asserts the same properties plus a few this cannot (no 5xx, no
+// uncaught page error, content beyond the app shell).
+//
+// Keep this script for exploration: it writes web_sweep_results.json, which is useful when you
+// want a table of every route's console output in one place rather than a pass/fail. Do not
+// treat it as coverage -- its checked-in results were stale at 36 routes while the app had 38,
+// which is precisely why the assertions moved into the gate.
+
 import { chromium } from '@playwright/test';
 import fs from 'fs';
 
