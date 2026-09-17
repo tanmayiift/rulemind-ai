@@ -41,7 +41,7 @@ def _record(rec_id: str, tenant_id: str) -> dict:
 
 class DecisionWalTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         os.environ["DECISION_WAL"] = "1"
         os.environ["DECISION_WAL_DIR"] = os.path.join(self.tempdir.name, "wal")
         self.db_path = os.path.join(self.tempdir.name, "wal.db")

@@ -32,7 +32,7 @@ _PAYLOAD = {"bureau_score": 810, "monthly_income_inr": 200000, "dti_ratio": 0.15
 class SingleDecisionLogTests(unittest.TestCase):
     def setUp(self):
         os.environ.pop("FAST_DECIDE", None)
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "sl.db"))
         self.client = TestClient(app_main.app)

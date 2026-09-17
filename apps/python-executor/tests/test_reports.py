@@ -123,7 +123,7 @@ class MailerUnitTests(unittest.TestCase):
 
 class ReportApiTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "rep.db"))
         self.client = TestClient(app_main.app)

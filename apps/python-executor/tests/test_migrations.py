@@ -52,7 +52,7 @@ class MigrationChainTests(unittest.TestCase):
         self.assertTrue((APP_ROOT / "alembic.ini").exists(), "alembic.ini is required by entrypoint.sh")
 
     def test_upgrade_head_on_fresh_db(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = os.path.join(tmp, "fresh.db")
             url = f"sqlite:///{db}"
             os.environ["DATABASE_URL"] = url
@@ -75,7 +75,7 @@ class MigrationChainTests(unittest.TestCase):
         # entrypoint fallback), which has no alembic_version stamp.
         from sqlalchemy import create_engine
         from app.models import Base
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = os.path.join(tmp, "existing.db")
             url = f"sqlite:///{db}"
             Base.metadata.create_all(create_engine(url))

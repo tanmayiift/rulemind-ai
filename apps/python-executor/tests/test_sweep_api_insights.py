@@ -55,7 +55,7 @@ class _TwoTenantCase(unittest.TestCase):
     """Tenant A (the default, seeded) plus a second tenant B with its own owner key."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "insights.db"))
         self.client = TestClient(app_main.app)

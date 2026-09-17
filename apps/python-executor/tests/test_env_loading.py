@@ -15,7 +15,7 @@ import unittest
 class EnvLoaderDepthTests(unittest.TestCase):
     def test_package_imports_from_a_shallow_path(self):
         """Import the loader logic with only two ancestors above it, mirroring /app/app."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = pathlib.Path(tmp) / "app" / "app"
             root.mkdir(parents=True)
             (root / "__init__.py").write_text(
@@ -29,7 +29,7 @@ class EnvLoaderDepthTests(unittest.TestCase):
             self.assertIn("ok", proc.stdout)
 
     def test_a_dotenv_beside_the_service_is_loaded(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             base = pathlib.Path(tmp) / "svc"
             pkg = base / "app"
             pkg.mkdir(parents=True)

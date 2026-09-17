@@ -49,7 +49,7 @@ TIMEOUT = {"value": None, "error": "Variable execution timed out."}
 
 class VariableFailureTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "varfail.db"))
         self.client = TestClient(app_main.app)
@@ -167,7 +167,7 @@ class FailOpenDirectionTest(unittest.TestCase):
     }
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "failopen.db"))
         self.tenant = app_main.storage.default_tenant_id
@@ -229,7 +229,7 @@ class FastPathParityTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "parity.db"))
         self.tenant = app_main.storage.default_tenant_id

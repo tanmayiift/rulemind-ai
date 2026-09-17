@@ -208,7 +208,7 @@ class MetricsRegistryTests(unittest.TestCase):
         appears to move backwards and rate() over it is garbage."""
         import tempfile
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             saved = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
             os.environ["PROMETHEUS_MULTIPROC_DIR"] = tmp
             try:
@@ -241,7 +241,7 @@ class MetricsRegistryTests(unittest.TestCase):
         counters its three siblings are writing -- the same shape as the WAL delete bug."""
         import tempfile
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             marker = os.path.join(tmp, "counter_11111.db")
             Path(marker).write_bytes(b"x")
             saved = os.environ.get("PROMETHEUS_MULTIPROC_DIR")

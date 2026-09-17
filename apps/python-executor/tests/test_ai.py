@@ -35,7 +35,7 @@ _RULE_JSON = json.dumps({
 
 class AITests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ai.db"))
         self.client = TestClient(app_main.app)

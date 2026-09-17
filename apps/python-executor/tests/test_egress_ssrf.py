@@ -108,7 +108,7 @@ class ActionPathTest(unittest.TestCase):
         from app.executor import PolicyExecutor
         from app.storage import Storage
 
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "egress.db"))
         self.tenant = self.storage.default_tenant_id
         self.executor = PolicyExecutor(self.storage)

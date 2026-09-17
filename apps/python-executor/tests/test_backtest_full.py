@@ -24,7 +24,7 @@ from app.storage import Storage  # noqa: E402
 
 class BacktestFullModeTests(unittest.TestCase):
     def setUp(self):
-        self.td = tempfile.TemporaryDirectory()
+        self.td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.st = Storage(path=os.path.join(self.td.name, "bt.db"))
         self.tn = self.st.default_tenant_id
         # A policy + a compiled bundle to backtest against.

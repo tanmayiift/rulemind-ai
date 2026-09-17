@@ -171,7 +171,7 @@ class TenantIsolationMatrixTest(unittest.TestCase):
         cls.mutating_routes = discover_mutating_routes(app_main.app)
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "iso.db"))
         self.client = TestClient(app_main.app)
@@ -391,7 +391,7 @@ class ScimIsolationTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "scim.db"))
         self.client = TestClient(app_main.app)

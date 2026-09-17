@@ -46,7 +46,7 @@ def body(**overrides):
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig = app_main.storage
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "pred.db"))

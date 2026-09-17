@@ -39,7 +39,7 @@ class DecisionArchiverTests(unittest.TestCase):
         # on what other tests happened to leave behind: this suite passed inside the full run
         # and failed on its own, which is the wrong way round for a test that asserts an exact
         # number ("archived 9, expected 5").
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tempdir.cleanup)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "archive.db"))
         self.tenant_id = self.storage.default_tenant_id

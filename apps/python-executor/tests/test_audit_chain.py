@@ -49,7 +49,7 @@ class AuditChainTest(unittest.TestCase):
         # A private store, not the shared .runtime DB: these tests assert on exact sequence
         # numbers and on the whole-tenant chain, so any other test's audit writes would break
         # them non-deterministically.
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "audit.db"))
         self.tenant = self.storage.default_tenant_id
 
@@ -257,7 +257,7 @@ class AuditEncryptionAtRestTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "enc.db"), force_sqlite=True)
         self.tenant = self.storage.default_tenant_id
         self.storage.add_audit_event(
@@ -329,7 +329,7 @@ class AuditVerifyEndpointTest(unittest.TestCase):
     a broken chain is 200 + ok:false, not an error status."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "verify.db"))
         self.client = TestClient(app_main.app)

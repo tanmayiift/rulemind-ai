@@ -23,7 +23,7 @@ from app.storage import Storage
 
 class RuleMindEnterpriseTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.database_path = os.path.join(self.tempdir.name, "rulemind-test.db")
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=self.database_path)

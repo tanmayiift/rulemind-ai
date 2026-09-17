@@ -41,7 +41,7 @@ from tests._storage_global import preserve_storage_global  # noqa: E402
 
 class DecideEmitsMetricsTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tempdir.cleanup)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "metrics.db"))

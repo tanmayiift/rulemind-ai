@@ -32,7 +32,7 @@ def _failures_count(source: str) -> float:
 
 class DecisionLogFailureObservabilityTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "obs.db"))
         self.tenant = app_main.storage.default_tenant_id

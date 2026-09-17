@@ -76,7 +76,7 @@ class WhatIfTests(unittest.TestCase):
     """#82 — custom KPIs over baseline vs candidate, chunked replay."""
 
     def setUp(self):
-        self.td = tempfile.TemporaryDirectory()
+        self.td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.st = Storage(path=os.path.join(self.td.name, "wi.db"))
         self.tn = self.st.default_tenant_id
         # Candidate bundle always approves; historical decisions were mixed.
@@ -119,7 +119,7 @@ class ShadowTests(unittest.TestCase):
     """#81 — dark launch: candidate runs on live traffic, never affects the returned decision."""
 
     def setUp(self):
-        self.td = tempfile.TemporaryDirectory()
+        self.td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.st = Storage(path=os.path.join(self.td.name, "sh.db"))
         self.tn = self.st.default_tenant_id
         self.live = _outcome_policy("POL-LIVE", "approve")
@@ -157,7 +157,7 @@ class ReleaseRollbackTests(unittest.TestCase):
     """#83 — release snapshots + one-click rollback restores the prior definition."""
 
     def setUp(self):
-        self.td = tempfile.TemporaryDirectory()
+        self.td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.st = Storage(path=os.path.join(self.td.name, "rel.db"))
         self.tn = self.st.default_tenant_id
 

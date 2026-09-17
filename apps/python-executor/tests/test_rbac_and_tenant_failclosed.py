@@ -113,7 +113,7 @@ class UnknownWriteFailsClosedTest(unittest.TestCase):
 
 class TenantResolutionTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "tenant.db"))
         self._prev_auth = os.environ.get("AUTH_MODE")
@@ -142,7 +142,7 @@ class TenantPrecedenceTest(unittest.TestCase):
     """The authenticated context must outrank a request-body tenant_id."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "prec.db"))
         self.first = self.storage.default_tenant_id
         self.second = self.storage.create_tenant("Second Co")["id"]
@@ -182,7 +182,7 @@ class WebhookTenantResolutionTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "wh.db"))
         self.first = self.storage.default_tenant_id
         self.second = self.storage.create_tenant("Second Co")["id"]

@@ -68,7 +68,7 @@ def parent_policy(child_step, policy_id="pol_parent"):
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "alias.db"))
         self.tenant = app_main.storage.default_tenant_id

@@ -94,7 +94,7 @@ class QuotaPolicyTest(unittest.TestCase):
 
 class UsageMeteringTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "usage.db"))
         self.tenant = self.storage.default_tenant_id
 
@@ -179,7 +179,7 @@ class UsageMeteringTest(unittest.TestCase):
 
 class QuotaEnforcementTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "enforce.db"))
         self.client = TestClient(app_main.app)

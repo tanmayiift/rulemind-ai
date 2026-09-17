@@ -43,7 +43,7 @@ from tests._storage_global import preserve_storage_global  # noqa: E402
 
 class DecisionSubjectHistoryTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "subject.db"))
         self.tenant = self.storage.default_tenant_id
 
@@ -119,7 +119,7 @@ class DecideEndpointSubjectTest(unittest.TestCase):
 
     def setUp(self):
         os.environ["RULEMIND_SEED_DEMO"] = "1"
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "decide.db"))
         self.client = TestClient(app_main.app)

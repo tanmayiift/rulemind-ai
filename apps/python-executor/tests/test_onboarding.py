@@ -29,7 +29,7 @@ from tests._storage_global import preserve_storage_global  # noqa: E402
 
 class OnboardingTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "onboard.db"))
         self.client = TestClient(app_main.app)
@@ -109,7 +109,7 @@ class CleanInstallActivationTests(unittest.TestCase):
     guided activation checklist; 'load samples' populates it on demand."""
 
     def setUp(self) -> None:
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._prev = os.environ.get("RULEMIND_SEED_DEMO")
         os.environ["RULEMIND_SEED_DEMO"] = "0"  # simulate a fresh clone
         preserve_storage_global(self)

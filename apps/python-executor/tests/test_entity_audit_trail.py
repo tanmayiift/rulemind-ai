@@ -32,7 +32,7 @@ from app.storage import Storage  # noqa: E402
 
 class EntityAuditTrailTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "audit.db"))
         self.tenant = self.storage.default_tenant_id
 

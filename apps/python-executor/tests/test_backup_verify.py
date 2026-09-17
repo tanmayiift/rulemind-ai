@@ -37,7 +37,7 @@ from app.storage import Storage  # noqa: E402
 
 class BackupVerifyTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = Path(self.tempdir.name) / "live.db"
         # force_sqlite: _dump()/_restore() below build a `sqlite:///` URL from this same
         # path, so the Postgres lane must not redirect the write side out from under them.

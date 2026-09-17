@@ -36,7 +36,7 @@ from app.storage import Storage  # noqa: E402
 
 class DecideDoesNotWriteThePolicyRowTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "hotpath.db"))
         self.client = TestClient(app_main.app)

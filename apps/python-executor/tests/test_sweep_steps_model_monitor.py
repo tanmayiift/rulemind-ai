@@ -59,7 +59,7 @@ PAYLOAD = {"bureau": {"scores": [{"scoreName": "CIBILTUSC3", "score": "00741"}]}
 class ModelAndMonitorStepTests(unittest.TestCase):
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tempdir.cleanup)
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "stepsweep.db"))

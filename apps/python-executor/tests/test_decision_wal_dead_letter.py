@@ -44,7 +44,7 @@ def _record(rec_id: str, tenant_id: str) -> dict:
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         os.environ["DECISION_WAL"] = "1"
         os.environ["DECISION_WAL_DIR"] = os.path.join(self.tempdir.name, "wal")
         os.environ["DECISION_WAL_MAX_REPLAY_ATTEMPTS"] = "3"

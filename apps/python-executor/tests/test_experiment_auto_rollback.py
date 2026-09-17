@@ -48,7 +48,7 @@ def analysis(recommendation="rollback", breached=True, breaches=("approval rate 
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "rollback.db"))
         self.tenant = self.storage.default_tenant_id
         self._leader = scheduler._IS_LEADER

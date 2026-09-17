@@ -28,7 +28,7 @@ from tests._storage_global import preserve_storage_global  # noqa: E402
 
 class DbTuningTests(unittest.TestCase):
     def test_sqlite_runs_in_wal_mode(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             # WAL is a SQLite journal mode; this assertion is meaningless on Postgres.
             s = Storage(path=os.path.join(tmp, "wal.db"), force_sqlite=True)
             with s.connect() as session:
@@ -38,7 +38,7 @@ class DbTuningTests(unittest.TestCase):
 
 class WebhookAuthTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "wh.db"))
         self.client = TestClient(app_main.app)
@@ -78,7 +78,7 @@ class WebhookAuthTests(unittest.TestCase):
 
 class AccessAuditTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "audit.db"))
         self.client = TestClient(app_main.app)

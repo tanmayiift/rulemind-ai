@@ -65,7 +65,7 @@ SCORECARD = {"total": 610, "factors": [{"variable": "phone", "value": PHONE, "po
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "deccrypt.db"))
         self.tenant_id = self.storage.default_tenant_id
         self.policy = self.storage.list_policies(tenant_id=self.tenant_id)[0]

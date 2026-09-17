@@ -235,7 +235,7 @@ class RotationScriptTests(unittest.TestCase):
     """scripts/rotate_config_key.py: re-encrypts everything, resumable, safe to run twice."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = os.path.join(self.tempdir.name, "rotate.db")
         self.state_path = os.path.join(self.tempdir.name, "state.json")
         # Seed a workspace with something in every encrypted column, under the OLD key.

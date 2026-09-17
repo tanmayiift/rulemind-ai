@@ -37,7 +37,7 @@ class FastFullConformanceTests(unittest.TestCase):
         # the dependency surfaced: the dev database is encrypted under rulemind-dev-master-key
         # while this module sets rulemind-test-key, so every connector config was silently empty
         # for as long as this test has existed.
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tempdir.cleanup)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "conformance.db"))

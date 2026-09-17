@@ -47,7 +47,7 @@ from tests._storage_global import preserve_storage_global  # noqa: E402
 
 class _RuntimeCase(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "runtime.db"))
         self.client = TestClient(app_main.app)

@@ -39,7 +39,7 @@ from tests._storage_global import preserve_storage_global  # noqa: E402
 
 class WebSocketAuthTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ws.db"))
         self._orig_hub = collab_router.hub
@@ -121,7 +121,7 @@ class WebSocketAuthTest(unittest.TestCase):
 
 class TenantScopingTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ws2.db"))
         self._orig_hub = collab_router.hub
@@ -187,7 +187,7 @@ class WriteAuthorizationTest(unittest.TestCase):
     """A read-only role may watch a session but must not be able to edit it."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ws3.db"))
         self._orig_hub = collab_router.hub

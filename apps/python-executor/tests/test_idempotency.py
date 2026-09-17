@@ -63,7 +63,7 @@ class IdempotencyUnitTest(unittest.TestCase):
 
 class IdempotencyStorageTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "idem.db"))
         self.tenant = self.storage.default_tenant_id
 
@@ -116,7 +116,7 @@ class IdempotencyStorageTest(unittest.TestCase):
 
 class IdempotencyEndToEndTest(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "e2e.db"))
         self.client = TestClient(app_main.app)

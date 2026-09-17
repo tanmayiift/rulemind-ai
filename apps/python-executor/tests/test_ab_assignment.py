@@ -39,7 +39,7 @@ class AbAssignmentTests(unittest.TestCase):
         # That made the test pass or fail on ambient local state: green on a fresh
         # checkout, red on a machine that had run the QA suites. Verified both ways
         # before this change.
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "ab.db"))
 

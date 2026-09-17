@@ -27,7 +27,7 @@ from app.storage import Storage  # noqa: E402
 
 class LeaseTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "lease.db"))
 
     def tearDown(self):
@@ -63,7 +63,7 @@ class LeaseTests(unittest.TestCase):
 
 class JobGatingTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "gate.db"))
         import app.scheduler as sched
         import app.mailer as mailer

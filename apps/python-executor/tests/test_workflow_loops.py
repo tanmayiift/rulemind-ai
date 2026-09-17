@@ -44,7 +44,7 @@ def _score_branch(item_name="app"):
 
 class LoopExecutorUnitTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "loop.db"))
         self.executor = PolicyExecutor(app_main.storage)
@@ -101,7 +101,7 @@ class LoopExecutorUnitTests(unittest.TestCase):
 
 class LoopApiTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "loopapi.db"))
         self.client = TestClient(app_main.app)

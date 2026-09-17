@@ -62,7 +62,7 @@ class ComputeOnlyUsedVarsParityTests(unittest.TestCase):
     """Both paths, both flag states, over policies covering every fast-servable step type."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tempdir.cleanup)
         self._orig_storage = app_main.storage
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "usedvars.db"))

@@ -172,7 +172,7 @@ class RetentionSettingsPersistenceTests(unittest.TestCase):
     endpoints and the dashboard keep working untouched."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "retention.db"))
         self.tenant = self.storage.default_tenant_id
 
@@ -228,7 +228,7 @@ class RetentionApiTests(unittest.TestCase):
     reports the real window for a months-configured workspace instead of a stale number."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
         app_main.storage = Storage(path=os.path.join(self.tempdir.name, "retention-api.db"))
         self.client = TestClient(app_main.app)
@@ -264,7 +264,7 @@ class RetentionMigrationTests(unittest.TestCase):
     not only on an upgraded one."""
 
     def test_column_lands_on_a_fresh_upgrade_to_head(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = os.path.join(tmp, "fresh.db")
             url = "sqlite:///{0}".format(db)
             os.environ["DATABASE_URL"] = url
@@ -279,7 +279,7 @@ class RetentionMigrationTests(unittest.TestCase):
             self.assertIn("audit_retention_days", cols, "the legacy column is kept, not replaced")
 
     def test_upgrade_is_idempotent_over_a_create_all_database(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = os.path.join(tmp, "existing.db")
             url = "sqlite:///{0}".format(db)
             Base.metadata.create_all(create_engine(url))
@@ -299,7 +299,7 @@ class PurgeHonoursCalendarMonthsTests(unittest.TestCase):
     actually destroys data."""
 
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.storage = Storage(path=os.path.join(self.tempdir.name, "purge.db"))
         self.tenant = self.storage.default_tenant_id
         self.policy = self.storage.list_policies(status="prod", tenant_id=self.tenant)[0]
