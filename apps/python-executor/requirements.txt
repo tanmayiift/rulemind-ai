@@ -19,7 +19,7 @@ python-dotenv==1.2.2
 # assertion-signature verification uses signxml (pure-Python XML-DSig over lxml).
 # Both ship manylinux/macos wheels — no system libxmlsec build step.
 lxml==6.1.0
-signxml==4.5.1
+signxml==5.1.0
 prometheus-client==0.21.1
 redis==5.2.1
 psycopg2-binary==2.9.9
