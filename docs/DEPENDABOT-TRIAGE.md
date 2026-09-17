@@ -103,13 +103,34 @@ have been closed as broken.
    teardown, after the test passed. 111 call sites used the fatal form while 10 already used
    `ignore_cleanup_errors=True`.
 
-### Follow-ups this round created
+### Follow-ups this round created — all three closed
 
-- `EncryptedSharedPreferences` is deprecated by security-crypto 1.1.0; `ExecutionStore.kt` needs
-  a replacement strategy. Staying on an alpha is not the alternative.
-- 4 `high` advisories remain: xlsx/SheetJS prototype pollution and ReDoS (**no fixed version
-  published**), plus vite and postcss issues reached through the toolchain.
-- numpy stays capped at 2.4.6 until the project moves off Python 3.11.
+**`pnpm audit` is now clean**: 4 high + 3 moderate + 1 low → *No known vulnerabilities found*.
+Two unrelated situations were hiding behind "high advisory":
+
+* **xlsx had no fix on npm.** The database reports `patched=<0.0.0` for both the prototype
+  pollution and the ReDoS — SheetJS stopped publishing to npm, so the registry copy is frozen at
+  0.18.5 and no bump reaches a fixed version. Pinned to the tarball they do ship
+  (`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`), which clears both.
+* **vite / postcss / nanoid / esbuild are transitive**, so an override is the only lever. A BARE
+  RANGE (`"vite": ">=7.3.5"`) does not work — pnpm treats it as a constraint on the existing
+  resolution, installs the vulnerable 7.3.1 anyway, and reports only an "unmet peer" warning. The
+  selective form (`"vite@<7.3.5": "7.3.6"`) does. It also matters for nanoid, where 3.3.11 and
+  6.0.1 are both in the tree and only the v3 line is vulnerable.
+
+**Android crypto deprecation.** `EncryptedSharedPreferences` is gone. **Four** stores used it, not
+the two the deprecation warnings named — `ExecutionStore` warned, while `CryptoManager`,
+`EventLogger` and `BundleManager` only showed up on a grep. `CryptoManager` holds the device's RSA
+private key, whose public half the server already has, so its one-time migration is not
+housekeeping: regenerating it silently produces a device that cannot decrypt bundles addressed to
+it. `SecurePrefs` holds an AES-256-GCM key in the AndroidKeyStore and hashes key names.
+Deprecation warnings 5 → 0; the deprecated import survives in one file that says in its header
+that it exists to be deleted.
+
+**numpy.** The cap moved out of this document and into `requirements.txt` as an environment
+marker, where pip enforces it — a constraint written in prose is one nobody's tooling checks, and
+Dependabot broke it twice. Also a real upgrade: 2.2.1 → 2.4.6, the newest installable on 3.11.
+Only the 3.11 branch is tested; the 3.12 line is the documented forward path and says so.
 
 ## Reproducing any of this
 
