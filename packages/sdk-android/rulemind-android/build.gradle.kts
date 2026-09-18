@@ -73,6 +73,10 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    // MockWebServer, so NetworkClient's retry and circuit-breaker behaviour is tested against a
+    // real HTTP server on the JVM rather than a mocked OkHttp. Same version as the okhttp above:
+    // the two are released together and a mismatch fails at runtime, not at resolution.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 
 publishing {
