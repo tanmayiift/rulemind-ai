@@ -252,6 +252,10 @@ services:
     profiles: ["observability"]
     volumes:
       - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # The alert destination, read from a gitignored file so enabling paging never means
+      # committing a credential. Read-only, and absent on a fresh clone -- Alertmanager reads
+      # `url_file` at notify time, so it starts fine either way.
+      - ./observability/secrets:/etc/alertmanager/secrets:ro
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"

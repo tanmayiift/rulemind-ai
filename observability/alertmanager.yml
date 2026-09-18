@@ -6,24 +6,37 @@
 # different claims, and only the second one is worth anything at 3am.
 #
 # ---------------------------------------------------------------------------------------------
-# THIS SHIPS WITH NO REAL DESTINATION, ON PURPOSE.
+# TURNING PAGING ON DOES NOT MEAN EDITING THIS FILE WITH A CREDENTIAL IN IT.
 #
-# The default receiver is a black hole. A config with someone's Slack webhook committed to it is
-# a leaked credential; a config that silently drops alerts while looking configured is worse than
-# no config at all. So it fails LOUD instead: `make observability` starts Alertmanager, alerts
-# route to `null`, and this comment is the only documentation of why nothing arrived.
+# It used to. The instruction was "uncomment a receiver block and paste your Slack webhook in",
+# which asks you to put a live credential into a file that is committed — so the only safe way to
+# follow it was to not follow it, and paging stayed off.
 #
-# TO MAKE IT REAL: uncomment ONE receiver block at the bottom, put the real credential in it,
-# and change `receiver: "null"` (in `route:` AND in the critical sub-route) to that receiver's
-# name.
+# The `paging` receiver below is REAL and enabled by default. It reads its destination from
 #
-# NOT via an environment variable — Alertmanager does not expand them in this file. It validates
-# `api_url` as a literal URL, so `${SOMETHING}` fails the config outright with
-# `unsupported scheme ""` rather than waiting to be filled in. Verified with
-# `amtool check-config`, not assumed.
+#     observability/secrets/paging_url        (gitignored; .example is committed)
 #
-# Keep the credential out of git: mount this file from a Kubernetes secret, or template it at
-# deploy time.
+# via Alertmanager's `url_file`, so the credential never enters git and nobody has to hand-write
+# receiver YAML. Compose mounts that directory read-only at /etc/alertmanager/secrets.
+#
+# To page for real: put your Slack/PagerDuty/Opsgenie webhook URL in that file (one line, no
+# quotes) and restart Alertmanager. Nothing else changes.
+#
+# With no file present Alertmanager still starts — `url_file` is read at NOTIFY time, not at
+# load time, so a fresh clone is not broken by a missing secret; it just logs a delivery failure
+# when an alert actually fires. That is the behaviour worth having: it fails LOUD at the moment
+# it matters instead of silently succeeding into a black hole.
+#
+# VERIFIED, both halves, on 2026-09-18 rather than reasoned about:
+#   * with a URL in place, a hand-fired critical alert arrived at the destination carrying its
+#     runbook link -- receiver "paging", status "firing";
+#   * with the file absent, Alertmanager started (ready=200) and the first alert logged
+#     `notify retry canceled ... read url_file: ... no such file or directory`.
+#
+# NOT via an environment variable — Alertmanager does not expand them here. `${SOMETHING}` fails
+# the config outright with `unsupported scheme ""` rather than waiting to be filled in. That is
+# why this is a FILE and not an env var, and it was verified with `amtool check-config` rather
+# than assumed — as was `url_file` itself, which needs Alertmanager >= 0.26 (this pins 0.27.0).
 # ---------------------------------------------------------------------------------------------
 
 global:
@@ -44,14 +57,14 @@ route:
   # Do not re-notify for 4 hours. Shorter than this and a long incident becomes its own denial
   # of service on the on-call person's attention.
   repeat_interval: 4h
-  receiver: "null"
+  receiver: "paging"
 
   routes:
     # Critical goes to the paging destination and repeats faster: these are the two that mean
     # decisions are not being served at all.
     - matchers:
         - severity = "critical"
-      receiver: "null"
+      receiver: "paging"
       group_wait: 10s
       repeat_interval: 1h
 
@@ -72,7 +85,17 @@ inhibit_rules:
     equal: ["source"]
 
 receivers:
-  # The black hole. Replace `receiver: "null"` above once a real destination exists.
+  # THE REAL DESTINATION. Its URL comes from a gitignored file, so enabling paging never means
+  # committing a credential — see the header. `url_file` is read at notify time, so a missing
+  # file is a logged delivery failure rather than a config that refuses to load.
+  - name: "paging"
+    webhook_configs:
+      - url_file: /etc/alertmanager/secrets/paging_url
+        send_resolved: true
+
+  # Kept so `receiver: "null"` above is still a one-word way to silence everything deliberately
+  # — which is a legitimate thing to want during a planned migration, and is different from
+  # having no destination configured at all.
   - name: "null"
 
   # The three destinations below are COMMENTED rather than left with placeholder credentials.

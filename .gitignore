@@ -61,3 +61,8 @@ apps/python-executor/data/
 qa/results/mobile-e2e-backend.log
 qa/results/mobile-e2e-backend.pid
 
+# The live alert destination. `.example` is committed; the real URL is a credential and must not
+# be — that is the whole reason paging reads it from a file instead of from this repo.
+observability/secrets/*
+!observability/secrets/*.example
+!observability/secrets/README.md
