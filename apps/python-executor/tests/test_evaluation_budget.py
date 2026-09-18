@@ -73,6 +73,12 @@ class EvaluationBudgetTest(unittest.TestCase):
         engine_config = dict(settings.get("engine_config") or {})
         engine_config["evaluation_budget_ms"] = ms
         app_main.storage.update_settings({"engine_config": engine_config}, tenant_id=self.tenant)
+        # Invalidate the serving bundle, which CACHES the budget. Without this a second call to
+        # _set_budget in one test silently has no effect -- the first run populates the cache and
+        # every later request keeps the old budget. It surfaced the moment a test set the budget
+        # twice: the bounded run returned 200 because it was still using the unbounded value.
+        from app import fast_decide as _fast_decide
+        _fast_decide.invalidate()
 
     def _slow_variable(self, seconds):
         """A variable that genuinely blocks, so the clamp is measured and not assumed."""
@@ -104,27 +110,54 @@ class EvaluationBudgetTest(unittest.TestCase):
 
         55 variables x 50ms would be ~2.75s unbounded. With a 300ms budget the request must
         return in roughly that, not merely time out while the loop keeps burning threads.
+
+        MEASURED RELATIVE TO AN UNBOUNDED RUN, not against a fixed millisecond ceiling: the work
+        is 55 sleeps, and a sleep stretches under CPU contention, so a fixed ceiling fails a
+        CORRECTLY bounded run on a busy machine. The fast-path twin of this test
+        (test_fast_path_validation_and_budget_parity) did exactly that in CI.
         """
         from app import executor as executor_module
 
-        self._set_budget(300)
-        started = time.perf_counter()
-        with mock.patch.object(executor_module, "execute_variable",
-                               side_effect=self._slow_variable(0.05)):
-            res = self.client.post("/api/v1/decide", headers=self.headers,
-                                   json={"policyId": self.policy_id, "payload": {"age": 30}})
-        elapsed_ms = (time.perf_counter() - started) * 1000
+        def timed(budget_ms):
+            self._set_budget(budget_ms)
+            started = time.perf_counter()
+            with mock.patch.object(executor_module, "execute_variable",
+                                   side_effect=self._slow_variable(0.05)):
+                res = self.client.post("/api/v1/decide", headers=self.headers,
+                                       json={"policyId": self.policy_id, "payload": {"age": 30}})
+            return res, (time.perf_counter() - started) * 1000
+
+        # The control: the same work with a budget too large to bite. Both runs happen on this
+        # machine moments apart, so load scales them together and cancels.
+        unbounded_res, unbounded_ms = timed(60_000)
+        self.assertEqual(unbounded_res.status_code, 200,
+                         "the control must COMPLETE; a 504 means the budget still bit")
+        self.assertGreater(unbounded_ms, 1000,
+                           "the unbounded run must actually be slow ({0:.0f}ms) or this test "
+                           "measures nothing".format(unbounded_ms))
+
+        res, elapsed_ms = timed(300)
         self.assertEqual(res.status_code, 504)
-        self.assertLess(elapsed_ms, 1500,
-                        "the request returned 504 but the evaluation kept running "
-                        "({0:.0f}ms for a 300ms budget)".format(elapsed_ms))
+        self.assertLess(
+            elapsed_ms, unbounded_ms * 0.6,
+            "the request returned 504 but the evaluation kept running: {0:.0f}ms bounded vs "
+            "{1:.0f}ms unbounded, for a 300ms budget".format(elapsed_ms, unbounded_ms))
 
     def test_one_variable_cannot_overshoot_the_budget(self):
         """The clamp. Without it, a variable started with 5ms of budget left still runs its
         full timeout_ms -- so the effective bound stays `timeout_ms x variable_count`."""
         from app import executor as executor_module
 
-        self._set_budget(120)
+        # 600ms, not 120. The budget has to be comfortably larger than REQUEST SETUP, which on
+        # the PostgreSQL lane is real queries against a real database -- at 120ms a loaded run
+        # spent the entire budget before the first variable started, and the test failed with
+        # "no variable ran" while the clamp it exists to check was working perfectly.
+        #
+        # It still bites: the fixture's variables sleep 50ms each and there are far more than
+        # twelve of them, so the budget drains partway through and the per-variable timeout
+        # shrinks, which is what the last assertion measures.
+        budget_ms = 600
+        self._set_budget(budget_ms)
         seen = []
 
         def record(code, payload, values, timeout_ms=2000, memory_mb=128):
@@ -135,8 +168,11 @@ class EvaluationBudgetTest(unittest.TestCase):
         with mock.patch.object(executor_module, "execute_variable", side_effect=record):
             self.client.post("/api/v1/decide", headers=self.headers,
                              json={"policyId": self.policy_id, "payload": {"age": 30}})
-        self.assertTrue(seen, "no variable ran")
-        self.assertTrue(all(t <= 120 for t in seen),
+        self.assertTrue(
+            seen,
+            "no variable ran -- the budget was spent before the first one started, which means "
+            "this measured request overhead rather than the clamp")
+        self.assertTrue(all(t <= budget_ms for t in seen),
                         "a variable was given more timeout than the whole budget: {0}".format(seen))
         self.assertLess(seen[-1], seen[0],
                         "the per-variable timeout did not shrink as the budget drained")
