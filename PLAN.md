@@ -1116,7 +1116,7 @@ via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak
 
 - [x] **R4.1** Rewrote `docs/PRODUCTION-READINESS.md`. Its headline open item is "what remains is registering the runner" — done days ago, with many green runs since. Its Next.js entry is closed at 14.2.35 (now 15.5.25) and its dependency section predates the whole Dependabot round.
 - [x] **R4.2** Fixed the stale references to retired workflows (`sdk-verify.yml`, `ci.yml`, `test-report.yml`) — only the three parity files were actually WRONG (they said the check runs in `sdk-verify.yml`); CLAUDE.md and the readiness doc already explain the retirement, and PLAN.md's are historical entries that should stay. `check_parity.py` still passes.
-- [ ] **R4.3** Give `rulemind-android` a test source set. It has **1,644 lines and zero tests** — NetworkClient (268), RuleMind (254), BundleParser (253) — and the `SecurePrefs` crypto rewritten this week is verified by compilation alone.
+- [x] **R4.3** Gave `rulemind-android` a test source set — Robolectric, so it runs on the JVM in the standing gate rather than waiting for an emulator. 18 tests covering `SecurePrefs` and `ExecutionStore`, all mutation-checked. Kotlin lane 46 → **64**. It has **1,644 lines and zero tests** — NetworkClient (268), RuleMind (254), BundleParser (253) — and the `SecurePrefs` crypto rewritten this week is verified by compilation alone.
 - [ ] **R4.4** Reframe or close issue #133: it describes emulator jobs in `sdk-verify.yml`, a workflow that no longer exists, so its premise is gone even though the underlying gap (no Android tests) is real.
 - [ ] **R4.5** Full gate green, push, CI green.
 

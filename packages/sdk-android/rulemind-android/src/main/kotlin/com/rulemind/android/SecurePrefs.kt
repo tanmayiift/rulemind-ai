@@ -34,7 +34,23 @@ import javax.crypto.spec.GCMParameterSpec
  * because `SyncWorker` drains the decision outbox in the background. Requiring auth would make a
  * background sync fail on a locked phone, which is the normal case rather than the exception.
  */
-internal class SecurePrefs(context: Context, name: String) {
+internal class SecurePrefs(
+    context: Context,
+    name: String,
+    /**
+     * Where the AES key comes from. Defaults to the AndroidKeyStore, which is the point of this
+     * class; it is a parameter ONLY so the surrounding logic can be tested.
+     *
+     * The keystore is a platform boundary no JVM test can cross -- Robolectric answers
+     * `NoSuchAlgorithmException` for the `AndroidKeyStore` provider, so without this seam the IV
+     * framing, the key-name hashing and the corrupt-value contract would all be untestable, and
+     * they were: this module had no test source set at all until 2026-09-18.
+     *
+     * Production never passes this. What a JVM test can then prove is everything EXCEPT that the
+     * key is hardware-backed and non-exportable, which needs a device.
+     */
+    private val keyProvider: () -> SecretKey = { keystoreKey() },
+) {
 
     private val prefs: SharedPreferences =
         context.applicationContext.getSharedPreferences(name, Context.MODE_PRIVATE)
@@ -83,7 +99,7 @@ internal class SecurePrefs(context: Context, name: String) {
 
     private fun encrypt(plaintext: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey())
+        cipher.init(Cipher.ENCRYPT_MODE, keyProvider())
         val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
         // IV first, then ciphertext. GCM generates the IV, and it must never be reused with the
         // same key -- letting the cipher pick it and storing it alongside is the safe form.
@@ -105,35 +121,12 @@ internal class SecurePrefs(context: Context, name: String) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(
             Cipher.DECRYPT_MODE,
-            secretKey(),
+            keyProvider(),
             GCMParameterSpec(TAG_BITS, raw.copyOfRange(0, IV_BYTES)),
         )
         cipher.doFinal(raw.copyOfRange(IV_BYTES, raw.size)).toString(Charsets.UTF_8)
     }.getOrNull()
 
-    private fun secretKey(): SecretKey {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
-        synchronized(SecurePrefs::class.java) {
-            // Re-check inside the lock: two threads reaching this together would otherwise
-            // generate two keys, and the second would silently orphan everything the first wrote.
-            val reloaded = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            (reloaded.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)
-                ?.let { return it.secretKey }
-            val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-            generator.init(
-                KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
-                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-                )
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(256)
-                    .build()
-            )
-            return generator.generateKey()
-        }
-    }
 
     private fun hash(key: String): String =
         Base64.encodeToString(
@@ -147,5 +140,31 @@ internal class SecurePrefs(context: Context, name: String) {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val IV_BYTES = 12
         private const val TAG_BITS = 128
+
+        /** The real thing: an AES-256-GCM key generated INSIDE the AndroidKeyStore,
+         *  which the app can use but cannot read. */
+        fun keystoreKey(): SecretKey {
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            (keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
+            synchronized(SecurePrefs::class.java) {
+                // Re-check inside the lock: two threads reaching this together would otherwise
+                // generate two keys, and the second would silently orphan everything the first wrote.
+                val reloaded = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                (reloaded.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)
+                    ?.let { return it.secretKey }
+                val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+                generator.init(
+                    KeyGenParameterSpec.Builder(
+                        KEY_ALIAS,
+                        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                    )
+                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .setKeySize(256)
+                        .build()
+                )
+                return generator.generateKey()
+            }
+        }
     }
 }

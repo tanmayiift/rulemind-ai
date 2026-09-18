@@ -30,6 +30,21 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // UNIT TESTS FOR THIS MODULE, which had NO test source set at all until 2026-09-18 -- 1,644
+    // lines of crypto, networking and persistence with nothing exercising them, while the pure-Kotlin
+    // `rulemind-core` next door had 46 tests.
+    //
+    // Robolectric rather than instrumentation: these run on the JVM in the ordinary `test` task, so
+    // they are part of the standing gate instead of waiting for an emulator (issue #133 is exactly
+    // that wait). What Robolectric CANNOT give is a real AndroidKeyStore -- see SecurePrefsTest for
+    // which half of the crypto that leaves covered and which half still needs a device.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
+
     publishing {
         singleVariant("release") {
             withSourcesJar()
@@ -53,6 +68,11 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Off-main-thread DB I/O for the durable decision outbox (Dispatchers.IO / withContext).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
 }
 
 publishing {

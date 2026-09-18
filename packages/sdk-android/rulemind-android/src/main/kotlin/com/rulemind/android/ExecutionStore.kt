@@ -5,11 +5,21 @@ import com.rulemind.core.models.Decision
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal class ExecutionStore(context: Context) {
+internal class ExecutionStore(
+    context: Context,
+    /**
+     * Forwarded to [SecurePrefs]. Production never passes it; it exists so this class is testable
+     * on the JVM, where the AndroidKeyStore is unavailable. See SecurePrefs for the full note.
+     */
+    keyProvider: (() -> javax.crypto.SecretKey)? = null,
+) {
     // SecurePrefs, not EncryptedSharedPreferences: security-crypto 1.1.0 deprecates the latter
     // and Google has deprecated the Jetpack Security crypto library outright, so there is no
     // newer version to move to. Same guarantee, held by an AndroidKeyStore AES-256-GCM key.
-    private val prefs = SecurePrefs(context, STORE_NAME).also {
+    private val prefs = (
+        if (keyProvider == null) SecurePrefs(context, STORE_NAME)
+        else SecurePrefs(context, STORE_NAME, keyProvider)
+    ).also {
         LegacySecureStoreMigration.migrateIfNeeded(context, STORE_NAME, it)
     }
 

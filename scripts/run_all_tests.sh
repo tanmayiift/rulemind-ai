@@ -255,7 +255,13 @@ except Exception: print('')
       # output this repo always had. awk rather than a grep|paste|bc pipeline: that version
       # returned empty inside the script while working fine on the command line, and a count that
       # silently degrades to "?" is worse than one that fails loudly.
-      n=$(find "$ROOT/packages/sdk-android/rulemind-core/build/test-results" -name "*.xml" 2>/dev/null \
+      #
+      # BOTH modules. This read only rulemind-core, so when rulemind-android gained its first
+      # tests the lane would have reported 46 while running 64 -- an undercount is the same class
+      # of defect as the vitest "?" this script was already fixed for once.
+      n=$(find "$ROOT/packages/sdk-android/rulemind-core/build/test-results" \
+               "$ROOT/packages/sdk-android/rulemind-android/build/test-results" \
+               -name "*.xml" 2>/dev/null \
             -exec awk 'match($0, /tests="[0-9]+"/) { s += substr($0, RSTART+7, RLENGTH-8) } END { print s }' {} + \
             2>/dev/null | awk '{ t += $1 } END { print t }') ;;
   esac
@@ -435,7 +441,18 @@ has flutter && command -v flutter >/dev/null 2>&1 \
 has e2e && run_lane e2e "Playwright (e2e)" bash -c \
   "cd '$ROOT' && PYTHON_BIN='$VENV' RM_E2E_ALLOW_DESTRUCTIVE=1 npx playwright test"
 
-has kotlin && run_lane kotlin "Kotlin — rulemind-core" bash -c "cd '$ROOT/packages/sdk-android' && ./gradlew :rulemind-core:cleanTest :rulemind-core:test --console=plain"
+# BOTH Android modules, not just rulemind-core. `rulemind-android` -- the module with the crypto,
+# the network client and the persistence -- had NO test source set at all until 2026-09-18, so
+# this lane reported 46 green tests while 1,644 lines went unexercised. Its unit tests are
+# Robolectric, so they run on the JVM here rather than waiting for an emulator (issue #133).
+#
+# ANDROID_HOME is required: the AGP tasks cannot configure without an SDK, and the failure is a
+# configuration error rather than a test failure, which reads as though the lane itself is broken.
+has kotlin && run_lane kotlin "Kotlin — Android SDK" bash -c \
+  "cd '$ROOT/packages/sdk-android' \
+   && ANDROID_HOME=\"\${ANDROID_HOME:-\$HOME/Library/Android/sdk}\" ./gradlew \
+        :rulemind-core:cleanTest :rulemind-core:test \
+        :rulemind-android:testDebugUnitTest --rerun-tasks --console=plain"
 
 if has contracts; then
   say "Contract gates"
