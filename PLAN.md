@@ -1116,7 +1116,7 @@ via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak
 
 - [x] **R5.1** Alertmanager's last hop closed. A real `paging` receiver reads its destination from a **gitignored** `observability/secrets/paging_url` via `url_file`, so turning paging on never means committing a credential — which is why it had stayed off. Verified both ways: an alert arrived carrying its runbook link, and with the file absent Alertmanager still started and failed *loudly* at notify time.
 - [x] **R5.2** `BundleParser` covered — 11 tests, mostly on `bound()`, which encodes a THREE-way distinction (absent / explicit null / non-numeric) mirroring the Python core. A parsing default that differs from the server's is a divergence the parity corpora cannot catch, because they compare evaluation and this runs before it. Android module 26 → **37**.
-- [ ] **R5.3** Full gate green, push, CI green.
+- [x] **R5.3** Full gate green — 15 lanes, 0 skipped, **5,035 tests** (Kotlin 46 → 83 across this session). Pushed; CI green.
 - [ ] **R5.4 — BLOCKED, needs the owner.** Delete the Render services. `RENDER_API_KEY` exists nowhere on this machine (no env var, no `~/.render`, no CLI, not in `.env`), and Render has no unauthenticated delete. `scripts/render_teardown.sh` does it in one command once the key is exported; it lists every resource first and requires typing `DELETE`.
 
 
