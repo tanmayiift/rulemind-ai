@@ -2,11 +2,20 @@
 
 An honest assessment, updated as gaps close. Every row below was **checked on a running
 system**, not read off the source — which is the distinction the whole document turns on. Four
-of the findings here were invisible to a green 4,600-test suite.
+of the findings here were invisible to a green suite — which is the argument for checking a
+running system rather than counting tests. (The suite was ~4,600 then and is 4,998 now; the
+point is that the number was never the evidence.)
 
-**Status: not yet production-ready, and the remaining gap is operational rather than
-engineering.** The blockers are a first real deployment, CI that actually runs, and thresholds
-calibrated against real traffic.
+**Status: not yet production-ready, and the remaining gap is now almost entirely operational.**
+The engineering blockers this document opened with are closed — CI runs on every commit, the
+paging chain is proven end to end, dependencies are current and the audit is clean. What is left
+is a first real deployment, thresholds calibrated against real traffic, and two surfaces that
+still need someone's credential.
+
+*Last re-checked 2026-09-18. Every claim below was re-verified against the running system on that
+date rather than carried forward — an earlier revision of this file kept "what remains is
+registering the runner" as its headline gap for days after the runner was registered and green,
+which is exactly the drift it warns about elsewhere.*
 
 ---
 
@@ -96,50 +105,42 @@ its own documented backup procedure. See `docs/runbooks/production.md`.
 
 ### Correctness — the standing gate
 
-4,600+ tests across 11 lanes, both deployment paths proven by smoke scripts (compose 14/14,
-kind + Helm 16/16), five engines held to generated corpora, and the parity backlog closed at
-21 PRESENT / 1 CUT / 0 ABSENT.
+**4,998 tests across 15 graded rows, 0 failed, 0 skipped** — and "0 skipped" is enforced rather
+than hoped for: `RULEMIND_REQUIRE_ALL_LANES=1` (set in CI) turns a skipped lane into a failure,
+after a local run exited 0 having silently not executed 2,085 tests.
+
+Both deployment paths proven by smoke scripts (compose 14/14, kind + Helm 16/16), five engines
+held to generated corpora, and the parity backlog closed at 21 PRESENT / 1 CUT / 0 ABSENT.
+
+**Five load-sensitive flakes were removed from the gate in September 2026**, each found by CI
+going red on a commit that was fine: fixed millisecond ceilings on work made of `sleep`, a DNS
+blip reported as `FAIL - 0 tests`, and a network outage reported as an audit failure. The timing
+assertions are now relative — measured against an unbounded run on the same machine moments
+apart, so load scales both and cancels. A gate that cries wolf is one people learn to re-run,
+and re-running is what hides a real failure.
 
 ---
 
 ## Open
 
-### 1. No CI has ever validated any of this — the biggest single gap
+### ~~1. No CI has ever validated any of this~~ — CLOSED 2026-09-16
 
-Every repo workflow has **zero successes**: ci (24 runs), sdk-verify (24), security (26),
-test-report (3), backup-verify (3). Jobs are assigned no runner and execute `steps: 0`.
+This was the headline gap, and it is gone. The self-hosted runner is registered and
+`self-hosted tests` has been green on every run since — 15 lanes, 0 skipped.
 
-The cause is a **billing block, not an exhausted quota** — GitHub's own annotation: *"The job
-was not started because recent account payments have failed or your spending limit needs to be
-increased."* Consumption is already ~0, so trimming workflows saves nothing.
+What it took, and each failure was a real defect rather than a configuration nuisance: a missing
+venv; `python3` on the host being Homebrew 3.14 when the project targets 3.11 (so psycopg2-binary
+had no wheel and fell back to a source build); a test that silently depended on `boto3` being
+installed; and CI silently covering *less* than a laptop because the Rust binding was not built,
+which showed up only as a diff in skip counts (CI 29, local 26).
 
-**Every test result in this repository is one person's local run on one machine.** That is the
-honest description of the evidence, however green it is.
+`ci.yml`, `sdk-verify.yml` and `test-report.yml` are retired — every non-emulator job they ran is
+folded into the one workflow that runs the same `scripts/run_all_tests.sh` a developer runs.
+`backup-verify`, `security` and `load-test` remain, all self-hosted, all green.
 
-Three ways out: settle billing; make the repo public (public repos get unlimited free
-GitHub-hosted minutes — `docs/PRE-PUBLICATION-AUDIT.md` establishes that would be safe); or a
-**self-hosted runner**, which is free even on a private repo.
-
-**The self-hosted path is prepared and needs one command from the repo owner.**
-`.github/workflows/self-hosted-tests.yml` runs the full regression, publishes `TEST_RESULTS.md`
-to the run summary, uploads the logs, and grades from the per-lane TSV so a late failure still
-fails the run. It is `workflow_dispatch` **only** — never `pull_request`, never `push` — because
-it executes on a real machine with real credentials and this repo has 15 open bot-authored
-dependency PRs.
-
-What remains is registering the runner, which installs a long-lived agent that executes workflow
-code as that user. That is the owner's decision to make, not an assistant's:
-
-```bash
-cd ~/actions-runner        # runner 2.337.0 already downloaded and extracted
-./config.sh --url https://github.com/tanmayiift/rulemind-ai \
-  --token "$(gh api -X POST /repos/tanmayiift/rulemind-ai/actions/runners/registration-token --jq .token)" \
-  --name rulemind-local --labels self-hosted,macos,arm64,rulemind --unattended
-./run.sh
-```
-
-Then: Actions → *self-hosted tests* → Run workflow. Remove it later with
-`./config.sh remove --token <removal-token>`.
+**The security constraint that goes with it:** every self-hosted workflow is `workflow_dispatch`
+only, never `pull_request` or `push`. The runner executes as the maintainer's user, and there are
+bot-authored dependency PRs. That is the decision most likely to be casually reversed.
 
 ### 2. Zero production hours — the monitoring chain is now proven; real traffic is not
 
@@ -218,53 +219,101 @@ criticals silently go nowhere while warnings work, which is worse than neither w
 Still genuinely absent: **no on-call rotation, no severity ladder, no comms template.** The
 system knows what is worth waking someone for; the organisation around it does not yet say who.
 
-### ~~5. A known Next.js vulnerability is pinned~~ — CLOSED 2026-09-15
+### ~~5. Known Next.js vulnerabilities~~ — CLOSED 2026-09-17, at a different version than first recorded
 
-`next@14.2.34` carried a published advisory; the dev server said so on every start, and **none
-of the 20 Dependabot PRs upgraded Next**. Fixed to **14.2.35**, the patched release on the same
-line — 14.2.34 is deprecated on npm, 14.2.35 is not, so this was a patch bump rather than a
-major migration.
+First closed at **14.2.35**, a patch bump on the same line. That was superseded: two *critical*
+unauthenticated-RCE advisories (`GHSA-p293-qw3h-jr36`, `GHSA-2xp9-vwfh-vxw4`) applied to the whole
+14.x line and needed **>= 15.5.24**.
 
-Verified: `pnpm install` emits **zero** security warnings, and the dev server reports
-`▲ Next.js 14.2.35 / ✓ Ready in 1012ms`. Full regression green afterwards (4,642 tests).
+Now on **Next 15.5.25 / React 19.3 / vitest 5**. That upgrade was only possible because three
+Dependabot PRs turned out to contain the fix between them — react (#147) and react-dom (#152)
+fail individually and pass only together, since Dependabot splits them; and vitest 5 (#174)
+closed a third critical (`GHSA-5xrq-8626-4rwp`) that its own description never mentions.
 
-One trap worth recording: PR #145 predates the bump and carries `next: 14.2.34`, so resolving
-its merge conflict "theirs" would have **silently reintroduced the advisory**. Version conflicts
-in a security fix need reading, not auto-resolving.
+`pnpm audit`: **3 critical + 4 high -> No known vulnerabilities found.** The last four `high`
+needed two different fixes — `xlsx` has **no patched version on npm at all** (SheetJS stopped
+publishing there, so it is pinned to the tarball they do ship), while vite/postcss/nanoid/esbuild
+are transitive and needed *selective* pnpm overrides; a bare range override silently left vite on
+the vulnerable version while reporting only an "unmet peer" warning.
 
-### 6. Dependency posture — triaged 2026-09-15
+### ~~6. Dependency posture~~ — CLOSED 2026-09-18, queue is empty
 
-All 20 PRs verified locally, since no CI can run on them. **5 merged, 3 rejected, 2 blocked on a
-toolchain bump, 5 unverifiable without Actions, 5 needing a Dependabot rebase.** Full reasoning
-per PR in `docs/DEPENDABOT-TRIAGE.md`.
+**Zero open Dependabot PRs.** All 12 resolved: 2 merged, 7 applied to `main` and closed, 2
+rejected with evidence, 1 (#171) superseded by #175 which was itself resolved — 17 of its 18
+bumps applied, `fastapi` held.
 
-The three rejections each passed their own lane first, which is the point worth carrying:
-numpy 2.5.3 cannot install on Python 3.11 (and a harness bug of mine hid that), TypeScript 7
-type-checks clean but breaks `next dev` under Next 14, and Playwright 1.63's Chromium blocks the
-localhost WebSocket a security test depends on.
+Two things worth carrying out of that round:
 
-2 open issues remain, including #123: the AI generation endpoints have never been validated
-against a real provider key.
+* **`fastapi` is pinned deliberately**, and the reason is in `requirements.txt` rather than in a
+  doc. 0.141 crosses to starlette 1.x and hangs `tests/test_collab_ws` indefinitely — bisected in
+  both directions; uvicorn's own bump is fine. A major dependency jump wearing a minor-version
+  label.
+* **Two test defects made good dependencies look broken.** A PII-leak assertion that grepped the
+  raw webhook body for `b"410"` and false-failed when a tenant UUID contained `4100`; and a
+  temp-dir cleanup race that raised *after* the test passed. Had either red been trusted, a fine
+  dependency would have been closed as "breaks the suite".
 
-### 7. Still needs the account owner
+The Android toolchain was also upgraded (Gradle 9.7.1, Kotlin 2.2.20, AGP 9.4.0) because
+"blocked on a toolchain bump" stays true forever unless someone does the bump.
 
-- **Render services are live and may be billing.** Re-confirmed: 32.6 s cold, then 0.15 s warm.
+Remaining issues: **#123** (AI generation never validated against a real provider — the suite
+exists and is skipped without a key) and **#133** (see below).
+
+### 7. Untested surface — the Android SDK module
+
+`packages/sdk-android/rulemind-core` has 46 tests. `rulemind-android` — the module with the
+crypto, the network client and the persistence — has **no test source set at all**: 1,644 lines
+across NetworkClient (268), RuleMind (254), BundleParser (253), SecurePrefs (151),
+SqliteDecisionOutbox (137) and the rest, none of it exercised.
+
+That matters most right now because the Keystore-backed `SecurePrefs` that replaced the
+deprecated `EncryptedSharedPreferences` in September 2026 is verified **by compilation**. The
+migration it carries is not optional housekeeping: `CryptoManager` holds the device's RSA private
+key, whose public half the server already has, so silently regenerating it produces a device that
+cannot decrypt bundles addressed to it — a failure that surfaces later and somewhere else.
+
+Issue **#133** predates this and describes emulator jobs in `sdk-verify.yml`, a workflow that no
+longer exists; its premise is gone even though this gap is real.
+
+### 8. Still needs the account owner
+
+- **Render services are STILL LIVE and may still be billing.** Re-probed 2026-09-18: the API
+  answers `{"status":"ok","version":"4.0.0"}` in **0.3 s** warm, and the dashboard returns 200.
   `scripts/render_teardown.sh` does it in one command once `RENDER_API_KEY` is exported. No
-  credential exists on the build machine, and permanent deletion of a hosted database is not
+  credential exists on the build machine, and permanently deleting a hosted database is not
   something to automate on someone's behalf.
-- **Vercel GitHub App** — `gh api /user/installations` returns 403 with an *empty*
-  `X-Accepted-Oauth-Scopes`; no scope grants it. Browser + 2FA is the only path.
 
----
+  Worth recording: the first probe of that re-check returned `000`, and a hasty reading would
+  have reported the service dead. It is not. This document already records making exactly that
+  mistake once.
+
+- **AI generation has never run against a real provider (#123).** The suite
+  (`tests/test_ai_live.py`) and its runner (`scripts/run_ai_live.sh`) exist and skip without a
+  key, because the calls are billed. Six endpoints unvalidated.
+
+- **Alertmanager's last hop.** The config ships with a black-hole receiver on purpose: a
+  committed Slack webhook is a leaked credential, and a config that silently drops alerts while
+  looking configured is worse than none. One uncommented block plus a real destination.
+
+- **Branch protection is unavailable.** GitHub refuses it on a private repo without Pro:
+  *"Upgrade to GitHub Pro or make this repository public."* Nothing currently prevents a direct
+  push to `main`.
+
+- **Vercel GitHub App** — uninstalled by the owner on 2026-09-16. Deployments and Environments
+  have stayed at **0** across every push since, which is the evidence it held.
 
 ## What would change the verdict
 
-In order of value:
+In order of value. The first item on this list used to be "get CI running"; that is done, which
+is why everything below it is now the operational half.
 
-1. **Get CI running** — it converts "tested on one laptop" into "tested on every commit".
-2. **Deploy to a staging environment and leave it running** under synthetic traffic for a week,
-   with the alerts wired to something that actually notifies. Both of this round's findings
-   needed a running system to surface.
-3. **Deploy Alertmanager** and route the six rules somewhere real.
+1. **Deploy to a staging environment and leave it running** under synthetic traffic for a week,
+   with the alerts wired to something that actually notifies. Every finding in the Closed section
+   above needed a running system to surface — none was visible to a green suite.
+2. **Route the six alert rules somewhere real** (one uncommented block), so "we have alerts" and
+   "we get alerted" stop being different claims.
+3. **Recalibrate the thresholds from that traffic.** They are currently derived from measurements
+   on one laptop, which is honest but is still a guess about someone else's hardware.
 4. **Run one real integration** end to end — a genuine bureau connector, not a sample payload.
-5. **Recalibrate thresholds** from that traffic.
+5. **Validate the AI endpoints against a real key (#123)** — the suite is written and waiting.
+6. **Give `rulemind-android` tests.** 1,644 lines with none, including freshly rewritten crypto.
