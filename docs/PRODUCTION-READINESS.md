@@ -200,7 +200,7 @@ origin nobody can reconstruct gets "tuned" during the first incident by whoever 
 **Still to do:** re-derive from real production traffic after the first month. The table is a
 laptop, and a threshold calibrated against someone else's hardware is still a guess.
 
-### 4. Paging — delivery works; the last hop is one uncommented line
+### 4. Paging — wired end to end; only the destination URL is missing
 
 **Alertmanager is deployed and receiving** (compose `observability` profile), with two inhibit
 rules so one outage pages once rather than five times. Proven under load: an alert fired and
@@ -210,11 +210,26 @@ arrived carrying its severity, `source` label and runbook link.
 copy to drift, which matters because a stale duplicate fails as *"the alert that would have
 caught it was the old one"*.
 
-**What is still open is deliberate and is one edit:** the default receiver is an explicit black
-hole, because a committed Slack webhook is a leaked credential. Uncomment one receiver in
-`observability/alertmanager.yml`, add the real credential, and change `receiver: "null"` in
-**both** places — the top-level route *and* the critical sub-route. Missing the second means
-criticals silently go nowhere while warnings work, which is worse than neither working.
+**The last hop is now closed** (2026-09-18). It used to route to an explicit black hole, with the
+instruction "uncomment a receiver and paste your Slack webhook in" — which asks you to put a live
+credential in a committed file, so the only safe way to follow it was not to.
+
+A real `paging` receiver is enabled by default and reads its destination from
+`observability/secrets/paging_url`, gitignored, via Alertmanager's `url_file`. Both halves were
+verified rather than reasoned about:
+
+- with a URL in place, a hand-fired critical alert **arrived** at the destination carrying its
+  alertname, severity, summary and runbook link;
+- with the file **absent**, Alertmanager still started (`ready=200`) and the first alert failed
+  loudly — `read url_file: ... no such file or directory`. `url_file` is read at notify time, so
+  a fresh clone is not broken by a missing secret and the failure surfaces when it matters.
+
+It had to be a file, not an environment variable: Alertmanager does not expand env vars in its
+config and rejects `${SOMETHING}` as `unsupported scheme ""`.
+
+**What remains is one line of someone's credential** — a Slack/PagerDuty/Opsgenie URL in that
+file. Nothing else to edit, and the "change it in BOTH places" trap is gone: the top-level route
+and the critical sub-route now name the same receiver.
 
 Still genuinely absent: **no on-call rotation, no severity ladder, no comms template.** The
 system knows what is worth waking someone for; the organisation around it does not yet say who.
@@ -310,8 +325,9 @@ is why everything below it is now the operational half.
 1. **Deploy to a staging environment and leave it running** under synthetic traffic for a week,
    with the alerts wired to something that actually notifies. Every finding in the Closed section
    above needed a running system to surface — none was visible to a green suite.
-2. **Route the six alert rules somewhere real** (one uncommented block), so "we have alerts" and
-   "we get alerted" stop being different claims.
+2. **Put a webhook URL in `observability/secrets/paging_url`.** The chain above it is wired and
+   proven; this is the only step left before "we have alerts" and "we get alerted" are the same
+   claim. It is one line and it never enters git.
 3. **Recalibrate the thresholds from that traffic.** They are currently derived from measurements
    on one laptop, which is honest but is still a guess about someone else's hardware.
 4. **Run one real integration** end to end — a genuine bureau connector, not a sample payload.
