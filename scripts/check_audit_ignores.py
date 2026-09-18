@@ -31,7 +31,25 @@ def reported_ids(requirements: str) -> set:
         [sys.executable, "-m", "pip_audit", "--requirement", requirements, "--format", "json"],
         capture_output=True, text=True, check=False)
     if not proc.stdout.strip():
-        print("pip-audit produced no output:\n{0}".format(proc.stderr.strip()), file=sys.stderr)
+        stderr = proc.stderr.strip()
+        # A NETWORK failure is not an audit failure, and conflating them is how a gate teaches
+        # people to ignore it. pip-audit builds a temp venv and upgrades pip in it, then queries
+        # the advisory service -- all of which need the network. A DNS blip on the runner
+        # produced "Failed to upgrade `pip`" and failed this lane on a commit that was fine.
+        #
+        # Exit 3, distinct from the 2 used for a genuine ignore-list drift, so a caller can tell
+        # "could not check" from "checked, and the list is wrong".
+        offline = any(marker in stderr for marker in (
+            "Failed to upgrade `pip`", "Temporary failure in name resolution",
+            "Failed host lookup", "Network is unreachable", "Read timed out",
+            "Max retries exceeded", "ConnectionError",
+        ))
+        if offline:
+            print("pip-audit could not reach the network -- SKIPPING the ignore-list check.\n"
+                  "This is not an audit result; nothing was verified.\n{0}".format(stderr),
+                  file=sys.stderr)
+            raise SystemExit(3)
+        print("pip-audit produced no output:\n{0}".format(stderr), file=sys.stderr)
         raise SystemExit(2)
     ids = set()
     for dep in json.loads(proc.stdout).get("dependencies", []):

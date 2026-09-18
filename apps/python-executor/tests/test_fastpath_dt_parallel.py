@@ -148,9 +148,15 @@ class ParallelLoopTests(unittest.TestCase):
         self.assertEqual([it["index"] for it in par["iterations"]], list(range(len(applicants))))
 
     def test_parallel_runs_concurrently(self):
-        # A sub-step that awaits ~40ms each: N items across a wide pool must finish in
-        # far less than N*40ms if they truly overlap.
-        async def _timed():
+        """10 items x ~40ms overlap, so a wide pool must beat a pool of one by a wide margin.
+
+        MEASURED AGAINST A SEQUENTIAL RUN, not a fixed second count. This asserted
+        `elapsed < 0.25` against work made of `asyncio.sleep(0.04)`, and a sleep stretches under
+        load -- CI recorded 0.311s for a correctly-concurrent run while the same commit passed on
+        an idle machine. Both runs happen here moments apart, so load scales them together and
+        cancels, which a fixed ceiling cannot do.
+        """
+        async def _timed(concurrency):
             async def sleep_step(step, ctx, *a, **k):
                 await asyncio.sleep(0.04)
                 ctx.outcome = "approve"
@@ -158,13 +164,25 @@ class ParallelLoopTests(unittest.TestCase):
             self.executor._execute_step_body = sleep_step  # type: ignore[assignment]
             items = [{"i": i} for i in range(10)]
             loop = {"type": "loop", "config": {"over": "variables.items", "as": "it", "mode": "parallel",
-                    "concurrency": 10, "steps": [{"type": "action", "id": "s"}]}}
+                    "concurrency": concurrency, "steps": [{"type": "action", "id": "s"}]}}
             import time as _t
             start = _t.perf_counter()
             await self.executor.debug_loop(loop, {}, self.tenant, variable_values={"items": items})
             return _t.perf_counter() - start
-        elapsed = asyncio.run(_timed())
-        self.assertLess(elapsed, 0.25)  # 10 * 0.04 = 0.4s sequential; concurrent is well under
+
+        # concurrency=1 is the same code path with the pool closed down to one, so the only
+        # difference between the two numbers is whether the work actually overlapped.
+        sequential = asyncio.run(_timed(1))
+        parallel = asyncio.run(_timed(10))
+
+        # The control: if the sleeps ever stopped happening, both numbers would be ~0 and the
+        # ratio below would pass while measuring nothing.
+        self.assertGreater(sequential, 0.3,
+                           "10 x 40ms sequential should be ~0.4s; got {0:.3f}s, so the fixture "
+                           "is not doing the work this test compares".format(sequential))
+        self.assertLess(parallel, sequential * 0.5,
+                        "parallel did not overlap: {0:.3f}s vs {1:.3f}s sequential".format(
+                            parallel, sequential))
 
 
 if __name__ == "__main__":

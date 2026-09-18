@@ -171,6 +171,34 @@ PYDROP
   fi
 }
 
+# Resolve Flutter packages without letting a network blip read as a broken test suite.
+#
+# `flutter test` resolves implicitly, so a DNS failure surfaces as "FAIL - 0 tests" -- which in
+# the report is indistinguishable from the Flutter suite actually being broken. A CI run failed
+# exactly that way twice, with "Got socket error trying to find package sqflite" and then
+# "Failed host lookup: 'pub.dev'".
+#
+# `--offline` first, but note it is NOT actually offline: it still fetches the advisory feed, and
+# that is the call that failed. So the last resort is to check whether packages are ALREADY
+# resolved and run the tests against those. With no package_config.json there is genuinely
+# nothing to run, and that is a real failure.
+#
+# Deliberately no retry around `flutter test` itself -- re-running a failing TEST until it passes
+# is how a real failure gets buried. This retries dependency RESOLUTION, which is network.
+flutter_pub_get_resilient() {
+  flutter pub get --offline >/dev/null 2>&1 && return 0
+  flutter pub get >/dev/null 2>&1 && return 0
+  sleep 5
+  flutter pub get >/dev/null 2>&1 && return 0
+  if [ -f .dart_tool/package_config.json ]; then
+    printf 'pub get failed, but packages are already resolved - running the tests anyway\n' >&2
+    return 0
+  fi
+  printf 'pub get failed and no packages are resolved - cannot run\n' >&2
+  return 1
+}
+export -f flutter_pub_get_resilient
+
 record() {
   local status="$3"
   if [ "$STRICT_LANES" = "1" ] && [ "$status" = "skipped" ]; then
@@ -393,11 +421,9 @@ has rust   && run_lane rust-decide "Rust — decide-service" bash -c \
 # case on a warm machine) it cannot fail for network reasons at all.
 has flutter && command -v flutter >/dev/null 2>&1 \
   && run_lane flutter "Flutter SDK" bash -c \
-    "cd '$ROOT/packages/sdk-flutter' \
-     && { flutter pub get --offline >/dev/null 2>&1 \
-          || flutter pub get >/dev/null 2>&1 \
-          || { sleep 5; flutter pub get; }; } \
+    "cd '$ROOT/packages/sdk-flutter' && flutter_pub_get_resilient \
      && flutter test --machine > '$OUT/flutter-machine.json' 2> '$OUT/flutter-stderr.log'; rc=\$?; tail -40 '$OUT/flutter-stderr.log' >&2; exit \$rc"
+
 # `cleanTest test`, not plain `test`. Gradle's up-to-date check skips a test task whose inputs
 # have not changed and still reports BUILD SUCCESSFUL -- so the lane recorded "pass" having
 # executed nothing at all, which is the one thing a test report must never do. cleanTest scopes
@@ -418,9 +444,19 @@ if has contracts; then
   # changing shape without anyone noticing is exactly what it catches, and nothing else does.
   for gate in "docs/parity/check_parity.py" "scripts/verify_chart.py" "scripts/check_audit_ignores.py" \
               "apps/python-executor/scripts/openapi_gate.py"; do
-    if env -u DATABASE_URL "$VENV" "$ROOT/$gate" > "$OUT/$(basename "$gate").log" 2>&1; then
+    env -u DATABASE_URL "$VENV" "$ROOT/$gate" > "$OUT/$(basename "$gate").log" 2>&1
+    gate_rc=$?
+    if [ "$gate_rc" -eq 0 ]; then
       record "$(basename "$gate" .py)" "$(basename "$gate")" "pass" "—" "—"
       printf '  pass — %s\n' "$(basename "$gate")"
+    elif [ "$gate_rc" -eq 3 ]; then
+      # Exit 3 means the gate could not RUN -- check_audit_ignores.py returns it when pip-audit
+      # cannot reach the network. That is not an audit result, so recording it as a pass would be
+      # a lie and recording it as a failure blames the code for a DNS blip. "skipped" is the
+      # honest answer, and under RULEMIND_REQUIRE_ALL_LANES=1 it still fails the run, because in
+      # CI a gate that could not run is a gate that did not run.
+      record "$(basename "$gate" .py)" "$(basename "$gate")" "skipped" "—" "—"
+      printf '  skipped — %s could not run (see %s)\n' "$(basename "$gate")" "$OUT/$(basename "$gate").log"
     else
       record "$(basename "$gate" .py)" "$(basename "$gate")" "FAIL" "—" "—"
       printf '  FAIL — %s\n' "$(basename "$gate")"
