@@ -60,10 +60,14 @@ has both an owning phase and a named E2E flow, and that every row cites evidence
 cannot quietly become unowned. Precedent for a machine-readable expectations file already exists
 at `qa/e2e-full/journey_expectations.json`.
 
-**As of 2026-09-04 that check actually runs.** It is the `contracts` job in
-`.github/workflows/sdk-verify.yml` — no `needs`, no path filter, a few seconds. Until then it was
-a script in the repo that no workflow invoked, which is worth stating plainly: for the first week
-of its life the guard against rot was itself the thing rotting. The 2026-09-04 re-audit found
+**As of 2026-09-04 that check actually runs.** Until then it was a script in the repo that no
+workflow invoked, which is worth stating plainly: for the first week of its life the guard against
+rot was itself the thing rotting.
+
+It first ran as the `contracts` job in `sdk-verify.yml`. **That workflow was retired on
+2026-09-16**; the check is now one of the contract gates in `scripts/run_all_tests.sh`, which is
+both what a developer runs locally and what `self-hosted-tests.yml` runs in CI — so it can no
+longer be green in one place and unrun in the other. The 2026-09-04 re-audit found
 drifted line numbers on most rows and three wrong states, all of which accumulated in that window.
 
 What the check still cannot do is verify a citation. It reads structure, not `app/executor.py`.

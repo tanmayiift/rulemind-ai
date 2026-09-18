@@ -66,8 +66,11 @@ backend-only one. Tag this on the way in, not after estimating.
 **phase** — the wave that owns it, from `ROADMAP.md`. A machine check asserts every
 `ABSENT`/`PARTIAL` row has both a phase and a named E2E flow in `parity.json`, so an
 unowned gap fails rather than drifting. That check is `docs/parity/check_parity.py`, and as of
-2026-09-04 it actually runs — the `contracts` job in `.github/workflows/sdk-verify.yml`. Before
-that it was a script nothing invoked, which is its own small parable about this table.
+2026-09-04 it actually runs. Before that it was a script nothing invoked, which is its own small
+parable about this table.
+
+It ran first in `sdk-verify.yml`; since that workflow was retired on 2026-09-16 it is a contract
+gate in `scripts/run_all_tests.sh` — the same script locally and in CI.
 
 ## What the 2026-09-04 re-audit changed
 

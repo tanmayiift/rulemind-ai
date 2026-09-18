@@ -1,5 +1,5 @@
 {
-  "$comment": "Machine-readable twin of PARITY-MATRIX.md. A CI check (docs/parity/check_parity.py, run by the `contracts` job in .github/workflows/sdk-verify.yml) asserts every ABSENT/PARTIAL row has an owning phase and a named E2E flow and that every row cites evidence, so the roadmap cannot rot silently.",
+  "$comment": "Machine-readable twin of PARITY-MATRIX.md. A CI check (docs/parity/check_parity.py, run as a contract gate by scripts/run_all_tests.sh -- locally and in .github/workflows/self-hosted-tests.yml; it ran in sdk-verify.yml until that workflow was retired on 2026-09-16) asserts every ABSENT/PARTIAL row has an owning phase and a named E2E flow and that every row cites evidence, so the roadmap cannot rot silently.",
   "generated": "2026-08-28",
   "reaudited": "2026-09-04",
   "$reauditNote": "Every row re-read against main. Line numbers in `evidence` had drifted across most rows and are refreshed here. Three states changed: P21 PARTIAL->PRESENT (the evaluation budget and its 504 shipped), P10 PRESENT->PARTIAL and P17 PRESENT->PARTIAL (both were scored on implementing code alone; neither has a test covering the thing the row actually claims). P22's palette gap is closed and its clause deleted.",
