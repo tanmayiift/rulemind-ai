@@ -1112,6 +1112,21 @@ a red X that only means "out of minutes".
 rather than on the module that leaked it. `tests/_storage_global.py` now holds one helper, called
 via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak now.**
 
+## R4. Truth-up the docs, and give the Android module tests — 2026-09-18
+
+- [ ] **R4.1** Rewrite `docs/PRODUCTION-READINESS.md`. Its headline open item is "what remains is registering the runner" — done days ago, with many green runs since. Its Next.js entry is closed at 14.2.35 (now 15.5.25) and its dependency section predates the whole Dependabot round.
+- [ ] **R4.2** Fix the stale references to retired workflows (`sdk-verify.yml`, `ci.yml`, `test-report.yml`) across the six files that still name them.
+- [ ] **R4.3** Give `rulemind-android` a test source set. It has **1,644 lines and zero tests** — NetworkClient (268), RuleMind (254), BundleParser (253) — and the `SecurePrefs` crypto rewritten this week is verified by compilation alone.
+- [ ] **R4.4** Reframe or close issue #133: it describes emulator jobs in `sdk-verify.yml`, a workflow that no longer exists, so its premise is gone even though the underlying gap (no Android tests) is real.
+- [ ] **R4.5** Full gate green, push, CI green.
+
+### Not in scope, and why
+
+- **fastapi/starlette 1.x** — the owner asked for this later.
+- **AI live validation (#123), Alertmanager's last hop, branch protection** — each needs a credential or a paid plan.
+- **Render** — re-probed 2026-09-18: the API answers **200 in 0.3s** and the dashboard 200. STILL LIVE, still possibly billing. Worth recording that the first probe returned `000` and a hasty read would have reported it dead — which is the same mistake this file already records once.
+
+
 ## R3. Round 3 execution — 2026-09-16
 
 - [x] **R3.1** Port `sdk-verify.yml` to the self-hosted runner, `workflow_dispatch` only.
