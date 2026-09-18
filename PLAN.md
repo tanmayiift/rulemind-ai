@@ -1112,6 +1112,14 @@ a red X that only means "out of minutes".
 rather than on the module that leaked it. `tests/_storage_global.py` now holds one helper, called
 via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak now.**
 
+## R5. Paging, Render, and the rest of the Android coverage — 2026-09-18
+
+- [x] **R5.1** Alertmanager's last hop closed. A real `paging` receiver reads its destination from a **gitignored** `observability/secrets/paging_url` via `url_file`, so turning paging on never means committing a credential — which is why it had stayed off. Verified both ways: an alert arrived carrying its runbook link, and with the file absent Alertmanager still started and failed *loudly* at notify time.
+- [x] **R5.2** `BundleParser` covered — 11 tests, mostly on `bound()`, which encodes a THREE-way distinction (absent / explicit null / non-numeric) mirroring the Python core. A parsing default that differs from the server's is a divergence the parity corpora cannot catch, because they compare evaluation and this runs before it. Android module 26 → **37**.
+- [ ] **R5.3** Full gate green, push, CI green.
+- [ ] **R5.4 — BLOCKED, needs the owner.** Delete the Render services. `RENDER_API_KEY` exists nowhere on this machine (no env var, no `~/.render`, no CLI, not in `.env`), and Render has no unauthenticated delete. `scripts/render_teardown.sh` does it in one command once the key is exported; it lists every resource first and requires typing `DELETE`.
+
+
 ## R4. Truth-up the docs, and give the Android module tests — 2026-09-18
 
 - [x] **R4.1** Rewrote `docs/PRODUCTION-READINESS.md`. Its headline open item is "what remains is registering the runner" — done days ago, with many green runs since. Its Next.js entry is closed at 14.2.35 (now 15.5.25) and its dependency section predates the whole Dependabot round.
