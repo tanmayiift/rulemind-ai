@@ -391,12 +391,23 @@ export function InlineTextarea(props: React.TextareaHTMLAttributes<HTMLTextAreaE
   );
 }
 
+/**
+ * The PAGE heading. Every v3 page renders exactly one of these (checked across all 11), so it is
+ * the document's `h1`.
+ *
+ * It rendered an `h2` and nothing rendered an `h1`, which left every page with no level-one
+ * heading and put the page title at the same level as the sections inside it -- so a page of
+ * twelve settings grouped under four sub-headings had a completely flat outline. Sub-sections
+ * use `h2` (see SettingGroup in SettingsPage), which now sits correctly beneath this.
+ *
+ * The visual size is unchanged: it is set by --rm-fs-title, not by the tag.
+ */
 export function SectionHeader(props: { title: string; subtitle?: string; actions?: React.ReactNode }) {
   const theme = useTheme();
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
       <div>
-        <h2 style={{ margin: 0, color: theme.text, fontSize: "var(--rm-fs-title)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{props.title}</h2>
+        <h1 style={{ margin: 0, color: theme.text, fontSize: "var(--rm-fs-title)", fontWeight: "var(--rm-fw-bold)" as unknown as number }}>{props.title}</h1>
         {props.subtitle ? <p style={{ margin: "6px 0 0", color: theme.muted, fontSize: "var(--rm-fs-body)" }}>{props.subtitle}</p> : null}
       </div>
       {props.actions}

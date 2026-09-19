@@ -195,7 +195,16 @@ export default function AICopilotPage() {
 
       {error ? <div style={{ padding: 12, borderRadius: 10, background: "var(--rm-danger-bg)", color: "var(--rm-danger)", fontSize: 13 }}>{error}</div> : null}
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 380px) minmax(0,1fr)", gap: 18, alignItems: "start" }}>
+      {/* STACKS INSTEAD OF CRUSHING. `minmax(320px, 380px) minmax(0,1fr)` guarantees the left
+        * column 320px whatever happens, so once the content area drops below about 700px the
+        * right column is whatever is left -- around 200px, which rendered the prompt box clipped
+        * mid-sentence and pushed "Generate draft" against the edge. `minmax(0,1fr)` promises the
+        * track can shrink; it does not promise the result is usable.
+        *
+        * auto-fit + a 340px floor puts the two side by side when there is room for both and
+        * stacks them when there is not, with no breakpoint to keep in sync with the sidebar's
+        * own collapse width. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 18, alignItems: "start" }}>
         {/* provider config */}
         <Card>
           <SectionTitle right={<KeyRound size={16} style={{ color: "var(--rm-dim)" }} />}>Provider key</SectionTitle>

@@ -80,6 +80,50 @@ import {
   EmptyState,
 } from "../kit";
 
+/* EVERY FIELD GETS A LABEL, AND EVERY GROUP GETS A HEADING.
+ *
+ * The four cards below (API, Engine, Sources, Audit) used to render bare inputs whose only
+ * identification was a `placeholder`. A placeholder is not a label: it disappears the moment
+ * you type, so a filled-in form became eight unlabelled boxes and you could not tell which one
+ * held the timeout and which held the memory limit without clearing it. Screen readers saw the
+ * same thing -- textboxes with no accessible name.
+ *
+ * The group names ("API", "Engine", …) were bare <div>s styled to look like headings, so the
+ * document outline was flat: one <h1> and then nothing, for a page of twelve settings.
+ *
+ * The sections further down this same file (Data protection, SLO) already did it properly, with
+ * <label> wrapping a <span> caption. That is the pattern; these two helpers just make it the
+ * cheap option so the next section added here does not drift back.
+ */
+function SettingField(props: { label: string; hint?: string; children: React.ReactNode; muted: string }) {
+  return (
+    <label style={{ display: "grid", gap: 4 }}>
+      <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: props.muted, fontWeight: 700 }}>
+        {props.label}
+      </span>
+      {props.children}
+      {props.hint ? <span style={{ fontSize: 11, color: props.muted, lineHeight: 1.45 }}>{props.hint}</span> : null}
+    </label>
+  );
+}
+
+function SettingGroup(props: { title: string; description?: string; children: React.ReactNode; theme: ThemeTokens }) {
+  const { theme } = props;
+  return (
+    <section style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 16, display: "grid", gap: 12, alignContent: "start" }}>
+      <div style={{ display: "grid", gap: 3 }}>
+        <h2 style={{ margin: 0, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>
+          {props.title}
+        </h2>
+        {props.description ? (
+          <p style={{ margin: 0, fontSize: 11.5, color: theme.muted, lineHeight: 1.5 }}>{props.description}</p>
+        ) : null}
+      </div>
+      {props.children}
+    </section>
+  );
+}
+
 export function SettingsPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
   const { apiBaseUrl, apiKey, themeMode, setThemeMode, isMobile } = useRuleMindStore();
@@ -178,47 +222,74 @@ export function SettingsPage(props: { data: BootstrapPayload; refresh: () => voi
   return (
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
       <SectionHeader title={PAGE_META.settings.title} subtitle={PAGE_META.settings.subtitle} actions={<Button variant="primary" onClick={saveSettings} disabled={busy} testId="settings-save">Save settings</Button>} />
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 14 }}>
-        <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>API</div>
-          <InlineInput value={String(settings.api_base_url ?? "")} onChange={(event) => setSettings((current) => ({ ...current, api_base_url: event.target.value }))} placeholder="Base URL" />
-          <InlineSelect value={String(settings.auth_config?.method ?? "none")} onChange={(event) => setSettings((current) => ({ ...current, auth_config: { ...current.auth_config, method: event.target.value } }))}>
-            <option value="none">No auth</option>
-            <option value="apikey">API key</option>
-            <option value="jwt">JWT</option>
-          </InlineSelect>
-          <InlineInput value={String(settings.auth_config?.decision_endpoint ?? "/api/v1/decide")} onChange={(event) => setSettings((current) => ({ ...current, auth_config: { ...current.auth_config, decision_endpoint: event.target.value } }))} placeholder="Decision endpoint" />
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 14, alignItems: "start" }}>
+        <SettingGroup theme={theme} title="API" description="Where this workspace sends decisions, and how it authenticates.">
+          <SettingField muted={theme.muted} label="Base URL" hint="The API this dashboard calls. Changing it here does not move the backend.">
+            <InlineInput value={String(settings.api_base_url ?? "")} onChange={(event) => setSettings((current) => ({ ...current, api_base_url: event.target.value }))} placeholder="https://api.example.com" />
+          </SettingField>
+          <SettingField muted={theme.muted} label="Authentication" hint="AUTH_MODE unset is not the same as none — leaving it unset leaves auth ON.">
+            <InlineSelect value={String(settings.auth_config?.method ?? "none")} onChange={(event) => setSettings((current) => ({ ...current, auth_config: { ...current.auth_config, method: event.target.value } }))}>
+              <option value="none">No auth</option>
+              <option value="apikey">API key</option>
+              <option value="jwt">JWT</option>
+            </InlineSelect>
+          </SettingField>
+          <SettingField muted={theme.muted} label="Decision endpoint">
+            <InlineInput value={String(settings.auth_config?.decision_endpoint ?? "/api/v1/decide")} onChange={(event) => setSettings((current) => ({ ...current, auth_config: { ...current.auth_config, decision_endpoint: event.target.value } }))} placeholder="/api/v1/decide" />
+          </SettingField>
+        </SettingGroup>
 
-        <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Engine</div>
-          <InlineInput value={String(settings.engine_config?.python_version ?? "3.9")} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, python_version: event.target.value } }))} placeholder="Python version" />
-          <InlineInput type="number" value={String(settings.engine_config?.timeout_ms ?? 2000)} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, timeout_ms: Number(event.target.value || 0) } }))} placeholder="Timeout ms" />
-          <InlineInput type="number" value={String(settings.engine_config?.memory_mb ?? 128)} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, memory_mb: Number(event.target.value || 0) } }))} placeholder="Memory MB" />
-        </div>
+        <SettingGroup theme={theme} title="Engine" description="Limits applied to every Python variable this workspace evaluates.">
+          <SettingField muted={theme.muted} label="Python version">
+            <InlineInput value={String(settings.engine_config?.python_version ?? "3.9")} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, python_version: event.target.value } }))} placeholder="3.11" />
+          </SettingField>
+          <SettingField muted={theme.muted} label="Timeout (ms)" hint="Per VARIABLE, not per decision. A policy reading 50 variables can take far longer than this.">
+            <InlineInput type="number" value={String(settings.engine_config?.timeout_ms ?? 2000)} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, timeout_ms: Number(event.target.value || 0) } }))} placeholder="2000" />
+          </SettingField>
+          <SettingField muted={theme.muted} label="Memory (MB)" hint="Applied per sandbox worker at spawn, uniformly across tenants.">
+            <InlineInput type="number" value={String(settings.engine_config?.memory_mb ?? 128)} onChange={(event) => setSettings((current) => ({ ...current, engine_config: { ...current.engine_config, memory_mb: Number(event.target.value || 0) } }))} placeholder="128" />
+          </SettingField>
+        </SettingGroup>
 
-        <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Sources</div>
-          <InlineInput value={String(settings.source_defaults?.default_format ?? "json")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, default_format: event.target.value } }))} placeholder="Default format" />
-          <InlineSelect value={String(settings.source_defaults?.batch_support ?? "enabled")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, batch_support: event.target.value } }))}>
-            <option value="enabled">Batch enabled</option>
-            <option value="disabled">Batch disabled</option>
-          </InlineSelect>
-          <InlineInput value={String(settings.source_defaults?.webhook_url ?? "")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, webhook_url: event.target.value } }))} placeholder="Webhook URL" />
-        </div>
+        <SettingGroup theme={theme} title="Sources" description="Defaults applied to new data connectors.">
+          <SettingField muted={theme.muted} label="Default format">
+            <InlineInput value={String(settings.source_defaults?.default_format ?? "json")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, default_format: event.target.value } }))} placeholder="json" />
+          </SettingField>
+          <SettingField muted={theme.muted} label="Batch support">
+            <InlineSelect value={String(settings.source_defaults?.batch_support ?? "enabled")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, batch_support: event.target.value } }))}>
+              <option value="enabled">Batch enabled</option>
+              <option value="disabled">Batch disabled</option>
+            </InlineSelect>
+          </SettingField>
+          <SettingField muted={theme.muted} label="Webhook URL" hint="Where connector callbacks are delivered. Leave blank if unused.">
+            <InlineInput value={String(settings.source_defaults?.webhook_url ?? "")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, webhook_url: event.target.value } }))} placeholder="https://example.com/hooks/rulemind" />
+          </SettingField>
+        </SettingGroup>
 
-        <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>Audit</div>
-          <InlineSelect value={String(settings.source_defaults?.logging ?? "enabled")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, logging: event.target.value } }))}>
-            <option value="enabled">Logging enabled</option>
-            <option value="disabled">Logging disabled</option>
-          </InlineSelect>
-          <InlineInput type="number" value={String(settings.audit_retention_days ?? 90)} onChange={(event) => setSettings((current) => ({ ...current, audit_retention_days: Number(event.target.value || 0) }))} placeholder="Retention days" />
-          <InlineSelect value={settings.theme_mode ?? "light"} onChange={(event) => setSettings((current) => ({ ...current, theme_mode: event.target.value as "light" | "dark" }))}>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </InlineSelect>
-        </div>
+        <SettingGroup theme={theme} title="Audit" description="What is recorded about each decision, and for how long.">
+          <SettingField muted={theme.muted} label="Decision logging">
+            <InlineSelect value={String(settings.source_defaults?.logging ?? "enabled")} onChange={(event) => setSettings((current) => ({ ...current, source_defaults: { ...current.source_defaults, logging: event.target.value } }))}>
+              <option value="enabled">Logging enabled</option>
+              <option value="disabled">Logging disabled</option>
+            </InlineSelect>
+          </SettingField>
+          <SettingField muted={theme.muted} label="Audit retention (days)" hint="Separate from the decision retention window under Data protection below.">
+            <InlineInput type="number" value={String(settings.audit_retention_days ?? 90)} onChange={(event) => setSettings((current) => ({ ...current, audit_retention_days: Number(event.target.value || 0) }))} placeholder="90" />
+          </SettingField>
+        </SettingGroup>
+
+        {/* THE THEME CONTROL WAS INSIDE "AUDIT". It is not an audit setting, it is not even a
+          * workspace setting in the same sense -- it is how this dashboard looks. Sitting third
+          * in a card about decision logging and retention, unlabelled, it read as a third audit
+          * option. Its own group, named for what it is. */}
+        <SettingGroup theme={theme} title="Appearance" description="How this dashboard renders. Stored with the workspace, so it follows you between browsers.">
+          <SettingField muted={theme.muted} label="Theme">
+            <InlineSelect value={settings.theme_mode ?? "light"} onChange={(event) => setSettings((current) => ({ ...current, theme_mode: event.target.value as "light" | "dark" }))}>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </InlineSelect>
+          </SettingField>
+        </SettingGroup>
       </div>
 
       {dp ? (
@@ -263,7 +334,10 @@ export function SettingsPage(props: { data: BootstrapPayload; refresh: () => voi
 
           <div style={{ display: "grid", gap: 6 }}>
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: theme.muted, fontWeight: 700 }}>Redacted PII fields (comma-separated)</div>
-            <InlineInput value={dpKeys} onChange={(event) => setDpKeys(event.target.value)} placeholder="account_no, member_id, tax_id" testId="data-protection-pii" />
+            {/* The caption above is a sibling <div>, so it labels this field visually and not
+              * programmatically -- a screen reader announced an unnamed textbox. aria-label is
+              * the minimal association that does not restructure the block around it. */}
+            <InlineInput aria-label="Redacted PII fields, comma-separated" value={dpKeys} onChange={(event) => setDpKeys(event.target.value)} placeholder="account_no, member_id, tax_id" testId="data-protection-pii" />
             <div style={{ fontSize: 11.5, color: theme.muted }}>
               These payload keys are masked to <code style={{ fontFamily: "monospace" }}>***</code> in stored decision logs, on top of built-ins ({(dp.builtin_redact_keys ?? []).join(", ") || "none"}){dp.env_redact_keys && dp.env_redact_keys.length ? ` and server keys (${dp.env_redact_keys.join(", ")})` : ""}.
             </div>

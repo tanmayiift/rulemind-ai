@@ -456,11 +456,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Menu size={20} />
               </button>
             )}
-            <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
-              <div style={{ fontSize: "var(--rm-fs-title)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, letterSpacing: -0.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{page.title}</div>
-              {!isMobile && (
-                <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{page.subtitle} · API {apiBaseUrl}</div>
-              )}
+            {/* ONE HEADING PER PAGE, AND IT IS NOT THIS ONE.
+              *
+              * This slot used to render `page.title` AND `page.subtitle · API <url>`, both
+              * `nowrap` with an ellipsis, in a flex child competing with a fixed-width control
+              * group. Every page body ALREADY renders the same title as its <h1> and the same
+              * subtitle beneath it -- so the header was a second, truncated copy of the page's
+              * own heading. On /ai it rendered as "AI C…" over "Bring y…", which is not a
+              * hierarchy, it is the same information twice with the second copy broken.
+              *
+              * The title stays: it is the only thing that tells you where you are once the page
+              * is scrolled past its own <h1>. The subtitle goes -- it is prose, it belongs with
+              * the heading it describes, and it was the part that truncated. The API URL moves
+              * to the control group as a chip, next to the environment switcher, because it is
+              * environment context rather than page copy -- and because it being wrong is a real
+              * failure mode worth seeing at a glance (a stale persisted :8100 pointed the whole
+              * dashboard at nothing while every page looked fine).
+              */}
+            {/* A <div>, not an <h1>. The page body owns the document heading; this is persistent
+              * chrome that repeats it. Marking both as <h1> gave every page two level-one
+              * headings, which is a worse outline than the one <h1> it replaced. */}
+            <div style={{ display: "grid", minWidth: 0 }}>
+              <div style={{ margin: 0, fontSize: "var(--rm-fs-title)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text, letterSpacing: -0.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{page.title}</div>
             </div>
           </div>
 
@@ -480,6 +497,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span style={{ color: theme.muted }}>Search</span>
                 <kbd style={{ fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: theme.dim, background: theme.card, border: "1px solid " + theme.border, borderRadius: 5, padding: "1px 5px" }}>⌘K</kbd>
               </button>
+            )}
+            {/* Which API this dashboard is actually talking to. Host:port only, with the full URL
+              * on hover -- enough to notice it is wrong, small enough not to compete with the
+              * environment switcher it sits beside. */}
+            {!isMobile && (
+              <span
+                data-testid="topbar-api-host"
+                title={apiBaseUrl}
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 10,
+                  color: theme.dim,
+                  background: theme.card,
+                  border: "1px solid " + theme.border,
+                  borderRadius: 6,
+                  padding: "3px 7px",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {(() => { try { const u = new URL(apiBaseUrl); return u.host; } catch { return apiBaseUrl; } })()}
+              </span>
             )}
             <div style={{ display: "flex", gap: 4 }}>
               {(["dev", "uat", "prod"] as const).map((item) => (
