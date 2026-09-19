@@ -16,6 +16,18 @@
 # .next so a Playwright run cannot leave the dev server's client bundle pointing at the
 # throwaway e2e API.
 .next-e2e
+
+# next-env.d.ts is GENERATED, and in this repo it churns. Next rewrites its `<reference path>` to
+# whichever distDir the last `next dev` used, so it flips between .next and .next-e2e every time
+# anyone runs the e2e suite -- and the flipped version is wrong for a fresh clone, where
+# .next-e2e does not exist yet.
+#
+# Next's docs say to commit it. That advice assumes one build directory; this repo deliberately
+# has two (see NEXT_DIST_DIR in playwright.config.ts), which is what makes the file
+# environment-dependent rather than a constant. The half that actually matters -- resolving typed
+# routes -- lives in tsconfig.json's `include`, which lists BOTH directories and does not move.
+# Verified: `tsc --noEmit` passes with the file absent, because Next regenerates it on any build.
+apps/web/next-env.d.ts
 dist
 coverage
 node_modules
