@@ -67,8 +67,16 @@ jobs:
           ln -sfn "$VENV" .venv-rulemind
           .venv-rulemind/bin/python -V
 
+      # ITS OWN PORT, like the QA lane. This workflow starts a throwaway backend and then grades
+      # whatever answers on the port -- so if the developer's compose stack is up on 8080 (this
+      # is a self-hosted runner, so "the developer's machine" IS the runner), `start_fastapi.sh`
+      # fails to bind and every k6 request grades the compose API instead. The numbers would look
+      # plausible and measure the wrong server.
+      #
+      # 8124, one above the QA lane's 8123, so the two can never collide either.
       - name: Start FastAPI backend
         env:
+          RULEMIND_E2E_PORT: "8124"
           # start_fastapi.sh otherwise resolves bare `python3` (Homebrew 3.14, no uvicorn) and
           # fails as "timed out waiting for backend health" -- a message that points at the
           # wrong thing entirely.
@@ -91,7 +99,7 @@ jobs:
           echo "id=$RULE_ID" >> "$GITHUB_OUTPUT"
           echo "using rule $RULE_ID"
         env:
-          RM_BASE: http://127.0.0.1:8080
+          RM_BASE: http://127.0.0.1:8124
           RM_KEY: rm_live_devlocaltenantkey000000000000
 
       # k6 comes from the host (Homebrew) rather than grafana/setup-k6-action, which downloads a
@@ -107,7 +115,7 @@ jobs:
       # invisible. A load test that cannot fail the job is a status badge, not a test.
       - name: Run k6
         env:
-          BASE_URL: http://127.0.0.1:8080
+          BASE_URL: http://127.0.0.1:8124
           RULE_ID: ${{ steps.rule.outputs.id }}
           API_KEY: rm_live_devlocaltenantkey000000000000
           # The latency contract, overridable without editing the script. 500 was measured on
@@ -130,7 +138,7 @@ jobs:
       - name: Arm the saturation harness
         run: |
           .venv-rulemind/bin/python test/load/saturation_setup.py \
-            --base-url http://127.0.0.1:8080
+            --base-url http://127.0.0.1:8124
 
       - name: Run k6 saturation sweep
         env:
@@ -140,7 +148,7 @@ jobs:
           # same host and the same dev key -- so it was reading neither of these values and
           # nobody could tell. Point this workflow at any other origin and it would have
           # silently load-tested localhost.
-          BASE_URL: http://127.0.0.1:8080
+          BASE_URL: http://127.0.0.1:8124
           API_KEY: rm_live_devlocaltenantkey000000000000
         # NO continue-on-error, same reason as above. This sweep's threshold is a correctness
         # property (`unsound_decisions: count==0`) plus a harness property
