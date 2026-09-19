@@ -77,6 +77,27 @@ jobs:
       - name: Start FastAPI backend
         env:
           RULEMIND_E2E_PORT: "8124"
+          # THE LIMITER OFF, which is what rate_limit.py's own docstring prescribes: "Set
+          # RATE_LIMIT_ENABLED=0 to switch limiting off entirely -- that is the supported way to
+          # run a load test or benchmark without the limiter shaping the result."
+          #
+          # It was never set, so this workflow was measuring the rate limiter rather than the
+          # engine, and its verdict depended on whether the run happened to stay under the cap.
+          # The tenant-wide default is 1500 rpm; a 30s run at 50 VUs lands either side of that
+          # depending only on how fast the machine is that minute:
+          #
+          #   2026-09-19 14:05   1426 requests   0.00% failed   PASS
+          #   2026-09-19 20:46   2014 requests  25.57% failed   FAIL  (exactly 1499 succeeded)
+          #   2026-09-19 20:48   1990 requests  24.67% failed   FAIL  (exactly 1499 succeeded)
+          #
+          # "Exactly 1499 twice" is the tell -- a ceiling, not contention. The earlier greens
+          # were not evidence the system was fast; they were evidence the run was small enough
+          # to fit under the limit. A load test whose pass/fail flips on machine speed is worse
+          # than none, because it reads as a performance regression.
+          #
+          # The limiter has its own coverage (tests/test_rate_limit*.py, and saturation.k6.js
+          # treats 429 as correct load-shedding). This lane measures decision throughput.
+          RATE_LIMIT_ENABLED: "0"
           # start_fastapi.sh otherwise resolves bare `python3` (Homebrew 3.14, no uvicorn) and
           # fails as "timed out waiting for backend health" -- a message that points at the
           # wrong thing entirely.
