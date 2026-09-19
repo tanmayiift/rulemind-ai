@@ -1112,6 +1112,36 @@ a red X that only means "out of minutes".
 rather than on the module that leaked it. `tests/_storage_global.py` now holds one helper, called
 via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak now.**
 
+## R9. Render gone, paging proven, and an OS upgrade that broke the build — 2026-09-19
+
+- [x] **R9.1 RENDER IS GONE.** The owner deleted the account. Both hostnames answer 404 with `x-render-routing: no-server` — Render's own header for "no service is bound here". That is the check worth recording, because this repo already called these services dead once on a single timeout: a *sleeping* free-tier service answers 200 after a ~50s cold start and a *stopped* one answers 5xx. Only a deleted one produces `no-server`. **No hosted footprint left to bill.**
+- [x] **R9.2 Paging proven END TO END** against a live stack, not by reading config. All 8 links green, and `--send` delivered a real alert carrying its runbook link. **The routing separation holds**: the on-call sink received only `RuleMindPagingTest`, the heartbeat sink only `Watchdog`. A heartbeat in the on-call channel pages a human every interval to say nothing is wrong, which is how one gets muted.
+- [x] **R9.3 Both deploy paths re-run** rather than carried forward — compose **14/14**, kind + Helm **16/16**. `k8s_alerts.sh` applied all 8 rules to the cluster, correctly detecting no prometheus-operator and falling back to the sidecar ConfigMap.
+- [x] **R9.4 Branch protection re-checked by BOTH routes** — classic `PUT /branches/main/protection` and modern `POST /rulesets` both 403 "Upgrade to GitHub Pro or make this repository public". Still genuinely unavailable.
+- [x] **R9.5 Gate + CI green** — 16 lanes, 0 skipped, locally and on the runner.
+
+### An OS upgrade broke the Python lane, and the pin guarded the wrong axis
+
+The machine went to **Darwin 27** between runs. The next regression failed BOTH Python lanes — 2064 tests, one error each — in a module nothing had touched:
+
+```
+ImportError: dlopen(.../scipy/sparse/linalg/_propack/_spropack.cpython-311-darwin.so):
+section '__DATA/__thread_bss' has a zero-fill section type, but offset field is not zero
+```
+
+The comment on those pins **already described this failure and named the wrong cause**: *"on modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to dlopen, so newer interpreters take 1.18.0 there."* It is not the interpreter, it is the OS — so the guard was written on `python_version`, Python stayed at 3.11, and an OS upgrade walked straight past it.
+
+1.17.1 is the newest release supporting 3.11, loads on Darwin 27, and satisfies scikit-learn 1.9.1. It works on Linux too, which collapses four cells to two: the `sys_platform` split existed only to work around a version that was simply too old.
+
+### Two flakes correctly identified as flakes, not defects
+
+* The image-build lane failed once on `getaddrinfo EAI_AGAIN registry.npmjs.org` **inside** the Docker build — a DNS blip in the window after Colima restarted. Checked rather than assumed (host `dig` and an in-container `nslookup` both resolved) and it passed on re-run.
+* A CI run sat `queued` forever because the **self-hosted runner did not survive the reboot** (`./svc.sh status` → not installed, so nothing restarted it). Labels matched; the queue entry was simply stale. Restarted the runner and re-dispatched.
+
+### Self-inflicted, again, and caught this time
+
+I dispatched CI while the local gate was running — the same machine, competing for ports — and my own echo line claimed I had not. Cancelled it within the minute, before it could take the ports. Third instance this cycle of "the runner IS this machine"; the ports are now per-lane, which is what stops it being a correctness problem.
+
 ## R8. The device, the key, and a frontend nobody had opened — 2026-09-19
 
 - [x] **R8.1 #176 CLOSED on real hardware.** 14 instrumentation tests on a Nothing Phone (1) (A015, Android 16, `securityLevel=1` TRUSTED_ENVIRONMENT), a Galaxy S23 (SM-S918B) and an emulator — 42 runs, 0 failures. `getEncoded()` returning null IS the non-exportability proof. Mutation: swapping `keystoreKey()` for a plain `SecretKeySpec` leaves every functional test passing and fails 4 of these. Opt-in `device` lane in the gate.
