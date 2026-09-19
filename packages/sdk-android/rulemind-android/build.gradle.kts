@@ -13,6 +13,12 @@ android {
     defaultConfig {
         minSdk = 29
         consumerProguardFiles("consumer-rules.pro")
+        // INSTRUMENTATION, for the two properties a JVM test structurally cannot reach: that the
+        // SecurePrefs key is generated inside the AndroidKeyStore and is non-exportable, and that
+        // LegacySecureStoreMigration actually copies a POPULATED legacy store. Both need a real
+        // keystore; Robolectric answers NoSuchAlgorithmException for that provider. See
+        // src/androidTest and issue #176.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -81,6 +87,13 @@ dependencies {
     // sync, and without this WorkManager throws "is not initialized properly" -- so the SDK's
     // entry point was untestable for a reason that had nothing to do with the SDK.
     testImplementation("androidx.work:work-testing:2.9.1")
+
+    // ON-DEVICE tests. Deliberately a SMALL dependency set: these run on a phone, they are not
+    // part of the standing gate (which must not require hardware), and every dependency added
+    // here is one more thing that can fail for a reason unrelated to the keystore.
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }
 
 publishing {

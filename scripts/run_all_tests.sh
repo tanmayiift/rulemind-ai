@@ -598,6 +598,55 @@ if has build; then
   fi
 fi
 
+# ── on-device (Android instrumentation) ───────────────────────────────────────────────────────
+# OPT-IN, like `smoke`, and for a harder reason: it needs a physical phone or an emulator, and a
+# gate that requires hardware is a gate that gets disabled.
+#
+# What it covers is exactly the two things no JVM test can reach, both of them the properties
+# SecurePrefs and LegacySecureStoreMigration were WRITTEN for (issue #176):
+#
+#   * the AES-256-GCM key is generated INSIDE the AndroidKeyStore and is non-exportable --
+#     asserted by asking the platform for the key material and confirming it returns null
+#   * a POPULATED legacy EncryptedSharedPreferences is actually copied -- `create` needs a real
+#     keystore, so on the JVM it throws before the copy is attempted
+#
+# Verified 2026-09-19 on a Nothing Phone (1), Android 16, securityLevel=1 (TRUSTED_ENVIRONMENT):
+# 14 tests, 0 failures. Mutation-checked by replacing keystoreKey() with a plain in-process
+# SecretKeySpec -- every functional test still passed and 4 of these failed, which is the point.
+#
+#   bash scripts/run_all_tests.sh device        # with a device attached
+#   ANDROID_SERIAL=<serial> ...                 # pick one when several are connected
+if has device; then
+  say "Android instrumentation (on-device)"
+  _ADB="${ANDROID_HOME:-$HOME/Library/Android/sdk}/platform-tools/adb"
+  _DEVICES=0
+  [ -x "$_ADB" ] && _DEVICES=$("$_ADB" devices 2>/dev/null | grep -cE "\sdevice$" || echo 0)
+  if [ "${_DEVICES:-0}" -eq 0 ]; then
+    record device "Android instrumentation (device)" "skipped" "—" "—"
+    printf '  skipped — no device or emulator attached (adb devices)\n'
+  elif (cd "$ROOT/packages/sdk-android" && \
+        ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}" \
+        ./gradlew :rulemind-android:connectedDebugAndroidTest) > "$OUT/device.log" 2>&1; then
+    # Counted from the JUnit XML, never from Gradle's exit code: Gradle has reported
+    # BUILD SUCCESSFUL and UP-TO-DATE on a run that executed no tests at all.
+    _N=$("$VENV" - "$ROOT" <<'PYCOUNT' 2>/dev/null || echo 0
+import glob, sys, xml.etree.ElementTree as ET
+total = 0
+for f in glob.glob(sys.argv[1] + "/packages/sdk-android/rulemind-android/build/outputs/"
+                   "androidTest-results/connected/**/*.xml", recursive=True):
+    total += int(ET.parse(f).getroot().get("tests", 0))
+print(total)
+PYCOUNT
+)
+    record device "Android instrumentation (device)" "pass" "${_N:-0}" "—"
+    printf '  pass — %s tests on %s attached device(s)\n' "${_N:-0}" "$_DEVICES"
+  else
+    record device "Android instrumentation (device)" "FAIL" "—" "—"
+    printf '  FAIL — connectedDebugAndroidTest (see %s)\n' "$OUT/device.log"
+    tail -15 "$OUT/device.log" | sed 's/^/        /'
+  fi
+fi
+
 # ── smoke ─────────────────────────────────────────────────────────────────────────────────────
 # Was ci.yml's `compose-smoke`. 14 checks that nothing else covers: liveness surviving the
 # database being down, readiness correctly reporting 503, the sandbox spawning INSIDE the
