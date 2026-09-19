@@ -72,29 +72,31 @@ unittest-xml-reporting==3.2.0
 # re-check it, along with scikit-learn, which pins its own supported numpy range.
 numpy==2.4.6; python_version < "3.12"
 numpy==2.5.3; python_version >= "3.12"
-# scipy: four cells, because the constraint has TWO dimensions and pinning on one of them is how
-# this broke. The note below used to say "BOTH sides need a python_version guard" while the Linux
-# side had none — `scipy==1.18.1; sys_platform != "darwin"` — and 1.18.x requires Python >= 3.12.
-# The Docker image is python:3.11-slim on Linux, so it matched that line, resolved to a wheel that
-# does not exist for it, and pip aborted the ENTIRE install:
+# scipy: ONE dimension, the Python version -- and getting that wrong cost a full regression run.
 #
-#     ERROR: Could not find a version that satisfies the requirement scipy==1.18.1
-#     ERROR: Ignored the following versions that require a different python version:
-#            1.18.0 Requires-Python >=3.12 ...
+# This was four cells split on `sys_platform` AND `python_version`, with darwin < 3.12 pinned to
+# 1.15.1 and a comment saying "on modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to
+# dlopen, so newer interpreters take 1.18.0 there".
 #
-# **The API image could not be built at all.** Nothing caught it, because every lane installs
-# into a host venv and `docker compose up` reuses an already-built image — the Dockerfile is only
-# exercised when someone rebuilds. Found by rebuilding, not by reading.
+# That comment identified the right FAILURE and the wrong CAUSE. It is not the interpreter, it is
+# the OS: when this machine was upgraded to Darwin 27 the existing Python 3.11 venv started
+# failing, because the 1.15.1 wheel's `_spropack.so` will not load under the newer dyld --
 #
-# On modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to dlopen, which is why darwin
-# splits at the same boundary rather than sharing one pin with Linux.
+#     ImportError: dlopen(.../scipy/sparse/linalg/_propack/_spropack.cpython-311-darwin.so):
+#     section '__DATA/__thread_bss' has a zero-fill section type, but offset field is not zero
 #
-# TESTED: only the two `< 3.12` lines. Every lane runs 3.11 — darwin locally, Linux in the image.
-# The `>= 3.12` lines are the documented forward path, unverified, exactly like numpy's above.
-scipy==1.17.1; sys_platform != "darwin" and python_version < "3.12"
-scipy==1.18.1; sys_platform != "darwin" and python_version >= "3.12"
-scipy==1.15.1; sys_platform == "darwin" and python_version < "3.12"
-scipy==1.18.0; sys_platform == "darwin" and python_version >= "3.12"
+# The gate was on python_version, so an OS upgrade walked straight past it and took out the whole
+# Python lane -- 2064 tests, one error, in a module nothing had changed.
+#
+# 1.17.1 is the newest release supporting 3.11, it loads on Darwin 27, and scikit-learn 1.9.1
+# accepts it. It also works on Linux, which is what collapses this back to one axis: the platform
+# split existed only to work around a version that was simply too old. Fewer cells, and none of
+# them gated on the dimension that was never the cause.
+#
+# TESTED: the first line, on darwin 27 / py3.11 and in the python:3.11-slim image. The >= 3.12
+# line is the documented forward path, unverified, exactly like numpy's above.
+scipy==1.17.1; python_version < "3.12"
+scipy==1.18.1; python_version >= "3.12"
 scikit-learn==1.9.1
 joblib==1.6.0
 xgboost==2.1.3
