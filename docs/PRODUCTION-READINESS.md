@@ -134,9 +134,18 @@ its own documented backup procedure. See `docs/runbooks/production.md`.
 
 ### Correctness — the standing gate
 
-**4,998 tests across 15 graded rows, 0 failed, 0 skipped** — and "0 skipped" is enforced rather
+**5,092 tests across 16 graded rows, 0 failed, 0 skipped** — and "0 skipped" is enforced rather
 than hoped for: `RULEMIND_REQUIRE_ALL_LANES=1` (set in CI) turns a skipped lane into a failure,
 after a local run exited 0 having silently not executed 2,085 tests.
+
+The 16th row is new and it is the one that answers *can this still ship*: **the image build**.
+On 2026-09-19 `docker compose build` failed outright — `requirements.txt` pinned
+`scipy==1.18.1; sys_platform != "darwin"` with no `python_version` guard, scipy 1.18.x needs
+Python ≥ 3.12, and the image is `python:3.11-slim` on Linux, so pip aborted the entire install.
+**The deployable artifact had been unbuildable for days behind a fully green suite**, because
+every lane installs into a host venv (darwin, a different marker) and `docker compose up` reuses
+an already-built image. `smoke_compose.sh` would have caught it but is opt-in, since it needs
+four ports to itself; the build half needs none, so it is now split out and always runs.
 
 Both deployment paths proven by smoke scripts (compose 14/14, kind + Helm 16/16), five engines
 held to generated corpora, and the parity backlog closed at 21 PRESENT / 1 CUT / 0 ABSENT.
