@@ -12,10 +12,21 @@ paging chain is proven end to end, dependencies are current and the audit is cle
 is a first real deployment, thresholds calibrated against real traffic, and two surfaces that
 still need someone's credential.
 
-*Last re-checked 2026-09-18. Every claim below was re-verified against the running system on that
+*Last re-checked 2026-09-19. Every claim below was re-verified against the running system on that
 date rather than carried forward — an earlier revision of this file kept "what remains is
 registering the runner" as its headline gap for days after the runner was registered and green,
 which is exactly the drift it warns about elsewhere.*
+
+**A green workflow is not evidence either, and this document nearly repeated its own mistake.**
+On 2026-09-19 all four workflows were green and reported as such. `load-test` was then opened
+rather than counted, and **both** of its k6 scripts turned out to be proving nothing: the
+throughput sweep's correctness check failed on 100% of requests (it read `body.outcome` where the
+endpoint nests it under `result`), hidden by `continue-on-error: true` and by the script
+declaring no `checks` threshold; and the saturation sweep's assertion is conditional on a
+variable failing to compute, which against a healthy server never happens — so it printed `PASS`
+having executed no assertion at all. Both are fixed and both now gate the job. The lesson is the
+same one this file opens with, one level up: **a green check mark is a claim, and the claim has
+to be opened.**
 
 ---
 
@@ -93,6 +104,24 @@ the monitoring stack itself. Now wired and verified:
 See `docs/PERFORMANCE.md`. One unexplained observation is recorded there rather than dropped: a
 single 120-second request at concurrency 64 that has not reproduced across two re-tests.
 
+**The `load-test` workflow now gates rather than reports** (run 35432346555, 2026-09-19):
+
+| Sweep | Result |
+|---|---|
+| evaluate, 50 VUs / 30 s | **2,828 of 2,828 checks pass**, `http_req_failed` 0.00%, p(95) 1.4 s |
+| saturation, ramp to 60 VUs | **1,894 degraded responses, 0 unsound decisions** |
+
+The second row is the one worth reading twice. The sweep asserts that a decision is never derived
+from an input that failed to compute, and that assertion only runs when something *does* fail —
+so a healthy server produced a `PASS` that executed nothing. `test/load/saturation_setup.py` now
+arms the run deliberately (one variable slower than the evaluation timeout, verified with a real
+decision before the sweep starts) and the script refuses to call an unsaturated run a pass. The
+1,894 is the guard actually firing under load, and holding.
+
+Mutation-checked through the product's own escape hatch rather than a source edit: with
+`engine_config.fail_open_on_variable_error` set, the same sweep reports unsound decisions by name
+and exits non-zero.
+
 ### Backup and restore — rehearsed on both lanes
 
 | Lane | Result |
@@ -141,6 +170,38 @@ folded into the one workflow that runs the same `scripts/run_all_tests.sh` a dev
 **The security constraint that goes with it:** every self-hosted workflow is `workflow_dispatch`
 only, never `pull_request` or `push`. The runner executes as the maintainer's user, and there are
 bot-authored dependency PRs. That is the decision most likely to be casually reversed.
+
+#### The Actions tab is still full of red, and almost none of it is a test failure
+
+Worth writing down, because the tab shows history and history here is mostly an old billing
+problem. Of **127 failed runs**, exactly **8 executed a single step**. The other 119 were
+assigned no runner at all and ran `steps: 0` — GitHub's own annotation on each reads *"The job
+was not started because recent account payments have failed or your spending limit needs to be
+increased."* **78 of those belong to `ci`, `sdk-verify` and `test-report`, workflows that no
+longer exist**; GitHub keeps a deleted workflow's runs in the tab forever.
+
+The 8 that actually ran, all of them since fixed:
+
+| Run | Workflow | What failed |
+|---|---|---|
+| 35046445624 | self-hosted tests | `.venv-rulemind` missing — the precondition doing its job |
+| 35046620568 | self-hosted tests | bare `python3` was Homebrew 3.14; no psycopg2-binary wheel |
+| 35046718374 | self-hosted tests | lanes failed |
+| 35053890248 | backup-verify | restore failed — the Postgres lane had leaked 453 schemas |
+| 35055005659 | security | `pnpm audit` gating on advisories now closed |
+| 35133068883 | backup-verify | same schema leak, before the fix landed at both ends |
+| 35243010034 | self-hosted tests | `python-pg` and `flutter` lanes |
+| 35374621279 | self-hosted tests | **self-inflicted** — a `pkill -f scripts/run_all_tests.sh` on the build machine killed CI's own run (exit 143). The runner executes the same script on the same host; kill by PID, never by pattern |
+
+Plus **4 cancelled** runs on one commit, also self-inflicted: a retry loop dispatched duplicates
+after misreading a queued run as failed.
+
+Current state is the thing to judge: **all four surviving workflows are green on `main`**, and
+`load-test`'s green means something as of 2026-09-19 (see Capacity) where before it did not.
+
+The 119 dead records can be removed with
+`gh api -X DELETE /repos/<owner>/<repo>/actions/runs/<id>` — irreversible, and an owner's call
+rather than something to do on their behalf.
 
 ### 2. Zero production hours — the monitoring chain is now proven; real traffic is not
 
@@ -274,26 +335,43 @@ The Android toolchain was also upgraded (Gradle 9.7.1, Kotlin 2.2.20, AGP 9.4.0)
 Remaining issues: **#123** (AI generation never validated against a real provider — the suite
 exists and is skipped without a key) and **#133** (see below).
 
-### 7. Untested surface — the Android SDK module
+### ~~7. Untested surface — the Android SDK module~~ — CLOSED 2026-09-19
 
-`packages/sdk-android/rulemind-core` has 46 tests. `rulemind-android` — the module with the
-crypto, the network client and the persistence — has **no test source set at all**: 1,644 lines
-across NetworkClient (268), RuleMind (254), BundleParser (253), SecurePrefs (151),
-SqliteDecisionOutbox (137) and the rest, none of it exercised.
+`rulemind-android` had **no test source set at all**: 1,644 lines of crypto, networking and
+persistence, none of it exercised. It now has **12 test classes over 12 source files — every
+file in `src/main`** — and the Kotlin lane went **46 → 140**.
 
-That matters most right now because the Keystore-backed `SecurePrefs` that replaced the
-deprecated `EncryptedSharedPreferences` in September 2026 is verified **by compilation**. The
-migration it carries is not optional housekeeping: `CryptoManager` holds the device's RSA private
-key, whose public half the server already has, so silently regenerating it produces a device that
-cannot decrypt bundles addressed to it — a failure that surfaces later and somewhere else.
+The one that mattered most was `CryptoManager`. It holds the device's RSA private key, whose
+public half the server already has, so a regenerated pair is not a cache miss: it is a device
+that can no longer decrypt any bundle addressed to it, and the symptom appears later and
+somewhere else. The class carried a comment saying exactly that, and nothing checked it.
 
-Issue **#133** predates this and describes emulator jobs in `sdk-verify.yml`, a workflow that no
-longer exists; its premise is gone even though this gap is real.
+Two things the tests turned up that reading the code did not:
+
+* **`verifySignature` fails OPEN.** With no `serverPublicKeyPem` configured it returns `true`
+  for every signature. That is a deployment consideration rather than a defect, and it is now
+  pinned by a test so it cannot change silently in either direction.
+* **A mutation survived, and the surviving test was the finding.** `ExistingPeriodicWorkPolicy`
+  `UPDATE → KEEP` passed a test named *"scheduling twice replaces rather than stacks"*, because
+  the unique-work name leaves exactly one request enqueued either way — a count cannot tell them
+  apart. Under `KEEP` a changed `bundleSyncIntervalMinutes` is silently discarded while every
+  outward sign still looks right. The test now asserts the interval.
+
+**Still needs a device**, and the files say so rather than implying coverage they do not have:
+that the `SecurePrefs` key is generated inside the AndroidKeyStore and is non-exportable, and
+that `LegacySecureStoreMigration` actually COPIES a populated legacy store. Robolectric answers
+`NoSuchAlgorithmException` for that provider, so neither is demonstrable on the JVM. The failure
+path of the migration — which its own comment calls the common production case, a master key
+dropped when the user changes their screen lock — **is** covered.
+
+Issue **#133** describes emulator jobs in `sdk-verify.yml`, a workflow that no longer exists.
+Its premise is gone; the two device-only properties above are what remains of its substance.
 
 ### 8. Still needs the account owner
 
-- **Render services are STILL LIVE and may still be billing.** Re-probed 2026-09-18: the API
-  answers `{"status":"ok","version":"4.0.0"}` in **0.3 s** warm, and the dashboard returns 200.
+- **Render services are STILL LIVE and may still be billing.** Re-probed **2026-09-19**: the API
+  answered 200 in 52 s cold (that is a free-tier spin-up, not a failure — see below), and the
+  dashboard returns 200 in 1.3 s.
   `scripts/render_teardown.sh` does it in one command once `RENDER_API_KEY` is exported. No
   credential exists on the build machine, and permanently deleting a hosted database is not
   something to automate on someone's behalf.
@@ -306,9 +384,15 @@ longer exists; its premise is gone even though this gap is real.
   (`tests/test_ai_live.py`) and its runner (`scripts/run_ai_live.sh`) exist and skip without a
   key, because the calls are billed. Six endpoints unvalidated.
 
-- **Alertmanager's last hop.** The config ships with a black-hole receiver on purpose: a
-  committed Slack webhook is a leaked credential, and a config that silently drops alerts while
-  looking configured is worse than none. One uncommented block plus a real destination.
+- **Alertmanager's last hop — the receiver is now real; only the destination is missing.** Both
+  routes name a `paging` receiver that reads its URL from `url_file`
+  (`/etc/alertmanager/secrets/paging_url`, gitignored, mounted read-only by compose), so the
+  credential never enters git and nothing has to be uncommented. `url_file` is read at **notify**
+  time, not load time — verified, not assumed, and it needs Alertmanager ≥ 0.26 (this pins
+  0.27.0). With no file present Alertmanager starts cleanly and fails **loudly** on the first
+  alert: `notify retry canceled ... read url_file: no such file or directory`. Write one file
+  with a real webhook URL and paging works; the chain either delivers or complains, and no
+  longer has a state where it looks configured and silently drops.
 
 - **Branch protection is unavailable.** GitHub refuses it on a private repo without Pro:
   *"Upgrade to GitHub Pro or make this repository public."* Nothing currently prevents a direct
@@ -332,4 +416,10 @@ is why everything below it is now the operational half.
    on one laptop, which is honest but is still a guess about someone else's hardware.
 4. **Run one real integration** end to end — a genuine bureau connector, not a sample payload.
 5. **Validate the AI endpoints against a real key (#123)** — the suite is written and waiting.
-6. **Give `rulemind-android` tests.** 1,644 lines with none, including freshly rewritten crypto.
+6. **Run `rulemind-android` on a real device or emulator.** The module now has 140 tests, but two
+   properties are platform guarantees no JVM test can demonstrate: that the `SecurePrefs` key is
+   generated inside the AndroidKeyStore and is non-exportable, and that
+   `LegacySecureStoreMigration` actually copies a populated legacy store. Robolectric answers
+   `NoSuchAlgorithmException` for that provider.
+7. **Delete the Render services.** They answered 200 on 2026-09-19 and may still be billing.
+   `scripts/render_teardown.sh` does it in one command once `RENDER_API_KEY` is exported.

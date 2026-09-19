@@ -1112,6 +1112,44 @@ a red X that only means "out of minutes".
 rather than on the module that leaked it. `tests/_storage_global.py` now holds one helper, called
 via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak now.**
 
+## R7. The green that proved nothing, and the last three Android files — 2026-09-19
+
+- [x] **R7.1** `load-test` reported SUCCESS while **both** its k6 scripts asserted nothing. `evaluate.k6.js`'s `has outcome` check read `body.outcome`; `POST /api/v1/rules/{id}/test` nests it under `result`. It failed on 100% of requests — **0 of 1398** in run 35430953581 — and stayed invisible for two independent reasons: the step carried `continue-on-error: true`, and the script declared no `checks` threshold, so a 0% check rate was not even a non-zero k6 exit. Fixed, and now 2828 of 2828 on the runner.
+- [x] **R7.2** `saturation.k6.js` was worse, because it looked like it passed on its own merits. Its assertion is conditional — *if* a variable failed to compute, the decision must have gone to review with the fail-closed guard in its trace — and against a healthy server no variable ever fails, so the assertion never executed. It printed `PASS` having proven only that the server was up. Now counts degraded responses and reports **INCONCLUSIVE** with the reason when a run never saturated; `degraded_responses: ["count>0"]` fails the job.
+- [x] **R7.3** `test/load/saturation_setup.py` arms it deterministically, and verifies its own effect with a real decision before the sweep starts. On the runner: **1,894 degraded responses, 0 unsound decisions** — the guard genuinely firing under load and holding. Both k6 steps lost `continue-on-error`.
+- [x] **R7.4** `CryptoManager` (10), `SyncWorker` (5), `LegacySecureStoreMigration` (5). **Every file in `rulemind-android/src/main` now has a test**; Kotlin lane **120 → 140**.
+- [x] **R7.5** Docs truthed up: readiness item 7 closed, the Alertmanager entry corrected (the receiver is real now, only the destination URL is missing), Render re-probed 2026-09-19 (**still live**, 200), and the Actions tab's red history categorised.
+
+### What the saturation sweep taught, recorded because I got it wrong twice first
+
+The script's own header says to run it against a pool smaller than the concurrency. That is not sufficient and not reproducible:
+
+| Configuration | Result |
+|---|---|
+| pool=4, timeout_ms=2000 (defaults), 60 VUs | 0.0% degraded — INCONCLUSIVE |
+| pool=4, timeout_ms=60, 60 VUs | 0.0% degraded — INCONCLUSIVE |
+| pool=1, timeout_ms=60, 60 VUs | 0.0% on one run, **32.9% on the next** |
+| pool=4, timeout_ms=60, **one slow variable** | 81.9% degraded, 59 guard firings, 0 unsound |
+| pool=1, timeout_ms=60, **one slow variable** | 99.6% degraded, 241 guard firings, 0 unsound |
+
+`future.result(timeout=)` bounds the wait for **one variable**, not the decision, and uvicorn's threadpool caps concurrent decisions at 40 — so the per-call queue never gets deep enough to cross the timeout, and whether it does at all depends on what else the machine is doing. Gating a threshold on that would flap. Forcing it with a variable slower than the timeout is deterministic on any machine.
+
+### A mutation that survived, and the test it condemned
+
+`ExistingPeriodicWorkPolicy.UPDATE` → `KEEP` passed a test named *"scheduling twice replaces rather than stacks"*. The unique-work name leaves exactly one request enqueued under either policy, so a count assertion cannot tell them apart — and under `KEEP` a changed `bundleSyncIntervalMinutes` is silently discarded while every outward sign (one enqueued sync, right name, right constraints) still looks correct. The test now reads `periodicityInfo` and asserts the interval.
+
+### Mutation checks this round
+
+| Mutation | Named test that failed |
+|---|---|
+| k6 `checks` threshold removed | evaluate sweep no longer gates — reproduced before the fix |
+| `fail_open_on_variable_error` on | saturation sweep: unsound decisions by name, exit 99 |
+| harness not armed | saturation sweep: INCONCLUSIVE, exit 99 (was PASS, exit 0) |
+| stored keypair ignored | `the device key pair survives a new CryptoManager over the same store` |
+| `Result.retry()` → `Result.failure()` | 2 `SyncWorkerTest` tests |
+| migration marker never set | 2 `LegacySecureStoreMigrationTest` tests |
+| `UPDATE` → `KEEP` | **survived** the first version; killed by the interval assertion |
+
 ## R6. Finish #176's Android file list — 2026-09-19
 
 - [x] **R6.1** `SqliteDecisionOutbox` (12 tests). Failure modes here are data loss and double-delivery, not a wrong answer: backoff respected, oldest-first draining, `trimToCapacity` drops the OLDEST, `markSynced([])` is a no-op.
