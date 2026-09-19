@@ -47,6 +47,11 @@ from app.storage import Storage  # noqa: E402
 LIVE = os.getenv("RULEMIND_AI_LIVE", "0") == "1"
 LIVE_PROVIDER = os.getenv("RULEMIND_AI_LIVE_PROVIDER", "anthropic")
 LIVE_KEY = os.getenv("RULEMIND_AI_LIVE_KEY", "")
+# Optional. Blank means the provider's default from ai.DEFAULT_MODELS -- gpt-4o for openai,
+# claude-sonnet-5 for anthropic. Worth having because an account can be entitled to a provider
+# without being entitled to that provider's default model, and the resulting 404 reads like a
+# broken integration rather than "pick a different model".
+LIVE_MODEL = os.getenv("RULEMIND_AI_LIVE_MODEL", "").strip()
 
 
 class _Base(unittest.TestCase):
@@ -165,10 +170,13 @@ class LiveGenerationTest(_Base):
         # PUT /api/v1/ai/config calls. get_ai_credentials then decrypts it for the outbound
         # call. (An earlier draft invented a set_ai_credentials() that does not exist, so
         # every live test errored in setUp before reaching a provider.)
+        provider_slot = {"key": LIVE_KEY}
+        if LIVE_MODEL:
+            provider_slot["model"] = LIVE_MODEL
         app_main.storage.set_ai_config({
             "enabled": True,
             "default_provider": LIVE_PROVIDER,
-            LIVE_PROVIDER: {"key": LIVE_KEY},
+            LIVE_PROVIDER: provider_slot,
         }, tenant_id=self.tenant)
         creds = app_main.storage.get_ai_credentials(LIVE_PROVIDER, tenant_id=self.tenant)
         self.assertIsNotNone(creds, "the key did not round-trip through set_ai_config")

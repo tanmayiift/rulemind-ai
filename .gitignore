@@ -1,6 +1,13 @@
 .DS_Store
 .env
 .env.local
+# Provider keys for the opt-in live-AI suite (#123) and anything else that reads a real
+# credential. `.env.*` catches every variant so a new one cannot be added un-ignored by
+# accident -- the two lines above were exact matches, and an `.env.ai` would have been tracked.
+# The .example files are the documented shape and are committed on purpose.
+.env.*
+!.env.example
+!.env.*.example
 .turbo
 .mypy_cache/
 .ruff_cache/
