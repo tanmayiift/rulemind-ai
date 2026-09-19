@@ -321,6 +321,40 @@ if has python-pg; then
   #
   # Safe because the name is ours and deterministic (db.test_schema_for -> `rmtest_<sha>`), and
   # because the lane recreates whatever it needs on the next run.
+  # A DEDICATED DATABASE, not the one `make up` runs against.
+  #
+  # The contamination check below is a good guard and it fired for real, repeatedly -- but it can
+  # only ever SKIP the lane, and the fix it prints drops the running app's data. So on a machine
+  # where anyone has used the stack, the Postgres lane is silently absent from the gate, and the
+  # only way to get it back is to wipe someone's workspace. That is a bad trade for a guard.
+  #
+  # Creating a second database on the same server removes the sharing instead of policing it.
+  # It is additive -- nothing is dropped, `make up` keeps its data -- and it is idempotent, so a
+  # fresh clone and a machine that has run this a hundred times behave the same.
+  #
+  # The guard below STAYS, because RULEMIND_TEST_PG_URL can still be pointed at a shared database
+  # (CI does not, but a developer might) and the InvalidToken failure it prevents is one that
+  # reads like a crypto bug for an hour before anyone suspects the database.
+  _PG_BASE="${RULEMIND_TEST_PG_BASE:-postgresql://rulemind:rulemind@127.0.0.1:55432}"
+  _PG_LANE_DB="${RULEMIND_TEST_PG_DB:-rulemind_lane}"
+  if [ -z "${RULEMIND_TEST_PG_URL:-}" ]; then
+    # `CREATE DATABASE` cannot run inside a transaction, hence AUTOCOMMIT. A failure here is not
+    # fatal: fall back to the shared database and let the guard below decide.
+    if "$VENV" - "$_PG_BASE/postgres" "$_PG_LANE_DB" <<'PYMK' >/dev/null 2>&1
+import sys
+from sqlalchemy import create_engine, text
+e = create_engine(sys.argv[1], isolation_level="AUTOCOMMIT")
+with e.connect() as c:
+    exists = c.execute(text("SELECT 1 FROM pg_database WHERE datname = :n"),
+                       {"n": sys.argv[2]}).first()
+    if not exists:
+        c.execute(text('CREATE DATABASE "%s"' % sys.argv[2]))
+PYMK
+    then
+      RULEMIND_TEST_PG_URL="$_PG_BASE/$_PG_LANE_DB"
+      export RULEMIND_TEST_PG_URL
+    fi
+  fi
   _PGURL="${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}"
   dropped=$("$VENV" - "$_PGURL" <<'PYDROP' 2>/dev/null || echo 0
 import sys

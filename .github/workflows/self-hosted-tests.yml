@@ -163,12 +163,16 @@ jobs:
           command -v docker >/dev/null || { echo "docker is required (Postgres lane + smoke)"; exit 1; }
           test -x .venv-rulemind/bin/python || { echo ".venv-rulemind missing after provisioning"; exit 1; }
           docker compose up -d db redis
-          # The PG lane shares this database with `make up`. If the app has written to the public
-          # schema under a different RULEMIND_CONFIG_KEY, every test touching the default schema
-          # dies on InvalidToken ~16 minutes in. run_all_tests.sh guards this, but resetting here
-          # keeps a CI run reproducible rather than dependent on what was run locally before it.
-          docker compose exec -T db psql -U rulemind -d rulemind \
-            -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO rulemind;"
+          # NO SCHEMA RESET ANY MORE. This used to DROP the public schema of the database that
+          # `make up` uses, because the PG lane shared it: if the app had written there under a
+          # different RULEMIND_CONFIG_KEY, every test touching the default schema died on
+          # InvalidToken ~16 minutes in.
+          #
+          # That fixed CI by destroying the maintainer's local workspace on every run -- this is a
+          # self-hosted runner, so "the CI database" and "the database they were just using" are
+          # the same one. run_all_tests.sh now creates and uses a SEPARATE database
+          # (rulemind_lane) instead of policing a shared one, which removes the conflict rather
+          # than resolving it in CI's favour.
 
       - name: Full regression
         # RULEMIND_REQUIRE_ALL_LANES: a SKIPPED lane fails the run here.

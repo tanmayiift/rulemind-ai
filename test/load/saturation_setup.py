@@ -39,9 +39,18 @@ product's own documented escape hatch, so no source edit is needed to break it:
 THIS IS DESTRUCTIVE TO THE TARGET WORKSPACE. It lowers the tenant's evaluation timeout and adds
 a variable to its catalog. Point it only at a throwaway load-test server -- never at anything
 whose decisions matter. It refuses a non-loopback host for that reason.
+
+It defaults to 127.0.0.1:8080, which on a developer's machine is the compose stack, so it also
+records the previous `timeout_ms` before overwriting it and can put everything back:
+
+    python3 test/load/saturation_setup.py --revert
+
+Revert restores the recorded timeout and deletes the harness variable. The recorded value lives
+in `.runtime/saturation_setup_state.json` (gitignored, like the rest of .runtime).
 """
 import argparse
 import json
+import pathlib
 import sys
 import urllib.error
 import urllib.request
@@ -75,18 +84,57 @@ def call(base, path, payload, key, method):
         return res.status, (json.loads(body) if body else None)
 
 
+STATE = pathlib.Path(__file__).resolve().parents[2] / ".runtime" / "saturation_setup_state.json"
+
+
+def revert(base, key):
+    """Put the workspace back. Best-effort on each half, so one failure does not strand the other."""
+    restored = "nothing recorded"
+    if STATE.exists():
+        previous = json.loads(STATE.read_text()).get("timeout_ms")
+        if previous is not None:
+            call(base, "/api/v1/settings", {"engine_config": {"timeout_ms": previous}}, key, "PUT")
+            restored = "timeout_ms={0}".format(previous)
+        STATE.unlink()
+    try:
+        call(base, "/api/v1/variables/load_generator", None, key, "DELETE")
+        removed = "load_generator deleted"
+    except urllib.error.HTTPError as exc:
+        removed = "load_generator not removed (HTTP {0}) - delete it by hand".format(exc.code)
+    print("reverted: {0}; {1}".format(restored, removed))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url", default="http://127.0.0.1:8080")
     ap.add_argument("--api-key", default="rm_live_devlocaltenantkey000000000000")
     ap.add_argument("--policy-id", default="")
     ap.add_argument("--timeout-ms", type=int, default=60)
+    ap.add_argument("--revert", action="store_true",
+                    help="restore the recorded timeout and remove the harness variable")
     args = ap.parse_args()
 
     base = args.base_url.rstrip("/")
     if not any(h in base for h in ("127.0.0.1", "localhost", "[::1]")):
         print("refusing: this rewrites tenant settings and catalog; loopback only", file=sys.stderr)
         return 2
+
+    if args.revert:
+        return revert(base, args.api_key)
+
+    # Record the CURRENT timeout before overwriting it, so --revert has something to restore.
+    # Written before the change, not after: a crash between the two must not leave a state file
+    # claiming the workspace is untouched.
+    try:
+        _, settings = call(base, "/api/v1/settings", None, args.api_key, "GET")
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps(
+            {"timeout_ms": (settings.get("engine_config") or {}).get("timeout_ms", 2000)}))
+    except Exception:
+        # Not fatal. This is a load-test harness; failing to record an undo should not stop the
+        # run, it should just mean --revert has nothing to restore.
+        pass
 
     call(base, "/api/v1/settings", {"engine_config": {
         "timeout_ms": args.timeout_ms,
@@ -99,7 +147,12 @@ def main():
     variable = {"id": "load_generator", "name": "Load Generator", "category": "Bureau",
                 "source_id": "bureau", "code": SLOW_VARIABLE,
                 "description": "saturation harness - see test/load/saturation_setup.py",
-                "status": "prod"}
+                # DEV, not prod, for one reason: `DELETE /api/v1/variables/{id}` returns 409
+                # "Only DEV variables can be deleted", so a prod harness variable can never be
+                # reverted. The executor's catalog comes from `list_variables` with no status
+                # filter, so a dev variable is computed on every decision exactly the same --
+                # verified by the probe below, which would fail loudly if it were not.
+                "status": "dev"}
     try:
         call(base, "/api/v1/variables", variable, args.api_key, "POST")
     except urllib.error.HTTPError:
