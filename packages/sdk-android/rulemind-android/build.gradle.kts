@@ -77,6 +77,10 @@ dependencies {
     // real HTTP server on the JVM rather than a mocked OkHttp. Same version as the okhttp above:
     // the two are released together and a mismatch fails at runtime, not at resolution.
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    // WorkManager's own test initialiser. `RuleMind.initialize` schedules the periodic bundle
+    // sync, and without this WorkManager throws "is not initialized properly" -- so the SDK's
+    // entry point was untestable for a reason that had nothing to do with the SDK.
+    testImplementation("androidx.work:work-testing:2.9.1")
 }
 
 publishing {

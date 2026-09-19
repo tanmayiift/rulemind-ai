@@ -61,6 +61,30 @@ object RuleMind {
         SyncWorker.schedule(appContext, config.bundleSyncIntervalMinutes)
     }
 
+    /**
+     * Return the SDK to its pre-`initialize` state.
+     *
+     * INTERNAL, so this is not part of the published API — but it exists because a global mutable
+     * singleton with no teardown is hard to test from ANY app's suite, not just this module's.
+     * Without it the "refuses before initialize" contract can be observed exactly once per JVM:
+     * whichever test runs first sees it, and every later one finds an already-initialised object.
+     * That made those assertions pass or fail on JUnit's method order, which is green by luck.
+     *
+     * Deliberately does NOT cancel the scheduled sync work: WorkManager's uniqueness is keyed on
+     * the work name, so a later `initialize` replaces it. Cancelling here would make a reset
+     * silently stop background syncing for an app that called it for another reason.
+     */
+    internal fun resetForTesting() = lock.write {
+        config = null
+        bundleManager = null
+        networkClient = null
+        eventLogger = null
+        executionStore = null
+        decisionOutbox = null
+        decisionSyncer = null
+        cache = DecisionCache(256, 300_000)
+    }
+
     fun syncNow(): Bundle? = lock.write {
         val before = bundleManager?.currentBundleVersion() ?: 0
         val updated = requireNotNull(bundleManager) { "RuleMind is not initialized." }.syncNow()
