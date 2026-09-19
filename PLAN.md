@@ -1112,6 +1112,17 @@ a red X that only means "out of minutes".
 rather than on the module that leaked it. `tests/_storage_global.py` now holds one helper, called
 via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak now.**
 
+## R6. Finish #176's Android file list — 2026-09-19
+
+- [x] **R6.1** `SqliteDecisionOutbox` (12 tests). Failure modes here are data loss and double-delivery, not a wrong answer: backoff respected, oldest-first draining, `trimToCapacity` drops the OLDEST, `markSynced([])` is a no-op.
+- [x] **R6.2** `RuleMind` (7 tests). The refusal contract before `initialize`, and that `initialize` actually SCHEDULES the periodic bundle sync — an enqueue that silently stopped would fail nothing and leave the device deciding on a stale bundle forever.
+- [x] **R6.3** Full gate green — **5,062 tests**, Kotlin lane **46 → 110**. Pushed; CI green.
+
+### A mutation that survived, and what it was hiding
+
+`CONFLICT_IGNORE` → `CONFLICT_REPLACE` in the outbox broke no test. The idempotency test asserted only the row count, which both modes satisfy — so it proved nothing about the conflict mode it was named after. REPLACE resets `attempts` and `next_attempt_at`, so a decision that had failed three times and was backed off would return as attempts=0 and immediately eligible: the SDK re-hammers a server it already knows is failing, and the give-up logic never fires. Now asserted directly.
+
+
 ## R5. Paging, Render, and the rest of the Android coverage — 2026-09-18
 
 - [x] **R5.1** Alertmanager's last hop closed. A real `paging` receiver reads its destination from a **gitignored** `observability/secrets/paging_url` via `url_file`, so turning paging on never means committing a credential — which is why it had stayed off. Verified both ways: an alert arrived carrying its runbook link, and with the file absent Alertmanager still started and failed *loudly* at notify time.
