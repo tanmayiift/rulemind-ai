@@ -675,19 +675,33 @@ fi
 # dependency instead of assuming one is running.
 if has qa; then
   say "QA suites"
-  if lsof -nP -iTCP:8080 -sTCP:LISTEN >/dev/null 2>&1; then
+  # ITS OWN PORT, for the same reason the Postgres lane got its own database.
+  #
+  # This lane used to hardcode 8080 and SKIP when anything was listening there -- which is the
+  # port `make up` publishes, so on any machine where someone had the stack running, 52 cases
+  # including the sandbox-escape matrix quietly left the gate. In CI, where a skip is a failure
+  # (RULEMIND_REQUIRE_ALL_LANES), it turned a developer's running stack into a red build: run
+  # 35444197370 failed on exactly this, with all 15 other lanes green.
+  #
+  # Refusing to grade the wrong server was right. Competing for the port was not. 8123 by
+  # default, RULEMIND_QA_PORT to override.
+  _QA_PORT="${RULEMIND_QA_PORT:-8123}"
+  if lsof -nP -iTCP:"$_QA_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     record qa "QA suites (core + sandbox)" "skipped" "—" "0s"
-    printf '  skipped — something is already listening on 8080; the suites would grade it\n'
+    printf '  skipped — something is already listening on %s; the suites would grade it\n' "$_QA_PORT"
   else
     _qa_ok=1
     # RULEMIND_PYTHON_BIN, for the same reason PYTHON_BIN exists for Playwright's webServer a few
     # lanes up: start_fastapi.sh otherwise resolves bare `python3`, which on this machine is
     # Homebrew 3.14 with no uvicorn installed. It fails as "No module named uvicorn" inside a
     # background log, and the visible symptom is only "timed out waiting for backend health".
+    export RULEMIND_E2E_PORT="$_QA_PORT"
     if RULEMIND_PYTHON_BIN="$VENV" bash "$ROOT/qa/mobile_e2e/start_fastapi.sh" > "$OUT/qa-server.log" 2>&1 \
        && bash "$ROOT/qa/mobile_e2e/wait_for_health.sh" >> "$OUT/qa-server.log" 2>&1; then
       for suite in core sandbox; do
-        if (cd "$ROOT/qa/e2e-full" && "$VENV" run.py "$suite") > "$OUT/qa-$suite.log" 2>&1; then
+        # RM_BASE, or harness.py defaults to 8080 and grades whatever is there instead of the
+        # server this lane just started.
+        if (cd "$ROOT/qa/e2e-full" && RM_BASE="http://127.0.0.1:$_QA_PORT" "$VENV" run.py "$suite") > "$OUT/qa-$suite.log" 2>&1; then
           n=$(grep -cE '^\s*(PASS|ok)' "$OUT/qa-$suite.log" 2>/dev/null || echo "—")
           printf '  pass — suite_%s\n' "$suite"
         else
@@ -699,7 +713,13 @@ if has qa; then
       _qa_ok=0
       printf '  FAIL — could not start the QA backend (see %s)\n' "$OUT/qa-server.log"
     fi
-    pkill -f 'uvicorn app.main:app' >/dev/null 2>&1 || true
+    # BY PID, NEVER BY PATTERN. `pkill -f 'uvicorn app.main:app'` matches every uvicorn running
+    # this app on the machine -- a developer's `pnpm dev` backend, the compose stack if it were
+    # run outside Docker, and, on this self-hosted runner, another lane's server. The same shape
+    # of pattern-kill already took out a CI run once. stop_fastapi.sh reads the pid file
+    # start_fastapi.sh wrote and kills that process only.
+    RULEMIND_E2E_PORT="$_QA_PORT" bash "$ROOT/qa/mobile_e2e/stop_fastapi.sh" >/dev/null 2>&1 || true
+    unset RULEMIND_E2E_PORT
     if [ "$_qa_ok" -eq 1 ]; then
       record qa "QA suites (core + sandbox)" "pass" "52" "—"
     else
