@@ -122,6 +122,24 @@ Mutation-checked through the product's own escape hatch rather than a source edi
 `engine_config.fail_open_on_variable_error` set, the same sweep reports unsound decisions by name
 and exits non-zero.
 
+**And the throughput half was measuring the wrong thing until 2026-09-19.** The lane never set
+`RATE_LIMIT_ENABLED=0`, which `rate_limit.py`'s own docstring calls *"the supported way to run a
+load test or benchmark without the limiter shaping the result"* — so it measured the rate
+limiter, and its verdict depended on whether the run happened to fit under the 1500 rpm cap:
+
+| Run | Requests | Failed | Verdict |
+|---|---:|---:|---|
+| 14:05 | 1426 | 0.00% | pass |
+| 20:46 | 2014 | 25.57% | fail — **exactly 1499 succeeded** |
+| 20:48 | 1990 | 24.67% | fail — **exactly 1499 succeeded** |
+| after the fix | 1563 | 0.00% | pass, and *above* the old ceiling |
+
+"Exactly 1499, twice" is a ceiling, not contention. Throughput varies with latency, latency
+varies with whatever else the machine is doing, and the limit does not move — so the earlier
+greens were not evidence the system was fast, only that the run was small enough to fit under
+it. **A load test whose pass/fail flips on machine speed is worse than none**, because it reads
+as a performance regression and sends someone hunting for one.
+
 ### Backup and restore — rehearsed on both lanes
 
 | Lane | Result |
