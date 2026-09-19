@@ -124,10 +124,20 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
   );
 }
 
+/**
+ * A CARD/PANEL title -- the first level of section beneath [PageHeader]'s `h1`, so `h2`.
+ *
+ * It was an `h3`, which skipped a level on every page that used it: h1 -> h3, no h2 anywhere.
+ * Measured on 2026-09-19 with qa/e2e-full/frontend_audit.mjs: 14 routes flagged `heading-skip`,
+ * and this component is used on exactly 14. Screen-reader users navigating by heading level, and
+ * anything reading the document outline, saw a gap that implied a missing section.
+ *
+ * The visual size is unchanged -- it is `fontSize: 15`, set here and not by the tag.
+ */
 export function SectionTitle({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-      <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--rm-text)" }}>{children}</h3>
+      <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--rm-text)" }}>{children}</h2>
       {right}
     </div>
   );

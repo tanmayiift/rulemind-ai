@@ -288,3 +288,28 @@ a:focus-visible {
 }
 .rm-empty-title { font-size: 15px; font-weight: 700; color: var(--rm-text); }
 .rm-empty-hint { font-size: 13px; color: var(--rm-dim); max-width: 320px; }
+
+/* Visually hidden, still announced.
+ *
+ * For the two full-height canvases (/studio, /workflow-builder), which had NO heading element at
+ * all -- not even a page title. They start straight into a toolbar because a canvas at
+ * `calc(100vh - 120px)` cannot spare the vertical space for a header, and that is a reasonable
+ * visual choice; having no `h1` in the document is not. This gives them one without taking a
+ * pixel.
+ *
+ * The clip-path/1px-box form rather than `display:none` or `visibility:hidden`, both of which
+ * remove the element from the accessibility tree as well as from the screen -- which would make
+ * this decoration rather than a fix.
+ */
+.rm-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

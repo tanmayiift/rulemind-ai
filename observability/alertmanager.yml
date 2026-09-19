@@ -60,6 +60,26 @@ route:
   receiver: "paging"
 
   routes:
+    # THE HEARTBEAT GOES SOMEWHERE ELSE, and it must be FIRST -- routes match in order, and the
+    # critical route below would otherwise be reached first by anything that shared its labels.
+    #
+    # Its own destination, because a dead man's switch belongs at a monitor that alerts on
+    # SILENCE, not in the on-call channel. Sending it to `paging` would page a human every
+    # repeat_interval to tell them nothing is wrong, which is how a heartbeat gets muted and
+    # stops being a heartbeat.
+    #
+    # `repeat_interval: 5m` is the actual signal rate: the receiving monitor should expect one
+    # every 5 minutes and alert if it has not seen one in 10-15. `group_wait: 0s` so the first
+    # one after a restart is immediate rather than 30 seconds late.
+    #
+    # `continue: false` (the default) is deliberate -- the heartbeat must not also reach paging.
+    - matchers:
+        - alertname = "Watchdog"
+      receiver: "watchdog"
+      group_wait: 0s
+      group_interval: 5m
+      repeat_interval: 5m
+
     # Critical goes to the paging destination and repeats faster: these are the two that mean
     # decisions are not being served at all.
     - matchers:
@@ -92,6 +112,18 @@ receivers:
     webhook_configs:
       - url_file: /etc/alertmanager/secrets/paging_url
         send_resolved: true
+
+  # THE HEARTBEAT'S DESTINATION -- a dead-man's-switch monitor, not a human.
+  #
+  # Same `url_file` mechanism and the same reasoning: the URL is a credential. If the file is
+  # absent the heartbeat simply does not send, which is EXACTLY what an unconfigured switch
+  # should look like from the outside -- silent. It cannot fail open.
+  #
+  # `send_resolved: false` because this alert never resolves; it is `vector(1)`.
+  - name: "watchdog"
+    webhook_configs:
+      - url_file: /etc/alertmanager/secrets/watchdog_url
+        send_resolved: false
 
   # Kept so `receiver: "null"` above is still a one-word way to silence everything deliberately
   # — which is a legitimate thing to want during a planned migration, and is different from

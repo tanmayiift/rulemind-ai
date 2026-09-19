@@ -134,7 +134,10 @@ export default function LifecyclePage() {
 
         {selected ? (
           <div style={{ ...card, padding: 18, position: isMobile ? "static" : "sticky", top: 16 }}>
-            <h3 style={{ fontSize: 15, margin: "0 0 4px" }}>{selected.name}</h3>
+            {/* h2, not h3: this is the first section under the page h1, and as an h3 it skipped
+              * a level -- the route audit flags it as heading-skip. Size is set here, not by the
+              * tag, so nothing moves. */}
+            <h2 style={{ fontSize: 15, margin: "0 0 4px" }}>{selected.name}</h2>
             <div style={{ marginBottom: 16 }}>{stageBadge(lifecycle?.stage ?? selected.lifecycle_status)}</div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 18, flexWrap: "wrap" }}>

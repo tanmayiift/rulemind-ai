@@ -232,8 +232,8 @@ export function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => v
             </option>
           ))}
         </InlineSelect>
-        <InlineInput value={scorecardName} onChange={(event) => setScorecardName(event.target.value)} placeholder="Scorecard name" />
-        <InlineInput type="number" value={String(baseScore)} onChange={(event) => setBaseScore(Number(event.target.value || 0))} placeholder="Base score" />
+        <InlineInput value={scorecardName} onChange={(event) => setScorecardName(event.target.value)} aria-label="Scorecard name" placeholder="Scorecard name" />
+        <InlineInput type="number" value={String(baseScore)} onChange={(event) => setBaseScore(Number(event.target.value || 0))} aria-label="Base score" placeholder="Base score" />
         <div style={{ alignSelf: "center", justifySelf: "end", fontSize: "var(--rm-fs-hero)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.success }} data-testid="scorecard-live-score">
           {testResult?.score ?? baseScore}
         </div>

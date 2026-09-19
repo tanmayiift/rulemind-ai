@@ -29,7 +29,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 3,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 1039,
     "horizontalOverflow": false,
@@ -54,7 +54,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 6,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 2095,
     "horizontalOverflow": false,
@@ -106,8 +106,8 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 4,
-    "headingSkips": 1,
-    "placeholderOnlyInputs": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 2527,
     "horizontalOverflow": false,
     "counts": {
@@ -132,7 +132,7 @@
     "h1Count": 1,
     "headingCount": 1,
     "headingSkips": 0,
-    "placeholderOnlyInputs": 2,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 1273,
     "horizontalOverflow": false,
     "counts": {
@@ -183,10 +183,10 @@
     "headingCount": 1,
     "headingSkips": 0,
     "placeholderOnlyInputs": 0,
-    "bodyTextLen": 906,
+    "bodyTextLen": 803,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 12,
+      "buttons": 13,
       "links": 33,
       "inputs": 0
     },
@@ -197,14 +197,9 @@
     "emptyHrefLinks": 0,
     "disabledButtons": 0,
     "invisibleText": 0,
-    "consoleErrors": [
-      "Access to fetch at 'http://127.0.0.1:8080/api/v1/audit/decisions' from origin 'http://127.0.0.1:3000' has been blocked by CORS policy: No 'Access-Control-Allow-",
-      "Failed to load resource: net::ERR_FAILED"
-    ],
+    "consoleErrors": [],
     "pageErrors": [],
-    "netFails": [
-      "GET http://127.0.0.1:8080/api/v1/audit/decisions"
-    ]
+    "netFails": []
   },
   {
     "route": "/batch",
@@ -234,10 +229,10 @@
   {
     "route": "/branding",
     "error": null,
-    "h1Count": 0,
+    "h1Count": 1,
     "headingCount": 1,
     "headingSkips": 0,
-    "placeholderOnlyInputs": 2,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 723,
     "horizontalOverflow": false,
     "counts": {
@@ -265,10 +260,10 @@
     "headingCount": 2,
     "headingSkips": 0,
     "placeholderOnlyInputs": 0,
-    "bodyTextLen": 923,
+    "bodyTextLen": 949,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 9,
+      "buttons": 10,
       "links": 33,
       "inputs": 6
     },
@@ -337,13 +332,13 @@
     "route": "/decision-explorer",
     "error": null,
     "h1Count": 1,
-    "headingCount": 1,
-    "headingSkips": 0,
-    "placeholderOnlyInputs": 1,
-    "bodyTextLen": 798,
+    "headingCount": 2,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 778,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 8,
+      "buttons": 9,
       "links": 34,
       "inputs": 1
     },
@@ -354,22 +349,17 @@
     "emptyHrefLinks": 0,
     "disabledButtons": 0,
     "invisibleText": 0,
-    "consoleErrors": [
-      "Access to fetch at 'http://127.0.0.1:8080/api/v1/audit/decisions' from origin 'http://127.0.0.1:3000' has been blocked by CORS policy: No 'Access-Control-Allow-",
-      "Failed to load resource: net::ERR_FAILED"
-    ],
+    "consoleErrors": [],
     "pageErrors": [],
-    "netFails": [
-      "GET http://127.0.0.1:8080/api/v1/audit/decisions"
-    ]
+    "netFails": []
   },
   {
     "route": "/decision-tables",
     "error": null,
     "h1Count": 1,
     "headingCount": 6,
-    "headingSkips": 1,
-    "placeholderOnlyInputs": 3,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 1947,
     "horizontalOverflow": false,
     "counts": {
@@ -418,7 +408,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 3,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 1217,
     "horizontalOverflow": false,
@@ -468,8 +458,8 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 4,
-    "headingSkips": 1,
-    "placeholderOnlyInputs": 2,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 1217,
     "horizontalOverflow": false,
     "counts": {
@@ -477,7 +467,7 @@
       "links": 33,
       "inputs": 8
     },
-    "unnamedButtons": 1,
+    "unnamedButtons": 0,
     "unnamedLinks": 0,
     "unlabelledInputs": 0,
     "imagesNoAlt": 0,
@@ -493,7 +483,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 2,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 895,
     "horizontalOverflow": false,
@@ -543,8 +533,8 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 2,
-    "headingSkips": 1,
-    "placeholderOnlyInputs": 2,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 969,
     "horizontalOverflow": false,
     "counts": {
@@ -568,7 +558,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 2,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 885,
     "horizontalOverflow": false,
@@ -593,7 +583,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 2,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 1381,
     "horizontalOverflow": false,
@@ -619,7 +609,7 @@
     "h1Count": 1,
     "headingCount": 1,
     "headingSkips": 0,
-    "placeholderOnlyInputs": 1,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 871,
     "horizontalOverflow": false,
     "counts": {
@@ -643,7 +633,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 2,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 1120,
     "horizontalOverflow": false,
@@ -693,12 +683,12 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 6,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
-    "bodyTextLen": 1284,
+    "bodyTextLen": 1341,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 14,
+      "buttons": 20,
       "links": 33,
       "inputs": 13
     },
@@ -709,14 +699,9 @@
     "emptyHrefLinks": 0,
     "disabledButtons": 0,
     "invisibleText": 0,
-    "consoleErrors": [
-      "Access to fetch at 'http://127.0.0.1:8080/api/v1/reports/column-suggestions' from origin 'http://127.0.0.1:3000' has been blocked by CORS policy: No 'Access-Con",
-      "Failed to load resource: net::ERR_FAILED"
-    ],
+    "consoleErrors": [],
     "pageErrors": [],
-    "netFails": [
-      "GET http://127.0.0.1:8080/api/v1/reports/column-suggestions"
-    ]
+    "netFails": []
   },
   {
     "route": "/review-queue",
@@ -749,7 +734,7 @@
     "h1Count": 0,
     "headingCount": 0,
     "headingSkips": 0,
-    "placeholderOnlyInputs": 1,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 1782,
     "horizontalOverflow": false,
     "counts": {
@@ -757,7 +742,7 @@
       "links": 33,
       "inputs": 7
     },
-    "unnamedButtons": 1,
+    "unnamedButtons": 0,
     "unnamedLinks": 0,
     "unlabelledInputs": 0,
     "imagesNoAlt": 0,
@@ -773,7 +758,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 2,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 940,
     "horizontalOverflow": false,
@@ -799,7 +784,7 @@
     "h1Count": 1,
     "headingCount": 1,
     "headingSkips": 0,
-    "placeholderOnlyInputs": 2,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 791,
     "horizontalOverflow": false,
     "counts": {
@@ -873,7 +858,7 @@
     "error": null,
     "h1Count": 1,
     "headingCount": 3,
-    "headingSkips": 1,
+    "headingSkips": 0,
     "placeholderOnlyInputs": 0,
     "bodyTextLen": 1483,
     "horizontalOverflow": false,
@@ -896,11 +881,11 @@
   {
     "route": "/studio",
     "error": null,
-    "h1Count": 0,
-    "headingCount": 0,
+    "h1Count": 1,
+    "headingCount": 1,
     "headingSkips": 0,
-    "placeholderOnlyInputs": 1,
-    "bodyTextLen": 1229,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1242,
     "horizontalOverflow": false,
     "counts": {
       "buttons": 47,
@@ -949,7 +934,7 @@
     "h1Count": 1,
     "headingCount": 1,
     "headingSkips": 0,
-    "placeholderOnlyInputs": 3,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 8134,
     "horizontalOverflow": false,
     "counts": {
@@ -971,11 +956,11 @@
   {
     "route": "/workflow-builder",
     "error": null,
-    "h1Count": 0,
-    "headingCount": 0,
+    "h1Count": 1,
+    "headingCount": 1,
     "headingSkips": 0,
     "placeholderOnlyInputs": 0,
-    "bodyTextLen": 1341,
+    "bodyTextLen": 1358,
     "horizontalOverflow": false,
     "counts": {
       "buttons": 32,

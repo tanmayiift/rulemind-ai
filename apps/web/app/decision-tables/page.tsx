@@ -424,7 +424,7 @@ export default function DecisionTablesPage() {
                     <span style={{ fontSize: 11, fontWeight: 700, color: "var(--rm-accent)", textTransform: "uppercase", letterSpacing: 0.4 }}>Input</span>
                     <button onClick={() => removeInput(c.id)} title="Remove input" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--rm-muted)" }}><Trash2 size={14} /></button>
                   </div>
-                  <Input value={c.name} onChange={(e) => setInput(c.id, { name: e.target.value })} placeholder="Column label" />
+                  <Input value={c.name} onChange={(e) => setInput(c.id, { name: e.target.value })} aria-label="Column label" placeholder="Column label" />
                   <div style={{ height: 6 }} />
                   <Select value={c.variable_id} onChange={(e) => { const v = variables.find((x) => x.id === e.target.value); setInput(c.id, { variable_id: e.target.value, field_type: v?.field_type || c.field_type }); }}>
                     <option value="">— bind variable —</option>
@@ -442,7 +442,7 @@ export default function DecisionTablesPage() {
                     <span style={{ fontSize: 11, fontWeight: 700, color: "var(--rm-success)", textTransform: "uppercase", letterSpacing: 0.4 }}>Output</span>
                     <button onClick={() => removeOutput(c.id)} title="Remove output" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--rm-muted)" }}><Trash2 size={14} /></button>
                   </div>
-                  <Input value={c.name} onChange={(e) => setOutput(c.id, { name: e.target.value })} placeholder="Output label" />
+                  <Input value={c.name} onChange={(e) => setOutput(c.id, { name: e.target.value })} aria-label="Output label" placeholder="Output label" />
                   <div style={{ height: 6 }} />
                   <Select value={c.type} onChange={(e) => setOutput(c.id, { type: e.target.value })}>
                     {["outcome", "string", "number", "boolean"].map((t) => <option key={t} value={t}>{t}</option>)}
@@ -488,7 +488,7 @@ export default function DecisionTablesPage() {
                                   {OPERATORS.map((o) => <option key={o} value={o}>{o}</option>)}
                                 </Select>
                                 {cellNeedsValue(cell.operator) ? (
-                                  <Input value={cell.value ?? ""} onChange={(e) => setCell(row.id, c.id, { value: e.target.value })} placeholder="value" style={{ width: 74, fontSize: 12, padding: "4px 6px" }} />
+                                  <Input aria-label="Condition cell value" value={cell.value ?? ""} onChange={(e) => setCell(row.id, c.id, { value: e.target.value })} placeholder="value" style={{ width: 74, fontSize: 12, padding: "4px 6px" }} />
                                 ) : null}
                                 {cell.operator === "between" ? (
                                   <Input value={cell.value2 ?? ""} onChange={(e) => setCell(row.id, c.id, { value2: e.target.value })} placeholder="…max" style={{ width: 60, fontSize: 12, padding: "4px 6px" }} />
@@ -505,7 +505,7 @@ export default function DecisionTablesPage() {
                                 {OUTCOMES.map((o) => <option key={o} value={o}>{o}</option>)}
                               </Select>
                             ) : (
-                              <Input value={row.outputs[c.id] ?? ""} onChange={(e) => setRowOutput(row.id, c.id, e.target.value)} placeholder="value" style={{ fontSize: 12, padding: "4px 6px" }} />
+                              <Input aria-label="Output cell value" value={row.outputs[c.id] ?? ""} onChange={(e) => setRowOutput(row.id, c.id, e.target.value)} placeholder="value" style={{ fontSize: 12, padding: "4px 6px" }} />
                             )}
                           </td>
                         ))}

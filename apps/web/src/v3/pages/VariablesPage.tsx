@@ -542,7 +542,7 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
                 beginDraft();
                 setName(event.target.value);
               }}
-              placeholder="Variable name"
+              aria-label="Variable name" placeholder="Variable name"
               data-testid="variable-name"
             />
             <InlineSelect
@@ -569,7 +569,7 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
                 beginDraft();
                 setCategory(event.target.value);
               }}
-              placeholder="Category"
+              aria-label="Category" placeholder="Category"
               data-testid="variable-category"
             />
           </div>
@@ -579,7 +579,7 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
               beginDraft();
               setDescription(event.target.value);
             }}
-            placeholder="Description"
+            aria-label="Description" placeholder="Description"
             data-testid="variable-description"
           />
         </div>

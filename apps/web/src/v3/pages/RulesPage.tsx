@@ -614,17 +614,17 @@ function AdvancedRuleTreeEditor(props: {
           <div style={{ fontSize: "var(--rm-fs-small)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.accent, letterSpacing: 0.7 }}>CONDITION</div>
           <div style={{ display: "flex", gap: 6 }}>
             {props.onMoveUp ? (
-              <button type="button" onClick={props.onMoveUp} style={actionButtonStyle}>
+              <button type="button" aria-label="Move up" title="Move up" onClick={props.onMoveUp} style={actionButtonStyle}>
                 <ArrowUp size={14} />
               </button>
             ) : null}
             {props.onMoveDown ? (
-              <button type="button" onClick={props.onMoveDown} style={actionButtonStyle}>
+              <button type="button" aria-label="Move down" title="Move down" onClick={props.onMoveDown} style={actionButtonStyle}>
                 <ArrowDown size={14} />
               </button>
             ) : null}
             {props.onRemove ? (
-              <button type="button" onClick={props.onRemove} style={actionButtonStyle}>
+              <button type="button" aria-label="Remove" title="Remove" onClick={props.onRemove} style={actionButtonStyle}>
                 <Trash2 size={14} />
               </button>
             ) : null}
@@ -657,6 +657,7 @@ function AdvancedRuleTreeEditor(props: {
             <InlineInput
               value={String(props.node.value ?? "")}
               onChange={(event) => props.onChange({ ...props.node, value: event.target.value })}
+              aria-label="Condition value"
               placeholder={props.node.operator === "in" || props.node.operator === "not_in" ? "a, b, c" : props.node.operator === "regex" ? "pattern" : "Value"}
               style={{ width: 140 }}
             />
@@ -688,17 +689,17 @@ function AdvancedRuleTreeEditor(props: {
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {props.onMoveUp ? (
-              <button type="button" onClick={props.onMoveUp} style={actionButtonStyle}>
+              <button type="button" aria-label="Move up" title="Move up" onClick={props.onMoveUp} style={actionButtonStyle}>
                 <ArrowUp size={14} />
               </button>
             ) : null}
             {props.onMoveDown ? (
-              <button type="button" onClick={props.onMoveDown} style={actionButtonStyle}>
+              <button type="button" aria-label="Move down" title="Move down" onClick={props.onMoveDown} style={actionButtonStyle}>
                 <ArrowDown size={14} />
               </button>
             ) : null}
             {props.onRemove ? (
-              <button type="button" onClick={props.onRemove} style={actionButtonStyle}>
+              <button type="button" aria-label="Remove" title="Remove" onClick={props.onRemove} style={actionButtonStyle}>
                 <Trash2 size={14} />
               </button>
             ) : null}
@@ -767,17 +768,17 @@ function AdvancedRuleTreeEditor(props: {
         </div>
         <div style={{ display: "flex", gap: 6 }}>
           {props.onMoveUp ? (
-            <button type="button" onClick={props.onMoveUp} style={actionButtonStyle}>
+            <button type="button" aria-label="Move up" title="Move up" onClick={props.onMoveUp} style={actionButtonStyle}>
               <ArrowUp size={14} />
             </button>
           ) : null}
           {props.onMoveDown ? (
-            <button type="button" onClick={props.onMoveDown} style={actionButtonStyle}>
+            <button type="button" aria-label="Move down" title="Move down" onClick={props.onMoveDown} style={actionButtonStyle}>
               <ArrowDown size={14} />
             </button>
           ) : null}
           {props.onRemove ? (
-            <button type="button" onClick={props.onRemove} style={actionButtonStyle}>
+            <button type="button" aria-label="Remove" title="Remove" onClick={props.onRemove} style={actionButtonStyle}>
               <Trash2 size={14} />
             </button>
           ) : null}
@@ -1199,6 +1200,7 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
                                   <InlineInput
                                     value={node.value ?? ""}
                                     onChange={(event) => setNodes((items) => items.map((item) => (item.id === node.id ? { ...item, value: event.target.value } : item)))}
+                                    aria-label="Condition value"
                                     placeholder={node.operator === "in" || node.operator === "not_in" ? "a, b, c" : node.operator === "regex" ? "pattern" : "Value"}
                                     style={{ width: 110 }}
                                   />

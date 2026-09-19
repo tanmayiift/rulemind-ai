@@ -281,7 +281,7 @@ export default function AICopilotPage() {
                 </button>
               ))}
             </div>
-            <textarea className="rm-textarea" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder={genMode === "policy" ? "e.g. Pull the loan connector, run the bureau and KYC gates, then approve." : "e.g. Reject if there are any delinquencies in the last 2 years, else approve."} />
+            <textarea aria-label={genMode === "policy" ? "Describe the policy in plain English" : "Describe the rule in plain English"} className="rm-textarea" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder={genMode === "policy" ? "e.g. Pull the loan connector, run the bureau and KYC gates, then approve." : "e.g. Reject if there are any delinquencies in the last 2 years, else approve."} />
             <div>
               <Button variant="primary" onClick={generate} disabled={generating || !configured}><Sparkles size={15} /> {generating ? "Generating…" : "Generate draft"}</Button>
               {!configured ? <span style={{ marginLeft: 10, fontSize: 12, color: "var(--rm-dim)" }}>Add a key first.</span> : null}

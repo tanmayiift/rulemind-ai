@@ -165,12 +165,15 @@ export default function JourneysPage() {
               {draft.screens.map((screen, index) => (
                 <div key={index} style={{ display: "grid", gridTemplateColumns: "28px 1fr 150px 1fr 32px", gap: 10, alignItems: "center" }}>
                   <span style={{ fontSize: 12, color: "var(--rm-dim)", fontFamily: "var(--font-mono)" }}>{index + 1}</span>
-                  <Input value={screen.id} onChange={(e) => setScreen(index, { id: e.target.value })} placeholder="screen_id" disabled={draft.is_locked} />
+                  <Input value={screen.id} onChange={(e) => setScreen(index, { id: e.target.value })} aria-label="Screen ID" placeholder="screen_id" disabled={draft.is_locked} />
                   <Select value={screen.type ?? "form"} onChange={(e) => setScreen(index, { type: e.target.value })} disabled={draft.is_locked}>
                     {SCREEN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                   </Select>
-                  <Input value={screen.title ?? ""} onChange={(e) => setScreen(index, { title: e.target.value })} placeholder="Heading shown to the customer" disabled={draft.is_locked} />
-                  <Button variant="secondary" onClick={() => removeScreen(index)} disabled={draft.is_locked}><Trash2 size={13} /></Button>
+                  <Input value={screen.title ?? ""} onChange={(e) => setScreen(index, { title: e.target.value })} aria-label="Screen heading" placeholder="Heading shown to the customer" disabled={draft.is_locked} />
+                  {/* Icon-only, so the icon is not the name. Without this it announces as an
+                    * unnamed button -- and it deletes a screen, which is the worst kind to have
+                    * to guess at. */}
+                  <Button aria-label={`Remove screen ${index + 1}`} title={`Remove screen ${index + 1}`} variant="secondary" onClick={() => removeScreen(index)} disabled={draft.is_locked}><Trash2 size={13} /></Button>
                 </div>
               ))}
             </div>

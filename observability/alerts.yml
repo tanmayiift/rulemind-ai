@@ -73,6 +73,64 @@
 # a threshold calibrated against someone else's hardware is still a guess.
 
 groups:
+  # ── THE ALERTING PIPELINE ITSELF ─────────────────────────────────────────────────────────────
+  #
+  # Every other rule in this file assumes the pipe works. Nothing checked that it does, and the
+  # failure is silent in the worst possible way: if paging breaks, the symptom is that you stop
+  # being woken up, which is indistinguishable from everything being fine.
+  #
+  # This group is the dead man's switch. It is the standard pattern (kube-prometheus ships the
+  # same thing under the same name) and it inverts the question: instead of alerting when
+  # something is wrong, Watchdog alerts CONSTANTLY, and the receiving side alerts on its ABSENCE.
+  # An absent heartbeat means Prometheus, Alertmanager, the network or the destination is down --
+  # and those are exactly the cases where a normal alert cannot reach you.
+  #
+  # YOU HAVE TO CONFIGURE THE OTHER HALF. A heartbeat nobody watches is decoration. Point it at a
+  # dead-man's-switch service:
+  #
+  #   Grafana OnCall  · Heartbeat monitor, gives you a URL and alerts when it goes quiet
+  #   PagerDuty       · Service -> Integrations -> Events API v2 with a "missing heartbeat" rule
+  #   Opsgenie        · Heartbeats -> Add heartbeat (free tier includes this)
+  #   healthchecks.io · Free, self-hostable, one URL per check
+  #
+  # The receiving side must expect one roughly every `repeat_interval` (alertmanager.yml) and
+  # alert if it has not seen one in 2-3x that.
+  - name: rulemind-alerting-pipeline
+    rules:
+      - alert: Watchdog
+        # `vector(1)` is always true, so this alert is always firing, on purpose. It carries no
+        # condition because it is not reporting on the system -- it is reporting that the
+        # reporting works.
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Alerting pipeline heartbeat"
+          description: >-
+            This alert fires continuously and means nothing on its own. Its ABSENCE is the
+            signal: if your dead-man's-switch stops receiving it, the alerting path is broken
+            and every other rule in this file has gone quiet without telling you.
+          runbook: docs/runbooks/production.md#alerting-is-broken
+
+      - alert: RuleMindPagingIsFailing
+        # Alertmanager's own account of whether it could deliver. This catches a wrong URL, a
+        # revoked webhook, or a destination that has started returning 5xx -- all of which look
+        # identical from inside the system: quiet.
+        expr: |
+          rate(alertmanager_notifications_failed_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager cannot deliver to {{ $labels.integration }}"
+          description: >-
+            Notifications are failing, which means alerts are being raised and not arriving.
+            The commonest cause is a missing or wrong `observability/secrets/paging_url` --
+            `url_file` is read at NOTIFY time, so a missing file starts Alertmanager cleanly
+            and fails only when something actually fires. Check Alertmanager's logs for
+            `notify retry canceled`.
+          runbook: docs/runbooks/production.md#alerting-is-broken
+
   - name: rulemind-availability
     rules:
       - alert: RuleMindApiDown

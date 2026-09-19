@@ -154,6 +154,10 @@ export default function WorkflowBuilderPage() {
 
   return (
     <div style={{ padding: 20, height: "100%", display: "flex", flexDirection: "column" }}>
+      {/* The page heading. Visually hidden because a full-height canvas cannot spare the vertical
+        * space, present because a page with no heading element has no outline and no landmark to
+        * navigate to -- this file had neither. See .rm-sr-only. */}
+      <h1 className="rm-sr-only">Workflow Builder</h1>
       {/* toolbar */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
         <select value={policyId} onChange={(e) => selectPolicy(e.target.value)} style={selectStyle(theme)}>

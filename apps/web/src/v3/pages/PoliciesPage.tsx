@@ -263,7 +263,7 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
               </option>
             ))}
           </InlineSelect>
-          <InlineInput value={policyName} onChange={(event) => setPolicyName(event.target.value)} placeholder="Policy name" />
+          <InlineInput value={policyName} onChange={(event) => setPolicyName(event.target.value)} aria-label="Policy name" placeholder="Policy name" />
           <div style={{ display: "grid", gap: 8 }}>
             <Button small onClick={() => setSteps((items) => [...items, { type: "connector", ref_id: props.data.connectors[0]?.id ?? "bureau", label: "Connector" }])}>
               + Connector step

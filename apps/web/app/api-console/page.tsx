@@ -235,7 +235,7 @@ export default function ApiConsolePage() {
             <select className="rm-select" value={method} onChange={(e) => setMethod(e.target.value)} style={{ width: 108, fontWeight: 700 }}>
               {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <input className="rm-input rm-mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/v1/resource" style={{ flex: 1 }} />
+            <input className="rm-input rm-mono" value={url} onChange={(e) => setUrl(e.target.value)} aria-label="Request URL" placeholder="https://api.example.com/v1/resource" style={{ flex: 1 }} />
             <Button variant="secondary" onClick={() => setShowEnv((s) => !s)}>Env{env.length ? ` · ${env.length}` : ""}</Button>
             <Button variant="primary" onClick={send} disabled={sending}>{sending ? "Sending…" : "Send"}</Button>
           </div>
@@ -255,7 +255,7 @@ export default function ApiConsolePage() {
                 {env.map((v, i) => (
                   <div key={i} style={{ display: "flex", gap: 8 }}>
                     <input className="rm-input rm-mono" value={v.key} placeholder="key" onChange={(e) => setEnv((arr) => arr.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} style={{ flex: 1 }} />
-                    <input className="rm-input rm-mono" value={v.value} placeholder="value" onChange={(e) => setEnv((arr) => arr.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} style={{ flex: 2 }} />
+                    <input aria-label="Variable value" className="rm-input rm-mono" value={v.value} placeholder="value" onChange={(e) => setEnv((arr) => arr.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} style={{ flex: 2 }} />
                     <Button variant="ghost" size="sm" onClick={() => setEnv((arr) => arr.filter((_, j) => j !== i))}><Trash2 size={14} /></Button>
                   </div>
                 ))}
@@ -274,6 +274,7 @@ export default function ApiConsolePage() {
             <div style={{ padding: 12 }}>
               <textarea className="rm-textarea rm-mono" spellCheck={false} value={reqTab === "body" ? bodyText : headersText}
                 onChange={(e) => (reqTab === "body" ? setBodyText(e.target.value) : setHeadersText(e.target.value))}
+                aria-label={reqTab === "body" ? "Request body (JSON)" : "Request headers (JSON)"}
                 placeholder={reqTab === "body" ? '{ "key": "{{value}}" }' : '{ "Authorization": "Bearer {{token}}" }'}
                 style={{ minHeight: 110, fontSize: 12.5, border: "none", boxShadow: "none", padding: 0, background: "transparent" }} />
             </div>

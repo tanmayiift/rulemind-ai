@@ -130,6 +130,10 @@ export default function BuildStudioPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)", minHeight: 520 }}>
+      {/* The page heading. Visually hidden because a full-height canvas cannot spare the
+        * vertical space, present because a page with no heading element has no outline and
+        * no landmark to navigate to -- this file had neither. See .rm-sr-only. */}
+      <h1 className="rm-sr-only">Build Studio</h1>
       {/* top bar */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", paddingBottom: 12, borderBottom: `1px solid ${theme.border}` }}>
         <select value={policyId} onChange={(e) => { touched.current = true; selectPolicy(e.target.value); }} style={sel(theme)}>
@@ -147,7 +151,7 @@ export default function BuildStudioPage() {
           ))}
         </select>
         <button onClick={newPolicy} style={ghost(theme)}>+ New</button>
-        <input value={name} onChange={(e) => { touched.current = true; setName(e.target.value); setDirty(true); }} placeholder="Policy name" style={{ ...inp(theme), flex: 1, minWidth: 180 }} />
+        <input value={name} onChange={(e) => { touched.current = true; setName(e.target.value); setDirty(true); }} aria-label="Policy name" placeholder="Policy name" style={{ ...inp(theme), flex: 1, minWidth: 180 }} />
         {dirty ? <span style={{ fontSize: 12, color: theme.warning }}>unsaved</span> : null}
         {/* Requires a SAVED policy. `analyze-mece` accepts posted steps so unsaved EDITS can be
             checked, but it still resolves the policy id first -- so the old `policyId || "draft"`
@@ -360,7 +364,7 @@ function InlineRuleEditor({ theme, variables, apiBaseUrl, apiKey, onSaved }: {
           <select value={c.operator} onChange={(e) => setC(i, { operator: e.target.value })} style={{ ...sel(theme), width: 66, fontSize: 12 }}>
             {OPERATORS.map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
-          <input value={c.value} onChange={(e) => setC(i, { value: e.target.value })} placeholder="value" style={{ ...inp(theme), width: 60, fontSize: 12 }} />
+          <input aria-label="Condition value" value={c.value} onChange={(e) => setC(i, { value: e.target.value })} placeholder="value" style={{ ...inp(theme), width: 60, fontSize: 12 }} />
           <button onClick={() => setConds((cs) => cs.filter((_, j) => j !== i))} style={iconBtn(theme)}>×</button>
         </div>
       ))}

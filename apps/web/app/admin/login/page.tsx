@@ -46,7 +46,7 @@ export default function AdminLoginPage() {
         </label>
         <label style={{ display: "grid", gap: 4 }}>
           <span style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-normal)" as unknown as number, color: theme.muted }}>Password</span>
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" style={adminInput(theme)} />
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} aria-label="Admin password" placeholder="Password" style={adminInput(theme)} />
         </label>
         <button type="submit" style={{ border: "none", background: theme.accent, color: theme.inverseText, borderRadius: 12, padding: "12px 16px", fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, cursor: "pointer" }}>
           Sign in

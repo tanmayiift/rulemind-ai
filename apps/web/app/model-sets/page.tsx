@@ -204,13 +204,14 @@ export default function ModelSetsPage() {
                       data-testid={`ms-member-label-${i}`}
                       value={m.label || ""}
                       onChange={(e) => setMember(i, { label: e.target.value })}
-                      placeholder="Label (defaults to the model id)"
+                      aria-label="Model label" placeholder="Label (defaults to the model id)"
                     />
                     <Input
                       mono
                       data-testid={`ms-member-condition-${i}`}
                       value={m.condition || ""}
                       onChange={(e) => setMember(i, { condition: e.target.value })}
+                      aria-label="Routing condition"
                       placeholder='Condition, e.g. score > 700 — blank means fallback'
                       style={{ fontSize: 12 }}
                     />

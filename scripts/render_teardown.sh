@@ -14,9 +14,13 @@
 #
 # then:
 #
-#   export RENDER_API_KEY=rnd_xxxxxxxxxxxx     # in your shell only
-#   bash scripts/render_teardown.sh            # lists what it found, asks, then deletes
-#   bash scripts/render_teardown.sh --yes      # skip the prompt
+#   cp .env.render.example .env.render        # paste the key into .env.render (gitignored)
+#   bash scripts/render_teardown.sh           # lists what it found, asks, then deletes
+#   bash scripts/render_teardown.sh --yes     # skip the prompt
+#
+# or, without a file:
+#
+#   export RENDER_API_KEY=rnd_xxxxxxxxxxxx    # in your shell only
 #
 # The token is read from the environment, never written to a file, never passed as an argument
 # (argv is visible in `ps`), and never echoed — including in the curl trace on failure.
@@ -33,12 +37,27 @@ ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; }
 bad()  { printf '  \033[31mfail\033[0m  %s\n' "$1"; }
 note() { printf '        %s\n' "$1"; }
 
+# `.env.render` is gitignored (`.env.*`), same shape as `.env.ai`. Reading it here means the key
+# is pasted into ONE file whose only job is to hold it, rather than typed into a shell whose
+# history keeps it.
+if [ -z "${RENDER_API_KEY:-}" ] && [ -f "$(dirname "$0")/../.env.render" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$(dirname "$0")/../.env.render"
+  set +a
+fi
+
 if [ -z "${RENDER_API_KEY:-}" ]; then
-  bad "RENDER_API_KEY is not set."
-  note "Create one at: Render dashboard -> Account Settings -> API Keys -> Create API Key"
-  note "Then:  export RENDER_API_KEY=rnd_...   (this shell only; never commit it)"
+  bad "RENDER_API_KEY is not set and .env.render was not found."
+  note "Create a key at: Render dashboard -> Account Settings -> API Keys -> Create API Key"
+  note "Then:  cp .env.render.example .env.render   and paste it in (the file is gitignored),"
+  note "  or:  export RENDER_API_KEY=rnd_...        (this shell only; never commit it)"
   exit 2
 fi
+
+# Whitespace from a paste produces a 401 that reads like a revoked key. Trim it here instead.
+RENDER_API_KEY="$(printf '%s' "$RENDER_API_KEY" | tr -d '[:space:]')"
+export RENDER_API_KEY
 command -v curl >/dev/null 2>&1 || { bad "curl is required"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { bad "python3 is required (for JSON parsing)"; exit 2; }
 

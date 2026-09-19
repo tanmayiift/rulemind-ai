@@ -122,7 +122,7 @@ export default function DecisionExplorerPage() {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search by decision id, policy, or outcome…"
+          aria-label="Search decisions" placeholder="Search by decision id, policy, or outcome…"
           style={{ flex: 1, border: 0, background: "transparent", color: theme.text, fontSize: 14, outline: "none", fontFamily: "var(--font-mono)" }}
         />
         <span style={{ color: theme.muted, fontSize: 12 }}>{filtered.length} of {decisions.length}</span>

@@ -94,15 +94,18 @@ function AdminGate({ apiBaseUrl, theme, onAuthed }: { apiBaseUrl: string; theme:
   return (
     <div style={{ maxWidth: 400, margin: "48px auto", padding: 24 }}>
       <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 24 }}>
-        <h2 style={{ margin: "0 0 6px", color: theme.text, fontSize: 18 }}>Admin sign-in required</h2>
+        {/* h1, not h2: in this state the gate IS the page, so it owns the document heading. As an
+          * h2 the page had no h1 at all -- which is what the route audit reported for /branding,
+          * because an unauthenticated visit never reaches the real heading below. */}
+        <h1 style={{ margin: "0 0 6px", color: theme.text, fontSize: 18 }}>Admin sign-in required</h1>
         <p style={{ margin: "0 0 18px", color: theme.muted, fontSize: 13, lineHeight: 1.5 }}>
           White-label branding is visible to platform admins only. Sign in with your admin
           account to change the CTA colour, backgrounds, brand name, and visible tabs.
         </p>
         <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="admin@rulemind.local" autoComplete="username"
+          <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" aria-label="Admin email" placeholder="admin@rulemind.local" autoComplete="username"
             style={inputStyle(theme)} />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Password" autoComplete="current-password"
+          <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" aria-label="Admin password" placeholder="Password" autoComplete="current-password"
             style={inputStyle(theme)} />
           {error ? <div style={{ color: theme.danger, fontSize: 13 }}>{error}</div> : null}
           <button type="submit" disabled={busy} style={ctaStyle(theme, busy)}>{busy ? "Signing in…" : "Sign in"}</button>

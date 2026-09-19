@@ -340,6 +340,56 @@ def decrypt_decision_field(value: Any) -> Any:
         raise _decryption_error("decision field") from exc
 
 
+# A row-level flag, NOT a value substituted into the field.
+#
+# The first version of this returned a marker DICT in place of whatever could not be decrypted.
+# That smuggles a dict into fields that are lists -- `trace` and `rule_results` -- and it defeats
+# the `or []` guards at the call site, because a non-empty dict is truthy. The dashboard then
+# died on `(selected.trace ?? []).map is not a function`: the guard was for null, and it had been
+# handed an object instead. A fallback that changes a field's TYPE is not a fallback.
+#
+# So the field falls back to an empty value OF ITS OWN SHAPE, and the row carries one boolean
+# saying why it is empty. Callers that render rows get something safe to iterate; callers that
+# care about the difference between "empty" and "unreadable" read the flag.
+DECISION_UNDECRYPTABLE_KEY = "undecryptable"
+
+
+def decrypt_decision_field_lenient(value: Any, empty: Any = None) -> Any:
+    """Decrypt for a LISTING, where one bad row must not take out the page.
+
+    `decrypt_decision_field` raises, and that is right when a caller asked for ONE decision: an
+    audit record you cannot decrypt must not be returned as though it were fine, and the error it
+    raises names the key rotation that caused it.
+
+    It is wrong for a list. A decision log accumulates rows across key rotations, restores and --
+    as happened here -- a test lane that shared the app's database under a different
+    RULEMIND_CONFIG_KEY. One such row made GET /api/v1/audit/decisions return HTTP 500, which
+    took out /audit, /decision-explorer and /reports together. The browser then reported it as a
+    CORS failure, because an unhandled 500 never reaches the CORS middleware that would have
+    added the header -- so the visible symptom pointed at the wrong subsystem entirely.
+
+    11,800 readable rows being hidden by one unreadable one is the worst available trade: the
+    operator loses the log exactly when something has gone wrong with the keys. Marking the row
+    keeps the other rows, and keeps the problem VISIBLE instead of turning it into a 500 whose
+    traceback only exists in the server log.
+    """
+    try:
+        return decrypt_decision_field(value)
+    except DecryptionError:
+        # `empty` is the caller's own zero value for this field -- {} for a mapping, [] for a
+        # list, None for a scalar -- so the shape the caller already guards for is preserved.
+        return copy.deepcopy(empty)
+
+
+def decision_field_is_undecryptable(value: Any) -> bool:
+    """True when a stored decision field is ciphertext none of the configured keys opens."""
+    try:
+        decrypt_decision_field(value)
+        return False
+    except DecryptionError:
+        return True
+
+
 def audit_encryption_enabled() -> bool:
     """Encrypt audit metadata and source IPs at rest (default ON).
 
@@ -1163,22 +1213,34 @@ class Storage:
 
     @staticmethod
     def _decision_to_dict(model: Decision) -> Dict[str, Any]:
+        # LENIENT ON PURPOSE -- see decrypt_decision_field_lenient. This builds every row of
+        # every decision listing, so a single undecryptable row here is the difference between a
+        # marked row and a 500 that takes out three pages.
+        encrypted_fields = (
+            model.payload_preview, model.computed_variables,
+            model.rule_results, model.scorecard_result, model.trace,
+        )
+        undecryptable = any(decision_field_is_undecryptable(f) for f in encrypted_fields)
         return {
             "id": model.id,
             "client_id": model.client_id,
             "user_id": model.user_id,
             "policy_id": model.policy_id,
-            "payload": copy.deepcopy(decrypt_decision_field(model.payload_preview) or {}),
+            # ONE flag for the row, rather than a marker hidden inside a field whose type the
+            # dashboard relies on. A consumer that just renders the list sees empty fields; a
+            # consumer that needs to know reads this and can say so.
+            DECISION_UNDECRYPTABLE_KEY: undecryptable,
+            "payload": copy.deepcopy(decrypt_decision_field_lenient(model.payload_preview, {}) or {}),
             "payload_hash": model.payload_hash,
-            "computed_variables": copy.deepcopy(decrypt_decision_field(model.computed_variables) or {}),
+            "computed_variables": copy.deepcopy(decrypt_decision_field_lenient(model.computed_variables, {}) or {}),
             # rule_results / scorecard_result / trace are decrypted here for the same reason the
             # two above are: they carry the same PII. The trace records the evaluated INPUT
             # values at every step, so leaving it in the clear (as it was) meant encrypting
             # payload_preview protected almost nothing — the plaintext sat one column over, and
             # redact_payload is applied only to the payload, never to the trace.
-            "rule_results": copy.deepcopy(decrypt_decision_field(model.rule_results) or []),
-            "scorecard_result": copy.deepcopy(decrypt_decision_field(model.scorecard_result)),
-            "trace": copy.deepcopy(decrypt_decision_field(model.trace) or []),
+            "rule_results": copy.deepcopy(decrypt_decision_field_lenient(model.rule_results, []) or []),
+            "scorecard_result": copy.deepcopy(decrypt_decision_field_lenient(model.scorecard_result, None)),
+            "trace": copy.deepcopy(decrypt_decision_field_lenient(model.trace, []) or []),
             "outcome": model.outcome,
             "latency_ms": model.latency_ms,
             "source": model.source,
@@ -1236,7 +1298,8 @@ class Storage:
         """
         undecryptable = False
         try:
-            metadata = decrypt_decision_field(model.metadata_json)
+            # Lenient for the same reason: this builds the AUDIT EVENT listing.
+            metadata = decrypt_decision_field_lenient(model.metadata_json, {})
         except DecryptionError:
             metadata, undecryptable = {}, True
         # deepcopy unconditionally. decrypt_decision_field returns a legacy plaintext row's dict
