@@ -376,6 +376,19 @@ dropped when the user changes their screen lock — **is** covered.
 Issue **#133** describes emulator jobs in `sdk-verify.yml`, a workflow that no longer exists.
 Its premise is gone; the two device-only properties above are what remains of its substance.
 
+**Both were closed on real hardware on 2026-09-19** (#176). 14 instrumentation tests, run on a
+Nothing Phone (1) (Android 16, `securityLevel=1` — TRUSTED_ENVIRONMENT), a Galaxy S23 and an
+emulator: 42 runs, 0 failures. `getEncoded()` returning null **is** the non-exportability proof —
+for an ordinary `SecretKeySpec` it hands back the 32 raw bytes; for a keystore key the platform
+has nothing to give. The legacy migration's happy path is covered too: a populated
+`EncryptedSharedPreferences` is copied, the old store is not deleted, and `CryptoManager` presents
+the SAME public key afterwards.
+
+Mutation-checked: swapping `keystoreKey()` for a plain in-process `SecretKeySpec` leaves every
+functional test passing and fails 4 of these. That asymmetry is the argument for running them on
+a device at all. The gate gains an opt-in `device` lane — opt-in because a gate that requires
+hardware is a gate that gets disabled.
+
 ### 8. Still needs the account owner
 
 - **Render services are STILL LIVE and may still be billing.** Re-probed **2026-09-19**: the API
@@ -389,9 +402,32 @@ Its premise is gone; the two device-only properties above are what remains of it
   have reported the service dead. It is not. This document already records making exactly that
   mistake once.
 
-- **AI generation has never run against a real provider (#123).** The suite
-  (`tests/test_ai_live.py`) and its runner (`scripts/run_ai_live.sh`) exist and skip without a
-  key, because the calls are billed. Six endpoints unvalidated.
+- ~~**AI generation has never run against a real provider (#123).**~~ **CLOSED 2026-09-19.**
+  10/10 live tests pass against a real OpenAI key. The two that carry the weight: a generated
+  rule is SAVED and comes back compiled to `IF (Bureau Score >= 600) → APPROVE ELSE → REJECT`,
+  and the usage counters move against real tokens. Running it found the suite's own assertions
+  were written against a shape the API never returns, so it would have failed on its own
+  invention the first time anyone supplied a key.
+
+  Also found: `GET /ai/models` defaulted to the literal `"anthropic"` and ignored the
+  workspace's configured provider, so an OpenAI workspace got five stale Anthropic model names
+  and `live: false` with no error — a well-formed list of real models, just the wrong
+  provider's, which is why nothing surfaced it. 5 curated → 82 live.
+
+- **Nothing watches the watchers — now something does.** Every rule in `alerts.yml` assumed the
+  paging pipe works, and nothing checked it. That failure is silent in the worst way: if paging
+  breaks, the symptom is that you stop being woken up, which is indistinguishable from
+  everything being fine. There is now a `Watchdog` dead man's switch (`expr: vector(1)`, always
+  firing) routed to its OWN destination on a 5-minute repeat — a heartbeat in the on-call
+  channel gets muted and stops being a heartbeat — plus an alert on
+  `alertmanager_notifications_failed_total`, which catches a revoked webhook or a destination
+  returning 5xx. `scripts/verify_paging.sh` walks the whole chain link by link and `--send`
+  injects a real alert to prove delivery.
+
+  **You still have to configure the other half**: a heartbeat nobody watches is decoration. Point
+  `observability/secrets/watchdog_url` at a dead-man's-switch monitor (Grafana OnCall heartbeat,
+  PagerDuty, Opsgenie Heartbeats, healthchecks.io — all have free tiers) set to alert if it has
+  not heard from you in 10–15 minutes.
 
 - **Alertmanager's last hop — the receiver is now real; only the destination is missing.** Both
   routes name a `paging` receiver that reads its URL from `url_file`
@@ -424,11 +460,9 @@ is why everything below it is now the operational half.
 3. **Recalibrate the thresholds from that traffic.** They are currently derived from measurements
    on one laptop, which is honest but is still a guess about someone else's hardware.
 4. **Run one real integration** end to end — a genuine bureau connector, not a sample payload.
-5. **Validate the AI endpoints against a real key (#123)** — the suite is written and waiting.
-6. **Run `rulemind-android` on a real device or emulator.** The module now has 140 tests, but two
-   properties are platform guarantees no JVM test can demonstrate: that the `SecurePrefs` key is
-   generated inside the AndroidKeyStore and is non-exportable, and that
-   `LegacySecureStoreMigration` actually copies a populated legacy store. Robolectric answers
-   `NoSuchAlgorithmException` for that provider.
-7. **Delete the Render services.** They answered 200 on 2026-09-19 and may still be billing.
-   `scripts/render_teardown.sh` does it in one command once `RENDER_API_KEY` is exported.
+5. **Point `observability/secrets/watchdog_url` at a dead-man's-switch monitor.** The heartbeat
+   now fires; nothing is listening for its silence yet.
+6. **Delete the Render services.** They answered 200 on 2026-09-19 and may still be billing.
+   `cp .env.render.example .env.render`, paste a key, `bash scripts/render_teardown.sh`.
+
+*(#123 and #176 closed 2026-09-19 — see above.)*

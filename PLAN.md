@@ -1112,6 +1112,25 @@ a red X that only means "out of minutes".
 rather than on the module that leaked it. `tests/_storage_global.py` now holds one helper, called
 via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak now.**
 
+## R8. The device, the key, and a frontend nobody had opened — 2026-09-19
+
+- [x] **R8.1 #176 CLOSED on real hardware.** 14 instrumentation tests on a Nothing Phone (1) (A015, Android 16, `securityLevel=1` TRUSTED_ENVIRONMENT), a Galaxy S23 (SM-S918B) and an emulator — 42 runs, 0 failures. `getEncoded()` returning null IS the non-exportability proof. Mutation: swapping `keystoreKey()` for a plain `SecretKeySpec` leaves every functional test passing and fails 4 of these. Opt-in `device` lane in the gate.
+- [x] **R8.2 #123 CLOSED against a real OpenAI key.** 10/10 live tests, including the two that carry the weight — a generated rule SAVES and comes back compiled to `IF (Bureau Score >= 600) → APPROVE ELSE → REJECT`, and usage counters move against real tokens. The suite's own assertions were written against a shape the API never returns (`body["rule"]["nodes"]`; the real envelope is `{draft, in_scope, provider, valid, validation_error}`), so it would have failed on its own invention the first time anyone supplied a key.
+- [x] **R8.3 212 dead workflow runs deleted.** Of 1,065 runs scanned, 212 executed `steps: 0` — assigned no runner, the billing block. 18 real failures kept, every one verified to have executed steps. `scripts/github_runs_cleanup.sh --dry-run` lists before touching anything.
+- [x] **R8.4 The frontend, opened rather than read.** 40 routes: **11 clean → 39**. The one page the user named was the tip.
+- [x] **R8.5 Watchdog + delivery-failure alerts.** Every other rule in `alerts.yml` assumed the paging pipe works and nothing checked it — if paging breaks the symptom is that you stop being woken up, which is indistinguishable from everything being fine. `Watchdog` (`expr: vector(1)`) is a dead man's switch routed to its OWN destination on a 5m repeat, because a heartbeat in the on-call channel gets muted and stops being a heartbeat. `scripts/verify_paging.sh` walks the chain link by link and `--send` injects a real alert.
+
+### Four defects the browser found that no test did
+
+1. **Running `pnpm test:e2e` broke the dev server.** Playwright's `next dev` shares `apps/web/.next` with the developer's, and `NEXT_PUBLIC_*` is inlined at compile time — so an e2e run left client chunks hardcoding the e2e API (`:8100`). SSR HTML regenerates, the stale client chunk does not: 24 hydration failures, 26 `ERR_CONNECTION_REFUSED`, and a dashboard saying "Unable to reach the API server at 127.0.0.1:8100" about a backend that was up on 8080. It survives a restart, because `.next` persists. One line each side: `NEXT_DIST_DIR`.
+2. **A 500 that read as a CORS error.** `/audit`, `/decision-explorer` and `/reports` all reported "blocked by CORS policy". It was `InvalidToken` on one decision row encrypted under a different key — and an unhandled 500 never reaches the CORS middleware that would have added the header, so the browser named the wrong subsystem entirely.
+3. **The AI model picker showed one model, from the wrong provider.** `GET /ai/models` defaulted to the literal `"anthropic"` and ignored the workspace's `default_provider`; the page raced two fetches and applied whichever RESPONSE landed last; and Gemini was fully implemented server-side but unreachable, because the selector pinned a two-element literal under a comment claiming it was driven by the config.
+4. **Settings had no labels, no section headings, and no `h1` anywhere.** `SectionHeader` is the page title on all 11 v3 pages and rendered `h2`, so no page had a level-one heading at all; `SectionTitle` rendered `h3` on 14 pages, skipping a level. 19 inputs were named only by a placeholder — which disappears the moment you type — and 10 icon-only buttons had no name at all.
+
+### A fix of mine that was wrong, caught by re-running the audit
+
+The first version of the decryption fallback substituted a marker **dict** for every unreadable field. `trace` and `rule_results` are lists, and a non-empty dict is truthy, so it also defeated the `or []` guards at the call site. The dashboard died on `(selected.trace ?? []).map is not a function` — the guard was for null and had been handed an object. **A fallback that changes a field's type is not a fallback; it moves the crash.** Each field now falls back to its own zero value and the row carries one boolean.
+
 ## R7. The green that proved nothing, and the last three Android files — 2026-09-19
 
 - [x] **R7.1** `load-test` reported SUCCESS while **both** its k6 scripts asserted nothing. `evaluate.k6.js`'s `has outcome` check read `body.outcome`; `POST /api/v1/rules/{id}/test` nests it under `result`. It failed on 100% of requests — **0 of 1398** in run 35430953581 — and stayed invisible for two independent reasons: the step carried `continue-on-error: true`, and the script declared no `checks` threshold, so a 0% check rate was not even a non-zero k6 exit. Fixed, and now 2828 of 2828 on the runner.
