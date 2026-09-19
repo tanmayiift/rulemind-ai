@@ -52,6 +52,23 @@ LIVE_KEY = os.getenv("RULEMIND_AI_LIVE_KEY", "")
 # without being entitled to that provider's default model, and the resulting 404 reads like a
 # broken integration rather than "pick a different model".
 LIVE_MODEL = os.getenv("RULEMIND_AI_LIVE_MODEL", "").strip()
+# POINT AT A RUNNING BACKEND THAT ALREADY HAS A KEY, instead of handing this process one.
+#
+# The other mode below needs RULEMIND_AI_LIVE_KEY so it can write a key into its own temporary
+# storage. That is fine for CI, but it is the wrong shape for the common case: someone has
+# already pasted their key into the AI Copilot page, the key is encrypted at rest under
+# RULEMIND_CONFIG_KEY, and getting it back out means decrypting a stored secret -- which is
+# exactly the operation nobody should be automating to run a test.
+#
+# With this set, the suite drives the endpoints over HTTP against that backend and NEVER SEES
+# THE KEY. It also tests something strictly better: the configuration that is actually deployed,
+# rather than one the test injected into a scratch database.
+#
+#   RULEMIND_AI_LIVE=1 RULEMIND_AI_LIVE_BASE_URL=http://127.0.0.1:8080 \
+#     RULEMIND_AI_LIVE_API_KEY=<the app api key, not the provider key> \
+#     python -m unittest tests.test_ai_live
+LIVE_BASE_URL = os.getenv("RULEMIND_AI_LIVE_BASE_URL", "").rstrip("/")
+LIVE_APP_KEY = os.getenv("RULEMIND_AI_LIVE_API_KEY", "")
 
 
 class _Base(unittest.TestCase):
@@ -64,6 +81,16 @@ class _Base(unittest.TestCase):
         self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
 
     def tearDown(self):
+        # Remote mode never ran _Base.setUp, so there is no tempdir and no storage to restore.
+        # Guarding on the attribute rather than on LIVE_BASE_URL keeps this correct for any
+        # subclass that skips setUp for its own reasons -- the first version of the remote mode
+        # turned every live test into an AttributeError in teardown, which reported as 5 errors
+        # and hid the 2 real failures underneath.
+        if not hasattr(self, "tempdir"):
+            client = getattr(self, "client", None)
+            if client is not None:
+                client.close()
+            return
         self.client.close()
         self.tempdir.cleanup()
 
@@ -163,9 +190,27 @@ class LiveGenerationTest(_Base):
     """
 
     def setUp(self):
+        # REMOTE MODE: drive a backend that is already configured. Nothing is injected, so the
+        # temporary-storage machinery in _Base is not just unnecessary here, it would point the
+        # client at a scratch database with no key in it.
+        if LIVE_BASE_URL:
+            import httpx
+            self.client = httpx.Client(base_url=LIVE_BASE_URL, timeout=120)
+            self.headers = {"x-api-key": LIVE_APP_KEY}
+            self.tenant = None
+            self.addCleanup(self.client.close)
+            cfg = self.client.get("/api/v1/ai/config", headers=self.headers)
+            if cfg.status_code != 200:
+                self.skipTest(f"{LIVE_BASE_URL} did not answer /ai/config ({cfg.status_code})")
+            providers = cfg.json().get("providers") or {}
+            if not any(p.get("configured") for p in providers.values()):
+                self.skipTest(f"{LIVE_BASE_URL} has no provider key configured")
+            return
+
         super().setUp()
         if not LIVE_KEY:
-            self.skipTest("RULEMIND_AI_LIVE_KEY is not set")
+            self.skipTest("set RULEMIND_AI_LIVE_KEY, or RULEMIND_AI_LIVE_BASE_URL to use a "
+                          "backend that already has a key")
         # set_ai_config is the real API -- it encrypts the key at rest and is what
         # PUT /api/v1/ai/config calls. get_ai_credentials then decrypts it for the outbound
         # call. (An earlier draft invented a set_ai_credentials() that does not exist, so
@@ -182,49 +227,97 @@ class LiveGenerationTest(_Base):
         self.assertIsNotNone(creds, "the key did not round-trip through set_ai_config")
         self.assertEqual(creds["api_key"], LIVE_KEY)
 
+    # THE RESPONSE SHAPE, checked against the endpoint rather than assumed.
+    #
+    # These assertions used to read `body["rule"]["nodes"]` and `body["policy"]["steps"]`. The
+    # endpoints return neither. The real envelope is:
+    #
+    #   {"draft": {...}, "in_scope": bool, "provider": str, "valid": bool, "validation_error": str|None}
+    #
+    # with the rule draft carrying a `tree` (group/condition, onPass/onFail) and the policy draft
+    # carrying `steps`. So this suite -- the one written to answer #123 -- would have failed on
+    # its own invented shape the first time anyone supplied a key, and the failure would have
+    # read as "the provider returns garbage" rather than "the test was never run".
+    #
+    # `valid` is the server's OWN verdict: ai.py validates the draft against the authoring schema
+    # before returning it. Asserting it is stronger than re-deriving the check here, because it is
+    # the same judgement the Save button acts on.
+
     def test_generated_rule_is_structurally_valid(self):
         res = self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
                                json={"prompt": "reject applicants whose bureau score is below 600"})
         self.assertEqual(res.status_code, 200, res.text[:400])
         body = res.json()
-        self.assertTrue(body.get("in_scope", True))
-        nodes = (body.get("rule") or body).get("nodes")
-        self.assertTrue(nodes, f"no nodes in {body}")
-        types = {n.get("type") for n in nodes}
-        self.assertTrue(types & {"approve", "reject", "review"},
-                        "a rule with no outcome node is rejected by the authoring schema")
+        self.assertTrue(body.get("in_scope"), f"an on-topic prompt was refused: {body.get('reason')}")
+        self.assertTrue(body.get("valid"),
+                        f"the server rejected its own draft: {body.get('validation_error')}")
+        draft = body.get("draft") or {}
+        tree = draft.get("tree")
+        self.assertTrue(tree, f"no tree in {str(body)[:300]}")
+        # Against main.RULE_TREE_OUTCOMES, not a narrower guess. The first version of this test
+        # asserted {approve, reject, review} and failed on a draft carrying `onPass: "pass"` --
+        # which is LEGITIMATE: `pass`/`fail` mean "this gate does not decide, continue to the
+        # next step", and the seeded sample policies use exactly that. The product was right and
+        # the assertion was wrong, which is worth saying because the failure looked like the
+        # model returning nonsense.
+        from app.main import RULE_TREE_OUTCOMES
+        self.assertIn(tree.get("onPass"), RULE_TREE_OUTCOMES, f"bad onPass in {tree}")
+        self.assertIn(tree.get("onFail"), RULE_TREE_OUTCOMES, f"bad onFail in {tree}")
+        self.assertTrue(tree.get("children"), "a tree with no conditions decides unconditionally")
 
     def test_a_generated_rule_can_actually_be_saved(self):
         """The assertion that makes this suite worth its cost. Everything short of POSTing the
-        draft back proves only that the model produced JSON."""
+        draft back proves only that the model produced JSON.
+
+        Verified by hand first, against a real gpt-4o response: the saved rule comes back
+        compiled to `IF (Bureau Score >= 600) -> APPROVE ELSE -> REJECT`, which is the proof
+        that the draft reached the authoring engine and not merely the database.
+        """
         res = self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
                                json={"prompt": "reject applicants whose bureau score is below 600"})
         # Assert the generation succeeded before reaching into its body, so an upstream 502
         # reports as "the provider rejected the call" rather than a bare KeyError.
         self.assertEqual(res.status_code, 200, res.text[:400])
-        draft = res.json()
-        rule = draft.get("rule") or draft
-        self.assertIn("nodes", rule, f"no nodes to save in {str(draft)[:300]}")
+        draft = (res.json().get("draft") or {})
+        self.assertIn("tree", draft, f"no tree to save in {str(res.json())[:300]}")
         saved = self.client.post("/api/v1/rules", headers=self.headers, json={
             "name": "ai-generated-live-test",
-            "nodes": rule["nodes"],
-            "outcome": rule.get("outcome", "reject"),
+            "tree": draft["tree"],
         })
         self.assertLess(saved.status_code, 300, f"generated rule was rejected: {saved.text[:400]}")
+        # The compiled expression is the evidence the draft was UNDERSTOOD, not just stored.
+        self.assertTrue(saved.json().get("expression"),
+                        f"saved but not compiled: {str(saved.json())[:300]}")
 
     def test_generated_policy_is_structurally_valid(self):
         res = self.client.post("/api/v1/ai/generate-policy", headers=self.headers,
                                json={"prompt": "a loan approval policy that runs a bureau rule then a scorecard"})
         self.assertEqual(res.status_code, 200, res.text[:400])
-        steps = (res.json().get("policy") or res.json()).get("steps")
+        body = res.json()
+        self.assertTrue(body.get("valid"),
+                        f"the server rejected its own draft: {body.get('validation_error')}")
+        steps = (body.get("draft") or {}).get("steps")
         self.assertTrue(steps, "a policy with no steps is rejected by the authoring schema")
+        # A policy must terminate. Without an outcome step it can run and decide nothing.
+        self.assertIn("outcome", [s.get("type") for s in steps],
+                      f"no outcome step in {[s.get('type') for s in steps]}")
+
+    def _usage(self):
+        """Read the counters the way the caller can. In remote mode reaching into storage is not
+        an option, and going through /ai/usage is the better test anyway -- it is the number the
+        budget UI shows, so a counter that moved in the database but not in the endpoint would
+        still be a bug the user sees."""
+        if LIVE_BASE_URL:
+            r = self.client.get("/api/v1/ai/usage", headers=self.headers)
+            return r.json() if r.status_code == 200 else {}
+        return (app_main.storage.get_tenant(self.tenant) or {}).get("config", {}).get("ai_usage", {})
 
     def test_usage_accounting_accumulates_against_real_tokens(self):
         """#123 asks whether the counters move for real traffic, not just for mocked calls."""
-        before = (app_main.storage.get_tenant(self.tenant) or {}).get("config", {}).get("ai_usage", {})
+        before = self._usage()
         self.client.post("/api/v1/ai/generate-rule", headers=self.headers,
                          json={"prompt": "approve applicants with a bureau score above 700"})
-        after = (app_main.storage.get_tenant(self.tenant) or {}).get("config", {}).get("ai_usage", {})
+        after = self._usage()
         self.assertGreater(after.get("calls", 0), before.get("calls", 0))
         self.assertGreater(after.get("input_tokens", 0), before.get("input_tokens", 0))
 

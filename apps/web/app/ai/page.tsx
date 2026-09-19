@@ -32,6 +32,20 @@ const PROVIDER_LABEL: Record<string, string> = {
   openai: "OpenAI (GPT)",
   gemini: "Google (Gemini)",
 };
+// Display ORDER only. The SET comes from /ai/config, so a provider added to the backend shows up
+// here with no frontend change -- which is what the comment above this block always claimed and
+// what the code did not do: the selector and the badge row each pinned a two-element literal, so
+// Gemini was fully implemented server-side (a _call_, a _fetch_live_models_, pricing, a curated
+// list) and unreachable from the UI.
+const PROVIDER_ORDER = ["anthropic", "openai", "gemini"];
+function providerList(config: MaskedConfig | null): string[] {
+  const known = Object.keys(config?.providers ?? {});
+  if (known.length === 0) return PROVIDER_ORDER;
+  const ordered = PROVIDER_ORDER.filter((p) => known.includes(p));
+  // A provider the backend reports and this file has never heard of still gets shown, at the end.
+  return [...ordered, ...known.filter((p) => !PROVIDER_ORDER.includes(p))];
+}
+
 const DEFAULT_MODEL: Record<string, string> = {
   anthropic: "claude-sonnet-5",
   openai: "gpt-4o",
@@ -102,17 +116,39 @@ export default function AICopilotPage() {
 
   // Load the selectable models for the current provider (live from the provider's
   // /models API when a key is set, else curated) whenever the provider changes.
+  //
+  // LAST REQUEST WINS, NOT LAST RESPONSE. On mount this page issues two model fetches: one for
+  // the initial `provider` state and one for whatever /ai/config says the default is. They race,
+  // and without this guard the SLOWER response was applied regardless of which provider was
+  // still selected. The visible symptom was the page showing "OpenAI (GPT) - configured" above a
+  // model dropdown listing claude-sonnet-5, with the hint "add a key to fetch the live list"
+  // while a key WAS configured and the API was returning 82 live models.
+  //
+  // A ref rather than state: it must be readable by an in-flight closure without re-rendering,
+  // and comparing it after the await is what makes a superseded response a no-op.
+  const latestModelRequest = React.useRef<string>("");
+
   const loadModels = React.useCallback(async (prov: string) => {
+    latestModelRequest.current = prov;
     setModelsBusy(true);
     try {
       const r = await apiJson<{ models: string[]; default: string; live: boolean }>(apiBaseUrl, `/api/v1/ai/models?provider=${prov}`, {}, apiKey);
+      if (latestModelRequest.current !== prov) return;  // superseded; dropping it IS the fix
       setModelList(r);
       setModel((m) => (m && r.models.includes(m) ? m : (r.default || r.models[0] || "")));
     } catch { /* keep whatever we have */ }
-    finally { setModelsBusy(false); }
+    finally {
+      if (latestModelRequest.current === prov) setModelsBusy(false);
+    }
   }, [apiBaseUrl, apiKey]);
 
-  React.useEffect(() => { void loadModels(provider); }, [loadModels, provider]);
+  // Wait for /ai/config before asking for models. The initial `provider` state is a placeholder,
+  // not a choice, so fetching against it is a request that can only ever be thrown away -- and it
+  // was the other half of the race above.
+  React.useEffect(() => {
+    if (!config) return;
+    void loadModels(provider);
+  }, [config, loadModels, provider]);
 
   const saveKey = async () => {
     setBusy(true); setSavedMsg(null); setTestMsg(null); setError(null);
@@ -166,8 +202,8 @@ export default function AICopilotPage() {
           <div style={{ display: "grid", gap: 14 }}>
             <Field label="Provider">
               <Select value={provider} onChange={(e) => { setProvider(e.target.value); setModel(config?.providers?.[e.target.value]?.model || ""); }}>
-                {["anthropic", "openai"].map((p) => (
-                  <option key={p} value={p}>{PROVIDER_LABEL[p]}{config?.providers?.[p]?.configured ? " · configured" : ""}</option>
+                {providerList(config).map((p) => (
+                  <option key={p} value={p}>{PROVIDER_LABEL[p] ?? p}{config?.providers?.[p]?.configured ? " · configured" : ""}</option>
                 ))}
               </Select>
             </Field>
@@ -191,8 +227,8 @@ export default function AICopilotPage() {
             {testMsg ? <div style={{ fontSize: 12.5, color: testMsg.ok ? "var(--rm-success)" : "var(--rm-danger)" }}>{testMsg.text}</div> : null}
             {config ? (
               <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                {["anthropic", "openai"].map((p) => (
-                  <Badge key={p} tone={config.providers?.[p]?.configured ? "success" : "neutral"}>{PROVIDER_LABEL[p].split(" ")[0]} {config.providers?.[p]?.configured ? "✓" : "—"}</Badge>
+                {providerList(config).map((p) => (
+                  <Badge key={p} tone={config.providers?.[p]?.configured ? "success" : "neutral"}>{(PROVIDER_LABEL[p] ?? p).split(" ")[0]} {config.providers?.[p]?.configured ? "✓" : "—"}</Badge>
                 ))}
               </div>
             ) : null}

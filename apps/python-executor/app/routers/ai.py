@@ -129,11 +129,26 @@ def _enforce_ai_budget() -> None:
 
 
 @router.get("/api/v1/ai/models")
-async def list_ai_models(provider: str = Query(default="anthropic")) -> Dict[str, Any]:
+async def list_ai_models(provider: str = Query(default="")) -> Dict[str, Any]:
     """Selectable models for a provider. Live-fetches from the provider's /models
     API when a key is configured (so new model launches appear automatically),
-    else returns the curated list."""
+    else returns the curated list.
+
+    WITH NO `provider`, USE THE WORKSPACE'S CONFIGURED DEFAULT. This used to default to the
+    literal "anthropic", so a workspace whose default_provider is openai -- with an OpenAI key
+    configured and no Anthropic key -- got the ANTHROPIC CURATED LIST back, `live: false`, and
+    no error. The caller sees five stale model names and a hint saying "add a key to fetch the
+    live list" while a key is configured and working.
+
+    The failure is silent in both directions: nothing errors, and the response is a
+    well-formed list of real models -- just the wrong provider's. Found by a live test asserting
+    `live: true` against a backend where the AI Copilot page was demonstrably working.
+    """
     from ..ai import list_models
+
+    if not provider:
+        config = main.storage.get_ai_config_masked() or {}
+        provider = config.get("default_provider") or "anthropic"
 
     creds = main.storage.get_ai_credentials(provider)
     api_key = creds.get("api_key") if creds else None
