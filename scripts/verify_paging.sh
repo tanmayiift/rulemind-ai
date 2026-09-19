@@ -126,10 +126,17 @@ for pair in "paging_url:on-call destination" "watchdog_url:dead-man's-switch mon
 done
 
 # ── 7 ────────────────────────────────────────────────────────────────────────────────────────
-FAILED=$(curl -sf --max-time 10 "$ALERTMANAGER/metrics" 2>/dev/null \
-  | awk '/^alertmanager_notifications_failed_total/ {s+=$2} END {printf "%.0f", s+0}')
+# `awk ... END {print s+0}` prints 0 even for EMPTY input, so an unreachable Alertmanager was
+# reporting "no failed notifications" -- a green tick for a component that is not running. Ask
+# whether the metrics were readable at all before interpreting the number.
+METRICS=$(curl -sf --max-time 10 "$ALERTMANAGER/metrics" 2>/dev/null)
+if [ -z "$METRICS" ]; then
+  FAILED=""
+else
+  FAILED=$(printf '%s' "$METRICS" | awk '/^alertmanager_notifications_failed_total/ {s+=$2} END {printf "%.0f", s+0}')
+fi
 if [ -z "$FAILED" ]; then
-  warn "could not read Alertmanager's metrics"
+  warn "could not read Alertmanager's metrics — delivery health is unknown, not healthy"
 elif [ "$FAILED" -gt 0 ]; then
   bad "Alertmanager has $FAILED failed notification(s) — alerts are firing and NOT arriving"
   note "docker compose logs alertmanager | grep 'notify retry canceled'"
