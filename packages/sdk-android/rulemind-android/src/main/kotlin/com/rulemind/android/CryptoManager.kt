@@ -18,6 +18,12 @@ import javax.crypto.spec.SecretKeySpec
 class CryptoManager(
     context: Context,
     private val config: RuleMindConfig,
+    /**
+     * Forwarded to [SecurePrefs]. Production never passes it; it exists because the
+     * AndroidKeyStore is unavailable on the JVM, so without this seam nothing in this class --
+     * including the bundle decryption the whole on-device engine depends on -- is testable.
+     */
+    keyProvider: (() -> javax.crypto.SecretKey)? = null,
 ) {
     private val applicationContext = context.applicationContext
     // SecurePrefs, not EncryptedSharedPreferences -- see SecurePrefs for why the Jetpack wrapper
@@ -25,7 +31,10 @@ class CryptoManager(
     // already has, so the migration in LegacySecureStoreMigration is not optional housekeeping:
     // regenerating it silently produces a device that can no longer decrypt bundles addressed to
     // it, and the symptom shows up later and somewhere else.
-    private val prefs = SecurePrefs(applicationContext, STORE_NAME).also {
+    private val prefs = (
+        if (keyProvider == null) SecurePrefs(applicationContext, STORE_NAME)
+        else SecurePrefs(applicationContext, STORE_NAME, keyProvider)
+    ).also {
         LegacySecureStoreMigration.migrateIfNeeded(applicationContext, STORE_NAME, it)
     }
     @Volatile private var cachedKeyPair: KeyPair? = null

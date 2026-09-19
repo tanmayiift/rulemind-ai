@@ -12,11 +12,16 @@ class BundleManager(
     private val config: RuleMindConfig,
     private val networkClient: NetworkClient = NetworkClient(config),
     private val cryptoManager: CryptoManager = CryptoManager(context, config),
+    /** Forwarded to [SecurePrefs]; see CryptoManager. Production never passes it. */
+    keyProvider: (() -> javax.crypto.SecretKey)? = null,
 ) {
     private val lock = ReentrantReadWriteLock()
     // See SecurePrefs: security-crypto 1.1.0 deprecates EncryptedSharedPreferences and the
     // Jetpack Security crypto library has no successor, so this talks to the Keystore directly.
-    private val prefs = SecurePrefs(context, STORE_NAME).also {
+    private val prefs = (
+        if (keyProvider == null) SecurePrefs(context, STORE_NAME)
+        else SecurePrefs(context, STORE_NAME, keyProvider)
+    ).also {
         LegacySecureStoreMigration.migrateIfNeeded(context, STORE_NAME, it)
     }
 
