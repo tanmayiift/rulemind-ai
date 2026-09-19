@@ -35,7 +35,30 @@ for (const route of ROUTES) {
       const inputs  = [...document.querySelectorAll('input,select,textarea')].filter(vis);
       const images  = [...document.querySelectorAll('img')].filter(vis);
 
+      // HIERARCHY, not just presence. The checks below this line ask whether an element EXISTS
+      // and is named; these ask whether the page has a STRUCTURE. Added 2026-09-19 after the
+      // Settings page turned out to have no <h1>, section names rendered as styled <div>s, and
+      // eight inputs whose only identification was a placeholder -- none of which the original
+      // audit flagged, because `name()` above accepts a placeholder as a name.
+      //
+      // A placeholder is not a label: it disappears the moment you type, so a filled-in form
+      // becomes a column of anonymous boxes. It is the single most common accessible-name
+      // mistake in this codebase and it was invisible to the very check meant to catch it.
+      const headings = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(vis);
+      const levels = headings.map(h => Number(h.tagName[1]));
+      let skips = 0;
+      for (let i = 1; i < levels.length; i++) if (levels[i] - levels[i - 1] > 1) skips++;
+      const realName = el => (el.getAttribute('aria-label') || el.getAttribute('title') ||
+        (el.labels?.length ? [...el.labels].map(l => l.textContent.trim()).join(' ') : '') ||
+        (el.getAttribute('aria-labelledby') ? 'labelledby' : '')).trim();
+
       return {
+        h1Count: levels.filter(l => l === 1).length,
+        headingCount: headings.length,
+        headingSkips: skips,
+        // Named ONLY by a placeholder -- passes the check above, fails a real user.
+        placeholderOnlyInputs: inputs.filter(i =>
+          i.type !== 'hidden' && !realName(i) && !!i.getAttribute('placeholder')).length,
         bodyTextLen: (document.body.innerText || '').trim().length,
         horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
         counts: { buttons: buttons.length, links: links.length, inputs: inputs.length },
@@ -75,11 +98,18 @@ for (const route of ROUTES) {
   if (audit.imagesNoAlt) flags.push(`img-noalt:${audit.imagesNoAlt}`);
   if (audit.emptyHrefLinks) flags.push(`deadlink:${audit.emptyHrefLinks}`);
   if (audit.invisibleText) flags.push(`invisible-text:${audit.invisibleText}`);
+  // Exactly one h1 per page. Zero means no document heading; more than one means the outline has
+  // two competing roots, which is what happened when the top bar and the page body both claimed
+  // the title.
+  if (audit.h1Count === 0 && (audit.headingCount ?? 0) > 0) flags.push('NO-H1');
+  if ((audit.h1Count ?? 0) > 1) flags.push(`h1-x${audit.h1Count}`);
+  if (audit.headingSkips) flags.push(`heading-skip:${audit.headingSkips}`);
+  if (audit.placeholderOnlyInputs) flags.push(`placeholder-as-label:${audit.placeholderOnlyInputs}`);
   if ((audit.bodyTextLen ?? 0) < 60) flags.push('NEARLY-BLANK');
   console.log(`${flags.length ? '⚠️ ' : '✅'} ${route.padEnd(20)} ${audit.counts ? `b:${audit.counts.buttons} l:${audit.counts.links} i:${audit.counts.inputs}` : ''}  ${flags.join(' ')}`);
   await ctx.close();
 }
 await browser.close();
 fs.writeFileSync('qa/e2e-full/frontend_audit.json', JSON.stringify(results, null, 2));
-const bad = results.filter(r => r.error || r.pageErrors?.length || r.unnamedButtons || r.unnamedLinks || r.unlabelledInputs || r.horizontalOverflow || r.invisibleText);
+const bad = results.filter(r => r.error || r.pageErrors?.length || r.unnamedButtons || r.unnamedLinks || r.unlabelledInputs || r.horizontalOverflow || r.invisibleText || (r.h1Count === 0 && (r.headingCount ?? 0) > 0) || (r.h1Count ?? 0) > 1 || r.headingSkips || r.placeholderOnlyInputs);
 console.log(`\n${results.length} routes · ${results.length - bad.length} clean · ${bad.length} with element findings`);

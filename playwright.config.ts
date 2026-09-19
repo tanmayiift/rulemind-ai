@@ -156,6 +156,12 @@ export default defineConfig({
         ...process.env,
         HOST: "127.0.0.1",
         PORT: "3100",
+        // Its OWN build directory. Without this the e2e server shares apps/web/.next with the
+        // developer's dev server, and because NEXT_PUBLIC_* is inlined at compile time, an e2e
+        // run leaves client chunks hardcoding the e2e API below (:8100) in the cache the dev
+        // server reads. See the distDir comment in apps/web/next.config.js for what that looks
+        // like from the outside -- it reads as the backend being down, and survives a restart.
+        NEXT_DIST_DIR: ".next-e2e",
         NEXT_PUBLIC_API_BASE_URL: apiBaseUrl,
         // apps/web/src/lib/store.ts reads this as its initial apiKey and api.ts sends it as
         // x-api-key. Each Playwright context starts with empty localStorage, so this default

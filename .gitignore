@@ -12,6 +12,10 @@
 .mypy_cache/
 .ruff_cache/
 .next
+# The e2e server's own build dir -- see NEXT_DIST_DIR in playwright.config.ts. Separate from
+# .next so a Playwright run cannot leave the dev server's client bundle pointing at the
+# throwaway e2e API.
+.next-e2e
 dist
 coverage
 node_modules

@@ -2,11 +2,15 @@
   {
     "route": "/",
     "error": null,
-    "bodyTextLen": 1068,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1231,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 11,
-      "links": 25,
+      "buttons": 12,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -23,11 +27,15 @@
   {
     "route": "/ab-tests",
     "error": null,
-    "bodyTextLen": 1074,
+    "h1Count": 1,
+    "headingCount": 3,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1039,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 8,
-      "links": 25,
+      "buttons": 9,
+      "links": 33,
       "inputs": 3
     },
     "unnamedButtons": 0,
@@ -44,11 +52,15 @@
   {
     "route": "/access",
     "error": null,
-    "bodyTextLen": 2142,
+    "h1Count": 1,
+    "headingCount": 6,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 2095,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 10,
-      "links": 25,
+      "buttons": 11,
+      "links": 33,
       "inputs": 16
     },
     "unnamedButtons": 0,
@@ -65,6 +77,10 @@
   {
     "route": "/admin",
     "error": null,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 103,
     "horizontalOverflow": false,
     "counts": {
@@ -83,20 +99,20 @@
       "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
     ],
     "pageErrors": [],
-    "netFails": [
-      "GET http://localhost:8080/api/v1/settings",
-      "GET http://localhost:8080/api/admin/v1/auth/me",
-      "GET http://127.0.0.1:3000/_next/static/chunks/app/admin/login/page-95a1f7d"
-    ]
+    "netFails": []
   },
   {
     "route": "/ai",
     "error": null,
-    "bodyTextLen": 1290,
+    "h1Count": 1,
+    "headingCount": 4,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 1,
+    "bodyTextLen": 2527,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 15,
-      "links": 25,
+      "buttons": 16,
+      "links": 33,
       "inputs": 5
     },
     "unnamedButtons": 0,
@@ -104,7 +120,7 @@
     "unlabelledInputs": 0,
     "imagesNoAlt": 0,
     "emptyHrefLinks": 0,
-    "disabledButtons": 2,
+    "disabledButtons": 0,
     "invisibleText": 0,
     "consoleErrors": [],
     "pageErrors": [],
@@ -113,11 +129,15 @@
   {
     "route": "/api-console",
     "error": null,
-    "bodyTextLen": 1298,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 2,
+    "bodyTextLen": 1273,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 22,
-      "links": 25,
+      "buttons": 23,
+      "links": 33,
       "inputs": 3
     },
     "unnamedButtons": 0,
@@ -134,11 +154,15 @@
   {
     "route": "/approvals",
     "error": null,
-    "bodyTextLen": 3212,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 4464,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 7,
-      "links": 25,
+      "buttons": 42,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -146,7 +170,7 @@
     "unlabelledInputs": 0,
     "imagesNoAlt": 0,
     "emptyHrefLinks": 0,
-    "disabledButtons": 0,
+    "disabledButtons": 4,
     "invisibleText": 0,
     "consoleErrors": [],
     "pageErrors": [],
@@ -155,11 +179,15 @@
   {
     "route": "/audit",
     "error": null,
-    "bodyTextLen": 817,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 906,
     "horizontalOverflow": false,
     "counts": {
       "buttons": 12,
-      "links": 25,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -169,18 +197,27 @@
     "emptyHrefLinks": 0,
     "disabledButtons": 0,
     "invisibleText": 0,
-    "consoleErrors": [],
+    "consoleErrors": [
+      "Access to fetch at 'http://127.0.0.1:8080/api/v1/audit/decisions' from origin 'http://127.0.0.1:3000' has been blocked by CORS policy: No 'Access-Control-Allow-",
+      "Failed to load resource: net::ERR_FAILED"
+    ],
     "pageErrors": [],
-    "netFails": []
+    "netFails": [
+      "GET http://127.0.0.1:8080/api/v1/audit/decisions"
+    ]
   },
   {
     "route": "/batch",
     "error": null,
-    "bodyTextLen": 908,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1026,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 12,
-      "links": 25,
+      "buttons": 13,
+      "links": 33,
       "inputs": 7
     },
     "unnamedButtons": 0,
@@ -188,7 +225,7 @@
     "unlabelledInputs": 0,
     "imagesNoAlt": 0,
     "emptyHrefLinks": 0,
-    "disabledButtons": 3,
+    "disabledButtons": 2,
     "invisibleText": 0,
     "consoleErrors": [],
     "pageErrors": [],
@@ -197,11 +234,15 @@
   {
     "route": "/branding",
     "error": null,
-    "bodyTextLen": 737,
+    "h1Count": 0,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 2,
+    "bodyTextLen": 723,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 8,
-      "links": 25,
+      "buttons": 9,
+      "links": 33,
       "inputs": 2
     },
     "unnamedButtons": 0,
@@ -220,11 +261,15 @@
   {
     "route": "/collab",
     "error": null,
-    "bodyTextLen": 958,
+    "h1Count": 1,
+    "headingCount": 2,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 923,
     "horizontalOverflow": false,
     "counts": {
       "buttons": 9,
-      "links": 25,
+      "links": 33,
       "inputs": 6
     },
     "unnamedButtons": 0,
@@ -241,12 +286,41 @@
   {
     "route": "/connectors",
     "error": null,
-    "bodyTextLen": 1073,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1283,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 16,
-      "links": 25,
+      "buttons": 27,
+      "links": 33,
       "inputs": 0
+    },
+    "unnamedButtons": 0,
+    "unnamedLinks": 0,
+    "unlabelledInputs": 0,
+    "imagesNoAlt": 0,
+    "emptyHrefLinks": 0,
+    "disabledButtons": 0,
+    "invisibleText": 0,
+    "consoleErrors": [],
+    "pageErrors": [],
+    "netFails": []
+  },
+  {
+    "route": "/debugger",
+    "error": null,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1201,
+    "horizontalOverflow": false,
+    "counts": {
+      "buttons": 9,
+      "links": 33,
+      "inputs": 2
     },
     "unnamedButtons": 0,
     "unnamedLinks": 0,
@@ -262,11 +336,15 @@
   {
     "route": "/decision-explorer",
     "error": null,
-    "bodyTextLen": 1061,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 1,
+    "bodyTextLen": 798,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 7,
-      "links": 25,
+      "buttons": 8,
+      "links": 34,
       "inputs": 1
     },
     "unnamedButtons": 0,
@@ -276,18 +354,27 @@
     "emptyHrefLinks": 0,
     "disabledButtons": 0,
     "invisibleText": 0,
-    "consoleErrors": [],
+    "consoleErrors": [
+      "Access to fetch at 'http://127.0.0.1:8080/api/v1/audit/decisions' from origin 'http://127.0.0.1:3000' has been blocked by CORS policy: No 'Access-Control-Allow-",
+      "Failed to load resource: net::ERR_FAILED"
+    ],
     "pageErrors": [],
-    "netFails": []
+    "netFails": [
+      "GET http://127.0.0.1:8080/api/v1/audit/decisions"
+    ]
   },
   {
     "route": "/decision-tables",
     "error": null,
-    "bodyTextLen": 1685,
+    "h1Count": 1,
+    "headingCount": 6,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 3,
+    "bodyTextLen": 1947,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 18,
-      "links": 25,
+      "buttons": 20,
+      "links": 33,
       "inputs": 11
     },
     "unnamedButtons": 0,
@@ -304,11 +391,15 @@
   {
     "route": "/deploy",
     "error": null,
-    "bodyTextLen": 3197,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 4464,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 7,
-      "links": 25,
+      "buttons": 42,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -316,7 +407,7 @@
     "unlabelledInputs": 0,
     "imagesNoAlt": 0,
     "emptyHrefLinks": 0,
-    "disabledButtons": 0,
+    "disabledButtons": 4,
     "invisibleText": 0,
     "consoleErrors": [],
     "pageErrors": [],
@@ -325,11 +416,15 @@
   {
     "route": "/evaluations",
     "error": null,
-    "bodyTextLen": 1121,
+    "h1Count": 1,
+    "headingCount": 3,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1217,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 8,
-      "links": 25,
+      "buttons": 9,
+      "links": 33,
       "inputs": 8
     },
     "unnamedButtons": 0,
@@ -346,11 +441,15 @@
   {
     "route": "/exports",
     "error": null,
-    "bodyTextLen": 194181,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 87203,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 12,
-      "links": 25,
+      "buttons": 13,
+      "links": 33,
       "inputs": 1
     },
     "unnamedButtons": 0,
@@ -365,13 +464,42 @@
     "netFails": []
   },
   {
-    "route": "/lifecycle",
+    "route": "/journeys",
     "error": null,
-    "bodyTextLen": 921,
+    "h1Count": 1,
+    "headingCount": 4,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 2,
+    "bodyTextLen": 1217,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 8,
-      "links": 25,
+      "buttons": 12,
+      "links": 33,
+      "inputs": 8
+    },
+    "unnamedButtons": 1,
+    "unnamedLinks": 0,
+    "unlabelledInputs": 0,
+    "imagesNoAlt": 0,
+    "emptyHrefLinks": 0,
+    "disabledButtons": 1,
+    "invisibleText": 0,
+    "consoleErrors": [],
+    "pageErrors": [],
+    "netFails": []
+  },
+  {
+    "route": "/lifecycle",
+    "error": null,
+    "h1Count": 1,
+    "headingCount": 2,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 895,
+    "horizontalOverflow": false,
+    "counts": {
+      "buttons": 9,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -388,6 +516,10 @@
   {
     "route": "/login",
     "error": null,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
     "bodyTextLen": 172,
     "horizontalOverflow": false,
     "counts": {
@@ -407,13 +539,42 @@
     "netFails": []
   },
   {
-    "route": "/models",
+    "route": "/model-sets",
     "error": null,
-    "bodyTextLen": 886,
+    "h1Count": 1,
+    "headingCount": 2,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 2,
+    "bodyTextLen": 969,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 8,
-      "links": 25,
+      "buttons": 10,
+      "links": 33,
+      "inputs": 5
+    },
+    "unnamedButtons": 0,
+    "unnamedLinks": 0,
+    "unlabelledInputs": 0,
+    "imagesNoAlt": 0,
+    "emptyHrefLinks": 0,
+    "disabledButtons": 0,
+    "invisibleText": 0,
+    "consoleErrors": [],
+    "pageErrors": [],
+    "netFails": []
+  },
+  {
+    "route": "/models",
+    "error": null,
+    "h1Count": 1,
+    "headingCount": 2,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 885,
+    "horizontalOverflow": false,
+    "counts": {
+      "buttons": 9,
+      "links": 33,
       "inputs": 3
     },
     "unnamedButtons": 0,
@@ -430,11 +591,15 @@
   {
     "route": "/onboarding",
     "error": null,
-    "bodyTextLen": 1434,
+    "h1Count": 1,
+    "headingCount": 2,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1381,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 12,
-      "links": 31,
+      "buttons": 13,
+      "links": 39,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -451,12 +616,41 @@
   {
     "route": "/policies",
     "error": null,
-    "bodyTextLen": 795,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 1,
+    "bodyTextLen": 871,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 17,
-      "links": 25,
+      "buttons": 20,
+      "links": 33,
       "inputs": 2
+    },
+    "unnamedButtons": 0,
+    "unnamedLinks": 0,
+    "unlabelledInputs": 0,
+    "imagesNoAlt": 0,
+    "emptyHrefLinks": 0,
+    "disabledButtons": 0,
+    "invisibleText": 0,
+    "consoleErrors": [],
+    "pageErrors": [],
+    "netFails": []
+  },
+  {
+    "route": "/predictors",
+    "error": null,
+    "h1Count": 1,
+    "headingCount": 2,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1120,
+    "horizontalOverflow": false,
+    "counts": {
+      "buttons": 9,
+      "links": 33,
+      "inputs": 6
     },
     "unnamedButtons": 0,
     "unnamedLinks": 0,
@@ -472,11 +666,15 @@
   {
     "route": "/prototype",
     "error": null,
-    "bodyTextLen": 1068,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1231,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 11,
-      "links": 25,
+      "buttons": 12,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -493,11 +691,15 @@
   {
     "route": "/reports",
     "error": null,
-    "bodyTextLen": 2002,
+    "h1Count": 1,
+    "headingCount": 6,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1284,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 47,
-      "links": 25,
+      "buttons": 14,
+      "links": 33,
       "inputs": 13
     },
     "unnamedButtons": 0,
@@ -507,18 +709,27 @@
     "emptyHrefLinks": 0,
     "disabledButtons": 0,
     "invisibleText": 0,
-    "consoleErrors": [],
+    "consoleErrors": [
+      "Access to fetch at 'http://127.0.0.1:8080/api/v1/reports/column-suggestions' from origin 'http://127.0.0.1:3000' has been blocked by CORS policy: No 'Access-Con",
+      "Failed to load resource: net::ERR_FAILED"
+    ],
     "pageErrors": [],
-    "netFails": []
+    "netFails": [
+      "GET http://127.0.0.1:8080/api/v1/reports/column-suggestions"
+    ]
   },
   {
     "route": "/review-queue",
     "error": null,
-    "bodyTextLen": 730,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 853,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 7,
-      "links": 25,
+      "buttons": 8,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -535,19 +746,23 @@
   {
     "route": "/rules",
     "error": null,
-    "bodyTextLen": 775,
+    "h1Count": 0,
+    "headingCount": 0,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 1,
+    "bodyTextLen": 1782,
     "horizontalOverflow": false,
     "counts": {
       "buttons": 21,
-      "links": 25,
-      "inputs": 1
+      "links": 33,
+      "inputs": 7
     },
-    "unnamedButtons": 0,
+    "unnamedButtons": 1,
     "unnamedLinks": 0,
     "unlabelledInputs": 0,
     "imagesNoAlt": 0,
     "emptyHrefLinks": 0,
-    "disabledButtons": 2,
+    "disabledButtons": 0,
     "invisibleText": 0,
     "consoleErrors": [],
     "pageErrors": [],
@@ -556,11 +771,15 @@
   {
     "route": "/schedules",
     "error": null,
-    "bodyTextLen": 959,
+    "h1Count": 1,
+    "headingCount": 2,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 940,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 8,
-      "links": 25,
+      "buttons": 9,
+      "links": 33,
       "inputs": 3
     },
     "unnamedButtons": 0,
@@ -577,11 +796,15 @@
   {
     "route": "/scorecards",
     "error": null,
-    "bodyTextLen": 730,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 2,
+    "bodyTextLen": 791,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 10,
-      "links": 25,
+      "buttons": 12,
+      "links": 33,
       "inputs": 3
     },
     "unnamedButtons": 0,
@@ -598,11 +821,15 @@
   {
     "route": "/segments",
     "error": null,
-    "bodyTextLen": 1068,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1232,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 11,
-      "links": 25,
+      "buttons": 12,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
@@ -619,11 +846,15 @@
   {
     "route": "/settings",
     "error": null,
-    "bodyTextLen": 1816,
+    "h1Count": 1,
+    "headingCount": 6,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 3086,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 10,
-      "links": 25,
+      "buttons": 11,
+      "links": 33,
       "inputs": 21
     },
     "unnamedButtons": 0,
@@ -640,11 +871,15 @@
   {
     "route": "/simulation",
     "error": null,
-    "bodyTextLen": 1480,
+    "h1Count": 1,
+    "headingCount": 3,
+    "headingSkips": 1,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1483,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 11,
-      "links": 25,
+      "buttons": 12,
+      "links": 33,
       "inputs": 2
     },
     "unnamedButtons": 0,
@@ -661,11 +896,15 @@
   {
     "route": "/studio",
     "error": null,
-    "bodyTextLen": 1171,
+    "h1Count": 0,
+    "headingCount": 0,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 1,
+    "bodyTextLen": 1229,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 37,
-      "links": 25,
+      "buttons": 47,
+      "links": 33,
       "inputs": 2
     },
     "unnamedButtons": 0,
@@ -682,11 +921,15 @@
   {
     "route": "/test-console",
     "error": null,
-    "bodyTextLen": 892,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1026,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 12,
-      "links": 25,
+      "buttons": 13,
+      "links": 33,
       "inputs": 7
     },
     "unnamedButtons": 0,
@@ -694,7 +937,7 @@
     "unlabelledInputs": 0,
     "imagesNoAlt": 0,
     "emptyHrefLinks": 0,
-    "disabledButtons": 3,
+    "disabledButtons": 2,
     "invisibleText": 0,
     "consoleErrors": [],
     "pageErrors": [],
@@ -703,12 +946,16 @@
   {
     "route": "/variables",
     "error": null,
-    "bodyTextLen": 1218,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 3,
+    "bodyTextLen": 8134,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 16,
-      "links": 25,
-      "inputs": 5
+      "buttons": 50,
+      "links": 33,
+      "inputs": 4
     },
     "unnamedButtons": 0,
     "unnamedLinks": 0,
@@ -724,11 +971,15 @@
   {
     "route": "/workflow-builder",
     "error": null,
-    "bodyTextLen": 1256,
+    "h1Count": 0,
+    "headingCount": 0,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1341,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 27,
-      "links": 25,
+      "buttons": 32,
+      "links": 33,
       "inputs": 1
     },
     "unnamedButtons": 0,
@@ -745,11 +996,15 @@
   {
     "route": "/workflows",
     "error": null,
-    "bodyTextLen": 1068,
+    "h1Count": 1,
+    "headingCount": 1,
+    "headingSkips": 0,
+    "placeholderOnlyInputs": 0,
+    "bodyTextLen": 1232,
     "horizontalOverflow": false,
     "counts": {
-      "buttons": 11,
-      "links": 25,
+      "buttons": 12,
+      "links": 33,
       "inputs": 0
     },
     "unnamedButtons": 0,
