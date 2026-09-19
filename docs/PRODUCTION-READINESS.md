@@ -147,8 +147,19 @@ every lane installs into a host venv (darwin, a different marker) and `docker co
 an already-built image. `smoke_compose.sh` would have caught it but is opt-in, since it needs
 four ports to itself; the build half needs none, so it is now split out and always runs.
 
-Both deployment paths proven by smoke scripts (compose 14/14, kind + Helm 16/16), five engines
-held to generated corpora, and the parity backlog closed at 21 PRESENT / 1 CUT / 0 ABSENT.
+Both deployment paths proven by smoke scripts — **re-run on 2026-09-19 against a freshly built
+stack, not carried forward: compose 14/14, kind + Helm 16/16, 0 skipped.** Between them they
+cover the things a green unit suite cannot: liveness surviving the database being down while
+readiness correctly reports 503, the sandbox spawning in a real process pool inside the
+container, the API running as non-root (uid 10001), the migrate Job completing, no container
+restarting, an unauthenticated caller rejected, and a real decision end to end through each.
+
+`scripts/k8s_alerts.sh` also applied all 8 alert rules to the cluster — it detects the absence of
+prometheus-operator and falls back to the sidecar ConfigMap form, which is the path a plain
+Prometheus needs.
+
+Five engines held to generated corpora, and the parity backlog closed at 21 PRESENT / 1 CUT /
+0 ABSENT.
 
 **Five load-sensitive flakes were removed from the gate in September 2026**, each found by CI
 going red on a commit that was fine: fixed millisecond ceilings on work made of `sleep`, a DNS
@@ -391,9 +402,13 @@ hardware is a gate that gets disabled.
 
 ### 8. Still needs the account owner
 
-- **Render services are STILL LIVE and may still be billing.** Re-probed **2026-09-19**: the API
-  answered 200 in 52 s cold (that is a free-tier spin-up, not a failure — see below), and the
-  dashboard returns 200 in 1.3 s.
+- ~~**Render services are STILL LIVE and may still be billing.**~~ **CLOSED 2026-09-19 — the
+  owner deleted the account.** Both hostnames now answer `404` with `x-render-routing:
+  no-server`, which is Render's own header for "no service is bound here". That is the
+  distinction that matters: a *sleeping* free-tier service answers 200 after a cold start (52 s,
+  measured earlier the same day) and a *stopped* one answers 5xx — only a deleted one produces
+  `no-server`. Checked that way deliberately, because this document already records calling
+  these services dead once on the strength of a single timeout.
   `scripts/render_teardown.sh` does it in one command once `RENDER_API_KEY` is exported. No
   credential exists on the build machine, and permanently deleting a hosted database is not
   something to automate on someone's behalf.
@@ -413,6 +428,24 @@ hardware is a gate that gets disabled.
   workspace's configured provider, so an OpenAI workspace got five stale Anthropic model names
   and `live: false` with no error — a well-formed list of real models, just the wrong
   provider's, which is why nothing surfaced it. 5 curated → 82 live.
+
+- ~~**Nothing watches the watchers**~~ — **PROVEN END TO END 2026-09-19**, against a live stack
+  rather than by reading the config. `scripts/verify_paging.sh` walks all eight links green, and
+  `--send` delivered a real alert:
+
+  | Destination | Received |
+  |---|---|
+  | on-call (`paging`) | `RuleMindPagingTest`, severity `critical`, carrying its runbook link |
+  | dead-man's-switch (`watchdog`) | `Watchdog`, `status=firing` |
+
+  **The routing separation is the part worth checking, and it holds**: the paging destination
+  received *only* the real alert and the heartbeat destination *only* the heartbeat. A heartbeat
+  that reached the on-call channel would be paging a human every interval to say nothing is
+  wrong, which is how a heartbeat gets muted and stops being one.
+
+  Verified with two throwaway local sinks standing in for Slack/PagerDuty. What remains is
+  pointing the two files at destinations you own — the chain above them is now measured, not
+  assumed.
 
 - **Nothing watches the watchers — now something does.** Every rule in `alerts.yml` assumed the
   paging pipe works, and nothing checked it. That failure is silent in the worst way: if paging
@@ -439,9 +472,17 @@ hardware is a gate that gets disabled.
   with a real webhook URL and paging works; the chain either delivers or complains, and no
   longer has a state where it looks configured and silently drops.
 
-- **Branch protection is unavailable.** GitHub refuses it on a private repo without Pro:
-  *"Upgrade to GitHub Pro or make this repository public."* Nothing currently prevents a direct
-  push to `main`.
+- **Branch protection is unavailable, by both routes.** Re-checked 2026-09-19 rather than
+  carried forward, and the newer API is blocked too:
+
+  | Attempt | Result |
+  |---|---|
+  | `PUT /branches/main/protection` (classic) | 403 *"Upgrade to GitHub Pro or make this repository public"* |
+  | `POST /rulesets` (the modern replacement) | 403, same message |
+
+  So nothing currently prevents a direct push to `main`, and no free configuration changes that.
+  Making the repo public would — `docs/PRE-PUBLICATION-AUDIT.md` establishes it would be safe —
+  but that remains the owner's call.
 
 - **Vercel GitHub App** — uninstalled by the owner on 2026-09-16. Deployments and Environments
   have stayed at **0** across every push since, which is the evidence it held.
