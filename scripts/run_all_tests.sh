@@ -38,7 +38,7 @@ export SANDBOX_POOL_SIZE="${SANDBOX_POOL_SIZE:-2}"
 # Playwright binds 8100/3100 while compose binds 8080/3000 -- they do not collide, and a test
 # report that silently omits the 68 browser tests is the kind of partial-coverage claim this
 # script exists to prevent. It adds ~30s.
-LANES="${*:-python python-pg web rust flutter kotlin e2e contracts lint migrations qa}"
+LANES="${*:-python python-pg web rust flutter kotlin e2e contracts lint migrations build qa}"
 # `smoke` is NOT in the default set: smoke_compose.sh builds and tears down the whole stack and
 # refuses to run when 8080/3000/55432/6380 are busy — which they are during a normal regression,
 # because the python-pg lane is using the database. Run it on its own: `run_all_tests.sh smoke`.
@@ -297,6 +297,47 @@ run_lane() {
 
 has() { case " $LANES " in *" $1 "*) return 0;; *) return 1;; esac; }
 
+# A DEDICATED DATABASE, not the one `make up` runs against.
+#
+# The contamination check below is a good guard and it fired for real, repeatedly -- but it can
+# only ever SKIP the lane, and the fix it prints drops the running app's data. So on a machine
+# where anyone has used the stack, the Postgres lane is silently absent from the gate, and the
+# only way to get it back is to wipe someone's workspace. That is a bad trade for a guard.
+#
+# Creating a second database on the same server removes the sharing instead of policing it.
+# It is additive -- nothing is dropped, `make up` keeps its data -- and it is idempotent, so a
+# fresh clone and a machine that has run this a hundred times behave the same.
+#
+# The contamination guard in the python-pg lane STAYS, because RULEMIND_TEST_PG_URL can still be
+# pointed at a shared database (CI does not, but a developer might) and the InvalidToken failure
+# it prevents is one that reads like a crypto bug for an hour before anyone suspects the database.
+#
+# THIS SITS OUTSIDE `if has python-pg` ON PURPOSE. The `migrations` lane runs `alembic upgrade
+# head` against the same URL, and when it shared the app's database it stamped alembic_version to
+# a revision the RUNNING CONTAINER IMAGE did not have -- so the next `docker compose up` died
+# with "Can't locate revision identified by 20260916_0030" and the stack would not start. A lane
+# selected on its own must get the dedicated database too.
+_PG_BASE="${RULEMIND_TEST_PG_BASE:-postgresql://rulemind:rulemind@127.0.0.1:55432}"
+_PG_LANE_DB="${RULEMIND_TEST_PG_DB:-rulemind_lane}"
+if [ -z "${RULEMIND_TEST_PG_URL:-}" ]; then
+  # `CREATE DATABASE` cannot run inside a transaction, hence AUTOCOMMIT. A failure here is not
+  # fatal: fall back to the shared database and let the guard below decide.
+  if "$VENV" - "$_PG_BASE/postgres" "$_PG_LANE_DB" <<'PYMK' >/dev/null 2>&1
+import sys
+from sqlalchemy import create_engine, text
+e = create_engine(sys.argv[1], isolation_level="AUTOCOMMIT")
+with e.connect() as c:
+    exists = c.execute(text("SELECT 1 FROM pg_database WHERE datname = :n"),
+                       {"n": sys.argv[2]}).first()
+    if not exists:
+        c.execute(text('CREATE DATABASE "%s"' % sys.argv[2]))
+PYMK
+  then
+    RULEMIND_TEST_PG_URL="$_PG_BASE/$_PG_LANE_DB"
+    export RULEMIND_TEST_PG_URL
+  fi
+fi
+
 if has python; then
   run_lane python "Python — SQLite" bash -c \
     "cd '$ROOT/apps/python-executor' && env -u DATABASE_URL '$VENV' -m xmlrunner discover -s tests -o '$OUT/python-junit'"
@@ -321,40 +362,6 @@ if has python-pg; then
   #
   # Safe because the name is ours and deterministic (db.test_schema_for -> `rmtest_<sha>`), and
   # because the lane recreates whatever it needs on the next run.
-  # A DEDICATED DATABASE, not the one `make up` runs against.
-  #
-  # The contamination check below is a good guard and it fired for real, repeatedly -- but it can
-  # only ever SKIP the lane, and the fix it prints drops the running app's data. So on a machine
-  # where anyone has used the stack, the Postgres lane is silently absent from the gate, and the
-  # only way to get it back is to wipe someone's workspace. That is a bad trade for a guard.
-  #
-  # Creating a second database on the same server removes the sharing instead of policing it.
-  # It is additive -- nothing is dropped, `make up` keeps its data -- and it is idempotent, so a
-  # fresh clone and a machine that has run this a hundred times behave the same.
-  #
-  # The guard below STAYS, because RULEMIND_TEST_PG_URL can still be pointed at a shared database
-  # (CI does not, but a developer might) and the InvalidToken failure it prevents is one that
-  # reads like a crypto bug for an hour before anyone suspects the database.
-  _PG_BASE="${RULEMIND_TEST_PG_BASE:-postgresql://rulemind:rulemind@127.0.0.1:55432}"
-  _PG_LANE_DB="${RULEMIND_TEST_PG_DB:-rulemind_lane}"
-  if [ -z "${RULEMIND_TEST_PG_URL:-}" ]; then
-    # `CREATE DATABASE` cannot run inside a transaction, hence AUTOCOMMIT. A failure here is not
-    # fatal: fall back to the shared database and let the guard below decide.
-    if "$VENV" - "$_PG_BASE/postgres" "$_PG_LANE_DB" <<'PYMK' >/dev/null 2>&1
-import sys
-from sqlalchemy import create_engine, text
-e = create_engine(sys.argv[1], isolation_level="AUTOCOMMIT")
-with e.connect() as c:
-    exists = c.execute(text("SELECT 1 FROM pg_database WHERE datname = :n"),
-                       {"n": sys.argv[2]}).first()
-    if not exists:
-        c.execute(text('CREATE DATABASE "%s"' % sys.argv[2]))
-PYMK
-    then
-      RULEMIND_TEST_PG_URL="$_PG_BASE/$_PG_LANE_DB"
-      export RULEMIND_TEST_PG_URL
-    fi
-  fi
   _PGURL="${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}"
   dropped=$("$VENV" - "$_PGURL" <<'PYDROP' 2>/dev/null || echo 0
 import sys
@@ -556,6 +563,38 @@ if has migrations; then
   else
     record migrations "Migrations (alembic check)" "skipped" "—" "0s"
     printf '  skipped — no Postgres at 127.0.0.1:55432 (docker compose up -d db)\n'
+  fi
+fi
+
+# ── image build ───────────────────────────────────────────────────────────────────────────────
+# THE DEPLOYABLE ARTIFACT MUST STILL BUILD. On 2026-09-19 it did not, and 5,000 passing tests
+# said nothing about it: `requirements.txt` pinned `scipy==1.18.1; sys_platform != "darwin"` with
+# no python_version guard, 1.18.x needs Python >= 3.12, and the image is python:3.11-slim on
+# Linux. pip aborted the ENTIRE install, so `docker compose build` failed outright.
+#
+# Nothing caught it because every lane installs into a HOST venv (darwin, so it took a different
+# marker) and `docker compose up` reuses an already-built image. The Dockerfile is only exercised
+# when someone rebuilds — which happened by accident, days later, while chasing something else.
+#
+# This is the build half of the `smoke` lane, split out because it is the half that needs no
+# ports. `smoke` stays opt-in (it wants 8080/3000/55432/6380 to itself, so it cannot run while
+# anyone has `make up` going); the build can always run, and it is the check that answers "can
+# this still ship".
+#
+# Cheap when nothing changed — Docker's layer cache makes it seconds — and it only costs minutes
+# on the runs where a dependency actually moved, which is exactly when it should.
+if has build; then
+  say "Image build"
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    record build "Image build (docker compose build)" "skipped" "—" "—"
+    printf '  skipped — no docker daemon\n'
+  elif docker compose build > "$OUT/build.log" 2>&1; then
+    record build "Image build (docker compose build)" "pass" "—" "—"
+    printf '  pass — docker compose build\n'
+  else
+    record build "Image build (docker compose build)" "FAIL" "—" "—"
+    printf '  FAIL — docker compose build (see %s)\n' "$OUT/build.log"
+    tail -15 "$OUT/build.log" | sed 's/^/        /'
   fi
 fi
 

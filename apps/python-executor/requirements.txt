@@ -72,12 +72,27 @@ unittest-xml-reporting==3.2.0
 # re-check it, along with scikit-learn, which pins its own supported numpy range.
 numpy==2.4.6; python_version < "3.12"
 numpy==2.5.3; python_version >= "3.12"
-# scipy: 1.15.1 is the version tested on Linux CI/prod (compatible with scikit-learn 1.6.1).
-# On modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to dlopen, so newer interpreters
-# take 1.18.0 there. BOTH sides need a python_version guard: 1.18.0 itself requires >=3.12, so a
-# bare `sys_platform == "darwin"` pin makes macOS + the documented py3.10/3.11 resolve to a wheel
-# that does not exist — pip then aborts the ENTIRE install, not just scipy.
-scipy==1.18.1; sys_platform != "darwin"
+# scipy: four cells, because the constraint has TWO dimensions and pinning on one of them is how
+# this broke. The note below used to say "BOTH sides need a python_version guard" while the Linux
+# side had none — `scipy==1.18.1; sys_platform != "darwin"` — and 1.18.x requires Python >= 3.12.
+# The Docker image is python:3.11-slim on Linux, so it matched that line, resolved to a wheel that
+# does not exist for it, and pip aborted the ENTIRE install:
+#
+#     ERROR: Could not find a version that satisfies the requirement scipy==1.18.1
+#     ERROR: Ignored the following versions that require a different python version:
+#            1.18.0 Requires-Python >=3.12 ...
+#
+# **The API image could not be built at all.** Nothing caught it, because every lane installs
+# into a host venv and `docker compose up` reuses an already-built image — the Dockerfile is only
+# exercised when someone rebuilds. Found by rebuilding, not by reading.
+#
+# On modern macOS (Darwin 27 / py3.13) the 1.15.1 wheel fails to dlopen, which is why darwin
+# splits at the same boundary rather than sharing one pin with Linux.
+#
+# TESTED: only the two `< 3.12` lines. Every lane runs 3.11 — darwin locally, Linux in the image.
+# The `>= 3.12` lines are the documented forward path, unverified, exactly like numpy's above.
+scipy==1.17.1; sys_platform != "darwin" and python_version < "3.12"
+scipy==1.18.1; sys_platform != "darwin" and python_version >= "3.12"
 scipy==1.15.1; sys_platform == "darwin" and python_version < "3.12"
 scipy==1.18.0; sys_platform == "darwin" and python_version >= "3.12"
 scikit-learn==1.9.1
