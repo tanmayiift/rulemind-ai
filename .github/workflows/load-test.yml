@@ -5,12 +5,16 @@ name: load-test
 #  1. test/load/evaluate.k6.js:13 defaults RULE_ID to the literal "replace-me",
 #     so without a lookup step every request 404s and the http_req_failed
 #     threshold (rate<0.01) blows through immediately.
-#  2. Its thresholds are p(95)<500 at 50 VUs. E2E_TEST_PLAN.md section 11
-#     measured that on PostgreSQL with 4 workers and the limiter off; a
-#     single-worker uvicorn on a 2-core GitHub runner will not hold it. Gating
-#     PRs on that would produce flaky red for no signal.
+#  2. Its latency threshold was p(95)<500 at 50 VUs. E2E_TEST_PLAN.md section 11
+#     measured that on PostgreSQL with 4 workers and the limiter off; this job
+#     runs a single-worker uvicorn on SQLite and will not hold it. It is now
+#     P95_MS, set per-job below, so the ceiling matches the configuration under
+#     test instead of failing for being a different one.
 #
-# So it runs nightly and on demand, and reports rather than blocks.
+# So it runs on demand. It no longer merely "reports": both k6 steps gate the
+# job. They did not until 2026-09-19, and in that time the evaluate sweep's
+# correctness check failed 100% of the time while the workflow stayed green --
+# see the comments on each step.
 on:
   workflow_dispatch:
 
@@ -95,12 +99,23 @@ jobs:
       - name: Check k6 is available
         run: k6 version
 
+      # NO continue-on-error. It was here, and it hid a script that was wrong in every run:
+      # the "has outcome" check read `body.outcome` while POST /api/v1/rules/{id}/test returns
+      # the outcome nested under `result`. Every request failed that check -- 0 of 1398 -- and
+      # the workflow reported SUCCESS, because k6's non-zero exit was swallowed and the script
+      # declared no `checks` threshold either. Two independent reasons a 100% failure rate was
+      # invisible. A load test that cannot fail the job is a status badge, not a test.
       - name: Run k6
-        continue-on-error: true
         env:
           BASE_URL: http://127.0.0.1:8080
           RULE_ID: ${{ steps.rule.outputs.id }}
           API_KEY: rm_live_devlocaltenantkey000000000000
+          # The latency contract, overridable without editing the script. 500 was measured on
+          # PostgreSQL with 4 workers and the limiter off (E2E_TEST_PLAN.md s11); this job runs a
+          # single-worker uvicorn on SQLite, so gating on 500 here would fail for the
+          # configuration rather than for a regression. docs/PERFORMANCE.md holds the real
+          # comparison.
+          P95_MS: "3000"
         run: k6 run --summary-export=k6-summary.json test/load/evaluate.k6.js
 
       # test/load/saturation.k6.js had never been executed by any workflow. It answers a
@@ -108,6 +123,15 @@ jobs:
       # does this fall over, and does it shed load or collapse". That is the number the the deployed instance
       # sizing depends on. Same runner, same server, so it is nearly free to add here -- and
       # this workflow is workflow_dispatch only, so it costs nothing per PR.
+      # ARM THE SWEEP BEFORE RUNNING IT. Without this it measures a healthy server, and its
+      # assertion -- "a decision must not be derived from a variable that failed" -- never
+      # executes, because no variable ever fails. It printed PASS in run 35430953581 on exactly
+      # that basis. The script explains why pool size alone does not reproduce it.
+      - name: Arm the saturation harness
+        run: |
+          .venv-rulemind/bin/python test/load/saturation_setup.py \
+            --base-url http://127.0.0.1:8080
+
       - name: Run k6 saturation sweep
         env:
           # BASE_URL and API_KEY, NOT RM_BASE. saturation.k6.js reads __ENV.BASE_URL (:67) and
@@ -118,8 +142,11 @@ jobs:
           # silently load-tested localhost.
           BASE_URL: http://127.0.0.1:8080
           API_KEY: rm_live_devlocaltenantkey000000000000
+        # NO continue-on-error, same reason as above. This sweep's threshold is a correctness
+        # property (`unsound_decisions: count==0`) plus a harness property
+        # (`degraded_responses: count>0`, i.e. "this run actually reached the condition it
+        # asserts on"). Both are worth failing a job for.
         run: k6 run --summary-export=k6-saturation.json test/load/saturation.k6.js
-        continue-on-error: true
 
       - name: Stop FastAPI backend
         if: always()

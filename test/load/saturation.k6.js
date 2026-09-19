@@ -42,6 +42,16 @@ const unsoundDecisions = new Counter("unsound_decisions");
 const failedVariables = new Rate("decisions_with_a_failed_variable");
 const guardFired = new Counter("fail_closed_guard_fired");
 const budgetExceeded = new Counter("evaluation_budget_exceeded_504");
+// Did this run actually REACH saturation? Without this the whole test is vacuous: the assertion
+// below only runs when a variable failed, so a run where nothing failed asserts nothing and
+// still prints PASS. That is exactly the "a test that cannot fail is not a test" shape this
+// repo keeps finding -- and it shipped here, green, in run 35430953581.
+//
+// Reaching saturation needs BOTH a pool smaller than the concurrency AND a per-variable timeout
+// short enough that a QUEUED call exceeds it. Measured on this machine: pool=1 + timeout_ms=60
+// at 60 VUs gives 32.9% degraded and 625 guard firings; pool=4 + timeout_ms=60 gives 0.0% and
+// prints PASS having proven nothing. The workflow sets both -- see .github/workflows/load-test.yml.
+const degraded = new Counter("degraded_responses");
 
 export const options = {
   // Ramp well past the sandbox pool so requests queue and time out on the WAIT. Holding at the
@@ -61,6 +71,10 @@ export const options = {
     //
     // 5xx other than 504 is still a real failure, so it is checked per-response below.
     checks: ["rate>0.99"],
+    // The harness assertion. If NOTHING degraded, the run never exercised the guard and its
+    // "PASS" means only that the server was healthy -- which evaluate.k6.js already measures.
+    // Fail loudly rather than report a green that covers nothing.
+    degraded_responses: ["count>0"],
   },
 };
 
@@ -99,6 +113,7 @@ export default function (data) {
   // 504 is the evaluation budget (T1.3) shedding load. That is the system working, not failing.
   if (res.status === 504) {
     budgetExceeded.add(1);
+    degraded.add(1);
     check(res, { "504 is a clean budget rejection": (r) => r.body.includes("evaluation_budget") });
     return;
   }
@@ -126,6 +141,7 @@ export default function (data) {
   const errors = body.variable_errors || {};
   const hadFailure = Object.keys(errors).length > 0;
   failedVariables.add(hadFailure);
+  if (hadFailure) degraded.add(1);
 
   const trace = body.trace || [];
   const guard = trace.filter((s) => s && s.type === "variable_error_guard");
@@ -158,6 +174,7 @@ export default function (data) {
 export function handleSummary(data) {
   const counter = (name) => (data.metrics[name] ? data.metrics[name].values.count : 0);
   const unsound = counter("unsound_decisions");
+  const reached = counter("degraded_responses");
   const lines = [
     "",
     "  sandbox saturation run",
@@ -170,10 +187,16 @@ export function handleSummary(data) {
     `  fail-closed guard fired          : ${counter("fail_closed_guard_fired")}`,
     `  504 budget rejections            : ${counter("evaluation_budget_exceeded_504")}`,
     `  UNSOUND decisions                : ${unsound}`,
+    `  degraded responses (saturation)  : ${reached}`,
     "",
-    unsound === 0
-      ? "  PASS - no decision was derived from an input that failed to compute."
-      : `  FAIL - ${unsound} decision(s) were derived from a null. This is the T1.2 + T2.2 regression.`,
+    reached === 0
+      ? "  INCONCLUSIVE - nothing degraded, so the fail-closed guard was never exercised and\n" +
+        "  this run asserted nothing. Saturation needs a pool SMALLER than the concurrency AND a\n" +
+        "  per-variable timeout short enough that a QUEUED call exceeds it. Set SANDBOX_POOL_SIZE\n" +
+        "  on the server and PUT {\"engine_config\":{\"timeout_ms\":60}} before running."
+      : unsound === 0
+        ? `  PASS - ${reached} degraded response(s) and not one decision derived from an input that failed to compute.`
+        : `  FAIL - ${unsound} decision(s) were derived from a null. This is the T1.2 + T2.2 regression.`,
     "",
   ];
   return { stdout: lines.join("\n") };
