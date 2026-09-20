@@ -6,7 +6,8 @@ works without a restart, and removing one fails loudly on the next alert instead
 | File | Who reads it | What it is |
 |---|---|---|
 | `topic` | `alert-relay` | the ntfy topic real alerts are pushed to |
-| `watchdog_url` | Alertmanager | the dead-man's-switch heartbeat endpoint |
+| `heartbeat_topic` | `alert-relay` | the ntfy topic the Watchdog heartbeat goes to — **not** the on-call one |
+| `watchdog_url` | `watchdog-monitor` | optional external dead-man's-switch, for the one case a local monitor cannot cover |
 | `paging_url` | *(retired)* | superseded by `topic` + the relay |
 
 ```bash
@@ -39,20 +40,42 @@ container — set `RULEMIND_NTFY_BASE` to your own and nothing else here changes
 
 ---
 
-## `watchdog_url` — the dead man's switch
+## `heartbeat_topic` — where the heartbeat goes
 
-**This is the one that cannot live in this repo.** Every other alert tells you something broke.
-This one tells you the *alerting itself* broke, and that failure is silent in the worst way: if
-paging dies, the symptom is that you stop being woken up, which is indistinguishable from
-everything being fine.
+Its own topic, never the on-call one. A heartbeat delivered where a human is subscribed sends
+"nothing is wrong" every five minutes, which is how a topic gets muted and stops being watched.
 
-So a monitor on the same machine is worthless — it shares fate with what it watches. If the host
-dies, the heartbeat stops and so does anything here that would have noticed. It has to be
-somewhere else, watching for **silence**.
+```bash
+printf 'rulemind-hb-%s' "$(python3 -c 'import secrets; print(secrets.token_hex(8))')" \
+  > observability/secrets/heartbeat_topic
+```
 
-The `Watchdog` alert fires unconditionally (`expr: vector(1)`) and Alertmanager repeats it every
-5 minutes to this URL. Configure the receiving end to alert if it has not heard from you in
-**15 minutes** — three missed beats, so one slow delivery does not page anyone.
+`watchdog-monitor` polls this topic for **silence** and pages the on-call topic when it stops.
+**Verified doing so**: stopping Alertmanager produced `[ALERTING IS DOWN] no heartbeat` at
+priority 5 within the grace period, and restoring it produced `[RECOVERED] heartbeat is back`.
+
+It covers five of the six ways alerting dies — a dead relay, a broken Alertmanager reload, a
+misrouted receiver, Prometheus stopping, a container not returning. The sixth, the whole host
+going away, it structurally cannot, because it runs on that host. That is what `watchdog_url`
+below is for.
+
+**The grace must exceed Alertmanager's `repeat_interval`** (5m), or the monitor pages during
+normal operation. It refuses to start otherwise — found the honest way, by testing a 90s grace
+and watching it page immediately after an Alertmanager restart.
+
+---
+
+## `watchdog_url` — the external backstop
+
+**Optional, and it covers exactly one thing the local monitor cannot: this host going away.**
+
+`watchdog-monitor` pings this URL **only while it can see heartbeats arriving**. That ordering is
+the design — ping it unconditionally and it reports healthy while the pipeline it vouches for is
+dead. Pinging only on a verified heartbeat means its silence says "the local chain stopped
+proving itself", which includes the monitor and the machine.
+
+Configure the receiving end to alert if it has not heard from you in **15 minutes** — three
+missed beats, so one slow delivery does not page anyone.
 
 ### Grafana OnCall (free tier)
 

@@ -276,6 +276,24 @@ services:
       timeout: 5s
       retries: 3
 
+  # Notices when the heartbeat STOPS and pages about it. Five of the six ways alerting dies are
+  # local (a dead relay, a broken Alertmanager reload, a misrouted receiver, Prometheus stopping,
+  # a container not coming back); only "the whole machine died" needs a different failure domain,
+  # and that is what observability/secrets/watchdog_url is for. This closes the five for free.
+  # monitor.py is explicit about that limit, including in the page it sends.
+  watchdog-monitor:
+    build:
+      context: ./observability/watchdog-monitor
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      RULEMIND_NTFY_BASE: ${RULEMIND_NTFY_BASE:-https://ntfy.sh}
+      RULEMIND_HEARTBEAT_TOPIC_FILE: /etc/watchdog-monitor/heartbeat_topic
+      RULEMIND_TOPIC_FILE: /etc/watchdog-monitor/topic
+      RULEMIND_WATCHDOG_GRACE_S: ${RULEMIND_WATCHDOG_GRACE_S:-960}
+    volumes:
+      - ./observability/secrets:/etc/watchdog-monitor:ro
+
   alertmanager:
     image: prom/alertmanager:v0.27.0
     profiles: ["observability"]

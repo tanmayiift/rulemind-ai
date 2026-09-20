@@ -38,6 +38,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 NTFY_BASE = os.environ.get("RULEMIND_NTFY_BASE", "https://ntfy.sh").rstrip("/")
 TOPIC_FILE = pathlib.Path(os.environ.get("RULEMIND_NTFY_TOPIC_FILE", "/etc/alert-relay/topic"))
+# The heartbeat goes to its OWN topic, so watchdog-monitor can watch that one for silence without
+# also seeing every real alert -- and so a human subscribed to the on-call topic is not sent a
+# "nothing is wrong" notification every five minutes, which is how a topic gets muted.
+HEARTBEAT_TOPIC_FILE = pathlib.Path(os.environ.get(
+    "RULEMIND_NTFY_HEARTBEAT_TOPIC_FILE", "/etc/alert-relay/heartbeat_topic"))
 PORT = int(os.environ.get("PORT", "9097"))
 
 # severity -> (ntfy priority, tag). `none` is the Watchdog's severity: a heartbeat must never
@@ -57,14 +62,19 @@ SEVERITY = {
 }
 
 
-def topic() -> str:
+def topic(path: str = "/") -> str:
     """Read at NOTIFY time, not at start. A destination added after the container came up must
     work without a restart, and one removed must fail visibly rather than keep using a cached
-    value."""
-    return TOPIC_FILE.read_text().strip() if TOPIC_FILE.exists() else ""
+    value.
+
+    Routed by PATH so one relay serves both receivers: `/heartbeat` is the Watchdog's own topic,
+    anything else is the on-call topic.
+    """
+    f = HEARTBEAT_TOPIC_FILE if path.rstrip("/").endswith("heartbeat") else TOPIC_FILE
+    return f.read_text().strip() if f.exists() else ""
 
 
-def render(payload: dict) -> list[dict]:
+def render(payload: dict, path: str = "/") -> list[dict]:
     """One notification per alert, not one per group.
 
     Alertmanager groups alerts to reduce noise, and that is correct for delivery. It is wrong
@@ -90,7 +100,7 @@ def render(payload: dict) -> list[dict]:
             body += f"\n\ninstance: {instance}"
 
         note = {
-            "topic": topic(),
+            "topic": topic(path),
             "title": f"[{status.upper()}] {name}",
             "message": body,
             "priority": priority,
@@ -124,7 +134,7 @@ class Relay(BaseHTTPRequestHandler):
         except ValueError:
             self.send_response(400); self.end_headers(); self.wfile.write(b"bad json"); return
 
-        if not topic():
+        if not topic(self.path):
             # 500, deliberately. Alertmanager retries a 5xx and counts it in
             # alertmanager_notifications_failed_total, which RuleMindPagingIsFailing alerts on.
             # A 200 here would mean "delivered" for an alert that reached nobody.
@@ -132,7 +142,7 @@ class Relay(BaseHTTPRequestHandler):
             self.wfile.write(b"no topic configured"); return
 
         failed = 0
-        for note in render(payload):
+        for note in render(payload, self.path):
             try:
                 deliver(note)
             except (urllib.error.URLError, OSError) as exc:
@@ -146,11 +156,15 @@ class Relay(BaseHTTPRequestHandler):
     def do_GET(self):
         # Liveness for compose's health gate. Says whether a destination is configured, which is
         # the one thing worth knowing about this service from the outside.
-        ok = bool(topic())
+        ok = bool(topic("/"))
         self.send_response(200 if ok else 503)
         self.send_header("content-type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps({"status": "ok" if ok else "no topic", "ntfy": NTFY_BASE}).encode())
+        self.wfile.write(json.dumps({
+            "status": "ok" if ok else "no topic",
+            "ntfy": NTFY_BASE,
+            "heartbeat_topic_configured": bool(topic("/heartbeat")),
+        }).encode())
 
     def log_message(self, *a):
         pass
