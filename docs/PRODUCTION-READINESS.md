@@ -245,6 +245,57 @@ rather than something to do on their behalf.
 
 Nobody has run this against real users. That part cannot be closed from here.
 
+#### How to actually close it
+
+This is the one item on the list with no engineering answer, so here is the operational one. It
+is four steps and roughly a month, and **the order matters** — each step makes the next one's
+numbers mean something.
+
+**1. Put it somewhere that stays up (week 1).** A single small VPS is enough: 2 vCPU / 4 GB runs
+the compose stack comfortably at the measured load. Hetzner CX22 is ~€4/mo, Fly.io and Railway
+have similar tiers. It does not need to be big, it needs to be *continuous* — the failures this
+list is waiting on (memory creep, connection-pool exhaustion, log volume, cert expiry, disk
+filling) are all functions of uptime, and none of them appear in a 30-second load test.
+`make up` plus a reverse proxy is the whole deployment; `scripts/smoke_compose.sh` tells you it
+worked.
+
+**2. Point the alerting at it and leave it alone (week 1–2).** Both destinations are already
+wired: `observability/secrets/topic` for the pager, `watchdog_url` for the dead man's switch.
+The thing to resist is tuning during this window. Every alert that fires is data about your real
+baseline, including the ones you think are wrong — especially those, because a threshold you
+silence in week 1 is a threshold you never learn was miscalibrated.
+
+**3. Drive it with traffic shaped like yours (week 2–4).** Synthetic load at a fixed rate finds
+saturation, which this repo has already measured. What it does not find is what *real* shape
+does: diurnal peaks, retry storms, one tenant sending 50× the others, payloads with fields
+nobody anticipated. Two options, in order of value:
+
+   - **Shadow a real integration.** Mirror production traffic from whatever system this is
+     replacing and discard the decisions. You get real payloads and real distribution with zero
+     blast radius, and you can compare outcomes against the incumbent — which is also the only
+     honest way to validate the policies themselves.
+   - **Replay, if there is nothing to shadow.** `qa/e2e-full/` and the seeded samples give you a
+     corpus; vary the arrival rate on a daily sine and inject a 10× burst once a day.
+
+**4. Then recalibrate, from the data (end of month).** This is now one command:
+
+```bash
+scripts/calibrate_thresholds.py --window 30d          # see what your traffic says
+scripts/calibrate_thresholds.py --window 30d --apply  # write it into alerts.yml
+```
+
+It refuses below 200 sampled minutes rather than producing a number from a quiet afternoon, and
+it derives warning and critical from the same measurement so they cannot cross. **Review the
+diff** — it proposes where your system *is*, and what you consider unacceptable is still a
+product decision it should not make for you.
+
+#### The honest floor
+
+You cannot shortcut this by running the load test for longer. Sustained synthetic load found
+three real defects on 2026-09-15 (below) and would find none of the four in step 1, because
+those are failures of *duration*, not of *rate*. A month of continuous operation under
+realistic traffic is the shortest path, and roughly €4.
+
 What **was** closed is the specific gap those hours stood for: whether the observability chain
 actually works end to end, as opposed to each piece validating on its own. Proven under
 sustained load on 2026-09-15 — **53,760 requests at concurrency 48, ~44 decisions/sec**:

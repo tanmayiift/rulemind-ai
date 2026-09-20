@@ -139,11 +139,34 @@ fi
 if [ ! -f "$SECRETS/watchdog_url" ]; then
   bad "$SECRETS/watchdog_url is MISSING — no dead-man's-switch monitor configured"
   note "this one must live OUTSIDE this stack: a monitor on the same machine shares fate with"
-  note "what it watches. healthchecks.io / Opsgenie Heartbeats / Grafana OnCall, all free-tier."
+  note "what it watches. See observability/secrets/README.md for the Grafana OnCall click-path."
 elif ! grep -qE '^https?://' "$SECRETS/watchdog_url"; then
   bad "$SECRETS/watchdog_url exists but holds no http(s) URL"
 else
   ok "dead-man's-switch monitor is configured ($(wc -c < "$SECRETS/watchdog_url" | tr -d ' ') bytes)"
+
+  # DOES IT ANSWER? A URL in a file proves someone pasted something. Heartbeat endpoints are
+  # tokenised, so a stale or mistyped token 404s -- and because a heartbeat's whole job is to be
+  # SILENT when healthy, a broken one looks exactly like a working one right up until the day it
+  # was supposed to save you. The only way to tell is to send one and read the status.
+  #
+  # Never printed: the URL IS the credential.
+  WD_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    -X POST "$(cat "$SECRETS/watchdog_url")" 2>/dev/null)
+  case "${WD_CODE:-000}" in
+    2*)   ok "the monitor accepted a heartbeat (HTTP $WD_CODE)" ;;
+    000)  bad "the monitor is unreachable — no response"
+          note "check egress from this host, and that the URL host is right" ;;
+    401|403|404)
+          # Measured against Grafana OnCall: a wrong token answers 403, not 404. Both are the
+          # same mistake and the same fix, so they share a branch rather than leaving 403 to
+          # fall through to a message that says nothing.
+          bad "the monitor answered HTTP $WD_CODE — the token is wrong, or the heartbeat was deleted"
+          note "re-copy the whole URL from the integration's Heartbeat panel" ;;
+    *)    bad "the monitor answered HTTP $WD_CODE — a heartbeat is not being recorded" ;;
+  esac
+  note "a green tick here means the endpoint RECEIVES. That it ALERTS on silence is a setting"
+  note "on their side — stop alertmanager for one interval once, and confirm you get paged."
 fi
 
 # ── 7 ────────────────────────────────────────────────────────────────────────────────────────
