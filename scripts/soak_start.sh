@@ -37,17 +37,52 @@ mkdir -p "$LOG_DIR"
 
 status() {
   printf '\n\033[1mSoak run\033[0m\n'
+  # LIVENESS IS NOT HEALTH, and reporting the first as the second is the failure this whole
+  # strand of work keeps removing -- so it is galling that this script shipped with it.
+  #
+  # On 2026-09-20 Colima stopped. The generator stayed alive and kept firing into a dead API for
+  # hours; `--status` said "ok traffic generator running" the entire time, because it checked
+  # that a process existed. The log said `failed=456` of 906 and nothing read the log.
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    local pid; pid="$(cat "$PID_FILE")"
-    ok "traffic generator running (pid $pid, up $(ps -o etime= -p "$pid" | tr -d ' '))"
-    tail -1 "$LOG_DIR/soak.log" 2>/dev/null | sed 's/^/        /'
+    local pid last failed
+    pid="$(cat "$PID_FILE")"
+    last="$(tail -1 "$LOG_DIR/soak.log" 2>/dev/null)"
+    failed="$(printf '%s' "$last" | sed -n 's/.*failed=\([0-9]*\).*/\1/p')"
+    if [ "${failed:-0}" -gt 0 ]; then
+      bad "generator is alive (pid $pid) but its last window had ${failed} FAILED requests"
+      note "a live process is not a working one — check the API and the docker daemon"
+    else
+      ok "traffic generator healthy (pid $pid, up $(ps -o etime= -p "$pid" | tr -d ' '))"
+    fi
+    [ -n "$last" ] && printf '        %s\n' "$last"
   else
     bad "traffic generator is not running"
+  fi
+
+  # The daemon underneath everything. `restart: unless-stopped` on a container does nothing when
+  # the DAEMON is gone, which is exactly what happened.
+  if docker ps >/dev/null 2>&1; then
+    ok "docker daemon responding"
+  else
+    bad "DOCKER DAEMON IS DOWN — every container is gone and nothing will restart them"
+    note "colima start && docker compose --profile observability up -d"
+  fi
+
+  if curl -sf --max-time 5 http://127.0.0.1:8080/health >/dev/null 2>&1; then
+    ok "API answering /health"
+  else
+    bad "API is NOT answering — the traffic being sent is going nowhere"
   fi
   if [ -f "$CAF_PID_FILE" ] && kill -0 "$(cat "$CAF_PID_FILE")" 2>/dev/null; then
     ok "caffeinate holding the machine awake"
   else
     note "caffeinate is NOT running — the machine may sleep and leave gaps in the series"
+  fi
+  if [ -f "$LOG_DIR/supervisor.pid" ] && kill -0 "$(cat "$LOG_DIR/supervisor.pid")" 2>/dev/null; then
+    ok "supervisor loop running (pid $(cat "$LOG_DIR/supervisor.pid"))"
+  else
+    bad "supervisor is NOT running — nothing will restart the stack if the VM dies"
+    note "bash scripts/soak_supervise.sh --loop &"
   fi
   local n; n=$(docker compose ps --format '{{.Service}}' 2>/dev/null | wc -l | tr -d ' ')
   ok "$n compose service(s) up"
@@ -67,15 +102,23 @@ status() {
 case "${1:-}" in
   --status) status; exit 0 ;;
   --stop)
-    [ -f "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null && ok "stopped the generator"
+    [ -f "$LOG_DIR/supervisor.pid" ] && kill "$(cat "$LOG_DIR/supervisor.pid")" 2>/dev/null \
+      && ok "stopped the supervisor"
+    rm -f "$LOG_DIR/supervisor.pid"
+    # Every generator, not just the one in the pid file.
+    for pid in $(pgrep -f "soak_traffic.py" 2>/dev/null); do
+      kill "$pid" 2>/dev/null && ok "stopped generator $pid"
+    done
     [ -f "$CAF_PID_FILE" ] && kill "$(cat "$CAF_PID_FILE")" 2>/dev/null && ok "released caffeinate"
     rm -f "$PID_FILE" "$CAF_PID_FILE"
     note "the compose stack is left running; 'docker compose --profile observability down' stops it"
     exit 0 ;;
 esac
 
-if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-  bad "already running (pid $(cat "$PID_FILE")) — use --status or --stop"
+# By PROCESS, not just the pid file: the supervisor may have started one whose pid this file
+# does not know about, and starting a second doubles the traffic rate.
+if pgrep -f "soak_traffic.py" >/dev/null 2>&1; then
+  bad "a generator is already running (pid $(pgrep -f 'soak_traffic.py' | tr '\n' ' ')) — use --status or --stop"
   exit 1
 fi
 
@@ -100,6 +143,20 @@ if command -v caffeinate >/dev/null 2>&1; then
   nohup caffeinate -s -i > /dev/null 2>&1 &
   echo $! > "$CAF_PID_FILE"
   ok "caffeinate holding the machine awake (pid $(cat "$CAF_PID_FILE"))"
+fi
+
+# The supervisor, in --loop mode. Without it a dead Docker VM stays dead: `restart:
+# unless-stopped` is a container policy and does nothing when the DAEMON is gone. That is not
+# hypothetical -- on 2026-09-20 Colima stopped and the generator fired into a dead API for four
+# and a half hours while --status reported "running".
+if ! { [ -f "$LOG_DIR/supervisor.pid" ] && kill -0 "$(cat "$LOG_DIR/supervisor.pid")" 2>/dev/null; }; then
+  nohup bash scripts/soak_supervise.sh --loop >/dev/null 2>&1 &
+  sleep 2
+  [ -f "$LOG_DIR/supervisor.pid" ] \
+    && ok "supervisor loop running (pid $(cat "$LOG_DIR/supervisor.pid")) — checks every 5m" \
+    || bad "supervisor did not start"
+else
+  ok "supervisor already running (pid $(cat "$LOG_DIR/supervisor.pid"))"
 fi
 
 VENV="${RULEMIND_VENV:-$PWD/.venv-rulemind/bin/python}"
