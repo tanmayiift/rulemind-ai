@@ -102,12 +102,20 @@ if [ "${GEN_COUNT:-0}" -gt 0 ]; then
   if [ "${GEN_COUNT}" -gt 1 ] && [ "$CHECK_ONLY" -eq 0 ]; then
     say "$GEN_COUNT generators running — traffic is at ${GEN_COUNT}x the configured rate"
     KEEP="$(cat "$PID_FILE" 2>/dev/null)"
+    # Decide what to keep BEFORE killing anything, and only then write it. Re-querying pgrep
+    # after the kills is a race: `kill` is asynchronous, the dying process is still listed for a
+    # moment, and `head -1` wrote the pid it had JUST KILLED. The generator then ran fine while
+    # --status reported "not running" -- the same liveness-vs-truth gap, introduced by the code
+    # written to close it.
+    if [ -z "$KEEP" ] || ! kill -0 "$KEEP" 2>/dev/null; then
+      KEEP="$(pgrep -f "soak_traffic.py" 2>/dev/null | head -1)"
+    fi
     for pid in $(pgrep -f "soak_traffic.py" 2>/dev/null); do
       [ "$pid" = "$KEEP" ] && continue
       kill "$pid" 2>/dev/null && say "  killed duplicate $pid"
     done
-    # If the pid file pointed at nothing, adopt whichever survived.
-    pgrep -f "soak_traffic.py" 2>/dev/null | head -1 > "$PID_FILE"
+    printf '%s' "$KEEP" > "$PID_FILE"
+    say "  kept $KEEP"
     REPAIRED="$REPAIRED duplicate-generator"
   fi
 fi
