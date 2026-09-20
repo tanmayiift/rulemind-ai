@@ -447,6 +447,29 @@ hardware is a gate that gets disabled.
   and `live: false` with no error — a well-formed list of real models, just the wrong
   provider's, which is why nothing surfaced it. 5 curated → 82 live.
 
+- ~~**Paging has no destination**~~ — **A REAL PAGER, 2026-09-19.** An alert fired into
+  Alertmanager now arrives as a push notification on a phone: titled, prioritised, carrying its
+  runbook. Proven end to end by reading the notification's own fields back off the topic, not by
+  reading config.
+
+  `observability/alert-relay` sits between Alertmanager and the push service, because
+  Alertmanager's webhook body is a JSON envelope — pointed straight at a phone it renders as a
+  wall of JSON, which tells you nothing in the ten seconds that matter. The relay maps it onto
+  `title` / `priority` / `tags` / `click`: priority 5 for `critical` so it cuts through silent
+  mode, priority 1 for the `severity: none` heartbeat so it never buzzes.
+
+  **ntfy, because it needs no account** — the topic name is the secret, the same model the rest
+  of `observability/secrets` uses. That is the right trade to get paging working and the wrong
+  one for production, since alert summaries leave your perimeter. `RULEMIND_NTFY_BASE` points at
+  a self-hosted ntfy (one container, open source) and nothing else changes.
+
+  **Still open: the dead-man's-switch destination.** `observability/secrets/watchdog_url` needs
+  an external monitor — one that records a ping and alerts when they stop. It cannot be anything
+  in this repo: a monitor on the same machine shares fate with what it watches. healthchecks.io,
+  Opsgenie Heartbeats, Grafana OnCall and Better Stack all have free tiers; it is one URL in one
+  file. Until then `verify_paging.sh` reports it missing and Alertmanager fails that delivery
+  loudly, which is the correct state for "not configured".
+
 - ~~**Nothing watches the watchers**~~ — **PROVEN END TO END 2026-09-19**, against a live stack
   rather than by reading the config. `scripts/verify_paging.sh` walks all eight links green, and
   `--send` delivered a real alert:
@@ -490,7 +513,19 @@ hardware is a gate that gets disabled.
   with a real webhook URL and paging works; the chain either delivers or complains, and no
   longer has a state where it looks configured and silently drops.
 
-- **Branch protection is unavailable, by both routes.** Re-checked 2026-09-19 rather than
+- **Branch protection: a local guard is installed; server-side is deferred to next month.**
+  `.githooks/pre-push` refuses a direct push to `main`, installed via
+  `bash scripts/install_hooks.sh` (which sets `core.hooksPath`, so the hook is tracked and
+  cloned rather than living in one person's `.git/hooks`).
+
+  **It is a guardrail, not a gate**, and it says so in its own refusal message: a hook runs on
+  the machine doing the pushing, `--no-verify` walks past it, and a fresh clone has none until
+  the installer runs. It reads refs from stdin rather than inspecting HEAD, which is what makes
+  it catch `git push origin HEAD:main` — the form someone actually pushes to main by accident.
+  All four paths verified: direct refused, `HEAD:main` refused, feature branch allowed,
+  `--no-verify` bypassed.
+
+  Server-side protection is still unavailable, by both routes. Re-checked 2026-09-19 rather than
   carried forward, and the newer API is blocked too:
 
   | Attempt | Result |

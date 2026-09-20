@@ -112,18 +112,39 @@ fi
 # ── 6 ────────────────────────────────────────────────────────────────────────────────────────
 # THE LINK THAT IS USUALLY MISSING. url_file is read at NOTIFY time, so an absent file does not
 # stop Alertmanager starting -- the stack looks healthy and drops every page.
-for pair in "paging_url:on-call destination" "watchdog_url:dead-man's-switch monitor"; do
-  f="${pair%%:*}"; what="${pair#*:}"
-  if [ ! -f "$SECRETS/$f" ]; then
-    bad "$SECRETS/$f is MISSING — no $what configured"
-    note "cp $SECRETS/${f}.example $SECRETS/$f   and put the URL in it"
-  elif [ ! -s "$SECRETS/$f" ] || ! grep -qE '^https?://' "$SECRETS/$f"; then
-    bad "$SECRETS/$f exists but holds no http(s) URL"
-  else
-    # Never print the file. A webhook URL IS the credential.
-    ok "$what is configured ($(wc -c < "$SECRETS/$f" | tr -d ' ') bytes)"
-  fi
-done
+# The on-call destination is now a TOPIC, not a URL: Alertmanager posts to the in-network relay
+# (which formats the envelope into a real notification) and the relay reads the topic at notify
+# time. The secret moved one hop; the reasoning did not.
+if [ ! -f "$SECRETS/topic" ]; then
+  bad "$SECRETS/topic is MISSING — no on-call destination configured"
+  note "cp $SECRETS/topic.example $SECRETS/topic   and put an unguessable topic name in it"
+elif [ ! -s "$SECRETS/topic" ]; then
+  bad "$SECRETS/topic is empty"
+else
+  # Never print it. The topic name IS the credential: anyone who knows it can read your alerts.
+  ok "on-call destination is configured ($(wc -c < "$SECRETS/topic" | tr -d ' ') bytes)"
+fi
+
+# The relay is the hop that turns the envelope into something a human can act on. Alertmanager
+# posting successfully to a relay that cannot reach its upstream is a delivery that looks fine
+# and reaches nobody, so ask the relay itself.
+RELAY=$(curl -sf --max-time 10 "${RULEMIND_RELAY_URL:-http://127.0.0.1:9097}/" 2>/dev/null)
+if [ -z "$RELAY" ]; then
+  warn "the alert relay is not answering — start it with: docker compose --profile observability up -d alert-relay"
+  note "without it Alertmanager delivers its raw JSON envelope, which is a page nobody can read"
+else
+  ok "alert relay is up ($(printf '%s' "$RELAY" | tr -d '{}\"' | cut -c1-60))"
+fi
+
+if [ ! -f "$SECRETS/watchdog_url" ]; then
+  bad "$SECRETS/watchdog_url is MISSING — no dead-man's-switch monitor configured"
+  note "this one must live OUTSIDE this stack: a monitor on the same machine shares fate with"
+  note "what it watches. healthchecks.io / Opsgenie Heartbeats / Grafana OnCall, all free-tier."
+elif ! grep -qE '^https?://' "$SECRETS/watchdog_url"; then
+  bad "$SECRETS/watchdog_url exists but holds no http(s) URL"
+else
+  ok "dead-man's-switch monitor is configured ($(wc -c < "$SECRETS/watchdog_url" | tr -d ' ') bytes)"
+fi
 
 # ── 7 ────────────────────────────────────────────────────────────────────────────────────────
 # `awk ... END {print s+0}` prints 0 even for EMPTY input, so an unreachable Alertmanager was

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Refuse a direct push to main.
+#
+# WHY THIS EXISTS AND WHAT IT IS NOT. GitHub's branch protection -- the server-side kind that
+# cannot be bypassed -- needs Pro or a public repo. Tested 2026-09-19 by both routes:
+# `PUT /branches/main/protection` and `POST /rulesets` each answer 403 "Upgrade to GitHub Pro or
+# make this repository public". Until one of those changes, nothing on the server stops a direct
+# push to `main`.
+#
+# This is the client-side stand-in. BE CLEAR ABOUT ITS LIMIT: a hook runs on the machine doing
+# the pushing, so it stops accidents and nothing else. `--no-verify` walks straight past it, and
+# a fresh clone has no hooks at all until `scripts/install_hooks.sh` runs. It is a guardrail, not
+# a gate, and calling it protection would be the kind of "looks configured" claim this repo has
+# spent a week removing.
+#
+# Bypass deliberately when you mean to:  git push --no-verify
+set -uo pipefail
+
+PROTECTED="${RULEMIND_PROTECTED_BRANCH:-main}"
+REMOTE="${1:-origin}"
+
+red()  { printf '\033[31m%s\033[0m\n' "$1" >&2; }
+note() { printf '        %s\n' "$1" >&2; }
+
+# stdin gives one line per ref being pushed: <local ref> <local sha> <remote ref> <remote sha>.
+# Reading it rather than inspecting HEAD is what makes this correct for `git push origin
+# HEAD:main`, for pushing several refs at once, and for a push made from a detached HEAD -- all
+# of which a HEAD-based check gets wrong.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${remote_ref:-}" ] || continue
+  case "$remote_ref" in
+    "refs/heads/$PROTECTED")
+      # A deletion (all-zero local sha) is the most destructive form, so name it separately.
+      if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+        red "refusing to DELETE $PROTECTED on $REMOTE"
+      else
+        red "refusing a direct push to $PROTECTED on $REMOTE"
+      fi
+      note ""
+      note "  Branch and open a PR instead:"
+      note "    git switch -c <branch>"
+      note "    git push -u $REMOTE <branch>"
+      note "    gh pr create --fill"
+      note ""
+      note "  This is a LOCAL hook, not server-side protection -- GitHub refuses that on a"
+      note "  private repo without Pro. It stops accidents, not intent."
+      note "  Deliberate override:  git push --no-verify"
+      note ""
+      exit 1
+      ;;
+  esac
+done
+
+exit 0

@@ -110,7 +110,14 @@ receivers:
   # file is a logged delivery failure rather than a config that refuses to load.
   - name: "paging"
     webhook_configs:
-      - url_file: /etc/alertmanager/secrets/paging_url
+      # Through the relay, which turns this envelope into a notification with a title, a
+      # priority taken from `severity`, and a tappable runbook. Sending straight to a push
+      # service delivers raw JSON to a phone screen.
+      #
+      # A fixed in-network address rather than url_file, because the SECRET moved: the
+      # destination is now observability/secrets/topic, which the relay reads at notify time.
+      # The url_file reasoning is unchanged, it just applies one hop further along.
+      - url: http://alert-relay:9097/
         send_resolved: true
 
   # THE HEARTBEAT'S DESTINATION -- a dead-man's-switch monitor, not a human.
@@ -122,6 +129,17 @@ receivers:
   # `send_resolved: false` because this alert never resolves; it is `vector(1)`.
   - name: "watchdog"
     webhook_configs:
+      # NOT through the relay, and not to the paging destination either. A dead man's switch is
+      # a different KIND of endpoint: it does not render a notification, it records that a ping
+      # arrived, and it alerts when one stops. Sending the heartbeat to the phone instead would
+      # deliver "nothing is wrong" every five minutes and detect nothing when the pipe dies --
+      # the one failure it exists for.
+      #
+      # It also has to live OUTSIDE this stack. A monitor on the same machine shares fate with
+      # what it watches: if the host dies, the heartbeat stops and so does anything here that
+      # would have noticed. That is why this one URL genuinely needs an external service
+      # (healthchecks.io, Opsgenie Heartbeats, Grafana OnCall, Better Stack -- all free-tier)
+      # and cannot be satisfied by anything in this repo.
       - url_file: /etc/alertmanager/secrets/watchdog_url
         send_resolved: false
 
