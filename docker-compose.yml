@@ -1,5 +1,6 @@
 services:
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/web/Dockerfile
@@ -42,6 +43,7 @@ services:
         condition: service_healthy
 
   api:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/python-executor/Dockerfile
@@ -90,6 +92,7 @@ services:
       retries: 3
 
   worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/python-executor/Dockerfile
@@ -126,6 +129,7 @@ services:
       start_period: 15s
 
   db:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: rulemind
@@ -142,6 +146,7 @@ services:
       retries: 5
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     ports:
       - "${RULEMIND_REDIS_PORT:-6380}:6379"
@@ -171,6 +176,7 @@ services:
   # log replicated in production (min.insync.replicas > 1), and with one broker it cannot be.
   # ---------------------------------------------------------------------------
   kafka:
+    restart: unless-stopped
     image: apache/kafka:3.9.0
     profiles: ["kafka"]
     ports:
@@ -214,6 +220,7 @@ services:
   # a starter dashboard. To emit traces, also set OTEL_EXPORTER_OTLP_ENDPOINT.
   # ---------------------------------------------------------------------------
   otel-collector:
+    restart: unless-stopped
     image: otel/opentelemetry-collector-contrib:0.109.0
     profiles: ["observability"]
     command: ["--config=/etc/otel-collector-config.yaml"]
@@ -223,6 +230,7 @@ services:
       - "${RULEMIND_OTLP_PORT:-4317}:4317"
 
   tempo:
+    restart: unless-stopped
     image: grafana/tempo:2.6.0
     profiles: ["observability"]
     command: ["-config.file=/etc/tempo.yaml"]
@@ -231,6 +239,7 @@ services:
       - tempodata:/var/tempo
 
   prometheus:
+    restart: unless-stopped
     image: prom/prometheus:v2.54.1
     profiles: ["observability"]
     volumes:
@@ -238,6 +247,22 @@ services:
       # The rules file prometheus.yml references; without this mount Prometheus starts and
       # silently evaluates nothing, which looks identical to "no alerts are firing".
       - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # A NAMED volume. /prometheus was ANONYMOUS: not declared below, so it is not guaranteed
+      # across a container recreate and is discarded by `docker compose down -v`. A month of
+      # history that evaporates on the next image rebuild is worse than none, because you find
+      # out at the END -- when calibrate_thresholds.py reports "not enough data" about a month
+      # you thought you had.
+      - promdata:/prometheus
+    # Retention defaults to 15d, and calibrate_thresholds.py suggests --window 30d: the default
+    # would silently halve the window and still produce a number. 90d leaves a full quarter.
+    # Setting `command` replaces the image default entirely, so the console flags below are not
+    # optional -- dropping them breaks the expression browser.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=90d
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
     ports:
       - "${RULEMIND_PROM_PORT:-9090}:9090"
     depends_on:
@@ -252,6 +277,7 @@ services:
   # push service delivers the raw JSON envelope instead, which is a notification that tells you
   # nothing in the ten seconds that matter. See observability/alert-relay/relay.py.
   alert-relay:
+    restart: unless-stopped
     build:
       context: ./observability/alert-relay
     profiles: ["observability"]
@@ -276,7 +302,26 @@ services:
       timeout: 5s
       retries: 3
 
+  # Notices when the heartbeat STOPS and pages about it. Five of the six ways alerting dies are
+  # local (a dead relay, a broken Alertmanager reload, a misrouted receiver, Prometheus stopping,
+  # a container not coming back); only "the whole machine died" needs a different failure domain,
+  # and that is what observability/secrets/watchdog_url is for. This closes the five for free.
+  # monitor.py is explicit about that limit, including in the page it sends.
+  watchdog-monitor:
+    build:
+      context: ./observability/watchdog-monitor
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      RULEMIND_NTFY_BASE: ${RULEMIND_NTFY_BASE:-https://ntfy.sh}
+      RULEMIND_HEARTBEAT_TOPIC_FILE: /etc/watchdog-monitor/heartbeat_topic
+      RULEMIND_TOPIC_FILE: /etc/watchdog-monitor/topic
+      RULEMIND_WATCHDOG_GRACE_S: ${RULEMIND_WATCHDOG_GRACE_S:-960}
+    volumes:
+      - ./observability/secrets:/etc/watchdog-monitor:ro
+
   alertmanager:
+    restart: unless-stopped
     image: prom/alertmanager:v0.27.0
     profiles: ["observability"]
     volumes:
@@ -292,6 +337,7 @@ services:
       - "${RULEMIND_ALERTMANAGER_PORT:-9093}:9093"
 
   grafana:
+    restart: unless-stopped
     image: grafana/grafana:11.2.0
     profiles: ["observability"]
     environment:
@@ -309,6 +355,7 @@ services:
       - tempo
 
 volumes:
+  promdata:
   kafkadata:
   pgdata:
   redisdata:

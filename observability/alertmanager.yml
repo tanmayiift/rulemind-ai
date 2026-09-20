@@ -129,18 +129,19 @@ receivers:
   # `send_resolved: false` because this alert never resolves; it is `vector(1)`.
   - name: "watchdog"
     webhook_configs:
-      # NOT through the relay, and not to the paging destination either. A dead man's switch is
-      # a different KIND of endpoint: it does not render a notification, it records that a ping
-      # arrived, and it alerts when one stops. Sending the heartbeat to the phone instead would
-      # deliver "nothing is wrong" every five minutes and detect nothing when the pipe dies --
-      # the one failure it exists for.
+      # Its OWN topic, via the relay's /heartbeat path -- never the on-call topic. Sending the
+      # heartbeat where a human is subscribed delivers "nothing is wrong" every five minutes,
+      # which is how a topic gets muted and stops being watched at all.
       #
-      # It also has to live OUTSIDE this stack. A monitor on the same machine shares fate with
-      # what it watches: if the host dies, the heartbeat stops and so does anything here that
-      # would have noticed. That is why this one URL genuinely needs an external service
-      # (healthchecks.io, Opsgenie Heartbeats, Grafana OnCall, Better Stack -- all free-tier)
-      # and cannot be satisfied by anything in this repo.
-      - url_file: /etc/alertmanager/secrets/watchdog_url
+      # `watchdog-monitor` polls that topic for SILENCE and pages when it stops. It covers five
+      # of the six ways alerting dies (a dead relay, a broken Alertmanager reload, a misrouted
+      # receiver, Prometheus stopping, a container not returning); the sixth -- the whole host
+      # going away -- it structurally cannot, because it runs on that host.
+      #
+      # The sixth is covered by observability/secrets/watchdog_url, which watchdog-monitor pings
+      # only while it can SEE heartbeats arriving. So the external service's silence means "the
+      # local chain stopped proving itself", which includes the monitor and the host.
+      - url: http://alert-relay:9097/heartbeat
         send_resolved: false
 
   # Kept so `receiver: "null"` above is still a one-word way to silence everything deliberately

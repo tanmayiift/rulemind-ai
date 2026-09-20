@@ -251,6 +251,21 @@ This is the one item on the list with no engineering answer, so here is the oper
 is four steps and roughly a month, and **the order matters** — each step makes the next one's
 numbers mean something.
 
+> **STARTED 2026-09-20, on this machine.** `scripts/soak_start.sh` runs the stack under the
+> observability profile with shaped traffic and holds the machine awake; `--status` reports
+> sampled minutes, which is the number that decides whether the month will be usable.
+>
+> Setting it up found two defects that would have quietly wasted the whole exercise: Prometheus
+> was writing to an **anonymous** volume (a month of history lost on the next image rebuild, and
+> you would only find out at the end), and retention was **15 days against a 30-day calibration
+> window** — which would have halved the window and still produced a number. A third: twelve
+> services had no restart policy, so a container dying at 3am stayed dead while the month carried
+> on measuring a degraded stack.
+>
+> **A laptop is not a VPS** and the script says so: it sleeps, it is one failure domain, and its
+> resources are shared. What it does give is *duration*, which is where the remaining value is.
+> Steps 3 and 4 below are unchanged; step 1 is satisfied for free, imperfectly.
+
 **1. Put it somewhere that stays up (week 1).** A single small VPS is enough: 2 vCPU / 4 GB runs
 the compose stack comfortably at the measured load. Hetzner CX22 is ~€4/mo, Fly.io and Railway
 have similar tiers. It does not need to be big, it needs to be *continuous* — the failures this
@@ -514,12 +529,18 @@ hardware is a gate that gets disabled.
   one for production, since alert summaries leave your perimeter. `RULEMIND_NTFY_BASE` points at
   a self-hosted ntfy (one container, open source) and nothing else changes.
 
-  **Still open: the dead-man's-switch destination.** `observability/secrets/watchdog_url` needs
-  an external monitor — one that records a ping and alerts when they stop. It cannot be anything
-  in this repo: a monitor on the same machine shares fate with what it watches. healthchecks.io,
-  Opsgenie Heartbeats, Grafana OnCall and Better Stack all have free tiers; it is one URL in one
-  file. Until then `verify_paging.sh` reports it missing and Alertmanager fails that delivery
-  loudly, which is the correct state for "not configured".
+  **The dead man's switch now fires, and has been seen to.** `watchdog-monitor` polls the
+  heartbeat's own topic for silence and pages on-call when it stops. Verified: stopping
+  Alertmanager produced `[ALERTING IS DOWN] no heartbeat` at priority 5; restoring it produced
+  `[RECOVERED] heartbeat is back`.
+
+  It covers five of the six ways alerting dies — a dead relay, a broken Alertmanager reload, a
+  misrouted receiver, Prometheus stopping, a container not returning. The sixth, *this host going
+  away*, it structurally cannot. `observability/secrets/watchdog_url` covers that one and is
+  still unset; the monitor pings it **only while it can see heartbeats**, so the external
+  service's silence means "the local chain stopped proving itself", which includes the monitor
+  and the machine. One URL in one file — `observability/secrets/README.md` has the Grafana OnCall
+  click-path.
 
 - ~~**Nothing watches the watchers**~~ — **PROVEN END TO END 2026-09-19**, against a live stack
   rather than by reading the config. `scripts/verify_paging.sh` walks all eight links green, and
