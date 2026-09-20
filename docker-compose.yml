@@ -247,6 +247,35 @@ services:
   # nothing, rules evaluate, alerts turn red on Prometheus's own page, and no human is told --
   # which is indistinguishable from "everything is fine". alertmanager.yml shipped a day before
   # anyone noticed nothing was wired to it.
+  # Formats Alertmanager's webhook envelope into a notification a human can act on -- title,
+  # priority from severity, an emoji, and a tappable runbook. Pointing Alertmanager straight at a
+  # push service delivers the raw JSON envelope instead, which is a notification that tells you
+  # nothing in the ten seconds that matter. See observability/alert-relay/relay.py.
+  alert-relay:
+    build:
+      context: ./observability/alert-relay
+    profiles: ["observability"]
+    environment:
+      # Override to a self-hosted ntfy for production: alert summaries should not leave the
+      # perimeter of a decisioning engine, and ntfy's server is one container.
+      RULEMIND_NTFY_BASE: ${RULEMIND_NTFY_BASE:-https://ntfy.sh}
+      RULEMIND_NTFY_TOPIC_FILE: /etc/alert-relay/topic
+    volumes:
+      - ./observability/secrets:/etc/alert-relay:ro
+    ports:
+      # Published so the chain can be verified from OUTSIDE it. Alertmanager posting successfully
+      # to a relay that cannot reach its upstream is a delivery that looks fine and reaches
+      # nobody -- scripts/verify_paging.sh asks the relay directly, and could not while this was
+      # in-network only.
+      - "${RULEMIND_RELAY_PORT:-9097}:9097"
+    healthcheck:
+      # Reports unhealthy while no destination is configured, so "paging is set up" is visible in
+      # `docker compose ps` rather than discovered when something breaks.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9097/', timeout=5).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
   alertmanager:
     image: prom/alertmanager:v0.27.0
     profiles: ["observability"]
