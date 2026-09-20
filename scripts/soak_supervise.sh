@@ -90,8 +90,27 @@ done
 [ "$API_OK" -eq 1 ] || say "API is not answering /health"
 
 # ── 4. the generator ─────────────────────────────────────────────────────────────────────────
+# BY PROCESS, NOT JUST BY PID FILE. The supervisor and soak_start.sh can both decide the
+# generator is missing in the same window -- `--stop` then `start` with a supervisor pass in
+# between did exactly that -- and each starts one. The pid file then tracks only the second, so
+# traffic runs at DOUBLE the configured rate (silently skewing the very measurements this month
+# exists to collect) and `--stop` leaves an orphan behind.
 GEN_ALIVE=0
-[ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null && GEN_ALIVE=1
+GEN_COUNT=$(pgrep -f "soak_traffic.py" 2>/dev/null | wc -l | tr -d ' ')
+if [ "${GEN_COUNT:-0}" -gt 0 ]; then
+  GEN_ALIVE=1
+  if [ "${GEN_COUNT}" -gt 1 ] && [ "$CHECK_ONLY" -eq 0 ]; then
+    say "$GEN_COUNT generators running — traffic is at ${GEN_COUNT}x the configured rate"
+    KEEP="$(cat "$PID_FILE" 2>/dev/null)"
+    for pid in $(pgrep -f "soak_traffic.py" 2>/dev/null); do
+      [ "$pid" = "$KEEP" ] && continue
+      kill "$pid" 2>/dev/null && say "  killed duplicate $pid"
+    done
+    # If the pid file pointed at nothing, adopt whichever survived.
+    pgrep -f "soak_traffic.py" 2>/dev/null | head -1 > "$PID_FILE"
+    REPAIRED="$REPAIRED duplicate-generator"
+  fi
+fi
 
 if [ "$GEN_ALIVE" -eq 0 ]; then
   say "traffic generator is not running"

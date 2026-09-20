@@ -105,15 +105,20 @@ case "${1:-}" in
     [ -f "$LOG_DIR/supervisor.pid" ] && kill "$(cat "$LOG_DIR/supervisor.pid")" 2>/dev/null \
       && ok "stopped the supervisor"
     rm -f "$LOG_DIR/supervisor.pid"
-    [ -f "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null && ok "stopped the generator"
+    # Every generator, not just the one in the pid file.
+    for pid in $(pgrep -f "soak_traffic.py" 2>/dev/null); do
+      kill "$pid" 2>/dev/null && ok "stopped generator $pid"
+    done
     [ -f "$CAF_PID_FILE" ] && kill "$(cat "$CAF_PID_FILE")" 2>/dev/null && ok "released caffeinate"
     rm -f "$PID_FILE" "$CAF_PID_FILE"
     note "the compose stack is left running; 'docker compose --profile observability down' stops it"
     exit 0 ;;
 esac
 
-if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-  bad "already running (pid $(cat "$PID_FILE")) — use --status or --stop"
+# By PROCESS, not just the pid file: the supervisor may have started one whose pid this file
+# does not know about, and starting a second doubles the traffic rate.
+if pgrep -f "soak_traffic.py" >/dev/null 2>&1; then
+  bad "a generator is already running (pid $(pgrep -f 'soak_traffic.py' | tr '\n' ' ')) — use --status or --stop"
   exit 1
 fi
 
