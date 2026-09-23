@@ -232,6 +232,46 @@ else
   bad "could not list policies to decide against"
 fi
 
+# /metrics must aggregate across uvicorn workers. The Dockerfile runs --workers 2 and
+# prometheus_client counts PER PROCESS, so without PROMETHEUS_MULTIPROC_DIR a scrape reports
+# whichever worker answered -- rulemind_decisions_total goes backwards and rate() is garbage.
+# Measured on this stack before the fix: a 10-minute window ranged 175,073..280,562 with two
+# decreases. Driving a few decisions first makes the workers' counts diverge, which is what
+# makes the per-process bug observable in a handful of scrapes.
+if [ -n "${POLICY:-}" ]; then
+  for _ in 1 2 3 4 5 6; do
+    curl -fsS -X POST "$API/api/v1/decide" -H "x-api-key: $KEY" -H 'content-type: application/json' \
+      -d "{\"policyId\":\"$POLICY\",\"payload\":{\"age\":34}}" >/dev/null 2>&1 || true
+  done
+  SERIES=""
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    V=$(curl -fsS "$API/metrics" 2>/dev/null \
+      | awk '/^rulemind_decisions_total[ {]/ { s += $NF } END { printf "%.0f", s }')
+    SERIES="$SERIES ${V:-x}"
+  done
+  VERDICT=$(printf '%s' "$SERIES" | awk '{
+    prev = -1; drops = 0; lo = ""; hi = ""
+    for (i = 1; i <= NF; i++) {
+      if ($i == "x") { print "unreadable"; exit }
+      if (prev >= 0 && $i < prev) drops++
+      if (lo == "" || $i < lo) lo = $i
+      if (hi == "" || $i > hi) hi = $i
+      prev = $i
+    }
+    print (drops > 0 ? "decreased " drops " time(s), range " lo ".." hi : "ok " lo ".." hi)
+  }')
+  case "$VERDICT" in
+    ok\ *)
+      ok "rulemind_decisions_total never decreases across 12 scrapes (${VERDICT#ok })" ;;
+    unreadable)
+      bad "could not read rulemind_decisions_total from /metrics" ;;
+    *)
+      bad "rulemind_decisions_total $VERDICT -- a counter cannot decrease; PROMETHEUS_MULTIPROC_DIR is not in effect, so /metrics reports one uvicorn worker at a time" ;;
+  esac
+else
+  bad "no policy available, so the /metrics aggregation check could not run"
+fi
+
 echo
 echo "  ---------------------------------------"
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
