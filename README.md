@@ -290,7 +290,11 @@ multi-step policy through the full `PolicyExecutor`. Reproduce it with the comma
 | 4 | 35.48 ms | 45.57 ms | 83.72 ms | 103.1 rps |
 | 16 | 134.66 ms | 178.46 ms | 223.02 ms | **117.5 rps** |
 
-A warm decision costs **6 SQL queries** (1 INSERT, 1 UPDATE, 4 SELECT).
+A warm decision costs **6 SQL queries** (1 INSERT, 1 UPDATE, 4 SELECT) and **~13 KB of
+storage** — trace 6.1 KB, rule_results 2.5 KB, computed_variables 1.6 KB, scorecard 1.1 KB. So
+1M decisions/day is roughly **13 GB/day**, and you size the volume for your retention window.
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) has the per-column breakdown and a growth table.
+Set `DECISION_ARCHIVE_SINK` or that window is advertised and never enforced.
 
 **Not measured** — the lean paths below are *sizing guidance*, extrapolated from component
 benchmarks, and neither is the default configuration. Treat them as what to expect if you
