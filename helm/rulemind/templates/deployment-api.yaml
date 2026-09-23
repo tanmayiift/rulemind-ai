@@ -16,6 +16,13 @@ spec:
   template:
     metadata:
       annotations:
+        # Roll the pods when the ConfigMap or Secret changes. Without these two lines a
+        # rotation does NOTHING: secret.yaml and configmap.yaml are pre-upgrade hooks consumed
+        # via envFrom, so changing env.configKey leaves this pod template byte-identical, Helm
+        # sees no diff, performs no rollout, and the running pods keep the old key indefinitely.
+        # Rotation that silently succeeds is worse than rotation that fails.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         # This chart ships no ServiceMonitor and the cluster may not run the Prometheus
         # Operator, so these annotations are the portable way to actually get scraped --
         # today nothing scrapes this service at all. /metrics is aggregated across uvicorn
@@ -28,6 +35,24 @@ spec:
         app: rulemind-api
     spec:
       {{- include "rulemind.podSecurityContext" . | nindent 6 }}
+      {{- if .Values.spreadAcrossNodes }}
+      # replicaCount.api is 3 and hpa.minReplicas is 3, which READS like high availability and
+      # was not: with no anti-affinity of any kind, Kubernetes is free to place all three on one
+      # node, and losing that node is a full outage. The replica count is the number people
+      # check; this is the constraint that makes it mean something.
+      #
+      # ScheduleAnyway, not DoNotSchedule: on a single-node cluster (kind, minikube, a one-node
+      # evaluation) DoNotSchedule leaves pods Pending forever, which turns a resilience setting
+      # into a reason the chart does not start. Best-effort spreading is the right default;
+      # set it to DoNotSchedule on a real multi-node cluster where you want it enforced.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: {{ .Values.spreadPolicy | default "ScheduleAnyway" }}
+          labelSelector:
+            matchLabels:
+              app: rulemind-api
+      {{- end }}
       containers:
         - name: api
           image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"

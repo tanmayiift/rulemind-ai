@@ -199,6 +199,13 @@ securityContext:
   # that has not been exercised here. Turn it on in a staging cluster first.
   readOnlyRootFilesystem: false
 
+# Spread API replicas across nodes. replicaCount.api: 3 with no anti-affinity lets all three
+# land on one node, so a node loss is a full outage while the replica count says otherwise.
+# "ScheduleAnyway" is best-effort and safe on a single-node cluster; switch to "DoNotSchedule"
+# on a real multi-node cluster to make it a hard requirement.
+spreadAcrossNodes: true
+spreadPolicy: ScheduleAnyway
+
 hpa:
   enabled: true
   minReplicas: 3

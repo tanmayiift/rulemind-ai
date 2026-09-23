@@ -9,6 +9,14 @@ spec:
       app: rulemind-worker
   template:
     metadata:
+      annotations:
+        # Roll the pods when the ConfigMap or Secret changes. Without these two lines a
+        # rotation does NOTHING: secret.yaml and configmap.yaml are pre-upgrade hooks consumed
+        # via envFrom, so changing env.configKey leaves this pod template byte-identical, Helm
+        # sees no diff, performs no rollout, and the running pods keep the old key indefinitely.
+        # Rotation that silently succeeds is worse than rotation that fails.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
       labels:
         app: rulemind-worker
     spec:
