@@ -79,3 +79,33 @@ data:
   DB_MAX_OVERFLOW: {{ .Values.db.maxOverflow | quote }}
   DB_POOL_RECYCLE: {{ .Values.db.poolRecycle | quote }}
   DB_POOL_TIMEOUT: {{ .Values.db.poolTimeout | quote }}
+
+  # ── Everything else ───────────────────────────────────────────────────────────────────────
+  # THE CONFIGURATION INTERFACE, and the reason this block exists.
+  #
+  # Measured on 2026-09-24 with scripts/config_surface.py: the backend reads 111 environment
+  # variables. This chart rendered 18 of them. For a product whose deployment model IS this
+  # chart, that is a customer who can configure 16% of the software they are running -- with
+  # DECISION_ENCRYPT_AT_REST, AUDIT_ENCRYPT_AT_REST, LOG_LEVEL, RATE_LIMIT_* and the whole
+  # circuit-breaker group on the wrong side of the line. Encryption at rest could not be turned
+  # on. Log level could not be raised during an incident.
+  #
+  # The named keys above stay named: they have defaults this chart is opinionated about, and a
+  # comment explaining why. This map is for the rest -- any setting the backend reads, set by
+  # its real environment-variable name, so a setting can never again be readable by the code and
+  # deliverable by nothing. `values-config.yaml` in this chart documents them grouped by
+  # concern; `.env.example` at the repo root is the full catalogue with in-code defaults.
+  #
+  #   config:
+  #     DECISION_ENCRYPT_AT_REST: "1"
+  #     LOG_LEVEL: "DEBUG"
+  #
+  # Values are quoted because a ConfigMap's data is string-typed -- an unquoted `1` or `true`
+  # renders as a YAML bool and Kubernetes rejects the manifest.
+  #
+  # SECRETS DO NOT GO HERE. A ConfigMap is world-readable to anything with `get` on the
+  # namespace and is printed verbatim by `kubectl describe`. Use `secretConfig` in
+  # templates/secret.yaml for RULEMIND_SIGNING_PRIVATE_KEY and anything else with a key in it.
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

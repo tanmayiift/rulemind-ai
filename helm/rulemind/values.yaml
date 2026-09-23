@@ -189,6 +189,184 @@ env:
 #   3. lower db.poolSize / db.maxOverflow.
 # Do NOT raise api.uvicornWorkers without redoing the sum above.
 # ---------------------------------------------------------------------------
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# config — THE CONFIGURATION INTERFACE
+# ════════════════════════════════════════════════════════════════════════════════════════════
+#
+# Measured, not asserted (scripts/config_surface.py, 2026-09-24): the backend reads 111
+# environment variables. Before this block, docker-compose.yml, this chart and k8s/ together
+# could deliver 27 of them. **84 were settable by nothing** -- 68 of those documented in
+# .env.example, so an operator could read about a setting, and could not set it.
+#
+# That is not untidiness. Among the 84: DECISION_ENCRYPT_AT_REST and AUDIT_ENCRYPT_AT_REST
+# (encryption at rest could not be turned on), LOG_LEVEL (verbosity could not be raised during
+# an incident), RATE_LIMIT_* and CIRCUIT_BREAKER (untunable), SANDBOX_MODE and
+# SANDBOX_FALLBACK_MODE (the posture for running untrusted customer Python), and
+# RULEMIND_SIGNING_PRIVATE_KEY (without which bundle signing breaks above one replica).
+#
+# Entries here are set by their REAL environment-variable name and rendered verbatim into the
+# ConfigMap, so a setting the code reads can never again be undeliverable. The `env:` block
+# above keeps the settings this chart is opinionated about; this block is everything else.
+#
+# Values MUST be quoted strings -- a ConfigMap's data is string-typed, and an unquoted `1` or
+# `true` renders as a YAML bool that Kubernetes rejects.
+#
+# SECRETS GO IN `secretConfig` BELOW, not here: a ConfigMap is readable by anything with `get`
+# on the namespace and `kubectl describe` prints it verbatim.
+#
+# Every commented line shows the IN-CODE default, so uncommenting changes nothing until you
+# edit the value. `scripts/check_config_surface.py` fails the build if a setting the backend
+# reads is missing from this file.
+config:
+
+  # ── Data protection ──────────────────────────────────────────────────────────────────────
+  # Set explicitly rather than inherited, because "on by default" is not something a compliance
+  # reviewer can read off a cluster. Both encrypt with RULEMIND_CONFIG_KEY (Fernet).
+  DECISION_ENCRYPT_AT_REST: "1"    # decision payloads + computed variables at rest
+  AUDIT_ENCRYPT_AT_REST: "1"       # audit event payloads at rest
+  # RULEMIND_PII_REDACT_KEYS: ""       # extra payload keys to redact from logs and traces
+  # RULEMIND_PII_KEY_MATCH: ""         # regex; keys matching it are redacted
+  # RULEMIND_PII_VALUE_SCAN: ""        # "1" also scans VALUES for PII patterns (costs latency)
+
+  # ── The sandbox that runs customer Python ────────────────────────────────────────────────
+  # SANDBOX_FALLBACK_MODE is the one to read twice. "fail" refuses to evaluate a variable when
+  # no sandbox subprocess is available; "inline" runs untrusted customer code INSIDE the API
+  # process instead. The code default is "fail" and this chart pins it, because a fallback that
+  # silently downgrades the isolation boundary under load is worse than an error.
+  SANDBOX_MODE: "pool"             # pool | subprocess | inline
+  SANDBOX_FALLBACK_MODE: "fail"    # fail | inline  -- see above before changing
+  SANDBOX_POOL_SIZE: "4"           # subprocesses per uvicorn worker; see the budget below
+  # SANDBOX_MEMORY_MB: ""              # RLIMIT_AS per sandbox subprocess; unset = no limit
+  # SANDBOX_CODE_CACHE_SIZE: "2048"    # compiled-variable cache entries per subprocess
+
+  # ── Authentication and abuse budgets ─────────────────────────────────────────────────────
+  # AUTH_MODE unset is NOT the same as "none": middleware.py tests `== "none"` exactly, so
+  # leaving it out leaves auth ON. That is the safe direction, and it is stated here because
+  # the README implied otherwise for a long time.
+  # AUTH_MODE: ""                      # "none" DISABLES authentication entirely. Dev only.
+  # RULEMIND_LOGIN_MAX_ATTEMPTS: ""    # failed logins before lockout
+  # RULEMIND_LOGIN_LOCKOUT_SECONDS: ""
+  # RULEMIND_LOGIN_ALERT_AFTER: ""     # failed logins before an audit alert
+  # RULEMIND_LOGIN_RATE_LIMIT_PER_MIN: ""
+  # RULEMIND_ADMIN_RATE_LIMIT_PER_MIN: ""
+  # RULEMIND_SIGNUP_RATE_LIMIT_PER_MIN: ""
+
+  # ── Rate limiting ────────────────────────────────────────────────────────────────────────
+  # Redis-backed when REDIS_URL is set, per-worker in-process otherwise -- which multiplies the
+  # configured limit by the worker count. RATE_LIMIT_FAIL_OPEN decides what happens when Redis
+  # is unreachable: unset means fail CLOSED (requests are rejected), which is the safe default
+  # and the surprising one, so set it deliberately if availability matters more than the limit.
+  RATE_LIMIT_ENABLED: "1"
+  # RATE_LIMIT_PER_CLASS: "1"          # separate budgets per endpoint class
+  # RATE_LIMIT_AGGREGATE: "1"          # also enforce a tenant-wide aggregate
+  # RATE_LIMIT_EXEMPT_PATHS: ""        # comma-separated path prefixes
+  # RATE_LIMIT_FAIL_OPEN: ""           # "1" = allow when Redis is down. Read the note above.
+
+  # ── Connector egress (SSRF boundary) ─────────────────────────────────────────────────────
+  # RULEMIND_ACTION_ALLOWED_HOSTS is the allow-list for outbound action/webhook targets. Empty
+  # means "no host allow-list" -- the SSRF pin (private-range refusal) still applies.
+  # RULEMIND_ACTION_ALLOWED_HOSTS: ""
+  # RULEMIND_ACTION_MAX_TIMEOUT_MS: "30000"
+  # RULEMIND_ACTION_MAX_RETRIES: "5"
+  # RULEMIND_ACTION_MAX_POLLS: "10"
+  # RULEMIND_ACTION_MAX_POLL_INTERVAL_MS: "10000"
+  # RULEMIND_CONNECTOR_MAX_CACHE_TTL_MS: "300000"
+  # RULEMIND_CONNECTOR_FETCH_MAX_TIMEOUT_MS: "8000"
+  # RULEMIND_CONNECTOR_FETCH_MAX_RETRIES: "2"
+  # RULEMIND_CONNECTOR_FETCH_MAX_BODY_BYTES: "1048576"
+  # RULEMIND_CONNECTOR_FETCH_CACHE_ENTRIES: "512"
+
+  # ── Circuit breaker ──────────────────────────────────────────────────────────────────────
+  CIRCUIT_BREAKER: "1"             # trip connector calls open after repeated failure
+
+  # ── Observability ────────────────────────────────────────────────────────────────────────
+  # Set explicitly so raising verbosity during an incident is a `helm upgrade --set`, not a
+  # rebuild. It was previously deliverable by nothing at all.
+  LOG_LEVEL: "INFO"                # DEBUG | INFO | WARNING | ERROR
+  LOG_FORMAT: "json"               # json | text
+
+  # ── Decision write path ──────────────────────────────────────────────────────────────────
+  # ASYNC_DECISION_LOG defaults to ON: the decision row is written by a background worker, so a
+  # SIGTERM can drop what is still queued. Set "0" for synchronous, zero-loss writes at the
+  # cost of write latency on /decide. It could not be forced off from any artifact before this.
+  # ASYNC_DECISION_LOG: "1"
+  # DECISION_LOG_WORKERS: "4"
+  # DECISION_LOG_MAX_QUEUE: "1000"
+  # DECISION_READ_AFTER_WRITE_MS: "500"  # how long a read waits for a just-queued write
+  # DECISION_WAL: "false"              # write-ahead log for decisions; survives a crash
+  # DECISION_WAL_DIR: ""               # must be a writable mount if DECISION_WAL is on
+  # DECISION_WAL_COMPACT_EVERY: "1000"
+  # DECISION_WAL_MAX_REPLAY_ATTEMPTS: "5"
+
+  # ── Kafka delivery (only when env.kafkaBootstrapServers is set) ──────────────────────────
+  # RULEMIND_KAFKA_TOPIC: ""
+  # RULEMIND_KAFKA_DLQ_TOPIC: ""
+  # RULEMIND_KAFKA_GROUP: ""
+  # RULEMIND_KAFKA_CLIENT_ID: "rulemind-relay"
+  # DECISION_OUTBOX_RELAY_SECONDS: "5"
+  # OUTBOX_RETRY_SECONDS: "60"
+
+  # ── Models and evaluation ────────────────────────────────────────────────────────────────
+  # MODEL_POOL_SIZE processes are forked PER UVICORN WORKER. See the process budget below.
+  MODEL_POOL_SIZE: "2"
+  # MODEL_TIMEOUT_MS: "5000"
+  # SIM_MAX_WORKERS: "32"
+  # SIMULATION_JSONL_MAX: "50000"
+  # REPORT_MAX_ROWS: "100000"
+  # ANALYTICS_WINDOW_DAYS: "90"
+  # EXPERIMENT_AUTO_ROLLBACK: "false"
+  # EXPERIMENT_AUTO_ROLLBACK_MINUTES: "10"
+
+  # ── Caches ───────────────────────────────────────────────────────────────────────────────
+  # FAST_CACHE_* govern the serving-bundle cache used by FAST_DECIDE (env.fastDecide above).
+  # FAST_CACHE_TTL_SECONDS: "5.0"
+  # FAST_CACHE_EPOCH_TTL: "1.0"
+  # FAST_CACHE_MAX_ENTRIES: "2048"
+  # RUNTIME_CACHE_MAX_ENTRIES: "4096"
+  # API_KEY_CACHE_TTL: "300.0"
+
+  # ── Redis client behaviour ───────────────────────────────────────────────────────────────
+  # REDIS_SOCKET_TIMEOUT: ""
+  # REDIS_CONNECT_TIMEOUT: ""
+  # REDIS_HEALTH_CHECK_INTERVAL: ""
+  # REDIS_RETRY_AFTER_SECONDS: "30.0"
+
+  # ── Background scheduler ─────────────────────────────────────────────────────────────────
+  # Leader-elected by a Postgres advisory lease, so these apply cluster-wide, not per pod.
+  # RULEMIND_RUN_API_SCHEDULER: ""     # "1" runs the scheduler in the API pod instead of worker
+  # SCHEDULER_LEASE_TTL: "30"
+  # SLO_CHECK_INTERVAL_MINUTES: "15"
+  # SAML_PRUNE_INTERVAL_HOURS: "6"
+
+  # ── SDK and bundles ──────────────────────────────────────────────────────────────────────
+  # SDK_BUNDLE_REQUIRE_CLIENT_KEY: ""  # "1" requires a per-device key to fetch a bundle
+  # SDK_DECISIONS_BATCH_MAX: "1000"
+  # RULEMIND_BUNDLE_PATH: ""           # lambda_handler only: a bundle baked into the image
+
+  # ── Streaming and misc ───────────────────────────────────────────────────────────────────
+  # DECISION_STREAM_BACKLOG: "25"
+  # DECISION_STREAM_POLL_SECONDS: "1.0"
+  # DECISION_STREAM_MAX_SECONDS: "3600"
+  # RULEMIND_WEBHOOK_MAX_SUBSCRIPTIONS: "50"
+  # RULEMIND_ENABLE_DOCS: "false"      # serve /docs and /openapi.json even in production
+  # RULEMIND_PUBLIC_API_BASE_URL: ""   # absolute base URL advertised to SDKs
+  # RULEMIND_ADMIN_EMAIL: "admin@rulemind.local"
+  # ANTHROPIC_WORKSPACE_ID: ""         # optional workspace scope for the BYO-key AI features
+
+# Secret-VALUED settings. Rendered into the Secret, not the ConfigMap. Same naming rule: real
+# environment-variable names.
+#
+# RULEMIND_SIGNING_PRIVATE_KEY is the one that matters and appeared in no artifact at all.
+# Unset, app/compiler.py generates a fresh RSA key PER PROCESS, so with replicaCount.api > 1 an
+# SDK that fetches /sdk/v1/signing-key from one pod and /sdk/v1/bundle from another fails
+# signature verification -- and every restart invalidates a key a device has pinned.
+# Generate: openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+secretConfig: {}
+  # RULEMIND_SIGNING_PRIVATE_KEY: |
+  #   -----BEGIN PRIVATE KEY-----
+  #   ...
+  #   -----END PRIVATE KEY-----
+
 db:
   maxConnections: 300      # documentation only: what the chart assumes of Postgres
   poolSize: 5              # DB_POOL_SIZE   (per uvicorn worker process)
@@ -198,8 +376,51 @@ db:
 
 api:
   # uvicorn --workers. Was 4; each one is a separate pool (see the sum above) and
-  # a separate copy of the ML stack in RAM. 2 fits the 500m CPU request.
+  # a separate copy of the ML stack in RAM.
   uvicornWorkers: 2
+
+# ---------------------------------------------------------------------------
+# PROCESS AND MEMORY BUDGET — the arithmetic, the way db.* above states the
+# connection budget. These were set independently of each other and did not add up.
+#
+# A pod does not run `uvicornWorkers` processes. Each uvicorn worker forks its OWN
+# sandbox pool and its OWN model pool:
+#
+#   1 uvicorn master
+#   + uvicornWorkers x (1 worker + SANDBOX_POOL_SIZE + MODEL_POOL_SIZE)
+#   = 1 + 2 x (1 + 4 + 2) = 15 processes at the defaults
+#
+# Both pool sizes live in `config:` above. They were settable by NO artifact before
+# 2026-09-24, so an operator could grant the pod more CPU and had no way to let it use it.
+#
+# MEASURED on 2026-09-24, inside the running api container (/proc/<pid>/statm):
+#
+#   uvicorn worker, ML stack resident .......... 118 MB each   (x2 = 236 MB)
+#   sandbox subprocess ......................... 27 MB each    (x8 = 216 MB)
+#   model worker (imports the same ML stack) ... ~120 MB each  (x4 = 480 MB)
+#   uvicorn master + multiprocessing tracker ... 41 MB
+#                                               ---------
+#   full-pool floor ............................ ~975 MB, before a single request's
+#                                                working set
+#
+# The pools fill LAZILY, which is why an idle pod reads ~285 MB and this was never
+# noticed. requests.memory was 1Gi -- i.e. BELOW the pod's own full-pool floor, so the
+# scheduler could pack a node on the idle number and OOMKill it as the pools filled.
+# It is 1.5Gi now, and the limit 3Gi rather than 2Gi.
+#
+# CPU: requests.cpu was 500m for those 15 processes, with limits.cpu 2. That is a 4x
+# burst ratio, and hpa.cpuUtilization is a percentage of the REQUEST -- so at 70% the
+# HPA added replicas at 350m while each pod was permitted 2000m. Pods scaled out at
+# ~17% of their own ceiling. requests.cpu is 1 now, so the HPA acts at 700m of 2000m.
+#
+# Note on MODEL_MEMORY_MB (2048, compose only): it is an RLIMIT_AS -- an ADDRESS SPACE
+# cap, not an RSS budget -- so it does not sum against the pod's memory limit and the
+# "4 x 2048 = 8 GB against a 2 Gi pod" reading is wrong. It is also inert as a
+# protection, because the cgroup limit is reached first. Left as-is deliberately: the
+# floor exists because numpy/scipy/sklearn reserve large virtual regions just to import.
+#
+# Raise uvicornWorkers and you multiply BOTH pools and the DB connection sum above.
+# ---------------------------------------------------------------------------
 
 # Empty maps here meant no requests and no limits. A CPU-utilization HPA computes
 # against resources.requests.cpu, so with none set the HPA reported <unknown> for
@@ -208,11 +429,16 @@ api:
 resources:
   api:
     requests:
-      cpu: 500m
-      memory: 1Gi          # xgboost/lightgbm/sklearn/pandas are resident per worker
+      # See the PROCESS AND MEMORY BUDGET block above before changing either of these.
+      # cpu was 500m against 15 processes, and the HPA targets a percentage of THIS number.
+      cpu: "1"
+      # memory was 1Gi, which is below the measured ~975 MB full-pool floor. xgboost,
+      # lightgbm, sklearn and scipy are resident per uvicorn worker AND per model worker.
+      # (An earlier comment here also listed pandas; pandas is not in the image.)
+      memory: 1536Mi
     limits:
       cpu: "2"
-      memory: 2Gi
+      memory: 3Gi
   web:
     requests:
       cpu: 100m
