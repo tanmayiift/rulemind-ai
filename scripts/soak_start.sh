@@ -143,7 +143,15 @@ case "${1:-}" in
     sleep 1
     LEFT="$(pgrep -f 'soak_traffic.py' 2>/dev/null | tr '\n' ' ')"
     [ -n "$LEFT" ] && bad "generator(s) still running after --stop: $LEFT"
-    [ -f "$CAF_PID_FILE" ] && kill "$(cat "$CAF_PID_FILE")" 2>/dev/null && ok "released caffeinate"
+    # BY PROCESS, like the generator. Killing only the pid in the file left every caffeinate
+    # the supervisor had started still running -- and caffeinate's whole job is to stop the
+    # machine sleeping, so a leaked one holds the laptop awake indefinitely after the soak is
+    # over. Found four, one of them three days old.
+    CAF_LEFT=0
+    for pid in $(pgrep -x caffeinate 2>/dev/null); do
+      kill "$pid" 2>/dev/null && CAF_LEFT=$((CAF_LEFT + 1))
+    done
+    [ "$CAF_LEFT" -gt 0 ] && ok "released caffeinate ($CAF_LEFT process(es))"
     rm -f "$PID_FILE" "$CAF_PID_FILE"
     note "the compose stack is left running; 'docker compose --profile observability down' stops it"
     exit 0 ;;
@@ -163,6 +171,13 @@ printf '\n\033[1mStarting the soak run\033[0m\n'
 # --build so the month runs the code in the working tree, not whatever image happened to be
 # tagged when the last run started. Without it a soak can spend weeks measuring a build nobody
 # has on disk any more.
+#
+# AND TRACING ON. `make observability` sets OTEL_EXPORTER_OTLP_ENDPOINT; this script started the
+# same profile WITHOUT it, so Tempo and the otel-collector ran for the whole month receiving
+# nothing -- 182 MiB of containers with no input, and zero trace data from a run whose entire
+# purpose is to demonstrate the stack works. Exported rather than inlined so the supervisor's
+# repair path inherits it too. Override by exporting it before calling this script.
+export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
 docker compose --profile observability up -d --build >/dev/null 2>&1 \
   && ok "compose stack up (observability profile)" \
   || { bad "compose failed to start"; exit 1; }
@@ -177,9 +192,16 @@ curl -sf --max-time 5 http://127.0.0.1:8080/health >/dev/null 2>&1 \
 # -s prevents SYSTEM sleep, -i idle sleep. Not a substitute for leaving it plugged in: on battery
 # with the lid shut, macOS sleeps regardless.
 if command -v caffeinate >/dev/null 2>&1; then
-  nohup caffeinate -s -i > /dev/null 2>&1 &
-  echo $! > "$CAF_PID_FILE"
-  ok "caffeinate holding the machine awake (pid $(cat "$CAF_PID_FILE"))"
+  # At most one. The supervisor starts one too when it finds none, so an unguarded start here
+  # adds a second on every run -- and they never exit on their own.
+  if pgrep -x caffeinate >/dev/null 2>&1; then
+    pgrep -x caffeinate | head -1 > "$CAF_PID_FILE"
+    ok "caffeinate already holding the machine awake (pid $(cat "$CAF_PID_FILE"))"
+  else
+    nohup caffeinate -s -i > /dev/null 2>&1 &
+    echo $! > "$CAF_PID_FILE"
+    ok "caffeinate holding the machine awake (pid $(cat "$CAF_PID_FILE"))"
+  fi
 fi
 
 # The supervisor, in --loop mode. Without it a dead Docker VM stays dead: `restart:

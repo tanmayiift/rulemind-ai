@@ -11,6 +11,17 @@ distributor:
 ingester:
   max_block_duration: 5m
 
+# BOUND THE RETENTION. There was no compactor block at all, so Tempo kept blocks on its own
+# default and nothing in this repository said how long. For a month-long soak that is the same
+# trap the decisions table fell into: growth with no ceiling, discovered when the volume fills.
+#
+# 48h is chosen for what traces are actually FOR here -- diagnosing something that happened
+# recently. The long-horizon record is Prometheus (90d) and the decision log; a trace from three
+# weeks ago answers no question anyone asks.
+compactor:
+  compaction:
+    block_retention: 48h
+
 storage:
   trace:
     backend: local
