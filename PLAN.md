@@ -1520,6 +1520,56 @@ calls it.
   Recorded with its measurement so the next person decides from a number rather than an
   intuition.
 
+- [x] **R10.13 PROFILED THE 63% NOBODY HAD MEASURED.** The only real profile in this repo was
+  "37% in the sandbox". The rest of a decision — middleware, the per-decision `asyncio.run()`,
+  the SQL, serialization, encryption, the outbox — had never been broken down, so every
+  optimisation proposed for it was a guess. `cProfile` inside the running API container, warm
+  caches, 20 decisions, two policy shapes side by side. Full table in `docs/PERFORMANCE.md`
+  under "The other 63%".
+
+  | | `instant_personal_loan` | `pl_underwriting` |
+  |---|---:|---:|
+  | warm wall clock | **15.5 ms** | **13.5 ms** |
+  | sandbox IPC wait | **29.8%** · 165 lock acquires | **35.6%** · 165 |
+  | **deepcopy** | **14.6%** · **7,079 calls** | **10.3%** · **3,691** |
+  | Postgres execute + commit | 13.8% · **14 stmts + 7** | 11.4% · **10 + 5** |
+  | `dataclasses.asdict` | 2.2% | 0% |
+  | JSON | 1.2% | 1.1% |
+  | Fernet | **0.3%** | 0.3% |
+
+  Four things fall out, and three of them contradict something written down.
+
+  **`deepcopy` is the second-largest cost and appears in no document, comment or plan.** 7,079
+  calls per decision, not one call site: the ORM-to-dict conversions each deep-copy their JSON
+  columns (`_variable_to_dict` × 55, `_rule_to_dict` × 39, `_connector_to_dict` × 18,
+  `_scorecard_to_dict` × 8), plus `ExecutionContext.to_dict()`'s `asdict(self)`, which
+  deep-copies the **entire** context — payload, all 55 computed variables, rule results and
+  trace — on any policy that persists. That is the whole 2.2% / 0% asdict split:
+  `pl_underwriting` never pauses, so it never persists, so it never pays it.
+
+  **Two suspected costs are not costs.** The plan named "4 Fernet encrypts" and "13.2 KB of
+  JSON" among the unmeasured 63%. Fernet is **0.3%**; JSON is **1.2%**. Neither is worth
+  touching — which is the entire argument for profiling before optimising, made against my own
+  earlier list.
+
+  **The query count in the docs was stale in both directions.** `docs/runbooks/production.md`
+  said **6**, from a measurement that was correct when taken and went stale when execution
+  persistence and the decision outbox landed; before that it said "8+N" from a comment's guess.
+  Now 10 + 5, or 14 + 7 with a `review_gate`. Corrected in both documents, with the instruction
+  to treat any query count in prose as a date-stamped observation rather than a property of the
+  system — this is the third time this one line has been wrong.
+
+  **The sandbox is the headline, and it is the IPC, not the work.** 30–36% is spent *waiting on
+  a lock* — 165 acquires for 55 variables, three per round trip — while the variable bodies
+  themselves measure 0.3 µs. So the lever is the variable **protocol** (batch independent
+  variables; send only what the callee declares it reads — `variable_reachability` already
+  computes that), not making variables faster. They are already fast. That is plan item 4.4,
+  and it now has a measurement behind it instead of an intuition.
+
+  **38% is unaccounted, and that is stated rather than hidden.** Spread across 843 functions
+  with no single contributor above 1%. There is no large win hiding in it, which is itself a
+  finding: the remaining levers are the four above.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

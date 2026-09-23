@@ -176,11 +176,18 @@ For a real slowdown, in order of likelihood:
    saturated pool serialises them. `SANDBOX_POOL_SIZE` is the knob. `/ready` reports pool mode.
 2. **A connector is slow.** Decision-time fetches are bounded per connector, but a bureau at
    3s × several sources is 10s of wall clock. Check the circuit breaker state.
-3. **The database.** A warm decision costs **6 queries** -- 1 INSERT into `decisions`, 1 UPDATE,
-   4 SELECT (`docs/PERFORMANCE.md`, measured with SQLAlchemy event hooks). This line used to
-   repeat the codebase's own comment, "8+N queries per decision"; the N was eliminated on
-   2026-09-03 and nobody updated the prose. A missing index or a bloated `decisions` table shows
-   up here first, and a count materially above 6 means the per-tenant catalog cache is missing.
+3. **The database.** A warm decision costs **10 statements + 5 commits** for a rules-and-
+   scorecard policy, and **14 + 7** for one carrying a `review_gate` (which forces a synchronous
+   execution persist). Re-measured 2026-09-24 by profiling inside the running container; see
+   "The other 63%" in `docs/PERFORMANCE.md`. It is ~14% of a decision.
+
+   This line has now been wrong twice, in both directions, and the history is the useful part:
+   it first repeated the codebase's own comment, "8+N queries per decision" (the N was
+   eliminated 2026-09-03 and the prose was not updated), then said **6** from a measurement
+   that was correct when taken and went stale when execution persistence and the decision
+   outbox landed. Nobody re-measured. **Treat any query count in prose as a date-stamped
+   observation, not a property of the system** -- a count materially above these means the
+   per-tenant catalog cache is missing, but re-measure before concluding that.
 4. **Variables doing too much.** `COMPUTE_ONLY_USED_VARS=1` computes only what the policy can
    actually reach — measured at **−92.8%** on the serving path and **−76.0%** on the executor
    (`docs/PERFORMANCE.md`). It is correct and proven, and it is **off by default** because it
