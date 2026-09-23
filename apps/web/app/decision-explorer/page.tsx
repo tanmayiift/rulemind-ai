@@ -32,15 +32,28 @@ const OUTCOME_TONE: Record<string, "success" | "warning" | "danger"> = {
   reject: "danger",
 };
 
-function reasonCodes(decision: Decision): string[] {
-  if (decision.outcome === "reject") {
-    return ["AA05 · Debt-to-income too high", "AA12 · Insufficient credit history"];
-  }
-  if (decision.outcome === "review") {
-    return ["MR02 · Manual verification required"];
-  }
-  return [];
-}
+// Adverse-action reason codes come from the SERVER, derived from the conditions that actually
+// failed on this decision -- GET /api/v1/decisions/{id}/reason-codes, which calls
+// logic.adverse_reason_codes() and ranks failing conditions by relative miss magnitude.
+//
+// This function used to be:
+//
+//   if (decision.outcome === "reject")
+//     return ["AA05 · Debt-to-income too high", "AA12 · Insufficient credit history"];
+//
+// -- the same two codes for every rejected decision, regardless of which rules fired, rendered
+// under a heading reading "Adverse-action reason codes". These are the codes a lender puts in a
+// FCRA-style decline notice. Inventing them is not a placeholder; it is a compliance
+// fabrication, and the real endpoint had existed and been called by nothing.
+type ReasonCode = {
+  code: string;
+  variable_name?: string;
+  variable_id?: string;
+  operator?: string;
+  threshold?: unknown;
+  value?: unknown;
+  reason: string;
+};
 
 export default function DecisionExplorerPage() {
   const { apiBaseUrl, apiKey, themeMode, isMobile } = useRuleMindStore();
@@ -62,6 +75,29 @@ export default function DecisionExplorerPage() {
       .catch(() => { if (active) setAiEnabled(false); });
     return () => { active = false; };
   }, [apiBaseUrl, apiKey]);
+
+  // Fetched per selected decision. Deliberately NOT derived from `selected.outcome`: the whole
+  // point is that these come from the conditions that failed on THIS decision.
+  const [reasonCodes, setReasonCodes] = React.useState<ReasonCode[] | null>(null);
+  const [reasonError, setReasonError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!selected) { setReasonCodes(null); setReasonError(null); return; }
+    let active = true;
+    setReasonCodes(null); setReasonError(null);
+    (async () => {
+      try {
+        const r = await apiJson<{ reason_codes?: ReasonCode[] }>(
+          apiBaseUrl, `/api/v1/decisions/${encodeURIComponent(selected.id)}/reason-codes`, {}, apiKey);
+        if (active) setReasonCodes(r.reason_codes ?? []);
+      } catch (e) {
+        // Surfaced rather than swallowed: an empty list and a failed fetch mean different
+        // things, and only one of them is "this decision declined for no stated reason".
+        if (active) setReasonError(e instanceof Error ? e.message : "Could not load reason codes");
+      }
+    })();
+    return () => { active = false; };
+  }, [selected, apiBaseUrl, apiKey]);
 
   const runExplain = React.useCallback(async (id: string) => {
     setExplaining(true); setExplain(null);
@@ -254,13 +290,20 @@ export default function DecisionExplorerPage() {
                   );
                 })}
               </div>
-              {reasonCodes(selected).length ? (
+              {reasonError ? (
                 <>
                   <h3 style={{ fontSize: 13, margin: "14px 0 8px" }}>Adverse-action reason codes</h3>
-                  {reasonCodes(selected).map((r) => (
-                    <div key={r} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 11px", border: "1px solid " + theme.border, borderRadius: 8, marginBottom: 8 }}>
-                      <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: theme.accent }}>{r.split(" · ")[0]}</span>
-                      <span style={{ fontSize: 12.5 }}>{r.split(" · ")[1]}</span>
+                  <div style={{ padding: "9px 11px", border: "1px solid " + theme.border, borderRadius: 8, fontSize: 12.5, color: theme.muted }}>
+                    {reasonError}
+                  </div>
+                </>
+              ) : reasonCodes && reasonCodes.length ? (
+                <>
+                  <h3 style={{ fontSize: 13, margin: "14px 0 8px" }}>Adverse-action reason codes</h3>
+                  {reasonCodes.map((r) => (
+                    <div key={r.code} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "9px 11px", border: "1px solid " + theme.border, borderRadius: 8, marginBottom: 8 }}>
+                      <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: theme.accent, whiteSpace: "nowrap" }}>{r.code}</span>
+                      <span style={{ fontSize: 12.5 }}>{r.reason}</span>
                     </div>
                   ))}
                 </>
