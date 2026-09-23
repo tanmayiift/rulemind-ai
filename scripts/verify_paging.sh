@@ -166,7 +166,11 @@ else
     *)    bad "the monitor answered HTTP $WD_CODE — a heartbeat is not being recorded" ;;
   esac
   note "a green tick here means the endpoint RECEIVES. That it ALERTS on silence is a setting"
-  note "on their side — stop alertmanager for one interval once, and confirm you get paged."
+  note "on their side, and the two are independent — a heartbeat with no escalation chain is"
+  note "decoration. Verified on this stack 2026-09-23: alertmanager stopped 03:54:34Z, the local"
+  note "monitor paged at priority 5 after 16m, recovery at 04:08:41Z. To repeat it, PAUSE THE"
+  note "SOAK SUPERVISOR first (kill -STOP) — it repairs the stack inside 100s and the first"
+  note "attempt proved nothing because of that."
 fi
 
 # ── 7 ────────────────────────────────────────────────────────────────────────────────────────
