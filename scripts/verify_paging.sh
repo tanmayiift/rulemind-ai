@@ -182,11 +182,53 @@ fi
 if [ -z "$FAILED" ]; then
   warn "could not read Alertmanager's metrics — delivery health is unknown, not healthy"
 elif [ "$FAILED" -gt 0 ]; then
-  bad "Alertmanager has $FAILED failed notification(s) — alerts are firing and NOT arriving"
-  note "docker compose logs alertmanager | grep 'notify retry canceled'"
+  # A LIFETIME counter, so a single transient blip reds this check forever. Measured here: 440
+  # DNS failures inside alert-relay during one outage window, all recovered, and this line then
+  # reported "alerts are firing and NOT arriving" on a chain that was working. Ask Prometheus
+  # for the RECENT rate instead, and fall back to the lifetime number only if it cannot answer.
+  RECENT=$(curl -sf --max-time 10 --get "$PROM/api/v1/query" \
+    --data-urlencode 'query=sum(increase(alertmanager_notifications_failed_total[15m]))' 2>/dev/null \
+    | awk -F'"' '/"value"/ {for (i=1;i<=NF;i++) if ($i ~ /^[0-9.eE+-]+$/) v=$i} END {printf "%.0f", v+0}')
+  if [ -z "$RECENT" ]; then
+    warn "Alertmanager reports $FAILED lifetime failure(s); Prometheus could not be asked whether"
+    note "any are recent. Treat delivery health as unknown, not healthy."
+  elif [ "$RECENT" -gt 0 ]; then
+    bad "Alertmanager failed $RECENT notification(s) in the last 15m — alerts are firing and NOT arriving"
+    note "docker compose logs alertmanager | grep 'notify retry canceled'"
+  else
+    ok "no failed notifications in the last 15m ($FAILED lifetime, all older)"
+  fi
 else
   ok "no failed notifications"
 fi
+
+# ── 8 ─────────────────────────────────────────────────────────────────────────────────────
+# Every alert rule must query a metric something can actually produce. A rule naming a metric
+# Prometheus has no series for evaluates to empty forever and can never fire, while /alerts
+# renders it green. RuleMindPagingIsFailing -- the rule whose job is to catch "alerts are firing
+# and NOT arriving" -- was exactly that for as long as it existed, because prometheus.yml had no
+# scrape job for Alertmanager. See scripts/check_alert_metrics.py for the full account.
+ALERT_METRICS=$(RULEMIND_PROM_URL="$PROM" RM_REPO_ROOT="$PWD" \
+  python3 scripts/check_alert_metrics.py 2>/dev/null)
+AM_RC=$?
+UNDEFINED=$(printf '%s\n' "$ALERT_METRICS" | sed -n 's/^UNDEFINED //p')
+UNEMITTED=$(printf '%s\n' "$ALERT_METRICS" | sed -n 's/^UNEMITTED //p')
+CHECKED=$(printf '%s\n' "$ALERT_METRICS" | sed -n 's/^CHECKED //p')
+if [ "$AM_RC" -eq 2 ]; then
+  warn "could not ask Prometheus whether the alert rules query live metrics"
+elif [ -n "$UNDEFINED" ]; then
+  bad "alert rule(s) query a metric with NO series and NO definition in the source — they can never fire:"
+  printf '%s\n' "$UNDEFINED" | while IFS= read -r line; do [ -n "$line" ] && note "$line"; done
+  note "usually a missing scrape_config in observability/prometheus.yml"
+else
+  ok "all ${CHECKED:-?} alert rules query a metric something can produce"
+fi
+if [ -n "$UNEMITTED" ]; then
+  warn "alert rule(s) query a metric that is defined but has never been emitted here:"
+  printf '%s\n' "$UNEMITTED" | while IFS= read -r line; do [ -n "$line" ] && note "$line"; done
+  note "the rule is UNTESTED, not dead — nothing has exercised that code path in this stack"
+fi
+
 
 # ── optional: inject a real alert ─────────────────────────────────────────────────────────────
 if [ "$SEND" -eq 1 ]; then

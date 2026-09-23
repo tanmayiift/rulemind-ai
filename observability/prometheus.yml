@@ -19,6 +19,17 @@ alerting:
         - targets: ["alertmanager:9093"]
 
 scrape_configs:
+  # Alertmanager's OWN metrics. This block was missing, and its absence was silent in the worst
+  # possible way: `alerting:` above points Prometheus AT Alertmanager, which looks like the two
+  # are wired together, but it only says where to SEND alerts -- it scrapes nothing. So
+  # alertmanager_notifications_failed_total had no series at all, and
+  # RuleMindPagingIsFailing (alerts.yml) -- the one rule whose entire job is to catch "alerts
+  # are firing and NOT arriving" -- evaluated against a metric that did not exist and could
+  # never fire. Measured: 440 real delivery failures in this stack's logs, and the alert
+  # watching for exactly that stayed green throughout.
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
   - job_name: rulemind-api
     metrics_path: /metrics
     static_configs:
