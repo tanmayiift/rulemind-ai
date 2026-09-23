@@ -12,7 +12,7 @@
         "value": 42,
         "error": null
       },
-      "ms": 6.353082950226963
+      "ms": 5.00816700514406
     },
     {
       "id": "3.2.1",
@@ -23,7 +23,7 @@
         "value": "None",
         "error": "Import not allowed: os"
       },
-      "ms": 6.436582945752889
+      "ms": 5.213874974288046
     },
     {
       "id": "3.2.2",
@@ -34,7 +34,7 @@
         "value": "None",
         "error": "Blocked symbol detected: __import__"
       },
-      "ms": 6.7186669912189245
+      "ms": 4.167582956142724
     },
     {
       "id": "3.2.3",
@@ -45,7 +45,7 @@
         "value": "None",
         "error": "Blocked call detected: open"
       },
-      "ms": 7.209541974589229
+      "ms": 3.553416987415403
     },
     {
       "id": "3.2.4",
@@ -56,7 +56,7 @@
         "value": "None",
         "error": "Access to dunder attribute not allowed: __name__"
       },
-      "ms": 6.595791026484221
+      "ms": 4.876040969975293
     },
     {
       "id": "3.2.5",
@@ -67,7 +67,7 @@
         "value": "None",
         "error": "Blocked call detected: eval"
       },
-      "ms": 7.506541034672409
+      "ms": 4.441457975190133
     },
     {
       "id": "3.2.6",
@@ -78,7 +78,7 @@
         "value": "None",
         "error": "Blocked call detected: exec"
       },
-      "ms": 6.9261250318959355
+      "ms": 4.191916959825903
     },
     {
       "id": "3.2.7",
@@ -89,7 +89,7 @@
         "value": "None",
         "error": "Blocked symbol detected: globals"
       },
-      "ms": 7.477250008378178
+      "ms": 3.7699589738622308
     },
     {
       "id": "3.2.8",
@@ -100,7 +100,7 @@
         "value": "None",
         "error": "Access to dunder attribute not allowed: __globals__"
       },
-      "ms": 7.59662501513958
+      "ms": 3.764832974411547
     },
     {
       "id": "3.2.9",
@@ -111,7 +111,7 @@
         "value": "None",
         "error": "Access to dunder attribute not allowed: __mro__"
       },
-      "ms": 6.13166595576331
+      "ms": 4.456124966964126
     },
     {
       "id": "3.2.10",
@@ -122,7 +122,7 @@
         "value": "None",
         "error": "Method not allowed: format (use an f-string or %-formatting)"
       },
-      "ms": 8.563583018258214
+      "ms": 3.747542039491236
     },
     {
       "id": "3.2.11",
@@ -133,7 +133,7 @@
         "value": "None",
         "error": "Import not allowed: importlib"
       },
-      "ms": 7.337792019825429
+      "ms": 3.8688749773427844
     },
     {
       "id": "3.2.12",
@@ -144,7 +144,7 @@
         "value": "None",
         "error": "Import not allowed: os"
       },
-      "ms": 8.608124975580722
+      "ms": 6.18533295346424
     },
     {
       "id": "3.2.13",
@@ -155,7 +155,7 @@
         "value": "None",
         "error": "Import not allowed: socket"
       },
-      "ms": 7.561792037449777
+      "ms": 5.64270798349753
     },
     {
       "id": "3.2.14",
@@ -166,7 +166,7 @@
         "value": "None",
         "error": "Import not allowed: subprocess"
       },
-      "ms": 8.72037495719269
+      "ms": 3.880749980453402
     },
     {
       "id": "3.2.15",
@@ -177,7 +177,7 @@
         "value": "None",
         "error": "Blocked call detected: open"
       },
-      "ms": 6.254084000829607
+      "ms": 3.265207982622087
     },
     {
       "id": "3.2.16",
@@ -185,7 +185,7 @@
       "status": "pass",
       "detail": "",
       "data": null,
-      "ms": 6.500834017060697
+      "ms": 3.2244169851765037
     },
     {
       "id": "3.3",
@@ -193,11 +193,11 @@
       "status": "pass",
       "detail": "",
       "data": {
-        "elapsed_ms": 2011,
+        "elapsed_ms": 2009,
         "error": "Variable execution timed out.",
         "http": 200
       },
-      "ms": 2011.0734579502605
+      "ms": 2009.1424999991432
     },
     {
       "id": "3.3b",
@@ -205,11 +205,11 @@
       "status": "pass",
       "detail": "",
       "data": {
-        "elapsed_ms": 220,
+        "elapsed_ms": 214,
         "http": 200,
         "error": "None"
       },
-      "ms": 228.25316595844924
+      "ms": 217.74629200808704
     },
     {
       "id": "3.3c",
@@ -219,7 +219,7 @@
       "data": {
         "error": "maximum recursion depth exceeded"
       },
-      "ms": 13.265125046018511
+      "ms": 10.560083028394729
     },
     {
       "id": "3.3d",
@@ -230,7 +230,7 @@
         "elapsed_ms": 2009,
         "error": "Variable execution timed out."
       },
-      "ms": 2009.2117910389788
+      "ms": 2008.8184580090456
     }
   ]
 }

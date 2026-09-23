@@ -89,3 +89,4 @@ qa/results/mobile-e2e-backend.pid
 observability/secrets/*
 !observability/secrets/*.example
 !observability/secrets/README.md
+.rulemind-test-run.lock/
