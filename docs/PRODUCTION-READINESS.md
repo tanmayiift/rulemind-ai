@@ -515,6 +515,20 @@ The destination is configured (Grafana OnCall free tier, escalation chain `rulem
 | 04:06:37Z | `[ALERTING IS DOWN] no heartbeat` — **priority 5**, on the on-call topic |
 | 04:08:41Z | `[RECOVERED] heartbeat is back` after alertmanager restarted |
 
+**And the EXTERNAL half is proven too, 2026-09-23.** A second, targeted test stopped only
+`watchdog-monitor` — so local alerting stayed up and only the OnCall pings stopped — for 20
+minutes against OnCall's 15-minute heartbeat interval. The owner received Grafana's
+`oncallheartbeatmissing` escalation. Both halves of the dead man's switch have now been watched
+working, which is what "wired end to end" was previously asserting without evidence.
+
+The email itself is close to useless: subject and `alertname` are both the literal string
+`oncallheartbeatmissing`, with no description, severity or link. That payload is OnCall's, not
+ours, so `docs/runbooks/production.md` now carries a section under exactly that name — what the
+alert means (nothing is watching your alerting any more), the five diagnostic steps in order,
+and where in OnCall's UI to put context into the template. **The most important alert this
+system can send arrives looking like the least important one**, and until now nothing anywhere
+explained it.
+
 The original text below is kept because its reasoning is still right: a green tick on "the
 endpoint accepted a heartbeat" only proves it RECEIVES. Whether it ALERTS on silence is a
 different property and the only one that matters, and nobody had ever seen it happen.
