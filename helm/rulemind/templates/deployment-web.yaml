@@ -15,7 +15,7 @@ spec:
       {{- include "rulemind.podSecurityContext" . | nindent 6 }}
       containers:
         - name: web
-          image: "{{ .Values.image.web.repository }}:{{ .Values.image.web.tag }}"
+          image: "{{ .Values.image.web.repository }}:{{ .Values.image.web.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.web.pullPolicy }}
           {{- include "rulemind.containerSecurityContext" . | nindent 10 }}
           ports:

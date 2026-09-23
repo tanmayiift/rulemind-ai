@@ -23,7 +23,7 @@ spec:
       {{- include "rulemind.podSecurityContext" . | nindent 6 }}
       containers:
         - name: worker
-          image: "{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag }}"
+          image: "{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.worker.pullPolicy }}
           {{- include "rulemind.containerSecurityContext" . | nindent 10 }}
           # `args`, not `command`, so the image ENTRYPOINT stays in the chain.

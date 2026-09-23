@@ -67,7 +67,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: migrate
-          image: ghcr.io/rulemind/rulemind-api:latest
+          image: ghcr.io/tanmayiift/rulemind-api:4.0.0
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
@@ -123,7 +123,7 @@ spec:
           # cannot pull. Point this at wherever CI publishes the image built from
           # apps/python-executor/Dockerfile, and pin a digest or tag — not :latest —
           # for anything you intend to roll back.
-          image: ghcr.io/rulemind/rulemind-api:latest
+          image: ghcr.io/tanmayiift/rulemind-api:4.0.0
           securityContext:
             allowPrivilegeEscalation: false
             # See helm/rulemind/values.yaml securityContext for why this is not
