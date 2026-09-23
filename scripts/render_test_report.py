@@ -35,8 +35,12 @@ def read_summary(path: Path):
         return rows
     for line in path.read_text().splitlines():
         parts = line.split("\t")
-        if len(parts) == 5:
-            rows.append(dict(zip(("name", "label", "status", "count", "duration"), parts)))
+        # 5 fields is the older shape, still accepted so an old summary renders.
+        if len(parts) in (5, 6):
+            keys = ("name", "label", "status", "count", "duration", "skips")
+            row = dict(zip(keys, parts))
+            row.setdefault("skips", "")
+            rows.append(row)
     return rows
 
 
@@ -66,11 +70,32 @@ def render(rows) -> str:
            "| Tests counted | {0} |".format(total if total else "—"),
            "", verdict, "",
            "## Lanes", "",
-           "| Lane | Result | Tests | Duration |", "|---|---|---:|---:|"]
+           "| Lane | Result | Tests | Skipped | Duration |", "|---|---|---:|---:|---:|"]
 
     for r in rows:
-        out.append("| {0} | {1} {2} | {3} | {4} |".format(
-            r["label"], BADGE.get(r["status"], "•"), r["status"], r["count"], r["duration"]))
+        skips = r.get("skips") or ""
+        out.append("| {0} | {1} {2} | {3} | {4} | {5} |".format(
+            r["label"], BADGE.get(r["status"], "•"), r["status"], r["count"],
+            skips if skips not in ("", "0") else ("—" if not skips else "0"), r["duration"]))
+
+    total_skips = sum(int(r["skips"]) for r in rows
+                      if (r.get("skips") or "").isdigit())
+    if total_skips:
+        out += ["",
+                "**{0} test(s) skipped INSIDE a lane.** The \"0 skipped\" above counts "
+                "LANES; `RULEMIND_REQUIRE_ALL_LANES=1` turns a skipped lane into a failure and "
+                "says nothing about this. These are gated on an unset environment variable and "
+                "run the moment it is set:".format(total_skips),
+                "",
+                "| variable | what stops running without it |",
+                "|---|---|",
+                "| `KAFKA_BOOTSTRAP_SERVERS` | the delivery half of P09 — outbox → Kafka, DLQ, "
+                "redelivery-does-not-double-log. `docker compose --profile kafka up -d kafka` |",
+                "| `REDIS_URL` | rate-limit and cache behaviour against a real Redis |",
+                "| `RULEMIND_AI_LIVE` | live provider calls (needs a real API key) |",
+                "| `CLICKHOUSE_URL`, `S3_TEST_ENDPOINT` | the archive sinks |",
+                "| `RM_E2E_ALLOW_DESTRUCTIVE` | Playwright tests that write: signup, bulk import |",
+                ]
 
     if failed:
         out += ["", "## Failures", "",

@@ -191,7 +191,11 @@ class TheScheduledJobTest(_Base):
         self.seed(5, days_ago=400)
         with mock.patch("app.archiver.archiving_enabled", return_value=False):
             result = scheduler.archive_old_decisions(self.storage)
-        self.assertEqual(result, {"skipped": "archiving_disabled"})
+        # The KEY, not the whole dict: the job also reports how many workspaces have a
+        # retention window configured while nothing enforces it, and pinning the exact object
+        # made adding that diagnostic a test failure. What this test is about is that nothing
+        # was purged.
+        self.assertEqual(result.get("skipped"), "archiving_disabled")
         self.assertEqual(self.remaining(), 5)
 
     def test_retention_disabled_for_a_workspace_purges_nothing(self):

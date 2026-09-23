@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,15 +25,55 @@ os.environ.pop("AUTH_MODE", None)
 import app.fast_decide as fast_decide  # noqa: E402
 import app.main as app_main  # noqa: E402
 from app.executor import PolicyExecutor  # noqa: E402
+from app.storage import Storage  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 class DecisionGateErrorTests(unittest.TestCase):
+    """These two tests had a BUILT-IN EXPIRY DATE and finally reached it on 2026-09-23.
+
+    They used the process-global `app_main.storage` -- a shared, persistent database -- and
+    asserted that a filtered count went UP:
+
+        self.assertGreater(len(self._recent_errors("gate_error")), before)
+
+    `list_error_events` returns the most recent 200 rows (`storage.py:2492`, `limit: int = 200`)
+    and `_recent_errors` filters that WINDOW by stage. Once the shared database holds 200 error
+    events the window is full, so writing one more evicts the globally-oldest row. Whether the
+    filtered count rises then depends on which STAGE that evicted row happened to be -- and as
+    one stage comes to dominate the window, the odds move steadily against the assertion.
+
+    Measured at the moment of failure: the window held 158 `gate_error` + 42 `variable_error`,
+    exactly 200. Every previous run had been adding to it. So this was not flake in the usual
+    sense of noise; it was a coin weighted a little further against the test every time anyone
+    ran it, and the coin came up tails on 2026-09-23.
+
+    That also means the fix cannot be mutation-checked cleanly: reverting to the shared global
+    storage does NOT reliably fail, because whether it fails depends on the accumulated contents
+    of a database outside the test. Being unable to write a deterministic failing case against
+    the old code is itself the argument for the new one.
+
+    They also passed in a full suite while failing alone, because some earlier test's storage
+    global leaked in and handed them a smaller database -- a pass that depended on a bug
+    elsewhere.
+
+    Own the storage, like every other test here does, and ask for a window big enough that no
+    single test can fill it.
+    """
+
     def setUp(self):
-        self.storage = app_main.storage
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tempdir.cleanup)
+        preserve_storage_global(self)
+        self.storage = Storage(path=os.path.join(self.tempdir.name, "gate-errors.db"))
+        app_main.storage = self.storage
         self.tenant_id = self.storage.default_tenant_id
 
     def _recent_errors(self, stage):
-        return [e for e in self.storage.list_error_events(tenant_id=self.tenant_id) if e.get("stage") == stage]
+        # limit is explicit and far above anything one test can produce: the default 200 is what
+        # made these tests expire, and leaving it implicit would just move the date.
+        return [e for e in self.storage.list_error_events(tenant_id=self.tenant_id, limit=1000)
+                if e.get("stage") == stage]
 
     def test_gate_error_fails_closed_to_review_and_records(self):
         before = len(self._recent_errors("gate_error"))
