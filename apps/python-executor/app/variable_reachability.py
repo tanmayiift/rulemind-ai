@@ -26,7 +26,7 @@ positive costs one sandbox call; a false negative changes the decision.
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Mapping, Optional, Set
 
 __all__ = ["needed_variable_ids", "collect_condition_variable_ids", "collect_step_variable_ids",
            "compute_only_used_vars"]
@@ -227,16 +227,40 @@ def needed_variable_ids(
     return needed
 
 
-def compute_only_used_vars() -> bool:
-    """Is COMPUTE_ONLY_USED_VARS on?
+# The per-tenant key, in `engine_config` alongside timeout_ms / memory_mb / evaluation_budget_ms.
+TENANT_SETTING = "compute_only_used_vars"
+
+
+def compute_only_used_vars(engine_config: Optional[Mapping[str, Any]] = None) -> bool:
+    """Should this decision compute only the variables the policy can reach?
 
     ONE reader, because both decision paths ask this question and two different answers to
-    "is the flag on" is its own divergence -- the executor would filter while the serving
-    path computed the whole catalog, or the reverse, for the same request.
+    "is the flag on" is its own divergence -- the executor would filter while the serving path
+    computed the whole catalog, or the reverse, for the same request. `PolicyExecutor.execute`
+    used to ask `os.getenv` directly and bypass this function entirely, which is exactly the
+    divergence this docstring already claimed to prevent; it now calls here like the fast path.
 
-    Strict `== "1"`, not `env.env_bool`, deliberately: FAST_DECIDE is read the same way
-    (routers/runtime.py), these two flags are siblings, and a looser read could silently
-    turn the flag ON for a deployment that set it to something env_bool considers truthy.
-    For a flag that changes which variables get computed, failing closed is the safe side.
+    PER TENANT FIRST, ENVIRONMENT AS THE DEFAULT, and that ordering is the point of the
+    setting. This flag is worth the entire measured +82% on the decision path -- and it is off
+    by default not for performance reasons but because it CHANGES WHAT IS RECORDED: with it on,
+    a decision's `computed_variables` holds what the policy read rather than the tenant's whole
+    catalog. That is a decision about your audit surface. A regulated lender that reconstructs
+    declines from the recorded variable set wants everything; a high-volume tenant scoring
+    thin-file applicants wants the latency. Those are different answers for different tenants
+    of the same install, which a process-wide environment variable cannot express.
+
+    So: `engine_config["compute_only_used_vars"]` wins when present (PUT /api/v1/settings),
+    `COMPUTE_ONLY_USED_VARS` is the install-wide default, and the default of that is off.
+
+    Strict `== "1"` on the env var, not `env.env_bool`, deliberately: FAST_DECIDE is read the
+    same way (routers/runtime.py), these two flags are siblings, and a looser read could
+    silently turn the flag ON for a deployment that set it to something env_bool considers
+    truthy. For a flag that changes which variables get computed, failing closed is the safe
+    side. The per-tenant value is a JSON bool or a string and is read with the same strictness:
+    anything that is not exactly True or "1" leaves the environment default in place.
     """
+    if engine_config:
+        configured = engine_config.get(TENANT_SETTING)
+        if configured is not None:
+            return configured is True or configured == "1" or configured == 1
     return os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1"

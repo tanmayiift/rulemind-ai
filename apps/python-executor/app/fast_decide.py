@@ -528,6 +528,10 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         "schema_paths": schema_paths,
         "core_bundle": core_bundle,
         "needed_variable_ids": needed,
+        # The tenant's engine_config, carried so the per-tenant compute_only_used_vars setting
+        # is resolvable here. Cache-safe: the bundle is per tenant AND per policy, and a
+        # settings write invalidates it like any other publish.
+        "engine_config": settings,
         "timeout_ms": int(settings.get("timeout_ms", 2000)),
         "memory_mb": int(settings.get("memory_mb", 128)),
         "budget_ms": _budget_ms(settings),
@@ -596,7 +600,9 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
     # `.get`, not `[...]`, because "needed_variable_ids" is an OPTIONAL bundle key: tests and
     # callers hand-roll serving bundles (test_simulation_accuracy builds one with five keys),
     # and a missing key has to mean "compute everything", which is the unfiltered default.
-    needed_ids = bundle.get("needed_variable_ids") if variable_reachability.compute_only_used_vars() else None
+    needed_ids = (bundle.get("needed_variable_ids")
+                  if variable_reachability.compute_only_used_vars(bundle.get("engine_config"))
+                  else None)
 
     for variable in bundle["variables"]:
         # Skip BEFORE the budget check, exactly as PolicyExecutor._compute_variables does --

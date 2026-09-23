@@ -123,9 +123,13 @@ env:
 
   # Performance flags, both previously unreachable -- absent from this chart and from
   # docker-compose.yml, so they could not be turned on anywhere. Off by default, as the code is.
+  #
   # COMPUTE_ONLY_USED_VARS shrinks a decision's recorded computed_variables from the tenant's
-  # whole catalog to what the policy actually read: a change to your audit surface, so decide it
-  # deliberately rather than for the throughput.
+  # whole catalog to what the policy actually read: a change to your AUDIT SURFACE, so decide it
+  # deliberately rather than for the throughput (it is worth the whole measured +82%).
+  # This value is the INSTALL-WIDE DEFAULT. Any tenant can override it in either direction with
+  # `compute_only_used_vars` in their engine_config (PUT /api/v1/settings) -- including keeping
+  # the full recorded catalog on an install that turned it on for everyone else.
   fastDecide: "0"
   computeOnlyUsedVars: "0"
 

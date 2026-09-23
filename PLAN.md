@@ -1617,6 +1617,46 @@ calls it.
   precisely because it is the seam those guarantees live on. Fanning out the existing call
   instead kept every guarantee and made the revert a one-line `git checkout`.
 
+- [x] **R10.15 `COMPUTE_ONLY_USED_VARS` IS NOW A PER-TENANT DECISION, AND THE "ONE READER" HAD
+  A SECOND READER.** The flag restricts a decision to the variables the policy can transitively
+  reach. It is worth the entire measured **+82%**, and it is off by default *not* for
+  performance reasons: with it on, `computed_variables` records what the policy read rather than
+  the tenant's whole catalog. That is a choice about your **audit surface**. A regulated lender
+  reconstructing declines from the recorded set wants everything; a high-volume tenant scoring
+  thin-file applicants wants the latency. Same install, different answers — which a
+  process-wide environment variable cannot express.
+
+  Now `engine_config.compute_only_used_vars` (PUT /api/v1/settings) wins in **both**
+  directions, `COMPUTE_ONLY_USED_VARS` is the install-wide default, and off is the default of
+  that. Documented in `.env.example` beside the other per-tenant engine_config blocks and in
+  `values.yaml` where the env default is set. A tenant value that is not exactly `true` or
+  `"1"` leaves the default in place, so a typo cannot silently shrink someone's audit record.
+
+  **And the divergence guard had a bypass.** `variable_reachability.compute_only_used_vars()`
+  carries a docstring stating it is the ONE reader, "because both decision paths ask this
+  question and two different answers to 'is the flag on' is its own divergence" — while
+  `PolicyExecutor.execute` called `os.getenv("COMPUTE_ONLY_USED_VARS")` directly and never
+  reached it. The guard existed; one of its two callers did not use it. No behavioural test
+  could have caught that, because with only the env var in play both readings agree — they
+  diverge only once a per-tenant value exists, which is exactly what this change adds. Pinned
+  by a source check on both modules instead.
+
+  10 tests, including that a null tenant value falls through rather than meaning off (a UI
+  sends `null` for "not set", and reading it as False would override an install that
+  deliberately turned the flag on). Three mutations, each failing named tests: ignore the
+  tenant setting (2), read the env directly in the executor (2), accept a truthy junk value (7).
+
+- [x] **R10.16 THE PyO3 SPIKE (4.5) IS ANSWERED BY THE PROFILE: NO.** Item 4.5 proposed
+  exposing `decide_from_payload` through PyO3 so the Rust `variables::compute_variables`
+  register machine could replace subprocess round trips, gated on 4.1's profile. The profile is
+  in, and it closes the question rather than opening it: the cost is **0.13 ms per round trip
+  through the pool's serial queue**, and the variable bodies themselves are **0.3 µs**.
+  Replacing 0.3 µs of Python with Rust cannot touch a 0.13 ms transport. The Rust register
+  machine would have to replace the *transport* too — i.e. run all variables in-process, which
+  removes the subprocess isolation boundary that exists to contain untrusted customer code.
+  That is not an optimisation, it is a different security posture. Closed, with the measurement
+  as the reason.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

@@ -4,7 +4,6 @@ import asyncio
 import ast
 import copy
 import json
-import os
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -1335,14 +1334,22 @@ class PolicyExecutor:
         connectors = self._catalog_for(tenant_id)["connectors"]
 
         # By default every tenant variable is computed (full parity + available for
-        # audit/downstream). Setting COMPUTE_ONLY_USED_VARS=1 restricts computation
-        # to the variables the policy actually uses (transitively) — a real latency
-        # win, but it changes the workload, so it is opt-in rather than default.
+        # audit/downstream). Restricting computation to what the policy can transitively reach
+        # is a real latency win -- the entire measured +82% -- but it changes WHAT IS RECORDED
+        # in the decision's computed_variables, so it is an audit-surface choice and is settled
+        # per tenant (`engine_config.compute_only_used_vars`) with COMPUTE_ONLY_USED_VARS as
+        # the install-wide default.
+        #
+        # Asked through variable_reachability, not os.getenv. This line read the environment
+        # directly while the fast path went through the helper -- and the helper's own
+        # docstring says it exists so the two paths cannot answer differently. One of the two
+        # callers was not using it.
         if not resume_from:
             needed = None
             # Simulation only needs the variables the policy actually reads —
             # computing the full catalog per case is the dominant backtest cost.
-            if simulate or os.getenv("COMPUTE_ONLY_USED_VARS", "0") == "1":
+            engine_config = self._catalog_for(tenant_id)["settings"].get("engine_config", {})
+            if simulate or variable_reachability.compute_only_used_vars(engine_config):
                 needed = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
             # Retrieve opted-in sources BEFORE the variables that read them. A connector step
             # runs after this point and so cannot supply data to a single variable; see the
