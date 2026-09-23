@@ -38,7 +38,8 @@ export SANDBOX_POOL_SIZE="${SANDBOX_POOL_SIZE:-2}"
 # Playwright binds 8100/3100 while compose binds 8080/3000 -- they do not collide, and a test
 # report that silently omits the 68 browser tests is the kind of partial-coverage claim this
 # script exists to prevent. It adds ~30s.
-LANES="${*:-python python-pg web rust flutter kotlin e2e contracts lint migrations build qa}"
+DEFAULT_LANES="python python-pg web rust flutter kotlin e2e contracts lint migrations build qa"
+LANES="${*:-$DEFAULT_LANES}"
 
 
 # `smoke` is NOT in the default set: smoke_compose.sh builds and tears down the whole stack and
@@ -778,7 +779,11 @@ if has qa; then
 fi
 
 say "Report"
-env -u DATABASE_URL "$VENV" "$ROOT/scripts/render_test_report.py" --summary "$SUMMARY" --out "$REPORT"
+# Tell the renderer whether this was the WHOLE gate or a subset. `run_all_tests.sh contracts`
+# used to overwrite TEST_RESULTS.md with four rows and the headline "All lanes green" -- true of
+# what ran, and a lie about what the sentence means to anyone reading the file.
+env -u DATABASE_URL RULEMIND_LANES_RUN="$LANES" RULEMIND_LANES_DEFAULT="$DEFAULT_LANES" \
+  "$VENV" "$ROOT/scripts/render_test_report.py" --summary "$SUMMARY" --out "$REPORT"
 printf '  wrote %s\n\n' "$REPORT"
 
 grep -q "	FAIL	" "$SUMMARY" && exit 1

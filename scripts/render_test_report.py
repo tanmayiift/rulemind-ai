@@ -56,6 +56,15 @@ def render(rows) -> str:
         if r["count"].isdigit():
             total += int(r["count"])
 
+    # PARTIAL RUNS MUST SAY SO. `run_all_tests.sh contracts` regenerates this whole file from
+    # four rows, and the old headline read "All lanes green" -- accurate about what ran, and
+    # wrong about what the sentence means to someone reading TEST_RESULTS.md as the evidence
+    # that the gate passes. Measured: a lock-verification run left this file claiming 4 lanes.
+    requested = (os.environ.get("RULEMIND_LANES_RUN") or "").split()
+    default = (os.environ.get("RULEMIND_LANES_DEFAULT") or "").split()
+    partial = bool(requested and default and set(requested) != set(default))
+    missing = sorted(set(default) - set(requested)) if partial else []
+
     verdict = ("**All lanes green.**" if not failed
                else "**{0} lane(s) FAILED.**".format(len(failed)))
 
@@ -68,7 +77,12 @@ def render(rows) -> str:
            "| Lanes | {0} passed, {1} failed, {2} skipped |".format(
                len(passed), len(failed), len(skipped)),
            "| Tests counted | {0} |".format(total if total else "—"),
-           "", verdict, "",
+           "", verdict, ""]
+    if partial:
+        out += ["> **PARTIAL RUN — this is not the gate.** Only `{0}` ran; `{1}` did not. "
+                "Re-run `scripts/run_all_tests.sh` with no arguments before treating this file "
+                "as evidence.".format(" ".join(requested), " ".join(missing)), ""]
+    out += [
            "## Lanes", "",
            "| Lane | Result | Tests | Skipped | Duration |", "|---|---|---:|---:|---:|"]
 
