@@ -83,10 +83,17 @@ import {
 export function AuditPage(props: { onNotify: (message: string) => void }) {
   const theme = useTheme();
   const { apiBaseUrl, apiKey, isMobile } = useRuleMindStore();
-  const [tab, setTab] = React.useState<"decisions" | "promotions" | "errors">("decisions");
+  const [tab, setTab] = React.useState<"decisions" | "promotions" | "errors" | "changes">("decisions");
   const [decisions, setDecisions] = React.useState<Array<Record<string, unknown>>>([]);
   const [promotions, setPromotions] = React.useState<PromotionRecord[]>([]);
   const [errors, setErrors] = React.useState<AuditErrorRecord[]>([]);
+  // THE AUTHORING CHANGE TRAIL -- the one the tamper-evident hash chain actually protects.
+  // GET /api/v1/audit was called by NOTHING in the web app: the page labelled "Audit Logs"
+  // showed decisions, promotions and errors, and the record of who changed which rule was
+  // reachable only by opening the database. `chain` is the verification report from
+  // GET /api/v1/audit/verify, equally uncalled.
+  const [changes, setChanges] = React.useState<Array<Record<string, unknown>>>([]);
+  const [chain, setChain] = React.useState<Record<string, unknown> | null>(null);
   const [selected, setSelected] = React.useState<Record<string, unknown> | null>(null);
   const [live, setLive] = React.useState(false);
   const [replay, setReplay] = React.useState<{ original_outcome: string; replayed_outcome: string; changed: boolean; bundle_version: number } | null>(null);
@@ -112,11 +119,15 @@ export function AuditPage(props: { onNotify: (message: string) => void }) {
       apiJson<Array<Record<string, unknown>>>(apiBaseUrl, "/api/v1/audit/decisions", {}, apiKey),
       apiJson<PromotionRecord[]>(apiBaseUrl, "/api/v1/audit/promotions", {}, apiKey),
       apiJson<AuditErrorRecord[]>(apiBaseUrl, "/api/v1/audit/errors", {}, apiKey),
+      apiJson<Array<Record<string, unknown>>>(apiBaseUrl, "/api/v1/audit", {}, apiKey),
+      apiJson<Record<string, unknown>>(apiBaseUrl, "/api/v1/audit/verify", {}, apiKey),
     ])
-      .then(([decisionRows, promotionRows, errorRows]) => {
+      .then(([decisionRows, promotionRows, errorRows, changeRows, chainReport]) => {
         setDecisions(decisionRows);
         setPromotions(promotionRows);
         setErrors(errorRows);
+        setChanges(changeRows);
+        setChain(chainReport);
       })
       .catch((error) => props.onNotify(error instanceof Error ? error.message : "Unable to load audit data."));
   }, [apiBaseUrl, apiKey, props]);
@@ -146,7 +157,9 @@ export function AuditPage(props: { onNotify: (message: string) => void }) {
       ? decisions
       : tab === "promotions"
         ? promotions
-        : errors;
+        : tab === "changes"
+          ? changes
+          : errors;
 
   return (
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
@@ -155,12 +168,29 @@ export function AuditPage(props: { onNotify: (message: string) => void }) {
         {[
           { id: "decisions", label: "Decision History" },
           { id: "promotions", label: "Promotion History" },
+          { id: "changes", label: "Change History" },
           { id: "errors", label: "Error Events" },
         ].map((item) => (
-          <Button key={item.id} variant={tab === item.id ? "primary" : "default"} onClick={() => setTab(item.id as "decisions" | "promotions" | "errors")}>
+          <Button key={item.id} variant={tab === item.id ? "primary" : "default"} onClick={() => setTab(item.id as "decisions" | "promotions" | "errors" | "changes")}>
             {item.label}
           </Button>
         ))}
+        {tab === "changes" && chain ? (
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+            {/* The chain report, which nothing surfaced. A hash chain nobody can verify from the
+                product is a claim rather than a control -- and `breaks` is the only field that
+                distinguishes "attestable" from "someone edited the database". */}
+            <span style={{ fontWeight: 600 }}>
+              {Array.isArray(chain.breaks) && (chain.breaks as unknown[]).length === 0
+                ? "✓ chain intact"
+                : "⚠ chain broken"}
+            </span>
+            <span style={{ opacity: 0.7 }}>
+              {String(chain.verified ?? 0)} verified
+              {Number(chain.pre_chain ?? 0) > 0 ? `, ${String(chain.pre_chain)} pre-chain` : ""}
+            </span>
+          </div>
+        ) : null}
         {tab === "decisions" ? (
           <div style={{ marginLeft: "auto" }}>
             <Button variant={live ? "primary" : "default"} onClick={() => setLive((value) => !value)}>
@@ -183,7 +213,10 @@ export function AuditPage(props: { onNotify: (message: string) => void }) {
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.1fr 0.9fr", gap: 16 }}>
         <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, overflow: "hidden" }}>
           <div style={{ padding: 14, borderBottom: "1px solid " + theme.border, fontSize: "var(--rm-fs-heading)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>
-            {tab === "decisions" ? "Recent decisions" : tab === "promotions" ? "Recent promotions" : "Recent operational errors"}
+            {tab === "decisions" ? "Recent decisions"
+              : tab === "promotions" ? "Recent promotions"
+              : tab === "changes" ? "Authoring changes — who changed what, when"
+              : "Recent operational errors"}
           </div>
           <div style={{ display: "grid" }}>
             {rows.length === 0 ? (
@@ -213,10 +246,18 @@ export function AuditPage(props: { onNotify: (message: string) => void }) {
                         ? `${String(record.policy_id ?? "policy")} → ${String(record.outcome ?? "")}`
                         : tab === "promotions"
                           ? `${String(record.entity_type ?? "")} · ${String(record.entity_id ?? "")}`
-                          : `${String(record.scope ?? "")} · ${String(record.message ?? "")}`}
+                          : tab === "changes"
+                            ? `${String(record.event_type ?? "change")} · ${String(record.entity_id ?? "")}`
+                            : `${String(record.scope ?? "")} · ${String(record.message ?? "")}`}
                     </div>
                     <div style={{ fontSize: "var(--rm-fs-small)", color: theme.muted }}>
-                      {String(record.created_at ?? "")}
+                      {/* On the change trail the ACTOR is the point -- this whole tab exists
+                          because "who changed which rule" was unanswerable. user_id was NULL on
+                          every row until the actor was threaded into add_audit_event; a row
+                          without one predates that and says so rather than showing a blank. */}
+                      {tab === "changes"
+                        ? `${String(record.user_id ?? "actor not recorded")} · ${String(record.created_at ?? "")}`
+                        : String(record.created_at ?? "")}
                     </div>
                   </button>
                 );

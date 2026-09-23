@@ -1249,6 +1249,7 @@ class Storage:
             "experiment_variant": model.experiment_variant,
             "device_id": model.device_id,
             "bundle_hash": model.bundle_hash,
+            "policy_version": model.policy_version,
             "created_at": serialize_datetime(model.created_at),
             "received_at": serialize_datetime(model.received_at),
         }
@@ -1868,7 +1869,13 @@ class Storage:
                 experiment_variant=payload.get("experiment_variant"),
                 device_id=payload.get("device_id") or payload.get("deviceId"),
                 bundle_hash=payload.get("bundle_hash") or payload.get("bundleHash"),
-                created_at=_parse_client_datetime(payload.get("created_at") or payload.get("createdAt")) or datetime.utcnow(),
+                policy_version=payload.get("policy_version") or payload.get("policyVersion"),
+                # _as_datetime, not _parse_client_datetime: the latter returns None for
+                # anything that is not a str, so an internal caller passing a real datetime for
+                # created_at silently got utcnow() instead -- a decision backdated by a replay,
+                # an import or a test would quietly claim to have happened just now. The SDK
+                # path sends ISO strings and is unaffected either way.
+                created_at=_as_datetime(payload.get("created_at") or payload.get("createdAt")) or datetime.utcnow(),
                 received_at=datetime.utcnow(),
             )
             session.add(decision)
@@ -1995,7 +2002,8 @@ class Storage:
 
     def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0,
                        client_id: Optional[str] = None, policy_id: Optional[str] = None,
-                       outcome: Optional[str] = None, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+                       outcome: Optional[str] = None, user_id: Optional[str] = None,
+                       created_from: Optional[Any] = None, created_to: Optional[Any] = None) -> List[Dict[str, Any]]:
         from . import decision_log
         decision_log.flush()  # read-after-write: see any just-submitted async writes
         resolved = self._tenant_id(tenant_id)
@@ -2015,6 +2023,19 @@ class Storage:
                 query = query.where(Decision.policy_id == policy_id)
             if outcome:
                 query = query.where(Decision.outcome == outcome)
+            # DATE RANGE. Without it "show me everything in Q1" was not expressible at any
+            # layer: the only ordering is created_at DESC, so an eight-month-old decision was
+            # reachable solely by paging every row written since. The Decision Explorer did not
+            # even do that -- it fetched the default 200 and filtered client-side, so the screen
+            # a regulator question lands on could see the most recent 200 decisions and nothing
+            # older. Half-open [from, to) so adjacent ranges tile without double-counting a row
+            # on the boundary.
+            start = _as_datetime(created_from)
+            if start is not None:
+                query = query.where(Decision.created_at >= start)
+            end = _as_datetime(created_to)
+            if end is not None:
+                query = query.where(Decision.created_at < end)
             query = query.order_by(desc(Decision.created_at)).limit(max(1, min(limit, 1000))).offset(max(0, offset))
             rows = session.scalars(query).all()
             return [self._decision_to_dict(row) for row in rows]
@@ -3751,7 +3772,11 @@ class Storage:
                     model.promoted_at = _as_datetime(payload.get("promoted_at"))
                 model.updated_at = datetime.utcnow()
             session.flush()
-            return self._experiment_to_dict(model)
+            result = self._experiment_to_dict(model)
+        # AFTER the transaction closes: invalidating inside it would republish a cache entry
+        # built from a not-yet-committed read on a concurrent request.
+        self._invalidate_fast_cache(resolved)
+        return result
 
     def list_experiments(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self._tenant_id(tenant_id)
@@ -3784,6 +3809,29 @@ class Storage:
             "updated_at": serialize_datetime(model.updated_at),
         }
 
+    @staticmethod
+    def _invalidate_fast_cache(tenant_id: str) -> None:
+        """Drop the fast path's cached view of this tenant.
+
+        `fast_path_eligible` caches which policies have a RUNNING experiment (it used to query
+        that uncached on every decision, inside the eligibility check, so it was paid even when
+        the policy was ineligible). A cache is only correct if the writers invalidate it, and a
+        stale answer here means the fast path serves a policy whose experiment has just
+        started -- no variant assignment, no overrides -- which is exactly the A/B bug
+        `fast_path_eligible` exists to prevent.
+
+        At the STORAGE layer, not in the router: the scheduler's experiment auto-rollback
+        writes status too, and a cache correct only for HTTP callers is not correct. Imported
+        inside the function because app.fast_decide imports app.executor which imports this
+        module.
+        """
+        try:
+            from .fast_decide import invalidate
+
+            invalidate(tenant_id)
+        except Exception:  # pragma: no cover - a cache drop must never fail a write
+            pass
+
     def delete_experiment(self, experiment_id: str, tenant_id: Optional[str] = None) -> bool:
         resolved = self._tenant_id(tenant_id)
         with self.connect() as session:
@@ -3791,7 +3839,8 @@ class Storage:
             if not row:
                 return False
             session.delete(row)
-            return True
+        self._invalidate_fast_cache(resolved)
+        return True
 
     def save_bundle(self, payload: Dict[str, Any], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))

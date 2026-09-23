@@ -302,9 +302,29 @@ configure for them, not as a result this repository can show you:
 
 | Policy shape | Path | Expected / node | Status |
 |---|---|---|---|
-| Rules-only (lean) | `FAST_DECIDE=1` + Rust core | high hundreds to low thousands/s | **untested end to end**; needs the native core built and `FAST_DECIDE=1` |
-| Rules + scorecards / decision tables | `FAST_DECIDE=1`, Python core | high hundreds/s | **untested end to end** |
+| Rules + scorecards / decision tables | `FAST_DECIDE=1`, Python core | high hundreds/s | **untested end to end**; **1 of the 4 shipped policies is eligible** |
 | Heavy multi-step (connector I/O, review gates, ML) | full `PolicyExecutor` | ~100/s, GIL-bound | **measured**: 117.5 rps at concurrency 16, above |
+
+**The `FAST_DECIDE` + Rust core row is gone, and that is a retraction rather than an edit.**
+It advertised a tier no policy in this repository could reach, and the accelerator behind it no
+longer serves live decisions at all:
+
+* Queried against the live API, **one of four seeded policies is fast-path eligible** — the
+  other three carry `action` and `review_gate` steps, which the fast path correctly declines.
+  The Rust core additionally requires no scorecard and no decision table, so **zero of four**
+  could ever have reached it. (`qa/loadtest.py` now refuses to run against an ineligible policy
+  rather than reporting a slow-path number as a fast-path one, which is what it had always done
+  — its default policy is one of the three.)
+* The Rust branch was **removed from the serving path** on 2026-09-24: it returned
+  `score`, `rule_results` and `trace` hardcoded empty, so decisions it served were recorded
+  without their reasons. See `PLAN.md` R10.9.
+* And the ceiling was small regardless. The Rust core replaces **rule-tree evaluation** —
+  under 100 µs of a ~50 ms decision. `simulation/LOAD_TEST_RESULTS.md:37-41` had already
+  measured that rule evaluation was never the bottleneck.
+
+What actually moves this number is variable computation (the subprocess sandbox, ~37% of a
+decision) and the uvicorn worker count. Measured on a 4-core box, three rounds, medians: 60.3
+rps as shipped, 109.9 with `COMPUTE_ONLY_USED_VARS=1`, 140.8 with 4 workers.
 
 This block previously advertised "thousands of decisions/s" for the lean row under a heading
 that called the whole table measured. It was not: the only number this repo has ever produced

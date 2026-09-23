@@ -1187,6 +1187,339 @@ calls it.
   made the suite retry OTLP exports against a container hostname. The soak scripts export it
   themselves; `.env` no longer does.
 
+- [x] **R10.3 A SERVER DECISION NOW CARRIES ITS POLICY VERSION.** `Decision` had no
+  `policy_version` column at all, and policies are mutated in place — so "which version of this
+  policy produced this decision" was answerable only by inferring it from timestamps against
+  `EntityHistory`. For the regulator question eight months out, that inference *is* the answer,
+  and the product did not make it. Added to the model, to an Alembic migration
+  (`20260924_0031`), and populated on **both** decision paths — `PolicyExecutor` via a new
+  `ExecutionContext.policy_version`, and `fast_decide` in both its result branches and in
+  `_log_decision` — because a lineage field present on one path and absent on the other is the
+  FAST_DECIDE divergence class this repo has now fixed five times.
+
+  `bundle_hash` stays NULL on **both** server paths, deliberately. It means "the compiled SDK
+  bundle this device decided from"; the executor never loads a bundle, and the fast path's
+  in-process serving bundle is not that artifact and has no published hash. Hashing it anyway
+  would put two different meanings in one column — worse than a NULL, because a NULL is
+  legible. (I wrote the opposite twice while doing this — a comment in `executor.py` and a
+  test docstring both said the fast path records one. It does not; the word does not appear in
+  `_log_decision`. Both corrected, because a false claim in a comment reads as a guarantee.)
+
+  Found while writing the tests: `add_decision` parsed `created_at` with
+  `_parse_client_datetime`, which **returns None for anything that is not a `str`**, so any
+  internal caller passing a real `datetime` silently got `utcnow()` — a replayed, imported or
+  backdated decision quietly claimed to have happened just now. Now `_as_datetime`. 8 tests.
+
+- [x] **R10.4 AN EIGHT-MONTH-OLD DECISION IS NOW FINDABLE.** `list_decisions` filtered on
+  `client_id / user_id / policy_id / outcome` plus `limit/offset` and had **no date range**. The
+  only ordering is `created_at DESC`, so reaching an old decision meant paging every row written
+  since — and the Decision Explorer did not even do that: it fetched the default 200 and filtered
+  in the browser. The screen a regulator question lands on could see the most recent 200
+  decisions and nothing older. Added `created_from` / `created_to`, half-open `[from, to)` so
+  adjacent ranges tile without double-counting a boundary row, at storage and at
+  `/api/v1/audit/decisions`.
+
+  Two things fixed alongside it: `limit`/`offset` were untyped, so `?limit=-1` reached Postgres
+  as `LIMIT -1` (500) and SQLite as *no limit* — the unbounded fetch pagination exists to
+  prevent; and the route **did not pass a tenant**, so it fell through `Storage._tenant_id`'s
+  chain to `default_tenant_id`, the first tenant in the table.
+
+  That one turned out to be **five routes, not two**. `/audit/decisions` and `/audit/errors`
+  were the pair sitting directly beneath the comment in `insights.py` explaining the hazard;
+  `/audit/decisions/count`, `/audit/promotions` and `/analytics/rejection-drivers` had it too —
+  a promotion ledger showing one customer's release history to another, a rejection-driver
+  analytic computed over someone else's decisions. Found only because the test was rewritten
+  as a **sweep of the file** for any `main.storage.*` call without `tenant_id=`, rather than a
+  list of the two routes I had noticed. Fixing the two and leaving three is the pattern this
+  round keeps finding, and a test that enumerates what you already fixed cannot catch it.
+  12 tests; mutation (drop the tenant from any one route) fails the sweep by name.
+
+  Query params moved to the `Annotated` form so the Python default is a real int: written as
+  `limit: int = Query(default=200, ...)` the default value is a `Query` object, which FastAPI
+  unwraps but a direct call does not — `test_enterprise` calls the handler as a function and
+  failed inside SQLAlchemy with `'<' not supported between instances of 'int' and 'Query'`.
+
+  Worth recording because the first attempt was wrong: my initial tenancy test passed against
+  the mutation, because on an authenticated request the contextvar is always set and the
+  fallback never runs. The test proved nothing. Replaced with one that clears the contextvar and
+  asserts the fallback serves the wrong tenant's rows, plus a source-level guard; the mutation
+  then fails by name.
+
+- [x] **R10.5 THE AUTHORING AUDIT TRAIL HAS A SCREEN.** `GET /api/v1/audit` — the change trail
+  the tamper-evident hash chain protects — and `GET /api/v1/audit/verify` were called by
+  **nothing** in the web app. The nav item labelled "Audit Logs" showed decisions, promotions and
+  errors; the record of who changed which rule was reachable only by opening the database. Added
+  a "Change History" tab to `AuditPage.tsx` rendering `event_type · entity_id`, the actor, and
+  the chain-verification badge, so the control is inspectable from the product rather than
+  asserted in a docstring.
+
+  **Verified end to end against the running stack**, which is the only thing that closes R10.2:
+  created a variable through the API and read the audit row back — `variable_created
+  v_actor_probe · user_id=a024138c-…`, where every pre-fix row still reads `user_id=None` — with
+  `/api/v1/audit/verify` returning `ok: true, verified: 16, breaks: []` across the mix of NULL
+  and populated rows.
+
+- [x] **R10.6 THE PRODUCT NOW HAS A CONFIGURATION INTERFACE.** Not a flag, a population.
+  `scripts/config_surface.py` derives the surface from source — an AST walk of every module
+  under `app/`, plus the container's own shell (`RULEMIND_WORKERS` is read by the Dockerfile
+  CMD, so a Python-only pass reported the largest measured throughput lever as "not read").
+  Measured 2026-09-24: the backend reads **111** settings; `docker-compose.yml`, the Helm chart
+  and `k8s/` together could deliver **27**; **84 were settable by nothing**, 68 of them
+  documented in `.env.example` — read by the code, described to the operator, deliverable by no
+  artifact. Among them: `DECISION_ENCRYPT_AT_REST` and `AUDIT_ENCRYPT_AT_REST` (encryption at
+  rest could not be turned on), `LOG_LEVEL` (verbosity could not be raised during an incident),
+  `RATE_LIMIT_*`, `CIRCUIT_BREAKER`, `SANDBOX_FALLBACK_MODE`, `RULEMIND_SIGNING_PRIVATE_KEY`.
+  For a product whose deployment model IS the chart, the customer could reach **16%** of the
+  software. `PROMETHEUS_MULTIPROC_DIR`, `MODEL_MEMORY_MB`, `RULEMIND_SELF_SERVE_SIGNUP`,
+  `DECISION_ARCHIVE_SINK` and `FAST_DECIDE` were never five unrelated bugs — five samples.
+
+  Closed structurally rather than instance by instance: a `config:` / `secretConfig:`
+  passthrough in the chart (real env-var names, rendered into the ConfigMap and the Secret) and
+  an optional `env_file` in compose. Deliberately `.env.runtime`, **not** `.env` — compose
+  already reads `.env` for `${VAR}` interpolation and that copy holds host-side values
+  including an `AUTH_MODE`; injecting it into the containers would have silently disabled
+  authentication on `make up`. Two roles, two files.
+
+  `scripts/check_config_surface.py` is the gate, in the family of `check_parity.py` and
+  `verify_chart.py`, and now in `run_all_tests.sh`. It asserts three things: every setting is
+  **reachable** (named key or documented passthrough), **visible** (in `.env.example` and in
+  `values.yaml`), and that the internal allow-list — 3 entries, each with a written reason —
+  still names variables the code reads. It also asserts **the passthrough itself still
+  exists**, because without that every other verdict is vacuous and the gate would pass anyway.
+  Mutation-checked three ways: drop `LOG_LEVEL` from `values.yaml` → fails; drop
+  `CIRCUIT_BREAKER` from `.env.example` → fails; stub out the ConfigMap `range` → fails naming
+  the passthrough. Exit 1 on violation, 0 clean, both verified. 15 tests, each reader form
+  separately, because a form the AST walk cannot see is a setting the gate cannot protect.
+
+  `.env.example` shipped **`SANDBOX_FALLBACK_MODE=inline`** against a code default of `fail`
+  (`sandbox.py:459`). That is the behaviour when no sandbox subprocess is available: `fail`
+  refuses the variable, `inline` runs untrusted customer Python **inside the API process**. The
+  file an operator copies re-enabled the exact posture the code default was changed to stop —
+  silently, and only under the load that exhausts the pool. Fixed, pinned in the chart, and
+  pinned by a test in both places.
+
+  **The pod's resource envelope and its process budget now agree**, with measured numbers
+  rather than assumed ones. A pod does not run `uvicornWorkers` processes: each uvicorn worker
+  forks its own sandbox pool *and* its own model pool — `1 + 2 × (1 + 4 + 2) = 15` at the
+  defaults. Measured inside the running container (`/proc/<pid>/statm`): uvicorn worker 118 MB,
+  sandbox subprocess 27 MB, a process with the ML stack resident 120 MB — a **~975 MB
+  full-pool floor**, against a `requests.memory` of **1Gi**. The pools fill lazily, which is
+  why an idle pod reads 285 MB and nobody saw it; the scheduler could pack a node on the idle
+  number and OOMKill it as they filled. And `requests.cpu` was **500m** for those 15 processes
+  against a 2-core limit — with `hpa.cpuUtilization` being a percentage of the *request*, pods
+  scaled out at 350m of a permitted 2000m, ~17% of their own ceiling. Now 1 CPU / 1536Mi
+  request, 2 CPU / 3Gi limit, with the arithmetic written into `values.yaml` beside the
+  connection budget it mirrors.
+
+  Two claims corrected while doing it. `MODEL_MEMORY_MB` × workers "= 8 GB against a 2 Gi pod"
+  is **wrong**: it is an `RLIMIT_AS`, an address-space cap, not an RSS budget, so it does not
+  sum against the pod limit — it is merely inert, because the cgroup limit is reached first.
+  And `values.yaml` claimed "xgboost/lightgbm/sklearn/**pandas** resident per worker"; pandas
+  is not in the image.
+
+- [x] **R10.7 A PERFORMANCE FLAG WAS CHANGING THE API CONTRACT.** Under `FAST_DECIDE=1` the
+  `/api/v1/decide` handler returns `fast_decide()`'s dict verbatim, and that dict had **no
+  `decision_id`** — the word appears nowhere in the file. The slow path has returned one since
+  it existed, and it exists so an integrator can deep-link
+  `GET /api/v1/decisions/{id}/reason-codes` or open the case without a second lookup. So an
+  operator flipping a flag documented as a performance toggle broke every such integration
+  silently, with a 200 whose body was simply missing a field. `fast_decide.py` warns about
+  exactly this divergence class three times — fail-closed semantics, PII redaction, the
+  `client_id` collision — each found by someone comparing the two paths. The response shape was
+  the one nobody compared.
+
+  Fixed both directions, because the first fix created the second: the id is minted in
+  `fast_decide` and **handed to `_log_decision`** rather than generated there, so the id the
+  caller receives names the row that was actually written (the obvious wrong fix — mint one for
+  the response and let the logger mint its own — returns an id that 404s, which is worse than
+  returning none). `log=False` returns `decision_id: None` rather than an id naming nothing;
+  the key is always present, because a key that comes and goes is its own divergence. And the
+  slow path now reports `policy_version`, which for a few minutes only the fast path did.
+
+  7 tests comparing the two responses as SETS of keys, so a field added to one branch and not
+  the other fails here. The load-bearing one is `test_both_paths_were_actually_exercised`:
+  `FAST_DECIDE=1` on an ineligible policy falls through to the executor silently, so without
+  that guard the file would compare the slow path with itself and pass — which is how the
+  repo's own load test has produced fast-path numbers that were slow-path numbers. Three
+  mutations, each failing named tests: drop the key (4), let the logger mint its own id (1),
+  drop `policy_version` from the slow path (3).
+
+- [x] **R10.8 BUNDLE SIGNING WAS BROKEN BY DEFAULT ABOVE ONE REPLICA.**
+  `RULEMIND_SIGNING_PRIVATE_KEY` appeared in **no chart, manifest or compose file** — the
+  Secret rendered five keys and not this one. Unset, `compiler._load_signing_keypair` generates
+  a fresh RSA-2048 key **per process**, so at `replicaCount.api: 3` an SDK that fetches
+  `/sdk/v1/signing-key` from one pod and `/sdk/v1/bundle` from another fails signature
+  verification — and the SDK is built to *refuse* a bundle it cannot verify, so on-device
+  decisioning stops rather than degrades. Every restart also invalidates a pinned key.
+
+  The code already knew. `signing_key_is_ephemeral()` exists and has always been correct; it
+  surfaced its answer **only as a JSON field on the signing-key response**, so the deployment
+  that breaks is precisely the one that never reads that field. No startup warning, no
+  readiness failure. That is the same shape as this round's other findings: the check existed
+  and nothing consumed it.
+
+  Now deliverable — `secretConfig:` renders it into the Secret, and the rendered multi-line PEM
+  was verified to round-trip byte-for-byte and re-parse as a private key, because a key that
+  renders but does not parse would fail at first use rather than at install. And now
+  **fail-closed**: added to `PRODUCTION_SECRET_CHECKS`, so `RULEMIND_ENV=production` with no
+  signing key refuses to boot, waivable per-secret like the other four for a single-replica
+  install that means it. A blank value counts as unset — `RULEMIND_SIGNING_PRIVATE_KEY=` is a
+  set-but-empty env var and `compiler.py`'s `if pem:` falls straight through to generating one,
+  so a check testing only `is None` would pass the exact configuration that breaks.
+
+  `scripts/k8s_up.sh` generates one per install alongside the four secrets it already
+  generates, for the reason written there: `values-kind.yaml` sets `rulemindEnv=production`, so
+  the new gate is exercised by the local kind install rather than tiptoed around. 6 tests,
+  including one pinning the gate and `compiler.signing_key_is_ephemeral()` to the same
+  question — if those two ever disagree about whether bundles are stably signed, the startup
+  gate is the half nobody would notice drifting. Two mutations, each failing named tests.
+
+- [x] **R10.9 THE RUST PATH WAS EMPTYING THE AUDIT RECORD, AND THE RUST CORE WAS SKIPPING NINE
+  STEP TYPES.** Two bugs, one root: an accelerator that answers a narrower question than the
+  thing it accelerates, and says nothing about the difference.
+
+  **The audit record.** `fast_decide` had two branches. When the Rust extension was importable
+  and the policy carried no scorecard or decision table, it served from
+  `rulemind_core_rs.Bundle` and returned `score: None, rule_results: [], trace: []`
+  **hardcoded**, while the Python branch one line below returned all three populated.
+  `trace` + `rule_results` are ~66% of the stored Decision row and they are the whole answer to
+  "why was this rejected" — so a decision taken through that branch was recorded as
+  **unexplainable**: same outcome, no reasons, nothing noting the reasons were dropped. It was
+  **live**: the Rust extension is built into this repo's venv, so `_HAVE_RUST` was true on
+  every host test run and any rules-only policy took it.
+
+  Removed the branch rather than populating it, and the reasoning is worth keeping because it
+  contradicts what the README implies. Populating it means reconstructing the step-level trace
+  — an entry per `outcome` step carrying the running merged outcome — which needs
+  `_merge_outcome` re-implemented on the Python side: a second copy of merge semantics, the
+  exact drift the five-engine parity contract exists to stop. Taking the branch only when no
+  trace is needed is the same thing stated honestly, because on this path a trace is *always*
+  needed (logged, it is the record; unlogged, it is the output). And the cost of dropping it is
+  small in a way the docs do not say: the Rust core replaces **rule-tree evaluation**, under
+  100 µs of a ~50 ms decision, so its ceiling is **1–2%** — and queried against the live API,
+  **zero of four seeded policies could ever reach it**. A path that served no shipped policy,
+  could not explain the decisions it did serve, and was worth one or two percent.
+
+  **The step skipping.** `CompiledBundle::steps` matched `rule` and `outcome` and sent
+  everything else to `_ => {}` — `connector`, `scorecard`, `decision_table`, `action`,
+  `review_gate`, `loop`, `branch`, `workflow`, `model`: nine of eleven, skipped with no error
+  and no signal. **A policy gated by a `review_gate` returned APPROVE with the gate never
+  executed**, HTTP 200. `fast_decide.py` documents this precise failure as the reason the
+  Python fast path *declines* such policies; the Rust core ignored their steps instead. Now
+  `EvalError::UnsupportedStep(type)` — refuse, naming the step. `connector` stays a no-op and
+  is now an explicit arm rather than a fall-through, because a compiled bundle already carries
+  the values and there is nothing to fetch. In `rulemind-decide-service` an evaluation error is
+  already a 422, so the wrong answer became a named refusal with no service change.
+
+  **This is a parity restoration, not just a fix.** Checked against the other four engines
+  afterwards: the Python core fails closed on an unknown step (`core/engine.py:296-307` — "the
+  steps that actually ran are not the policy"), Kotlin returns `"Unknown step type: ..."`
+  (`PolicyExecutor.kt:327`), and Dart does the same (`policy_executor.dart:354`, with a comment
+  recording that it *used* to mark the step skipped). **Rust was the only one of five that
+  silently skipped**, and it is the one no lane executes end to end — the five-engine contract
+  held everywhere it was tested.
+
+  The extension was **rebuilt into the venv** (`maturin develop --release`), because otherwise
+  the Python suite would have gone on testing the old compiled `.so` — a green run against a
+  binary that no longer matches its source is this project's recurring failure in a new place.
+  8 Python tests asserting the RECORD (a rejection carries the rule, the failing condition, its
+  threshold and value; the stored row matches the response; `adverse_reason_codes` can still be
+  derived from it) — deliberately about the record rather than the branch, so they would have
+  failed on the old code without naming Rust. Mutation: re-empty the three fields → 5 named
+  failures. 5 Rust tests + 1 decide-service test; mutation: restore `_ => {}` → 3 named
+  failures. Rust suite 16 + 8, decide-service 11, all green.
+
+- [x] **R10.10 THE LOAD TEST HAD NEVER EXERCISED THE PATH IT BENCHMARKED.** `qa/loadtest.py`
+  defaults `RM_POLICY` to `policy_instant_personal_loan`, whose steps are
+  `action, connector, outcome, review_gate, rule, scorecard`. `action` and `review_gate` are
+  both in `_IO_STEP_TYPES`, so that policy is **permanently** fast-path ineligible — and
+  `FAST_DECIDE=1` does not error on an ineligible policy, it falls through to the full executor
+  silently with a 200. **Every fast-path number this repository has ever produced through its
+  own load test was a slow-path number**, produced with the flag on and the flag doing nothing.
+  Same failure as a test that passes without asserting: the harness reported success at the
+  thing it was not doing.
+
+  The harness now probes the policy's shape over HTTP and **refuses to run** on an ineligible
+  one, naming the blocking steps, with `RM_REQUIRE_FAST=0` to opt into slow-path numbers
+  explicitly. Run against the live API it now prints
+  *"REFUSING TO RUN: policy 'policy_instant_personal_loan' can NEVER take the fast path — it
+  contains action, review_gate."* Confirmed against all four seeded policies, and the answer
+  matches the table in the round's plan exactly: **`policy_pl_underwriting` eligible, the other
+  three blocked by `action, review_gate`.**
+
+  The step-type list is duplicated in the harness on purpose — it talks HTTP and must not
+  import the server it measures — so a test pins the copy to `fast_decide._IO_STEP_TYPES`. A
+  duplicate that drifts is a guard that has stopped guarding, which is this round's theme.
+  8 tests, including that an unreadable policy answers UNKNOWN rather than eligible: a probe
+  that fails open is how the original defect returns through the error path.
+
+- [x] **R10.11 README RETRACTION.** `README.md` advertised a `FAST_DECIDE=1` + Rust core tier at
+  "high hundreds to low thousands/s". The row is **deleted**, not softened, because three
+  separate things make it unreachable: one of four seeded policies is fast-path eligible and
+  **zero of four** could ever reach the Rust core (it additionally requires no scorecard and no
+  decision table); the Rust serving branch was removed outright in R10.9; and the ceiling was
+  1–2% regardless, because the core accelerates rule-tree evaluation — under 100 µs of a ~50 ms
+  decision, which `simulation/LOAD_TEST_RESULTS.md:37-41` had already measured as not the
+  bottleneck. Replaced with what actually moves the number: variable computation (~37%, the
+  subprocess sandbox) and the worker count — 60.3 rps as shipped, 109.9 with
+  `COMPUTE_ONLY_USED_VARS=1`, 140.8 with 4 workers, measured three rounds on a 4-core box.
+
+- [x] **R10.12 THE THREE FREE WINS, MEASURED — TWO TAKEN, ONE DEFERRED WITH A NUMBER.**
+
+  **1. The sandbox re-prepared every variable on every call.** `_execute_in_process` re-ran
+  `validate_source`, `exec(code, ...)` and `inspect.signature` on **each** invocation — 55 times
+  per decision on the seeded tenant — while `_execute_inline`, one function below, cached
+  exactly that. `SANDBOX_MODE=pool` is the default, so **production traffic took the uncached
+  path and the cached path was the one nobody ran.** Measured in the API image, 2000
+  iterations: preparation **33.8 µs** against **0.3 µs** for the variable's own body — the
+  preparation was **113× the computation**. Broken down: `compile` 6.7 µs, `inspect.signature`
+  2.4 µs, `exec` + resolve 1.6 µs, validation 0.3 µs.
+
+  The fix has a trap and the trap is the interesting part. Caching the resolved **function** —
+  which the inline path does — also caches its `__globals__`, and the cache key is a source
+  hash, so two tenants submitting byte-identical variable source share any module-level state
+  that code mutates. That is a cross-tenant data channel introduced by a performance fix, in
+  the default execution mode. So only the **code object** is cached: immutable, stateless,
+  safe to share; the namespace is rebuilt per call. 1.5 µs of the saving is deliberately left
+  on the table as the price of isolation.
+
+  Confirmed **end to end through the real pool**, not only in the microbenchmark, because the
+  IPC round trip could have swallowed the whole saving: 200 calls × 5 runs × 3 processes,
+  medians **0.094–0.097 ms cached against 0.122–0.130 ms uncached** — ~0.030 ms per variable,
+  ~**1.7 ms per decision** over a 55-variable catalog, agreeing with the microbenchmark.
+  Worth saying that the FIRST measurement of this was a single sample per side and reported
+  the cache as *slower* (0.316 vs 0.183 ms); it was noise on a machine running the soak, and
+  it is the same mistake this file already records once ("reported as fixed on a single clean
+  sample, which is not evidence for an intermittent failure"). Repeats, or it is not a
+  measurement. 6 tests;
+  two mutations — remove the cache (fails `test_the_source_is_compiled_once_and_reused`), and
+  cache the function instead (fails `test_module_level_state_does_not_leak_between_calls`,
+  which is the point).
+
+  **2. `list_experiments` ran uncached on every decision** — inside `fast_path_eligible`, so
+  it was paid even when the policy was ineligible and `FAST_DECIDE` did nothing at all. Every
+  other catalog read on that path already went through the epoch+TTL cache. Now cached as
+  `running_experiment_policy_ids`, **with the writers invalidating at the storage layer** —
+  `create_or_update_experiment` and `delete_experiment`, not the router, because the
+  scheduler's auto-rollback writes experiment status too and a cache correct only for HTTP
+  callers is not correct. Without that invalidation the cache reintroduces the A/B assignment
+  bug this check exists to prevent: for the TTL after an experiment starts, the fast path
+  serves it with no variant assigned. 7 tests; mutation (drop the invalidation) fails 2 named.
+
+  **3. The three uncached SELECTs — measured and DEFERRED, deliberately.**
+  `list_rules` / `list_scorecards` / `list_decision_tables` run per decision at
+  `executor.py:1330-1333`. Timed against the live Postgres, 200 iterations each:
+  **0.506 + 0.398 + 0.292 = 1.196 ms per decision**, about 2.4% of a ~50 ms decision.
+
+  Not taken, and the reason is the ratio rather than the number: caching them means **nine**
+  writer methods must invalidate, and a single missed one serves decisions against a stale
+  rule — silently, and only for the tenant who just edited it. This repo already has the
+  worked example of that failure mode (the storage-global fix that needed all 41 call sites
+  and was wrong until it had them). 2.4% is not worth a nine-site hand-edit with that blast
+  radius, and plan item 4.1 puts the profile before the optimisation for exactly this reason.
+  Recorded with its measurement so the next person decides from a number rather than an
+  intuition.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

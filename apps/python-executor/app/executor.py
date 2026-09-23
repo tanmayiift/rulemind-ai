@@ -192,6 +192,10 @@ class ExecutionContext:
     # Set by _log_decision so callers can return it — /decide used to emit no id at
     # all, leaving no way to deep-link the case it had just created.
     decision_id: Optional[str] = None
+    # WHICH VERSION of the policy is deciding. Policies mutate in place, so policy_id alone
+    # cannot answer "what was live when this decision was made" -- it had to be inferred from
+    # the timestamp against EntityHistory. Carried here so _log_decision can record it.
+    policy_version: Optional[int] = None
     variables: Dict[str, Any] = field(default_factory=dict)
     # {variable_id: message} for variables that FAILED to compute. Their entry in `variables`
     # is None, which is indistinguishable from a legitimately-null value -- and a None fed to a
@@ -1296,6 +1300,7 @@ class PolicyExecutor:
                 payload=copy.deepcopy(payload),
                 tenant_id=tenant_id,
                 policy_id=policy["id"],
+                policy_version=policy.get("version"),
                 execution_id=str(uuid.uuid4()),
                 user_id=user_id,
                 started_at=datetime.utcnow(),
@@ -1580,6 +1585,14 @@ class PolicyExecutor:
             "client_id": payload_client_id,
             "user_id": ctx.user_id,
             "policy_id": ctx.policy_id,
+            # Lineage. bundle_hash is deliberately NULL on both server paths, and this is a
+            # decision rather than an omission: the column means "the compiled SDK bundle this
+            # device decided from". The executor reads rules and scorecards live from the DB
+            # and never loads a bundle; the fast path builds an in-process serving bundle that
+            # is not that artifact and has no published hash. Hashing it anyway would put two
+            # different meanings in one column, which is worse than a NULL -- a NULL is legible.
+            # policy_version is the server-side lineage, and it is recorded on both paths.
+            "policy_version": ctx.policy_version,
             "payload": redact_payload(ctx.payload, extra_keys=self.storage.tenant_pii_redact_keys(ctx.tenant_id)),
             "computed_variables": copy.deepcopy(ctx.variables),
             "rule_results": copy.deepcopy(ctx.rule_results),

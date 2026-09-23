@@ -31,6 +31,19 @@ pub const REGEX_INPUT_MAX: usize = 4096;
 pub enum EvalError {
     /// Nesting exceeded [`MAX_RULE_TREE_DEPTH`].
     DepthExceeded,
+    /// A step type this core cannot execute.
+    ///
+    /// It used to be `_ => {}`: `connector`, `scorecard`, `decision_table`, `action`,
+    /// `review_gate`, `loop`, `branch`, `workflow` and `model` -- nine of the eleven types the
+    /// product ships -- were skipped with no error and no signal. A policy whose gate is a
+    /// `review_gate` therefore returned APPROVE with the gate never executed, at HTTP 200.
+    ///
+    /// `fast_decide.py` documents this exact failure as the reason the Python fast path
+    /// DECLINES such a policy rather than ignoring its steps; the same stance belongs here.
+    /// The Python fast path never reaches it (eligibility screens those types out first), but
+    /// `rulemind-decide-service` calls `Bundle::decide` with no screening at all, and the WASM
+    /// entry point is open to any bundle a caller hands it.
+    UnsupportedStep(String),
 }
 
 impl std::fmt::Display for EvalError {
@@ -40,6 +53,11 @@ impl std::fmt::Display for EvalError {
             EvalError::DepthExceeded => write!(
                 f,
                 "Rule tree nesting exceeds the maximum depth ({MAX_RULE_TREE_DEPTH})"
+            ),
+            EvalError::UnsupportedStep(step_type) => write!(
+                f,
+                "This engine cannot execute a '{step_type}' step. Refusing rather than \
+                 skipping it: skipping changes the outcome silently."
             ),
         }
     }
@@ -617,7 +635,13 @@ impl CompiledBundle {
                             .unwrap_or("review");
                         outcome = merge_outcome(&outcome, oc);
                     }
-                    _ => {}
+                    // A connector step contributes nothing AT DECISION TIME in this engine:
+                    // the bundle already carries the variable values, and a bundle is compiled
+                    // precisely so no fetch happens here. Skipping it is therefore correct and
+                    // is named explicitly, so it is a decision rather than a fall-through.
+                    "connector" => {}
+                    // Everything else: refuse. See EvalError::UnsupportedStep.
+                    other => return Err(EvalError::UnsupportedStep(other.to_string())),
                 }
             }
         }
@@ -1066,5 +1090,100 @@ mod tests {
             bundle.decide_from_payload(&json!({"x": 5})),
             Err(EvalError::DepthExceeded)
         );
+    }
+
+    /// The bug this fixes, stated as a test: a policy GATED by a `review_gate` returned
+    /// `approve` at HTTP 200 with the gate never executed.
+    ///
+    /// `steps()` matched `rule` and `outcome` and sent everything else to `_ => {}` -- nine of
+    /// the eleven step types the product ships, skipped with no error and no signal. The
+    /// Python fast path documents this exact failure as the reason it DECLINES such policies;
+    /// this engine ignored their steps instead. Nothing deploys `rulemind-decide-service`
+    /// today, which is the only reason it was never a production incident.
+    #[test]
+    fn a_step_this_engine_cannot_run_is_refused_not_skipped() {
+        let bundle = CompiledBundle::from_value(json!({
+            "rules": {},
+            "policy": { "id": "p", "steps": [
+                { "type": "review_gate", "ref_id": "manual_review" },
+                { "type": "outcome", "ref_id": "approve" }
+            ] }
+        }));
+        // Before: Ok("approve") -- the gate skipped, the approval returned.
+        assert_eq!(
+            bundle.decide(&json!({})),
+            Err(EvalError::UnsupportedStep("review_gate".into()))
+        );
+    }
+
+    /// Every type the fast path screens out, one at a time, so adding a step type to the
+    /// product and not to this engine fails here rather than answering wrongly.
+    #[test]
+    fn every_unsupported_step_type_errors() {
+        for stype in [
+            "scorecard", "decision_table", "action", "review_gate",
+            "loop", "branch", "workflow", "model", "monitor", "transform",
+        ] {
+            let bundle = CompiledBundle::from_value(json!({
+                "rules": {},
+                "policy": { "id": "p", "steps": [
+                    { "type": stype, "ref_id": "x" },
+                    { "type": "outcome", "ref_id": "approve" }
+                ] }
+            }));
+            assert_eq!(
+                bundle.decide(&json!({})),
+                Err(EvalError::UnsupportedStep(stype.to_string())),
+                "'{stype}' was executed or skipped instead of refused"
+            );
+        }
+    }
+
+    /// `connector` is the one skip that stays, and it is deliberate rather than a
+    /// fall-through: a compiled bundle already carries the variable values, so there is
+    /// nothing for a connector step to do at decision time. Pinned, because turning this into
+    /// an error would make every bundle built from a real policy unservable.
+    #[test]
+    fn a_connector_step_is_a_deliberate_no_op() {
+        let bundle = CompiledBundle::from_value(json!({
+            "rules": {},
+            "policy": { "id": "p", "steps": [
+                { "type": "connector", "ref_id": "bureau" },
+                { "type": "outcome", "ref_id": "approve" }
+            ] }
+        }));
+        assert_eq!(bundle.decide(&json!({})), Ok("approve".into()));
+    }
+
+    /// The traced path must refuse identically. A trace is what an auditor reads, so an engine
+    /// that refuses a step untraced and silently skips it when tracing would put a wrong,
+    /// *documented* answer in front of exactly the person checking it.
+    #[test]
+    fn the_traced_path_refuses_the_same_steps() {
+        let bundle = CompiledBundle::from_value(json!({
+            "rules": {},
+            "policy": { "id": "p", "steps": [ { "type": "scorecard", "ref_id": "sc1" } ] }
+        }));
+        assert_eq!(
+            bundle.decide_traced(&json!({})),
+            Err(EvalError::UnsupportedStep("scorecard".into()))
+        );
+    }
+
+    /// A rule and an outcome still decide normally -- the refusal must not have narrowed what
+    /// the engine can do.
+    #[test]
+    fn supported_steps_still_decide() {
+        let bundle = CompiledBundle::from_value(json!({
+            "rules": { "r1": { "id": "r1", "tree": {
+                "type": "group", "logic": "AND",
+                "children": [{"type": "condition", "variable": "score",
+                              "operator": ">=", "value": 700}],
+                "onPass": "approve", "onFail": "reject"
+            } } },
+            "policy": { "id": "p", "steps": [ { "type": "rule", "ref_id": "r1" } ] }
+        }));
+        assert_eq!(bundle.decide(&json!({"score": 750})), Ok("approve".into()));
+        assert_eq!(bundle.decide(&json!({"score": 650})), Ok("reject".into()));
     }
 }

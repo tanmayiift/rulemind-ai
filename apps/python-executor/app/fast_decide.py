@@ -16,7 +16,6 @@ cannot safely serve.
 """
 from __future__ import annotations
 
-import json
 import threading
 import time
 import uuid
@@ -36,12 +35,11 @@ from .executor import EvaluationBudgetExceeded, PolicyExecutor
 from .logic import now_iso, redact_payload
 from .sandbox import _BoundedCache, execute_variable
 
-try:  # optional native accelerator
-    import rulemind_core_rs  # type: ignore
-
-    _HAVE_RUST = True
-except ImportError:  # pragma: no cover - Rust extension optional
-    _HAVE_RUST = False
+# No `import rulemind_core_rs` here any more. This module used to build a Rust bundle and
+# serve decisions from it; that branch returned score/rule_results/trace hardcoded empty and is
+# gone -- the full reasoning is in _build_serving_bundle below. The Rust core is still used by
+# packages/rulemind-decide-service and the WASM entry point, where the caller asks for a traced
+# or untraced answer explicitly instead of having one silently emptied.
 
 # step types that need live I/O or human interaction -> not fast-servable
 # Step types the fast path CANNOT serve, so a policy containing one falls through to the full
@@ -199,11 +197,38 @@ def fast_path_eligible(storage: Any, policy: Dict[str, Any], tenant_id: str) -> 
     executor on when the fast path is safe. (The A/B assignment bug came from these being split.)"""
     if not is_fast_servable(policy):
         return False
-    policy_id = policy.get("id")
-    for experiment in storage.list_experiments(tenant_id=tenant_id):
-        if experiment.get("status") == "running" and experiment.get("target_policy_id") == policy_id:
-            return False
+    if policy.get("id") in running_experiment_policy_ids(storage, tenant_id):
+        return False
     return not tenant_fetches_sources(storage, tenant_id)
+
+
+def running_experiment_policy_ids(storage: Any, tenant_id: str) -> frozenset:
+    """Policies with a RUNNING experiment, cached like the rest of the tenant catalog.
+
+    This was `storage.list_experiments(tenant_id=...)` inline, uncached, on EVERY decision --
+    and worse, inside the eligibility check, so it was paid even when the policy turned out to
+    be ineligible and `FAST_DECIDE` did nothing at all. Every other catalog read on this path
+    (variables, connectors, settings, secrets) already goes through the epoch+TTL cache; this
+    one did not, purely because it was written as a loop rather than a lookup.
+
+    CACHING IT IS ONLY SAFE BECAUSE THE WRITES INVALIDATE. A stale answer here means the fast
+    path serves a policy whose experiment has just started, with no variant assignment and no
+    overrides -- which is the A/B assignment bug this function exists to prevent, reintroduced
+    through a cache. So `Storage.create_or_update_experiment` and `Storage.delete_experiment`
+    now call `invalidate(tenant_id)`. Placed at the STORAGE layer rather than in the router
+    because the scheduler's auto-rollback writes experiment status too, and a cache correct
+    only for HTTP callers is not correct.
+    """
+    def _build() -> frozenset:
+        return frozenset(
+            experiment.get("target_policy_id")
+            for experiment in storage.list_experiments(tenant_id=tenant_id)
+            if experiment.get("status") == "running" and experiment.get("target_policy_id")
+        )
+
+    result: frozenset = _epoch_cached(_CATALOG, f"{tenant_id}:running_experiments", tenant_id,
+                                      _build)
+    return result
 
 
 def tenant_fetches_sources(storage: Any, tenant_id: str) -> bool:
@@ -430,15 +455,48 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
     core_bundle = {"policy": policy, "rules": rules, "scorecards": scorecards,
                    "decision_tables": decision_tables, "variables": variables}
 
-    rust_bundle = None
-    # The Rust core covers rule/outcome policies only; scorecards and decision tables
-    # stay on the Python core (which now serves both on the fast path).
-    rules_only = not any(step.get("type") in ("scorecard", "decision_table") for step in policy.get("steps", []))
-    if _HAVE_RUST and rules_only:
-        try:
-            rust_bundle = rulemind_core_rs.Bundle(json.dumps({"policy": policy, "rules": rules}))
-        except Exception:  # pragma: no cover - defensive
-            rust_bundle = None
+    # NO RUST BUNDLE IS BUILT HERE ANY MORE, and that is the fix rather than an omission.
+    #
+    # What this used to do: when the Rust extension was importable and the policy had no
+    # scorecard or decision table, build a `rulemind_core_rs.Bundle` and serve the decision
+    # from it. The branch that consumed it returned
+    #
+    #     {"score": None, "rule_results": [], "trace": []}
+    #
+    # hardcoded -- while the Python branch one line below returned all three populated.
+    # `trace` and `rule_results` are ~66% of the stored Decision row and they are the entire
+    # answer to "why was this rejected", which is the question this product exists to answer.
+    # So a decision taken through the Rust branch was recorded as UNEXPLAINABLE: same outcome,
+    # no reasons, and nothing anywhere said so. For a regulated buyer that is not a performance
+    # trade-off, it is an unusable record.
+    #
+    # Three ways to fix it, and the reason for the one taken:
+    #
+    #   1. Populate from `decide_traced` (the Rust side HAS it, and its per-rule JSON matches
+    #      the Python evaluation dict key for key). But the STEP-level trace also carries an
+    #      entry per `outcome` step with the running merged outcome, so reconstructing it needs
+    #      `_merge_outcome` re-implemented on this side -- a second copy of the merge semantics,
+    #      which is precisely the drift the five-engine parity contract exists to stop.
+    #   2. Take the Rust branch only when no trace is required. On this path a trace is ALWAYS
+    #      required: `fast_decide` either logs the decision (the trace is the record) or is
+    #      serving a simulation (the trace is the output). There is no caller that does not
+    #      need it, so the condition is never true.
+    #   3. Do not take it. Which is 2, stated honestly.
+    #
+    # And the cost of dropping it is the part worth writing down, because it is not what the
+    # README implies. The Rust core replaces RULE-TREE EVALUATION -- under 100 microseconds of
+    # a ~50 ms decision (`simulation/LOAD_TEST_RESULTS.md:37-41` said rule evaluation was never
+    # the bottleneck). Ceiling of the swap: 1-2%. And it requires a policy with no scorecard
+    # and no decision table on top of the fast path's own exclusions: queried against the live
+    # API, ZERO of the four seeded policies could ever reach it. So this deletes a path that
+    # served no shipped policy, could not explain the decisions it did serve, and was worth
+    # one or two percent if it had.
+    #
+    # The Rust core is not dead: `rulemind-decide-service` and the WASM entry point both call
+    # it, and there the CALLER chooses traced or untraced explicitly rather than having the
+    # answer silently emptied. `app/variable_reachability.py` + the PyO3 `decide_from_payload`
+    # spike (plan item 4.5) is the version of this that would attack the real cost -- the
+    # subprocess sandbox -- and that is measured before it is built, not after.
 
     # Which variables this policy can actually reach -- the SAME analysis the executor runs
     # (app/variable_reachability.py owns it; a second copy here is precisely the drift that
@@ -469,7 +527,6 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         "connectors": connectors,
         "schema_paths": schema_paths,
         "core_bundle": core_bundle,
-        "rust_bundle": rust_bundle,
         "needed_variable_ids": needed,
         "timeout_ms": int(settings.get("timeout_ms", 2000)),
         "memory_mb": int(settings.get("memory_mb", 128)),
@@ -604,19 +661,12 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
     # list as one unit, so this is the equivalent boundary. Without it a run whose variables ate
     # the entire budget would still go on to evaluate.
     budget.check("policy evaluation")
-    if bundle["rust_bundle"] is not None:
-        outcome = bundle["rust_bundle"].decide(values)
-        result = {
-            "policy_id": policy["id"],
-            "outcome": outcome,
-            "score": None,
-            "variables": values,
-            "rule_results": [],
-            "scorecard_result": None,
-            "trace": [],
-        }
-    else:
-        result = core_decide(bundle["core_bundle"], payload or {}, {"variables": values, "strict_validation": False})
+    # ONE branch. There used to be two, and the Rust one returned score/rule_results/trace
+    # hardcoded empty -- see the long note in _build_serving_bundle for why it is gone.
+    result = core_decide(bundle["core_bundle"], payload or {}, {"variables": values, "strict_validation": False})
+    # Lineage, on the path that actually serves from a compiled bundle. Policies mutate in
+    # place, so policy_id alone cannot say what was live when this decision was made.
+    result.setdefault("policy_version", policy.get("version"))
 
     latency_ms = round((time.perf_counter() - started) * 1000, 3)
     # Warn-mode issues lead the trace, as they do on the slow path: the executor appends its
@@ -627,6 +677,20 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
         trace.insert(0, validation_trace)
     decision = {
         "policy_id": policy["id"],
+        # THE RESPONSE SHAPE MUST NOT DEPEND ON THE FLAG. This dict is returned verbatim to the
+        # caller of POST /api/v1/decide when FAST_DECIDE=1, and it had no `decision_id` at all
+        # -- the slow path's response has carried one since it existed. So an integrator who
+        # deep-links /decisions/{id}/reason-codes broke silently the moment an operator flipped
+        # a flag documented as a performance toggle. That is the same divergence class this
+        # file warns about three times for fail-closed semantics; the response shape was missed.
+        #
+        # None when log=False (simulation, shadow, what-if): no Decision row is written, so
+        # there is no id to name, and inventing one would be a lineage fabrication. The KEY is
+        # always present, because a key that appears and disappears is its own divergence.
+        "decision_id": str(uuid.uuid4()) if log else None,
+        # Same reasoning: the slow path reports which version of the policy decided, so this
+        # one must too. (And `policy_version` here is what makes the logged row attributable.)
+        "policy_version": policy.get("version"),
         "outcome": result["outcome"] if result["outcome"] != "pending" else policy.get("defaultOutcome", "review"),
         "score": result.get("score"),
         "variables": values,
@@ -762,9 +826,13 @@ def _fail_closed_on_variable_errors(
 
 def _log_decision(storage: Any, tenant_id: str, decision: Dict[str, Any], payload: Dict[str, Any], values: Dict[str, Any], user_id: Optional[str] = None) -> None:
     record = {
-        "id": str(uuid.uuid4()),
+        # The SAME id the caller was handed. It used to be minted here, so the response and the
+        # row it describes could never be connected -- the fast path returned no id at all and
+        # this one existed only in the database.
+        "id": decision.get("decision_id") or str(uuid.uuid4()),
         "tenant_id": tenant_id,
         "policy_id": decision["policy_id"],
+        "policy_version": decision.get("policy_version"),
         # Match the slow path exactly: carry the case id, and honour the tenant's
         # configured PII redaction keys. Passing no extra_keys here meant enabling
         # FAST_DECIDE silently dropped tenant-configured redaction.

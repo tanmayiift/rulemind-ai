@@ -998,6 +998,9 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
     outcome = {
         "policy_id": policy.get("id"),
         "decision_id": ctx.decision_id,
+        # Lineage, surfaced to the caller rather than only written to the row. The fast path
+        # returns it; both response shapes have to agree whatever FAST_DECIDE is set to.
+        "policy_version": ctx.policy_version,
         "outcome": ctx.outcome if ctx.outcome != "pending" else (policy.get("defaultOutcome") or "review"),
         "scorecard_result": scorecard_result,
         "trace": copy.deepcopy(ctx.step_trace),
