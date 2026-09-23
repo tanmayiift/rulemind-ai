@@ -5,11 +5,11 @@
 #
 # A major dependency jump wearing a minor-version label. Lifting it means investigating the
 # starlette 1.x WebSocket change against app/routers/collab.py, which deserves its own PR.
-fastapi==0.115.6
+fastapi==0.141.1
 uvicorn==0.53.0
 pydantic==2.13.5
 cryptography==46.0.7
-sqlalchemy==2.0.52
+sqlalchemy==2.0.54
 alembic==1.20.0
 bcrypt==4.2.1
 PyJWT==2.14.0
@@ -115,7 +115,7 @@ websockets==13.1
 
 # Dev tooling. `lint` and `typecheck` were both `py_compile app/*.py`,
 # which does not match app/routers/ or app/core/.
-ruff==0.16.7
+ruff==0.16.8
 # Real SMTP server for tests/test_mailer_live_smtp.py -- lets mailer._default_smtp
 # actually execute instead of being replaced by a fake transport.
 aiosmtpd==1.4.6
