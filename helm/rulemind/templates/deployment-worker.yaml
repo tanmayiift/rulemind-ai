@@ -32,7 +32,7 @@ spec:
             - configMapRef:
                 name: rulemind-config
             - secretRef:
-                name: rulemind-secrets
+                name: {{ .Values.existingSecret | default "rulemind-secrets" }}
           # The worker serves no HTTP, so probes go through the readiness file that
           # app/worker.py writes on start and refreshes from heartbeat() every 30s
           # (the same signal docker-compose.yml already health-checks on). Without

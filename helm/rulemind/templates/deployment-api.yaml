@@ -75,7 +75,7 @@ spec:
             - configMapRef:
                 name: rulemind-config
             - secretRef:
-                name: rulemind-secrets
+                name: {{ .Values.existingSecret | default "rulemind-secrets" }}
           # Boot does a lot before it can serve: import the ML stack (xgboost,
           # lightgbm, sklearn, pandas), create_all, take the advisory lock, seed,
           # and bcrypt the admin password. startupProbe gives that up to
