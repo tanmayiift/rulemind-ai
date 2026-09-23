@@ -470,3 +470,62 @@ To check the disk directly:
 ```bash
 colima ssh -- df -h /var/lib/docker
 ```
+
+---
+
+## Step 14 closed — the hotspot audit, with verdicts instead of a checkbox
+
+Round 1 step 14 said "fix the hotspots the measurements actually name, each with a before/after
+number", and listed three candidates "to be confirmed not assumed". It stayed open for two
+rounds. Auditing it rather than trusting the list: **five of the six candidates were already
+done, one was measured and fixed, and the sixth turned out to be a non-issue once measured.**
+Recorded here so the box is closed with evidence and nobody re-opens it from the same guess.
+
+### `fast_decide._build_tenant_secrets` — already optimised, before the baseline was taken
+
+The N in "8+N queries" was eliminated on **2026-09-03**, which is *before* the step-12 baseline
+this workstream was measuring against. `fast_decide.py:311-313` resolves secrets from the shared
+catalog rather than per connector. Proven, not asserted: `tests/test_catalog_cache.py:105-111`
+drives 5 requests and asserts exactly **2** `get_connector` calls, and `:113-123` asserts a
+policy that reads no secrets pays **0**.
+
+### `_SHARED_CATALOG_SOURCES` — already optimised
+
+TTL + Redis-epoch invalidation + single-flight + a bounded cache, all covered
+(`fast_decide.py:64-153, 237-291`). No miss-rate number exists. That is a gap in *evidence*, not
+in behaviour, and it is cheaper to say so than to manufacture a metric for it.
+
+### Query count — 6, not "8+N"
+
+Measured above. The "8+N" figure was a comment's guess that outlived the code. It survived in
+`docs/runbooks/production.md` until 2026-09-23; corrected there too.
+
+### The one real hotspot — found, fixed, measured
+
+*A decision computes all 55 of the tenant's variables when the policy reads 6.* Fixed via one
+shared reachability walk (`app/variable_reachability.py`), measured at **−92.8%** on the serving
+path and **−76.0%** on the full executor, mutation-checked in both directions. Deliberately left
+opt-in, because it shrinks the recorded `computed_variables` from the whole catalog to what the
+policy read — a change to the audit surface, which is the operator's call and not a default.
+
+### Modelset `POST /compare` — the last unmeasured candidate. Measured; it is fine.
+
+`routers/modelsets.py:151-163` loops members and calls `execute_model` per member, each a
+`ProcessPoolExecutor` round trip, and because the loop awaits each call the pool's second worker
+is never used. `docs/parity/parity.json:65` called this "acceptable but worth naming" on the
+grounds that it is an authoring tool rather than a decision path. That was an opinion. Here is
+the number — 10 identical scikit-learn members, same features, request-paced under the tenant
+rate limit:
+
+| members | p50 | p95 | marginal ms/member |
+|---:|---:|---:|---:|
+| 1 | 7.3 ms | 9.5 ms | — |
+| 2 | 8.4 ms | 18.4 ms | 1.1 |
+| 5 | 11.0 ms | 12.4 ms | 0.9 |
+| 10 | **14.7 ms** | 19.3 ms | **0.8** |
+
+**0.8 ms per additional member.** Ten members cost 14.7 ms, not the ~73 ms a per-member round
+trip would imply — the fixed ~6.5 ms of request overhead dominates, and the worker keeps the
+deserialised model, so the marginal cost is one pool hop. The serial loop is real and is not
+worth parallelising: at 50 members this extrapolates to ~45 ms, for a screen an operator opens
+deliberately. The parity row's assertion was right; it now cites a measurement instead.

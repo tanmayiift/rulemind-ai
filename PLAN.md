@@ -962,6 +962,15 @@ own mistakes:
 
 ## Blockers
 
+> **NOTHING IN THIS SECTION IS STILL OPEN (audited 2026-09-23).** Every item below is resolved:
+> the Render services and account were deleted 2026-09-19 (R9.1), the Vercel GitHub App was
+> revoked, the Actions billing block was routed around by moving the whole gate to a self-hosted
+> runner (R7), and #123 was closed 2026-09-19 by a live run against a real key. The section is
+> kept as the record of what blocked and how each cleared — but it read as a live blocker list
+> for weeks after it stopped being one, which cost a re-audit every time someone opened this
+> file. If you are looking for what is actually outstanding, it is the *"What this plan does
+> NOT close"* list in the current round, not here.
+
 ### RESOLVED 2026-09-03 — the #127 half of this was wrong
 
 I recorded that #127's last three rows needed infrastructure I could not supply. That was
@@ -1220,7 +1229,7 @@ The script's own header says to run it against a pool smaller than the concurren
 - [x] **R5.1** Alertmanager's last hop closed. A real `paging` receiver reads its destination from a **gitignored** `observability/secrets/paging_url` via `url_file`, so turning paging on never means committing a credential — which is why it had stayed off. Verified both ways: an alert arrived carrying its runbook link, and with the file absent Alertmanager still started and failed *loudly* at notify time.
 - [x] **R5.2** `BundleParser` covered — 11 tests, mostly on `bound()`, which encodes a THREE-way distinction (absent / explicit null / non-numeric) mirroring the Python core. A parsing default that differs from the server's is a divergence the parity corpora cannot catch, because they compare evaluation and this runs before it. Android module 26 → **37**.
 - [x] **R5.3** Full gate green — 15 lanes, 0 skipped, **5,035 tests** (Kotlin 46 → 83 across this session). Pushed; CI green.
-- [ ] **R5.4 — BLOCKED, needs the owner.** Delete the Render services. `RENDER_API_KEY` exists nowhere on this machine (no env var, no `~/.render`, no CLI, not in `.env`), and Render has no unauthenticated delete. `scripts/render_teardown.sh` does it in one command once the key is exported; it lists every resource first and requires typing `DELETE`.
+- [x] **R5.4 — CLOSED 2026-09-19, by the owner.** Delete the Render services. Resolved in R9.1; this box stayed unticked afterwards and was the plan's last open item, which made the whole file read as if something were outstanding. `RENDER_API_KEY` exists nowhere on this machine (no env var, no `~/.render`, no CLI, not in `.env`), and Render has no unauthenticated delete. `scripts/render_teardown.sh` does it in one command once the key is exported; it lists every resource first and requires typing `DELETE`.
 
 
 ## R4. Truth-up the docs, and give the Android module tests — 2026-09-18

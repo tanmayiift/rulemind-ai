@@ -279,13 +279,34 @@ See `.env.example` for the full list.
 - **Observability** — Prometheus metrics are always at `/metrics`. For traces + dashboards in **one command**, run **`make observability`**: it turns tracing on (sets the OTLP endpoint) and brings up **Grafana** (`:3001`), **Prometheus** (`:9090`), **Tempo**, and the OTel collector with a pre-provisioned dashboard. (Equivalent to `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up`.) See [`observability/README.md`](observability/README.md).
 
 ### ⚡ Throughput & scaling (what to expect)
-Sizing guidance for buyers — measured on the reference stack, honest about the trade-offs:
 
-| Policy shape | Path | Throughput / node | Notes |
+**Measured**, on the reference stack — one laptop, `qa/e2e-full/bench.py` against a real
+multi-step policy through the full `PolicyExecutor`. Reproduce it with the command in
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md):
+
+| Concurrency | p50 | p95 | p99 | Throughput |
+|---:|---:|---:|---:|---:|
+| 1 | **19.78 ms** | 21.50 ms | 34.13 ms | 49.2 rps |
+| 4 | 35.48 ms | 45.57 ms | 83.72 ms | 103.1 rps |
+| 16 | 134.66 ms | 178.46 ms | 223.02 ms | **117.5 rps** |
+
+A warm decision costs **6 SQL queries** (1 INSERT, 1 UPDATE, 4 SELECT).
+
+**Not measured** — the lean paths below are *sizing guidance*, extrapolated from component
+benchmarks, and neither is the default configuration. Treat them as what to expect if you
+configure for them, not as a result this repository can show you:
+
+| Policy shape | Path | Expected / node | Status |
 |---|---|---|---|
-| Rules-only (lean) | `FAST_DECIDE=1`, Rust core | **thousands of decisions/s** | Cached-bundle serving via the native core; no per-request DB writes on the hot path. |
-| Rules + scorecards / decision tables | `FAST_DECIDE=1`, Python core | **high hundreds/s** | Pure-compute, served from the cached bundle. |
-| Heavy multi-step (connector I/O, review gates, ML) | full `PolicyExecutor` | **~100/s** (GIL-bound) | Per-step trace + live I/O; scale **horizontally**. |
+| Rules-only (lean) | `FAST_DECIDE=1` + Rust core | high hundreds to low thousands/s | **untested end to end**; needs the native core built and `FAST_DECIDE=1` |
+| Rules + scorecards / decision tables | `FAST_DECIDE=1`, Python core | high hundreds/s | **untested end to end** |
+| Heavy multi-step (connector I/O, review gates, ML) | full `PolicyExecutor` | ~100/s, GIL-bound | **measured**: 117.5 rps at concurrency 16, above |
+
+This block previously advertised "thousands of decisions/s" for the lean row under a heading
+that called the whole table measured. It was not: the only number this repo has ever produced
+end to end is the 117.5 rps above, and the same claim was already on the do-not-use list for the
+sales deck (`docs/deck/README.md`). A buyer who benchmarks you is the wrong person to discover
+that from.
 
 - **Scale out, not up.** The decision path is **stateless**, so real scale is N api replicas behind the Ingress with the **HPA** on RPS/latency (Helm chart ships it). A single Python process is GIL-bound (~100 TPS for heavy policies); ten pods ≈ ten times that.
 - **Async by default.** Decision logging, email, and AI calls run off the request path; the DB pool is tunable (`DB_POOL_SIZE` / `DB_MAX_OVERFLOW`) and SQLite uses WAL — so the request thread isn't blocked on I/O.

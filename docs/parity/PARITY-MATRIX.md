@@ -2,9 +2,17 @@
 
 One row per feature named in the source changelog, assessed against `rulemind-ai` @ `main`.
 
-**Every claim cites a file and line.** A `PRESENT` or `PARTIAL` row points at the code that
-implements it; an `ABSENT` row points at the search that returned nothing. That is what makes
-this re-verifiable in six months instead of folklore.
+**Every claim cites the files it rests on, and `check_parity.py` resolves all of them.** A
+`PRESENT` or `PARTIAL` row points at the code that implements it; an `ABSENT` row points at the
+search that returned nothing. That is what makes this re-verifiable in six months instead of
+folklore.
+
+Line numbers appear where they pin a specific behaviour, not on every reference — **7 of 22 rows
+carry a `file:line`; all 21 non-CUT rows name between 2 and 8 files.** This sentence used to read
+"every claim cites a file *and line*", which was not true and, worse, was not checked: the gate
+only iterated paths that already had a line number, so the other 15 rows passed with an empty
+list. It now verifies that **every named file exists**, which is ~100 references rather than 21,
+and the first run of that check found five broken ones.
 
 Generated 2026-08-28. **Re-audited 2026-09-04** — every row re-read against `main`. Line numbers
 had drifted on most rows; the table below carries the current ones, and `parity.json` carries the

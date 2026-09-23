@@ -3,14 +3,27 @@
 An honest assessment, updated as gaps close. Every row below was **checked on a running
 system**, not read off the source — which is the distinction the whole document turns on. Four
 of the findings here were invisible to a green suite — which is the argument for checking a
-running system rather than counting tests. (The suite was ~4,600 then and is 4,998 now; the
-point is that the number was never the evidence.)
+running system rather than counting tests. (The suite was ~4,600 then and is larger now — see
+`TEST_RESULTS.md` for the current figure; the point is that the number was never the evidence,
+which is also why three different totals were quotable from two documents at once.)
 
-**Status: not yet production-ready, and the remaining gap is now almost entirely operational.**
-The engineering blockers this document opened with are closed — CI runs on every commit, the
-paging chain is proven end to end, dependencies are current and the audit is clean. What is left
-is a first real deployment, thresholds calibrated against real traffic, and two surfaces that
-still need someone's credential.
+**Status: not yet production-ready.** The engineering blockers this document opened with are
+closed — the gate runs every lane on a self-hosted runner, the paging chain is proven end to
+end, dependencies are current and the audit is clean. What is left is a first real deployment,
+thresholds calibrated against real traffic, and two surfaces that still need someone's
+credential.
+
+This paragraph used to say **"CI runs on every commit."** It does not, and it never did.
+`self-hosted-tests.yml:45-46` is `workflow_dispatch` only — deliberately, for the
+runner-security reason this document states correctly 200 lines below at *"the security
+constraint that goes with it"*. Nothing runs automatically on a push. The summary contradicted
+its own body, and a summary is what gets read.
+
+Nor is the gap "almost entirely operational". Since that sentence was written, three code
+defects have been found by running the system rather than testing it: `/metrics` reported one
+uvicorn worker instead of the pod, the alert rule that watches the alerting system could never
+fire, and **the ML model feature was dead in every Linux deployment**. Each was invisible to the
+full suite. See *What running it found* below.
 
 *Last re-checked 2026-09-19. Every claim below was re-verified against the running system on that
 date rather than carried forward — an earlier revision of this file kept "what remains is
@@ -152,9 +165,21 @@ its own documented backup procedure. See `docs/runbooks/production.md`.
 
 ### Correctness — the standing gate
 
-**5,092 tests across 16 graded rows, 0 failed, 0 skipped** — and "0 skipped" is enforced rather
-than hoped for: `RULEMIND_REQUIRE_ALL_LANES=1` (set in CI) turns a skipped lane into a failure,
-after a local run exited 0 having silently not executed 2,085 tests.
+**16 graded rows, 0 failed, 0 skipped lanes** — the count lives in `TEST_RESULTS.md`, which
+`make test-all` regenerates from the runners' own output. Three different totals (4,998, 5,092,
+5,142) were in circulation across two documents because the number kept being typed by hand;
+cite the generated file, not a figure in prose.
+
+"0 skipped" is enforced rather than hoped for — `RULEMIND_REQUIRE_ALL_LANES=1` (set in CI) turns
+a skipped lane into a failure, after a local run exited 0 having silently not executed 2,085
+tests. **But it is a LANE-level guarantee, not a test-level one.** 31 individual tests are gated
+off by an unset environment variable and are invisible to it: `REDIS_URL` (10),
+`RULEMIND_AI_LIVE` (5), `KAFKA_BOOTSTRAP_SERVERS` (5 — the whole delivery half of the P09
+exactly-once row), `CLICKHOUSE_URL` (3), `S3_TEST_ENDPOINT` (3), and
+`RM_E2E_ALLOW_DESTRUCTIVE` (5 Playwright). Two lanes, `device` and `smoke`, sit outside the
+default `LANES` list in `scripts/run_all_tests.sh:41` altogether, while
+`self-hosted-tests.yml:49` describes a blank `lanes` input as "blank for all" — blank runs 12 of
+14.
 
 The 16th row is new and it is the one that answers *can this still ship*: **the image build**.
 On 2026-09-19 `docker compose build` failed outright — `requirements.txt` pinned
@@ -237,9 +262,9 @@ after misreading a queued run as failed.
 Current state is the thing to judge: **all four surviving workflows are green on `main`**, and
 `load-test`'s green means something as of 2026-09-19 (see Capacity) where before it did not.
 
-The 119 dead records can be removed with
-`gh api -X DELETE /repos/<owner>/<repo>/actions/runs/<id>` — irreversible, and an owner's call
-rather than something to do on their behalf.
+~~The 119 dead records can be removed with `gh api -X DELETE ...`~~ **DONE 2026-09-19 — 212
+zero-step runs deleted** (the count had grown past 119 by the time it was actioned).
+`PLAN.md` R8 records the sweep.
 
 ### 2. Zero production hours — the monitoring chain is now proven; real traffic is not
 
@@ -626,9 +651,13 @@ is why everything below it is now the operational half.
 3. **Recalibrate the thresholds from that traffic.** They are currently derived from measurements
    on one laptop, which is honest but is still a guess about someone else's hardware.
 4. **Run one real integration** end to end — a genuine bureau connector, not a sample payload.
-5. **Point `observability/secrets/watchdog_url` at a dead-man's-switch monitor.** The heartbeat
-   now fires; nothing is listening for its silence yet.
-6. **Delete the Render services.** They answered 200 on 2026-09-19 and may still be billing.
-   `cp .env.render.example .env.render`, paste a key, `bash scripts/render_teardown.sh`.
+5. ~~**Point `observability/secrets/watchdog_url` at a dead-man's-switch monitor.**~~
+   **CLOSED 2026-09-23** — wired to a Grafana OnCall alertmanager heartbeat (free tier),
+   escalation chain `rulemind-heartbeat` → `tanmay_d21@iift.edu`. The endpoint returns 200 and
+   `scripts/verify_paging.sh` asserts it. See *The silence test* below for whether it FIRES,
+   which is the only property that matters.
+6. ~~**Delete the Render services.**~~ **CLOSED 2026-09-19 — the owner deleted the account.**
+   This line contradicted the struck-through entry 140 lines above it in this same document,
+   which is how a resolved item keeps costing attention.
 
 *(#123 and #176 closed 2026-09-19 — see above.)*
