@@ -30,6 +30,26 @@ export function resolveApiBaseUrl(): string {
   }
   const built = process.env.NEXT_PUBLIC_API_BASE_URL;
   if (built) return built.replace(/\/+$/, "");
+
+  // SAME-ORIGIN whenever we are not on a developer's machine. This is what makes ONE published
+  // image work in every cluster: the Ingress already routes /api to the API Service, so a
+  // browser served from https://rulemind.acme.internal should call
+  // https://rulemind.acme.internal/api/v1/... and needs no build argument to be told so.
+  //
+  // Without it, an adopter who pulls a published web image gets a bundle hard-wired to
+  // http://localhost:8080 -- their own laptop -- because NEXT_PUBLIC_* is substituted at BUILD
+  // time and the chart's runtime env: block cannot reach it. The only escape was rebuilding the
+  // image yourself with --build-arg, which is not a thing a Helm chart can ask of you.
+  if (typeof window !== "undefined") {
+    const location = window.location;
+    const hostname = location?.hostname ?? "";
+    const isDevHost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"
+      || hostname === "[::1]";
+    if (location?.origin && !isDevHost) return location.origin.replace(/\/+$/, "");
+  }
+
+  // Local development only: `pnpm dev` serves the UI on :3000 and the API on :8080, and compose
+  // does the same, so a localhost browser genuinely does need the port.
   return "http://localhost:8080";
 }
 

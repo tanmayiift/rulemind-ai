@@ -71,6 +71,19 @@ env:
   # `docker compose --profile kafka up -d kafka` is the local equivalent.
   kafkaBootstrapServers: ""   # e.g. kafka.svc.cluster.local:9092
 
+  # SELF-SERVE SIGNUP -- off on a chart install, on in the code's own default.
+  #
+  # app/routers/onboarding.py:50 reads env_bool("RULEMIND_SELF_SERVE_SIGNUP", True), and
+  # app/middleware.py:486 lists /api/v1/onboarding/signup in EXEMPT_PATHS, so it is reachable
+  # UNAUTHENTICATED through the Ingress. The variable appeared in no chart or manifest, so every
+  # cluster install published a tenant-and-API-key faucet on day one, rate-limited only to
+  # 20 req/min/IP. That default is right for `docker compose up` on a laptop and wrong for the
+  # deployment shape this chart exists for: an internal install at a company that provisions
+  # tenants out of band.
+  #
+  # Set to "1" if you actually want public signup, and put an authenticating proxy in front.
+  selfServeSignup: "0"
+
   # Was set in NO deployment artifact. app/security_config.py checks RULEMIND_ENV
   # first; with it unset (and NODE_ENV unset) the fail-closed default-secret check
   # takes its "warn and SKIP" branch, so a cluster would happily boot on the

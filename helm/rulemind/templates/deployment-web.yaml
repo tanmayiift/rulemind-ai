@@ -21,19 +21,23 @@ spec:
           ports:
             - containerPort: 3000
           env:
-            # WARNING: this is currently a no-op. apps/web/src/lib/store.ts reads
-            # process.env.NEXT_PUBLIC_API_BASE_URL, and Next.js substitutes
-            # NEXT_PUBLIC_* constants at BUILD time (apps/web/Dockerfile sets the
-            # ARG/ENV before `pnpm --filter @rulemind/web build`), so whatever is
-            # set here never reaches the browser bundle. It is rendered anyway so
-            # that it becomes correct the moment store.ts reads the value at
-            # runtime. Until then, build the web image with
-            #   --build-arg NEXT_PUBLIC_API_BASE_URL=
-            # (empty) so the client issues same-origin /api/v1/... requests, which
-            # the ingress routes to the API Service.
+            # STILL A NO-OP AT RUNTIME, and that no longer matters. Next.js substitutes
+            # NEXT_PUBLIC_* constants at BUILD time, so nothing set here reaches the browser
+            # bundle; it is rendered because it documents intent and becomes live if the app
+            # ever grows a real runtime-config injection (store.ts already reads
+            # window.__RULEMIND_CONFIG__ if something sets it).
             #
-            # The previous value here was "http://rulemind-api:8080": cluster-
-            # internal DNS that no browser can resolve.
+            # What changed 2026-09-23: apps/web/src/lib/store.ts now falls back to the SERVING
+            # ORIGIN whenever the browser is not on localhost, and apps/web/Dockerfile's ARG
+            # defaults to empty instead of http://localhost:8080. So a published image needs no
+            # build argument and no rebuild -- the dashboard calls its own host and the Ingress
+            # routes /api to the API Service.
+            #
+            # Set this (and rebuild with --build-arg) only for a SPLIT-ORIGIN deployment where
+            # the API is on a different host from the dashboard; then set CORS_ORIGINS to match.
+            #
+            # The value here was once "http://rulemind-api:8080": cluster-internal DNS that no
+            # browser can resolve.
             - name: NEXT_PUBLIC_API_BASE_URL
               value: {{ .Values.env.webApiBaseUrl | quote }}
             - name: NODE_ENV

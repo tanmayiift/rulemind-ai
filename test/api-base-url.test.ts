@@ -25,6 +25,14 @@ function withWindow(config: { apiBaseUrl?: string } | undefined) {
     : { __RULEMIND_CONFIG__: config };
 }
 
+/** A browser served from `origin`, with no injected config and no build-time value. */
+function servedFrom(origin: string) {
+  const url = new URL(origin);
+  (globalThis as Record<string, unknown>).window = {
+    location: { origin: url.origin, hostname: url.hostname },
+  };
+}
+
 afterEach(() => {
   delete (globalThis as Record<string, unknown>).window;
   if (originalEnv === undefined) delete process.env.NEXT_PUBLIC_API_BASE_URL;
@@ -89,5 +97,53 @@ describe("persisted base URL merge", () => {
   it("ignores the user-set flag when no URL came with it", () => {
     expect(merge({ apiBaseUrlIsUserSet: true }, "https://api.example.com"))
       .toBe("https://api.example.com");
+  });
+});
+
+describe("same-origin resolution", () => {
+  /**
+   * The third cause, and the one that made the product not self-hostable at all: with no
+   * injected config and no build-time value, the bundle fell through to http://localhost:8080 --
+   * the adopter's own laptop. NEXT_PUBLIC_* is substituted at BUILD time, so the Helm chart's
+   * runtime env: block could not reach it and the only fix was rebuilding the image with
+   * --build-arg, which is not something a chart can ask of the person installing it.
+   *
+   * The Ingress already routes /api to the API Service, so a browser served from the cluster
+   * host should simply call its own origin.
+   */
+  it("uses the serving origin when the app is not on a developer machine", () => {
+    delete process.env.NEXT_PUBLIC_API_BASE_URL;
+    servedFrom("https://rulemind.acme.internal");
+    expect(resolveApiBaseUrl()).toBe("https://rulemind.acme.internal");
+  });
+
+  it("keeps the port form on localhost, where the API really is a separate origin", () => {
+    delete process.env.NEXT_PUBLIC_API_BASE_URL;
+    for (const host of ["http://localhost:3000", "http://127.0.0.1:3000"]) {
+      servedFrom(host);
+      expect(resolveApiBaseUrl()).toBe("http://localhost:8080");
+    }
+  });
+
+  it("still lets an explicit build-time value win, for a split-origin deployment", () => {
+    process.env.NEXT_PUBLIC_API_BASE_URL = "https://api.acme.internal";
+    servedFrom("https://rulemind.acme.internal");
+    expect(resolveApiBaseUrl()).toBe("https://api.acme.internal");
+  });
+
+  it("still lets runtime injection win over everything", () => {
+    process.env.NEXT_PUBLIC_API_BASE_URL = "https://api.acme.internal";
+    const url = new URL("https://rulemind.acme.internal");
+    (globalThis as Record<string, unknown>).window = {
+      location: { origin: url.origin, hostname: url.hostname },
+      __RULEMIND_CONFIG__: { apiBaseUrl: "https://injected.acme.internal/" },
+    };
+    expect(resolveApiBaseUrl()).toBe("https://injected.acme.internal");
+  });
+
+  it("falls back to localhost on the server, where there is no window", () => {
+    delete process.env.NEXT_PUBLIC_API_BASE_URL;
+    delete (globalThis as Record<string, unknown>).window;
+    expect(resolveApiBaseUrl()).toBe("http://localhost:8080");
   });
 });
