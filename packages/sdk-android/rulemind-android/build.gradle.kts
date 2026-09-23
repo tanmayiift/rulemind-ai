@@ -71,7 +71,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
     // Off-main-thread DB I/O for the durable decision outbox (Dispatchers.IO / withContext).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
@@ -82,7 +82,7 @@ dependencies {
     // MockWebServer, so NetworkClient's retry and circuit-breaker behaviour is tested against a
     // real HTTP server on the JVM rather than a mocked OkHttp. Same version as the okhttp above:
     // the two are released together and a mismatch fails at runtime, not at resolution.
-    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.5.0")
     // WorkManager's own test initialiser. `RuleMind.initialize` schedules the periodic bundle
     // sync, and without this WorkManager throws "is not initialized properly" -- so the SDK's
     // entry point was untestable for a reason that had nothing to do with the SDK.
