@@ -38,7 +38,7 @@ jobs:
     runs-on: [self-hosted, rulemind]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # NO actions/setup-python. The host provides 3.11 and the venv is provisioned the same way
       # self-hosted-tests.yml does it -- outside the workspace, so it survives between runs while

@@ -62,7 +62,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # LANGUAGE TOOLCHAINS come from the host (node, java, flutter, cargo). That part is
       # deliberate: a self-hosted runner already has the versions the team develops against, and
