@@ -122,4 +122,4 @@ aiosmtpd==1.4.6
 mypy==1.14.1
 # Stub package for PyYAML. mypy needs it to type app/logic.py's `import yaml`;
 # without it the run fails with import-untyped, which is a lint failure, not a code one.
-types-PyYAML==6.0.12.20250915
+types-PyYAML==6.0.12.20260906
