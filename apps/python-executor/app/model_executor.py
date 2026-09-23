@@ -8,6 +8,7 @@ Supports scikit-learn compatible models (predict / predict_proba).
 from __future__ import annotations
 
 import base64
+import sys
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -23,8 +24,30 @@ MAX_MODEL_SIZE_MB = 50
 MODEL_TIMEOUT_MS = env.env_int("MODEL_TIMEOUT_MS", 5000)
 # Address-space cap for a model worker. Much higher than the variable sandbox's because numpy +
 # scikit-learn reserve large virtual regions just to import; too low a cap makes every prediction
-# fail with MemoryError. Still a hard ceiling on a runaway model.
-_MODEL_MEMORY_MB = env.env_int("MODEL_MEMORY_MB", 512)
+# fail. Still a hard ceiling on a runaway model.
+#
+# THE DEFAULT USED TO BE 512, AND THAT BROKE EVERY LINUX DEPLOYMENT. Bisected inside the shipped
+# api image (python 3.11, aarch64 linux, scipy-openblas):
+#
+#     256 MB -> fails: libscipy_openblas-*.so: failed to map segment from shared object
+#     512 MB -> fails: sklearn/metrics/_pairwise_distances_reduction/*.so
+#     768 MB -> imports OK
+#
+# So the shipped default sat below the floor for the stack shipped alongside it: uploading a
+# scikit-learn model returned 422 "Invalid model: failed to map segment from shared object", and
+# every `model` policy step failed, in compose and in the chart alike.
+#
+# None of the ~5,000 tests could see it. They run on darwin, where setrlimit(RLIMIT_AS) is
+# REFUSED outright ("current limit exceeds maximum limit"), _model_worker_init swallows that
+# OSError, and the cap is therefore never applied -- sklearn imports fine and every model test
+# passes. The mechanism under test does nothing on the only platform that tests it.
+#
+# 2048 gives real headroom over the 768 MB import floor for the model's own working set. RLIMIT_AS
+# caps VIRTUAL address space, which a BLAS stack reserves lavishly and which is a poor proxy for
+# RSS, so a tight value here buys less than it looks like it does. The containment that actually
+# holds is the process boundary, the kill-on-timeout, and the container's own memory limit.
+MODEL_MEMORY_FLOOR_MB = 768  # measured; below this the shipped ML stack cannot import at all
+_MODEL_MEMORY_MB = env.env_int("MODEL_MEMORY_MB", 2048)
 
 # A DEDICATED process pool for models, separate from the variable sandbox: models need far more
 # memory and run a different (heavier, rarer) workload, so sharing one pool would either starve
@@ -45,8 +68,13 @@ def _model_worker_init() -> None:
 
         bytes_limit = _MODEL_MEMORY_MB * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
-    except (ImportError, ValueError, OSError):
-        pass
+    except (ImportError, ValueError, OSError) as exc:
+        # Say so. This silently passed, and the silence is why a 512 MB default that broke every
+        # Linux deployment survived: on darwin the call is REFUSED, the cap is never applied, and
+        # nothing anywhere reported that the isolation this worker advertises was absent.
+        # One line per worker start, to stderr, so it lands in container logs.
+        print("model worker: RLIMIT_AS not applied (%s) -- this worker has NO memory ceiling"
+              % exc, file=sys.stderr, flush=True)
 
 
 def _get_model_pool() -> ProcessPoolExecutor:
