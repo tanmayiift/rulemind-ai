@@ -81,8 +81,22 @@ EXPOSE 8080
 # (helm/rulemind/templates/job-migrate.yaml); docker-compose.yml has a one-shot
 # `migrate` service that the api and worker wait on.
 ENTRYPOINT ["/app/entrypoint.sh"]
-# --workers 4 was 4 independent SQLAlchemy pools (and 4 resident copies of the ML
-# stack) per pod: 4 x (DB_POOL_SIZE 20 + DB_MAX_OVERFLOW 20) = 160 connections from
-# a single pod, against a Postgres default max_connections of 100. See the
-# connection-budget arithmetic in helm/rulemind/values.yaml before raising this.
-CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]
+# WORKER COUNT IS A CONNECTION-BUDGET DECISION, NOT A CORE-COUNT ONE, and hardcoding it here
+# made it look like a property of the image.
+#
+# The cap of 2 was right for its stated arithmetic: 4 x (DB_POOL_SIZE 20 + DB_MAX_OVERFLOW 20)
+# = 160 connections from one pod against a Postgres default max_connections of 100. But the
+# pool size is configuration, and at compose's own default of 5+5 four workers need 40. The
+# binding constraint was the pool, and the fix was applied to the wrong variable.
+#
+# Measured on this machine (4-core VM, both perf flags on, 3 rounds, median):
+#
+#     2 workers  109.9 rps  p50 71.0ms  p95 118.3ms
+#     4 workers  140.8 rps  p50 53.8ms  p95  92.5ms     <- +28% throughput, -24% p50
+#
+# RULEMIND_WORKERS now sets it, defaulting to 2 so nothing changes by accident. Raise it only
+# together with the pool: workers x (DB_POOL_SIZE + DB_MAX_OVERFLOW) must stay under your
+# server's max_connections, with room for the worker process and anything else connecting.
+# helm/rulemind/values.yaml carries the full arithmetic.
+ENV RULEMIND_WORKERS=2
+CMD ["sh", "-c", "exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers ${RULEMIND_WORKERS}"]

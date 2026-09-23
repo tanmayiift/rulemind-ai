@@ -69,6 +69,24 @@ services:
       REDIS_URL: redis://redis:6379/0
       PYTHON_SANDBOX_TIMEOUT: 2000
       PYTHON_SANDBOX_MEMORY: 128
+      # THE TWO PERFORMANCE FLAGS, which appeared in NO deployment artifact -- not this file,
+      # not the Helm chart -- while being documented in .env.example and read by the code
+      # (executor.py:1340, variable_reachability.py:242, fast_decide.py). So they could not be
+      # turned on anywhere, and a benchmark toggling them measured the same configuration
+      # every time. Same shape as PROMETHEUS_MULTIPROC_DIR: documented, read, never delivered.
+      #
+      # Both default OFF, which is the existing behaviour. FAST_DECIDE serves pure-compute
+      # policies from a cached bundle; COMPUTE_ONLY_USED_VARS computes only the variables a
+      # policy can actually reach, which shrinks the recorded computed_variables from the whole
+      # catalog to what was read -- a change to your AUDIT SURFACE, so it stays opt-in.
+      # Uvicorn worker processes. Was hardcoded to 2 in the Dockerfile because .env here sets
+      # DB_POOL_SIZE=20, so 4 workers would have needed 160 connections against max_connections
+      # 100 -- a pool-size constraint expressed as a worker-count one. Raise the two together:
+      # workers x (DB_POOL_SIZE + DB_MAX_OVERFLOW) must stay under your server's limit.
+      # Measured here at 4 workers with 10+10: 140.8 rps vs 109.9 at 2 workers.
+      RULEMIND_WORKERS: ${RULEMIND_WORKERS:-2}
+      FAST_DECIDE: ${FAST_DECIDE:-0}
+      COMPUTE_ONLY_USED_VARS: ${COMPUTE_ONLY_USED_VARS:-0}
       # Address-space cap for the ML model workers. Explicit because the in-code default was
       # 512 MB, which is BELOW the 768 MB the shipped scikit-learn/scipy stack needs just to
       # import inside this image -- so every model upload returned 422 and every `model` policy
