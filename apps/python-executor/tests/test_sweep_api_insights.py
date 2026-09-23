@@ -1,10 +1,16 @@
 """Sweep: the insights/audit endpoints that no test mentioned.
 
 `app/routers/insights.py` backs /decision-explorer and the audit UI. Six of its twelve routes
-were reachable only through the browser: /api/v1/analytics/{decisions,latency,sdk},
+were reachable only through the browser: /api/v1/analytics/{decisions,sdk},
 /api/v1/audit/{errors,promotions,decisions/count}. Nothing asserted what they answer when the
 input is malformed, when the caller is a different tenant, or when a device has pushed a
 malformed telemetry payload.
+
+This paragraph listed `/api/v1/analytics/latency` too, and this file never called it --
+`latency_analytics` appeared only in `app/analytics.py` and in the router, nowhere else in the
+repository. A docstring claiming coverage is worse than no docstring, because the next person
+greps for the route name, finds this file, and stops looking. It is covered now, in
+`test_sweep_untested_endpoints.py` alongside the six other endpoints that had no test at all.
 
 What this file pins down:
 

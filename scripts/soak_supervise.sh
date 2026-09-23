@@ -73,7 +73,12 @@ if docker ps >/dev/null 2>&1; then
   if [ "${UP:-0}" -lt "$WANT" ]; then
     say "only $UP/$WANT services up"
     if [ "$CHECK_ONLY" -eq 0 ]; then
-      docker compose --profile observability up -d >/dev/null 2>&1 \
+      # --build, deliberately. `docker compose up -d` reuses whatever image is already
+      # tagged, so a service whose source changed keeps running the OLD build indefinitely --
+      # measured: watchdog-monitor ran a build predating its own grace-vs-repeat guard for
+      # days, and a crash fix committed to monitor.py would not have reached the process that
+      # needed it. A supervisor that restores a stale binary is restoring the wrong thing.
+      docker compose --profile observability up -d --build >/dev/null 2>&1 \
         && { say "  brought the stack up"; REPAIRED="$REPAIRED stack"; }
     fi
   fi

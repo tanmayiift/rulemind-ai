@@ -282,6 +282,19 @@ consequence is worse: a workspace that set a window believes data older than it 
 CRUD shapes surfaced **27 sub-routes** at once. Writing the tests found `GET`/`DELETE .../shadow`
 answering 200 for another tenant's policy.
 
+### 7. The running monitor was a build older than its own safety guard
+
+Caught while verifying the fix above: `docker compose start` and `docker compose up -d` reuse
+whatever image is already tagged. `watchdog-monitor` is built, not bind-mounted, so the process
+supervising this stack had been running a build that predated its own grace-vs-repeat guard --
+visible in one missing word of its startup line (`repeat=300s`), and in nothing else.
+
+The consequence is general, not specific: **a fix committed to an observability service does not
+reach the process that needs it.** The malformed-URL crash fix in §6 above would have sat in
+`main` while the running monitor kept the bug. The soak supervisor's repair path had the same
+hole — it restored the stack and, in doing so, restored the stale binary. Both now pass
+`--build`.
+
 ### And the one that had to be watched rather than tested
 
 The dead man's switch **fired**, at 04:06:37Z on 2026-09-23: alertmanager stopped at 03:54:34Z,
