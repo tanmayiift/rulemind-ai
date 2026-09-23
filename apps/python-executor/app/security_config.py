@@ -25,6 +25,21 @@ PRODUCTION_SECRET_CHECKS = [
     ("RULEMIND_ADMIN_JWT_SECRET", "rulemind-admin-dev-secret", "admin session JWT signing secret"),
     ("RULEMIND_ADMIN_PASSWORD", "rulemind-admin", "default admin password"),
     ("RULEMIND_DEV_API_KEY", "rm_live_devlocaltenantkey000000000000", "seeded dev API key"),
+    # Not a "default secret" like the four above -- there IS no default. Unset,
+    # compiler.py:_load_signing_keypair generates a fresh RSA-2048 key PER PROCESS. That is
+    # exactly right on a laptop and broken on any real deployment:
+    #
+    #   * at replicaCount.api > 1, an SDK that fetches /sdk/v1/signing-key from one pod and
+    #     /sdk/v1/bundle from another fails signature verification -- and the SDK is built to
+    #     REFUSE a bundle it cannot verify, so on-device decisioning simply stops;
+    #   * every restart invalidates a key a device has pinned.
+    #
+    # The code already knew: signing_key_is_ephemeral() exists, and surfaced the answer only as
+    # a JSON field on the signing-key response (sdk.py:94). No startup warning, no readiness
+    # failure -- so the deployment that breaks is the one that never looks at that field.
+    # `None` as the default is a sentinel that no real value can equal; only unset/blank trips.
+    ("RULEMIND_SIGNING_PRIVATE_KEY", None,
+     "SDK bundle signing key -- unset generates a FRESH key per process, so replicas disagree"),
 ]
 
 
@@ -73,8 +88,8 @@ def default_secret_violations(env: Optional[Mapping[str, str]] = None) -> List[s
         if var in waived:
             continue
         value = env.get(var)
-        if value is None or value == "" or value == default:
-            state = "is unset" if not value else "is still the built-in default"
+        if value is None or value.strip() == "" or (default is not None and value == default):
+            state = "is unset" if not (value or "").strip() else "is still the built-in default"
             violations.append("{0} ({1}) {2}".format(var, description, state))
     return violations
 
