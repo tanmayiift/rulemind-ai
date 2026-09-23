@@ -181,7 +181,7 @@ jobs:
         if: always()
         run: bash qa/mobile_e2e/stop_fastapi.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         continue-on-error: true
         with:
