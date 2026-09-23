@@ -431,6 +431,69 @@ is no big win hiding in it, which is itself a finding: the remaining levers are 
 not a mystery.
 
 
+### The variable protocol — three hypotheses, two of them measured wrong
+
+The profile says 30–36% of a decision is spent waiting on sandbox round trips. `PLAN.md` listed
+three ways to attack it, "cheapest first". Two were tried, measured, and **reverted**. Recording
+that, because a negative result nobody wrote down gets re-attempted.
+
+**Hypothesis 1 — "send only the variables the callee declares it reads" (the O(n²) pickling).**
+The loop passes each variable the accumulated results map, so the Nth call re-pickles N−1
+earlier results. Real, and worth almost nothing: a round trip costs **0.130 ms with an empty
+map and 0.136 ms carrying 55 values** — and 0.133 ms carrying 55 × 200-character strings.
+**0.006 ms of difference, ~5% of one trip.** The cost is the trip, not the payload. Trimming
+the payload is not worth the divergence risk of two paths disagreeing about what a variable can
+see.
+
+**Hypothesis 2 — dispatch independent variables concurrently across the pool.** A variable can
+only be reordered if it never reads the accumulated map, which is statically decidable from its
+source; measured on the seeded tenant, **55 of 55 variables are independent**. None reads
+another. So the sequential loop was keeping exactly one of `SANDBOX_POOL_SIZE` workers busy for
+no reason.
+
+Implemented, measured, **reverted — it was slower.** End to end: 15.5 → **18.3 ms**. Isolated,
+55 calls:
+
+| | |
+|---|---:|
+| 55 sequential round trips | **6.97 ms** |
+| waves of 4, a thread pool per wave | 8.28 ms |
+| waves of 4, one shared thread pool | **5.90 ms** |
+
+A shared pool is **15% better, not 4×**. `ProcessPoolExecutor` serialises every submission and
+every result through one work queue and one management thread, and the work per variable is
+0.3 µs — so the bottleneck is the queue, not the workers, and adding concurrency in front of a
+serial queue buys only overlap of the pickling. Creating a thread pool per wave costs more than
+that.
+
+**Hypothesis 3 — one round trip for the whole group, executed inside the worker.** The only
+design that attacks the actual cost. By parts: one trip ~0.13 ms, plus 55 × ~3 µs of in-worker
+execution with compilation already cached (see the prepare-cache note) ≈ **0.35 ms against
+6.97 ms** — roughly **6.6 ms off a 15.5 ms decision, ~40%.** Estimated by parts and **not
+measured end to end**, because measuring it requires building it.
+
+Not built here, and the constraint list is the reason — every one of these is a guarantee the
+current per-call design gets for free:
+
+1. **Per-variable timeout.** Today each call has its own `future.result(timeout=…)` and a
+   timeout recycles the pool so a wedged worker cannot pin a slot. One trip means one deadline
+   for the group. A `while True` variable then burns the group's budget rather than its own —
+   the same wall clock and the same fail-closed outcome, but the trace names a cluster instead
+   of a culprit. Restoring per-variable granularity needs `signal.setitimer` inside the worker,
+   which works for the pure-Python the AST allowlist permits, and is new security-boundary code.
+2. **Error isolation.** One variable raising must not lose the other 54's results.
+3. **Budget abandonment.** `_check_budget` between dispatches is what turns an over-budget run
+   into a 504. One dispatch means one checkpoint — so the group has to be a pool-sized wave, not
+   the whole catalog. (The first attempt at hypothesis 2 dispatched everything at once and the
+   budget suite went from 504 to 200. The tests were right.)
+4. **Fail-closed on a broken pool**, per `SANDBOX_FALLBACK_MODE`, for every item in the group.
+
+`app/variable_independence.py` — the AST analysis that decides which variables can be reordered
+— was written and tested for hypothesis 2 and removed with it rather than left as dead code.
+It is small, and hypothesis 3 needs the same analysis; the tests for it are in the commit that
+reverted it.
+
+
 ## Where it saturates, and how it behaves past that
 
 `qa/loadtest.py` — ramp to find the knee, then soak at it. Run against compose on this laptop
