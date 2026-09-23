@@ -52,6 +52,23 @@ ALERTS = pathlib.Path(__file__).resolve().parents[1] / "observability" / "alerts
 # describing noise.
 MIN_SAMPLES = 200
 
+# Minimum SPREAD before a number is trustworthy, as the ratio of the worst-5% minute's p95 to the
+# typical minute's p95.
+#
+# Sample count and dynamic range are different questions, and guarding only the first is how this
+# tool proposed thresholds from a window with no signal in it. Measured on three days of the soak:
+#
+#     3,860 sampled minutes -- comfortably past MIN_SAMPLES
+#     per-minute p95: q0.05=47.4ms  q0.50=47.9ms  q0.95=48.0ms  q0.99=48.0ms
+#
+# 0.6 ms of spread across three days. The generator varies arrival rate (0.4-4 rps) over a range
+# the system absorbs without moving, so latency never changes and every quantile lands on the same
+# number. A threshold derived from that is not "calibrated from real traffic" -- it is the idle
+# floor with a multiplier on it, and it fires on the first genuine variance.
+#
+# This is the same trap the sample-count guard warns about, one level up: enough data, no signal.
+MIN_SPREAD_RATIO = 1.10
+
 
 def query(prom: str, expr: str) -> list[float]:
     url = prom.rstrip("/") + "/api/v1/query?" + urllib.parse.urlencode({"query": expr})
@@ -164,6 +181,9 @@ def main() -> int:
     ap.add_argument("--window", default="7d", help="e.g. 24h, 7d, 30d")
     ap.add_argument("--warning-multiple", type=float, default=1.5)
     ap.add_argument("--critical-multiple", type=float, default=4.0)
+    ap.add_argument("--min-spread", type=float, default=MIN_SPREAD_RATIO,
+                    help="refuse below this worst-5%%/typical ratio (default %(default)s). A "
+                         "flat window has enough rows and no signal; see MIN_SPREAD_RATIO.")
     ap.add_argument("--min-samples", type=int, default=MIN_SAMPLES,
                     help="refuse below this many sampled minutes (default %(default)s). Lower it "
                          "only when calibrating from a deliberate load test, where you know the "
@@ -196,6 +216,22 @@ def main() -> int:
         print(f"  decision p95, worst 5% of mins  {lat_p95 * 1000:8.1f} ms")
     if err is not None:
         print(f"  error rate, worst 5% of mins    {err * 100:8.2f} %")
+
+    # Enough rows is not the same as enough signal. See MIN_SPREAD_RATIO.
+    if lat_med and lat_p95:
+        spread = lat_p95 / lat_med
+        print(f"  spread (worst-5% / typical)     {spread:8.3f}x")
+        if spread < args.min_spread:
+            print(f"\n  INCONCLUSIVE — the distribution is FLAT ({spread:.3f}x, "
+                  f"need {args.min_spread:.2f}x).")
+            print(f"  {int(samples)} sampled minutes is plenty of rows, but the worst minute and")
+            print("  the typical minute are the same number, so there is nothing here to")
+            print("  calibrate against — any threshold would be the idle floor times a constant,")
+            print("  and it would fire on the first real variance.")
+            print("\n  The traffic generator has to reach the knee before this means anything:")
+            print("  raise the peak arrival rate toward measured saturation, or add a periodic")
+            print("  heavy policy, so the diurnal curve crosses into contention.\n")
+            return 1
 
     d = derive(m, args.warning_multiple, args.critical_multiple)
     if not d:

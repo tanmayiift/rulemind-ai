@@ -75,7 +75,34 @@ def archive_old_decisions(storage: Storage) -> Dict[str, Any]:
     from .archiver import archiving_enabled, get_archiver, retention_cutoff
 
     if not archiving_enabled():
-        return {"skipped": "archiving_disabled"}
+        # SILENT BEFORE THIS. DECISION_ARCHIVE_SINK defaults to "none", so on a default
+        # deployment this job returned early on every run and no decision was ever purged --
+        # while the settings screen showed "Audit Retention Days: 90"
+        # (experience_studio.py:219) and the workspace row said 90 (models.py:745).
+        #
+        # Two consequences, and the second is worse than the first:
+        #   * the decisions table grows without bound. Measured on the soak stack: 13.2 KB per
+        #     decision (trace 6.1 KB, rule_results 2.5 KB, computed_variables 1.6 KB,
+        #     scorecard_result 1.1 KB), so 1M decisions/day is ~13 GB/day, forever.
+        #   * a workspace that set a retention window believes data older than it is gone. It is
+        #     not. For a decisioning engine holding bureau data, that is a false compliance
+        #     statement, not just a disk problem.
+        #
+        # Archiving and retention are different jobs -- copy-to-OLAP is optional, honouring the
+        # window the UI advertises is not -- but changing the default to delete would silently
+        # destroy data on upgrade. So this stays a no-op and says so, loudly, naming the exact
+        # mismatch, once per scheduled run.
+        configured = [t.get("id") for t in storage.list_tenants()
+                      if t.get("id") and retention_cutoff(
+                          storage.get_settings(tenant_id=t["id"])) is not None]
+        if configured:
+            logger.warning(
+                "RETENTION IS ADVERTISED BUT NOT ENFORCED: %d workspace(s) have a retention "
+                "window configured, and DECISION_ARCHIVE_SINK is 'none', so archive_old_decisions "
+                "purges nothing. Decisions are kept forever and the settings screen says "
+                "otherwise. Configure a sink, or clear the retention setting so the UI stops "
+                "promising it.", len(configured))
+        return {"skipped": "archiving_disabled", "retention_configured_tenants": len(configured)}
     archiver = get_archiver()
     total = 0
     tenants = 0
