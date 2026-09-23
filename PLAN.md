@@ -1121,6 +1121,42 @@ a red X that only means "out of minutes".
 rather than on the module that leaked it. `tests/_storage_global.py` now holds one helper, called
 via `addCleanup` so it runs AFTER the module's own tearDown. **Zero modules leak now.**
 
+## R10. Three audits, and the altitude was wrong all along — 2026-09-24
+
+The owner's criticism: this project has been fixing configuration symptoms without ever
+evaluating the architecture, the APIs, the scalability, the product or the UX. Correct. Three
+parallel audits — execution engine, API/scalability/orchestration, product/UX/integrations —
+replaced guesswork with evidence. Full plan in the session plan file; the findings that reframe
+everything:
+
+**The config surface is the systemic defect.** The backend reads **111 environment variables**.
+`docker-compose.yml`, the Helm chart and `k8s/` together can deliver **28**. **83 are settable by
+nothing**, and **64 of those are documented in `.env.example`** — documented, read, undeliverable.
+For a self-hosted product whose deployment model IS the chart, the customer can configure **16%**
+of the software. `PROMETHEUS_MULTIPROC_DIR`, `MODEL_MEMORY_MB`, `RULEMIND_SELF_SERVE_SIGNUP`,
+`DECISION_ARCHIVE_SINK`, `FAST_DECIDE` were never five unrelated bugs; they were five samples
+from a population of 83. Among the unreachable: `DECISION_ENCRYPT_AT_REST`,
+`AUDIT_ENCRYPT_AT_REST` and `LOG_LEVEL`.
+
+**The performance story was pointed at the wrong layer.** Measured, 3 rounds, medians: as
+shipped 60.3 rps / p50 124.9 ms; with both perf flags 109.9 rps; with 4 workers 140.8 rps — the
+default runs at **43%** of the same code on the same hardware. But `FAST_DECIDE` contributed
+**0%**, because `policy_instant_personal_loan` (the load test's default) has `action` and
+`review_gate` steps and fails `fast_path_eligible` outright. The entire gain was
+`COMPUTE_ONLY_USED_VARS`. And the Rust core is not merely unpackaged — it accelerates rule
+evaluation, under 100 µs of a ~50 ms decision, so shipping it is worth **1–2%**. Queried live:
+**1 of 4 seeded policies can use `FAST_DECIDE`, and 0 of 4 can ever reach the Rust core.**
+
+**A compliance fabrication ships in the demo.** `apps/web/app/decision-explorer/page.tsx:36-42`
+returns hardcoded `["AA05 · Debt-to-income too high", "AA12 · Insufficient credit history"]` for
+every rejected decision, under a heading reading "Adverse-action reason codes". A real
+deterministic implementation exists at `governance.py:213` → `logic.py:841-897` and the UI never
+calls it.
+
+- [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
+  contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
+  `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.
+
 ## R9. Render gone, paging proven, and an OS upgrade that broke the build — 2026-09-19
 
 - [x] **R9.1 RENDER IS GONE.** The owner deleted the account. Both hostnames answer 404 with `x-render-routing: no-server` — Render's own header for "no service is bound here". That is the check worth recording, because this repo already called these services dead once on a single timeout: a *sleeping* free-tier service answers 200 after a ~50s cold start and a *stopped* one answers 5xx. Only a deleted one produces `no-server`. **No hosted footprint left to bill.**
