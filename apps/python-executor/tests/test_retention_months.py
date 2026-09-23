@@ -369,7 +369,14 @@ class PurgeHonoursCalendarMonthsTests(unittest.TestCase):
         self.storage.update_settings({"audit_retention_months": 1}, tenant_id=self.tenant)
         with mock.patch.dict(os.environ, {"DECISION_ARCHIVE_SINK": "none"}):
             result = archive_old_decisions(self.storage)
-        self.assertEqual(result, {"skipped": "archiving_disabled"})
+        # The KEY, not the whole dict. The job now also reports how many workspaces have a
+        # retention window configured while nothing enforces it -- which is exactly the
+        # situation this test constructs, and which used to be silent. Pinning the exact object
+        # made adding that diagnostic a test failure in two separate files.
+        self.assertEqual(result.get("skipped"), "archiving_disabled")
+        self.assertEqual(result.get("retention_configured_tenants"), 1,
+                         "this workspace HAS a window set and nothing is enforcing it -- the "
+                         "job must say so rather than skipping quietly")
         self.assertTrue(self._alive(old))
 
 
