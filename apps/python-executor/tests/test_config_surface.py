@@ -40,6 +40,22 @@ class InventoryParseTests(unittest.TestCase):
         self.assertIn("A_SETTING", found)
         self.assertIn("7", found["A_SETTING"].defaults)
 
+    def test_an_alias_of_os_environ(self):
+        """The archiver's `settings = env if env is not None else os.environ` hid thirteen settings,
+        and mtls.py / security_config.py / quota.py hid ten more, including the mutual-TLS config
+        and the production secret-check escape hatches."""
+        found = self._parse('import os\ndef f(env=None):\n    settings = env if env is not None else os.environ\n'
+                            '    return settings.get("ALIASED_SETTING", "x")\n')
+        self.assertIn("ALIASED_SETTING", found)
+
+    def test_an_ordinary_dict_get_is_not_a_setting(self):
+        """The same file also reads `settings.get("audit_retention_months")` off a plain dict; a
+        lower-case key is not an environment variable, so it must not be inventoried."""
+        found = self._parse('import os\nsettings = os.environ\nsettings.get("audit_retention_months")\n'
+                            'other = {}\nother.get("NOT_AN_ALIAS")\n')
+        self.assertNotIn("audit_retention_months", found)
+        self.assertNotIn("NOT_AN_ALIAS", found)
+
     def test_os_environ_get(self):
         self.assertIn("B_SETTING", self._parse('import os\nos.environ.get("B_SETTING")\n'))
 

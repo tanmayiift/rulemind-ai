@@ -2192,6 +2192,45 @@ calls it.
   5 Python tests for signup, 4 for CORS on early responses, 3 Vitest for `safeNext`, 3 Playwright
   for signup/gate/key-vs-session; 7 mutations caught.
 
+- [x] **R10.31 DATA RESIDENCY AND DATA-SUBJECT RIGHTS.** (Plan 6.7.) Nothing existed: no region, no
+  access request, no erasure — for an EU or Indian lender a procurement blocker.
+  * **Residency is answered by what the install is**, not by a per-tenant region the product could not
+    enforce: every workspace on an install stores its data in that install's database.
+    `RULEMIND_DATA_REGION` declares where it runs; `GET /api/v1/data-residency` reports it with the
+    database (engine and host, never credentials), encryption at rest, and **every egress destination
+    found in live configuration** — connector hosts and token endpoints, webhook receivers, AI
+    providers, archive sink, Kafka, tracing. `docs/DATA-RESIDENCY.md` is the operator's version.
+  * **Access:** `GET /api/v1/data-subjects/{id}` — every decision about the subject, in full.
+  * **Erasure is redaction, not deletion**, because adverse-action records carry their own retention
+    duties: the outcome, policy version, time and reason codes stay; the payload, variables, trace,
+    scorecard detail and **the applicant's own values** go — including from inside the reason-code
+    sentence ("…required 650, actual 612"), which is where a key-only filter would have left them.
+    Executions, review tasks (the reviewer's verdict kept), queued webhook events, Kafka outbox rows,
+    cached idempotent responses and linked error events are covered **in one transaction**; the
+    subject id becomes a keyed pseudonym; the audit event names the pseudonym, never the person; the
+    receipt lists what it could not reach (archives, backups, delivered events, WAL, providers).
+    Admin only. `erased_at` on the decision (migration `20260924_0035`); reason codes stay readable.
+
+  **Found on the way, fixed and mutation-checked:**
+  * **A viewer could read access-management data** — every member's email, the API keys (masked, with
+    the key ids that are now OAuth client_ids) and the SSO configuration. Every GET mapped to READ
+    while the members handler's docstring said "requires manage_access". A sensitive-read list now
+    requires MANAGE_ACCESS for those and for data-subject export.
+  * **The config gate was blind to settings read through an alias of `os.environ`**
+    (`settings = env if env is not None else os.environ`). It now sees them — and that surfaced
+    **23 settings missing from the chart, 20 of them documented nowhere at all**: the archive sink's S3 and ClickHouse options, the entire
+    **mutual-TLS** configuration, `QUOTA_ENFORCE`, and the production secret check's two **escape
+    hatches** (`RULEMIND_SKIP_SECRET_CHECK`, `RULEMIND_ALLOW_DEFAULT_SECRETS`, now documented as
+    never-in-production). All are in `.env.example` and `values.yaml` (the ClickHouse password under
+    `secretConfig`).
+  * **`token_url` was masked as a secret** because it contains "token", so an author could not read
+    the OAuth2 endpoint they configured. A `*_url` key is an address; genuine secret values are still
+    redacted by value.
+
+  9 erasure tests, 7 residency tests, 3 sensitive-read tests, 2 gate tests; 13 mutations caught. The
+  6.6 full run's two migration-test failures were that run racing this migration's creation (the
+  test fixes its expected head at import); both pass when run.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

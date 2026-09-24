@@ -51,6 +51,8 @@ from config_surface import ROOT, build  # noqa: E402
 # Genuinely internal: read by the code, but NOT an operator's setting. Each carries its reason,
 # because "internal" is the sentence that would otherwise absorb the whole list again.
 INTERNAL: Dict[str, str] = {
+    "PYTEST_CURRENT_TEST":
+        "set by pytest itself; security_config treats its presence as a test run. Not a setting.",
     "RULEMIND_TEST_PG_SCHEMA_PER_PATH":
         "test harness only -- gives each test path its own Postgres schema. Setting it on a "
         "real deployment would scatter the schema, not configure anything.",

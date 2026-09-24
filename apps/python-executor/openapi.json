@@ -650,6 +650,21 @@
         "title": "DataProtectionRequest",
         "type": "object"
       },
+      "DataSubjectEraseRequest": {
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 10,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "DataSubjectEraseRequest",
+        "type": "object"
+      },
       "DecideRequest": {
         "properties": {
           "payload": {
@@ -7588,6 +7603,121 @@
           }
         },
         "summary": "Test Connector"
+      }
+    },
+    "/api/v1/data-residency": {
+      "get": {
+        "description": "Where this workspace's data is stored and every destination it can leave to, assembled from\nthe live configuration. For a procurement review's residency questions.",
+        "operationId": "data_residency_api_v1_data_residency_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Data Residency Api V1 Data Residency Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Data Residency"
+      }
+    },
+    "/api/v1/data-subjects/{subject_id}": {
+      "get": {
+        "description": "Everything this workspace holds about one subject (the decide request's `userId`), for an\naccess request. Admin only (MANAGE_ACCESS): it is one person's data, in bulk.",
+        "operationId": "data_subject_export_api_v1_data_subjects__subject_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subject_id",
+            "required": true,
+            "schema": {
+              "title": "Subject Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Data Subject Export Api V1 Data Subjects  Subject Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Subject Export"
+      }
+    },
+    "/api/v1/data-subjects/{subject_id}/erase": {
+      "post": {
+        "description": "Redact one subject's personal data everywhere this database holds it, keeping each decision's\noutcome and adverse-action reason codes. Returns a receipt, including the stores it cannot\nreach. Admin only; recorded in the audit trail under a pseudonym.",
+        "operationId": "data_subject_erase_api_v1_data_subjects__subject_id__erase_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subject_id",
+            "required": true,
+            "schema": {
+              "title": "Subject Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataSubjectEraseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Data Subject Erase Api V1 Data Subjects  Subject Id  Erase Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Subject Erase"
       }
     },
     "/api/v1/debug/sessions": {

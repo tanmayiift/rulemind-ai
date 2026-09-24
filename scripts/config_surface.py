@@ -67,10 +67,35 @@ def _literal(node: Optional[ast.AST]) -> Optional[str]:
     return str(value)
 
 
+# An environment variable name, as opposed to an ordinary dict key read through the same `.get`.
+_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]+$")
+
+
+def _environ_aliases(tree: ast.AST) -> Set[str]:
+    """Names this file binds to os.environ -- `settings = env if env is not None else os.environ`.
+
+    The archiver reads its ClickHouse connection and every S3 archive option through such an
+    alias, so this inventory -- which only knew os.getenv / os.environ.get / env_* -- never saw
+    them, and neither did the deployment artifacts: thirteen real settings a self-hosted customer
+    could not discover. Found when an env_str() read of three of them tripped this gate.
+    """
+    aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        reads_environ = any(isinstance(sub, ast.Attribute) and sub.attr == "environ"
+                            and isinstance(sub.value, ast.Name) and sub.value.id == "os"
+                            for sub in ast.walk(node.value))
+        if reads_environ:
+            aliases.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    return aliases
+
+
 class _Visitor(ast.NodeVisitor):
-    def __init__(self, relpath: str, out: Dict[str, Setting]) -> None:
+    def __init__(self, relpath: str, out: Dict[str, Setting], aliases: Optional[Set[str]] = None) -> None:
         self.relpath = relpath
         self.out = out
+        self.aliases = aliases or set()
 
     def _record(self, name: str, line: int, kind: str, default: Optional[str]) -> None:
         entry = self.out.setdefault(name, Setting(name=name))
@@ -92,6 +117,9 @@ class _Visitor(ast.NodeVisitor):
             elif (isinstance(target, ast.Attribute) and target.attr == "environ"
                   and func.attr == "get"):
                 kind = "os.environ.get"
+            elif (isinstance(target, ast.Name) and target.id in self.aliases and func.attr == "get"
+                  and literal_name and _ENV_NAME.match(literal_name)):
+                kind = "os.environ alias"
         elif isinstance(func, ast.Name) and func.id in ENV_HELPERS:
             kind = func.id
         elif isinstance(func, ast.Attribute) and func.attr in ENV_HELPERS:
@@ -129,7 +157,7 @@ def read_settings(app_dir: str = APP_DIR) -> Dict[str, Setting]:
             except SyntaxError as exc:  # pragma: no cover - would fail the suite first
                 print(f"could not parse {relpath}: {exc}", file=sys.stderr)
                 continue
-            _Visitor(relpath, out).visit(tree)
+            _Visitor(relpath, out, _environ_aliases(tree)).visit(tree)
     return out
 
 

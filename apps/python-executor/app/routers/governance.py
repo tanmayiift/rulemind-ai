@@ -12,7 +12,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import main
 from ..logic import now_iso
@@ -219,8 +219,49 @@ def decision_reason_codes(request: Request, decision_id: str, limit: int = Query
 
     tenant_id = main.active_tenant_id(request)
     decision = main.ensure_exists(main.storage.get_decision(decision_id, tenant_id=tenant_id), "decision", decision_id)
+    if decision.get("erased_at"):
+        # The subject's data was erased; the codes a decline notice needs were kept at erasure
+        # time (without the applicant's own values), because the rule results they came from
+        # are gone.
+        kept = (decision.get("rule_results") or [{}])[0].get("reason_codes") or []
+        return {"decision_id": decision_id, "outcome": decision.get("outcome"),
+                "reason_codes": kept[:limit], "erased_at": decision["erased_at"]}
     codes = adverse_reason_codes(decision.get("rule_results", []), limit=limit)
     return {"decision_id": decision_id, "outcome": decision.get("outcome"), "reason_codes": codes}
+
+
+# ── Data residency (plan 6.7) ─────────────────────────────────────────────
+@router.get("/api/v1/data-residency")
+def data_residency(request: Request) -> Dict[str, Any]:
+    """Where this workspace's data is stored and every destination it can leave to, assembled from
+    the live configuration. For a procurement review's residency questions."""
+    from .. import data_residency as residency
+
+    return residency.residency_report(main.storage, main.active_tenant_id(request))
+
+
+# ── Data subjects: access and erasure (plan 6.7) ──────────────────────────
+class DataSubjectEraseRequest(BaseModel):
+    reason: str = Field(min_length=10, max_length=500)
+
+
+@router.get("/api/v1/data-subjects/{subject_id}")
+def data_subject_export(request: Request, subject_id: str) -> Dict[str, Any]:
+    """Everything this workspace holds about one subject (the decide request's `userId`), for an
+    access request. Admin only (MANAGE_ACCESS): it is one person's data, in bulk."""
+    from .. import data_subjects
+
+    return data_subjects.export_subject(main.storage, subject_id, main.active_tenant_id(request))
+
+
+@router.post("/api/v1/data-subjects/{subject_id}/erase")
+def data_subject_erase(request: Request, subject_id: str, body: DataSubjectEraseRequest) -> Dict[str, Any]:
+    """Redact one subject's personal data everywhere this database holds it, keeping each decision's
+    outcome and adverse-action reason codes. Returns a receipt, including the stores it cannot
+    reach. Admin only; recorded in the audit trail under a pseudonym."""
+    from .. import data_subjects
+
+    return data_subjects.erase_subject(main.storage, subject_id, main.active_tenant_id(request), reason=body.reason)
 
 
 # ── Decision replay + bundle versions + policy backtest ────────────────────

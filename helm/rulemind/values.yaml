@@ -336,6 +336,35 @@ config:
   # OAuth2 access tokens (POST /api/v1/oauth/token). Clamped to 60..86400 seconds; a token
   # stops working when its key is revoked, within API_KEY_CACHE_TTL.
   # OAUTH2_ACCESS_TOKEN_TTL_SECONDS: "3600"
+  # Where this install runs, as stated to a regulator. Reported by GET /api/v1/data-residency.
+  # RULEMIND_DATA_REGION: ""
+  # Decision archive sink details (DECISION_ARCHIVE_SINK selects the sink).
+  # DECISION_ARCHIVE_S3_BUCKET: ""
+  # DECISION_ARCHIVE_S3_PREFIX: "rulemind/decisions"
+  # DECISION_ARCHIVE_S3_FORMAT: "jsonl"
+  # DECISION_ARCHIVE_S3_ENDPOINT: ""
+  # DECISION_ARCHIVE_S3_REGION: ""
+  # AWS_REGION: ""
+  # CLICKHOUSE_HOST: "localhost"
+  # CLICKHOUSE_PORT: "8123"
+  # CLICKHOUSE_USER: "default"
+  # CLICKHOUSE_DATABASE: "default"
+  # CLICKHOUSE_TABLE: "rulemind_decisions"
+  # CLICKHOUSE_PREDICTOR_TABLE: "rulemind_predictor_values"
+  # Mutual TLS for the SDK surface, terminated at your ingress/proxy.
+  # MTLS_MODE: "off"
+  # MTLS_CERT_HEADER: "x-client-cert"
+  # MTLS_VERIFY_HEADER: "x-client-verify"
+  # MTLS_REQUIRE_PROXY_VERIFY: "0"
+  # MTLS_ALLOWED_FINGERPRINTS: ""
+  # MTLS_PROTECTED_PREFIXES: "/sdk/v1"
+  # Enforce per-plan monthly decision quotas.
+  # QUOTA_ENFORCE: "0"
+  # Development only. The chart sets RULEMIND_ENV=production, which is what arms the check.
+  # NODE_ENV: "production"
+  # Escape hatches for the production secret check -- never on a real deployment.
+  # RULEMIND_ALLOW_DEFAULT_SECRETS: ""
+  # RULEMIND_SKIP_SECRET_CHECK: "0"
 
   # ── Redis client behaviour ───────────────────────────────────────────────────────────────
   # REDIS_SOCKET_TIMEOUT: ""
@@ -391,6 +420,7 @@ config:
 # signature verification -- and every restart invalidates a key a device has pinned.
 # Generate: openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048
 secretConfig: {}
+  # CLICKHOUSE_PASSWORD: ""           # when DECISION_ARCHIVE_SINK=clickhouse
   # RULEMIND_SIGNING_PRIVATE_KEY: |
   #   -----BEGIN PRIVATE KEY-----
   #   ...
