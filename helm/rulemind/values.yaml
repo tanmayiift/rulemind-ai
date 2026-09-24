@@ -2,14 +2,30 @@
 # referenced it, so setting it did nothing at all. Namespace is a release
 # property, not a chart value — use `helm install -n <ns> --create-namespace`.
 
+# IMAGES. Three ways to get them, and until 2026-09-23 only the third existed:
+#
+#   1. Publish your own with .github/workflows/release-images.yml (workflow_dispatch, builds
+#      and pushes ghcr.io/<owner>/rulemind-{api,web}:<version>). Then set image.*.tag.
+#   2. Mirror them into your own registry and override image.*.repository.
+#   3. Build locally and load them into the cluster -- scripts/k8s_up.sh does this for kind, and
+#      values-kind.yaml overrides repository/tag/pullPolicy accordingly.
+#
+# The defaults below named `rulemind/api:latest`, which NOTHING in this repository produced and
+# which resolves to a non-existent Docker Hub image, so `helm install` against a real cluster
+# ImagePullBackOff'd on every pod. That is the single reason "any company can host this on their
+# own infra" did not hold.
+#
+# `tag` defaults to the chart's appVersion rather than `latest` so that a release is
+# identifiable and `helm rollback` restores a DIFFERENT binary than the one it is leaving --
+# with both sides on :latest it restores the same image and the rollback does nothing.
 image:
   web:
-    repository: rulemind/web
-    tag: latest
+    repository: ghcr.io/tanmayiift/rulemind-web
+    tag: ""              # defaults to .Chart.AppVersion; set explicitly to pin a release
     pullPolicy: IfNotPresent
   api:
-    repository: rulemind/api
-    tag: latest
+    repository: ghcr.io/tanmayiift/rulemind-api
+    tag: ""
     pullPolicy: IfNotPresent
   worker:
     # There is no `rulemind/worker` image and no Dockerfile that would build one.
@@ -17,8 +33,8 @@ image:
     # and just overrides the command (`python3 -m app.worker`), so the worker IS
     # the API image. Defaulting this to the api repository keeps the chart
     # deployable; override only if you genuinely publish a separate image.
-    repository: rulemind/api
-    tag: latest
+    repository: ghcr.io/tanmayiift/rulemind-api
+    tag: ""
     pullPolicy: IfNotPresent
 
 replicaCount:

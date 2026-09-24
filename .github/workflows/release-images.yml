@@ -1,0 +1,89 @@
+# Build and publish the container images the Helm chart and k8s manifests reference.
+#
+# WHY THIS EXISTS. Before it, nothing in this repository ever built or pushed an image.
+# helm/rulemind/values.yaml defaulted to `rulemind/api:latest` and k8s/rulemind.yaml to
+# `ghcr.io/rulemind/rulemind-api:latest`, and neither tag was produced by anything -- so
+# `helm install` against a real cluster ImagePullBackOff'd on every pod. The only path that
+# produced images at all was scripts/k8s_up.sh, which builds locally and `kind load`s them into
+# a laptop cluster. "Any B2B company can host this on their own infra" did not survive contact
+# with that: the first step was build-and-publish work the repo did not do for you.
+#
+# WORKFLOW_DISPATCH ONLY, like every other workflow here, and for the same reason: the runner
+# executes as the maintainer's user and there are bot-authored dependency PRs. A `push` trigger
+# on this one would additionally publish an artifact from unreviewed code. Do not add one.
+name: release images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image tag (e.g. 4.0.0). Also tagged :latest."
+        required: true
+        type: string
+      push:
+        description: "Push to the registry. Unchecked = build only, to prove the Dockerfiles work."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    runs-on: [self-hosted, rulemind]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject a tag that cannot be rolled back to
+        # `latest` alone is not a version: `helm rollback` restores a Deployment whose image
+        # reference is unchanged, so it brings back the same binary it was trying to leave.
+        # docs/runbooks/rollback.md depends on an immutable tag existing.
+        run: |
+          case "${{ inputs.version }}" in
+            latest|"") echo "::error::supply a real version, not '${{ inputs.version }}'"; exit 1 ;;
+          esac
+
+      - name: Log in to GHCR
+        if: ${{ inputs.push }}
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build api
+        run: |
+          docker build -f apps/python-executor/Dockerfile \
+            -t "ghcr.io/${{ github.repository_owner }}/rulemind-api:${{ inputs.version }}" \
+            -t "ghcr.io/${{ github.repository_owner }}/rulemind-api:latest" .
+
+      - name: Build web
+        # No --build-arg NEXT_PUBLIC_API_BASE_URL on purpose. The ARG defaults to empty and
+        # apps/web/src/lib/store.ts resolves the API base from the serving origin at runtime, so
+        # ONE published image works in every cluster. Passing a value here would bake one
+        # deployment's hostname into the bundle for everybody.
+        run: |
+          docker build -f apps/web/Dockerfile \
+            -t "ghcr.io/${{ github.repository_owner }}/rulemind-web:${{ inputs.version }}" \
+            -t "ghcr.io/${{ github.repository_owner }}/rulemind-web:latest" .
+
+      - name: Push
+        if: ${{ inputs.push }}
+        run: |
+          for repo in rulemind-api rulemind-web; do
+            docker push "ghcr.io/${{ github.repository_owner }}/$repo:${{ inputs.version }}"
+            docker push "ghcr.io/${{ github.repository_owner }}/$repo:latest"
+          done
+
+      - name: Report
+        run: |
+          {
+            echo "### Images"
+            echo ""
+            echo "| image | tag | pushed |"
+            echo "|---|---|---|"
+            for repo in rulemind-api rulemind-web; do
+              echo "| ghcr.io/${{ github.repository_owner }}/$repo | ${{ inputs.version }} | ${{ inputs.push }} |"
+            done
+            echo ""
+            echo 'Install with `--set image.api.tag=${{ inputs.version }} --set image.web.tag=${{ inputs.version }}`.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -36,7 +36,7 @@ spec:
       {{- include "rulemind.podSecurityContext" . | nindent 6 }}
       containers:
         - name: migrate
-          image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"
+          image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.api.pullPolicy }}
           {{- include "rulemind.containerSecurityContext" . | nindent 10 }}
           # `args`, not `command`: k8s `command` replaces the image ENTRYPOINT, and
