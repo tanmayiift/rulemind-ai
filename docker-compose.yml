@@ -144,6 +144,9 @@ services:
       # unchanged) so a deployment can turn retention on without editing this file --
       # DECISION_ARCHIVE_SINK=discard purges with no copy kept. See .env.example.
       DECISION_ARCHIVE_SINK: ${DECISION_ARCHIVE_SINK:-none}
+      # How often the purge runs. 24h suits a retention window measured in months; a soak, or
+      # any short window, wants it tighter -- the table grows ~13 KB per decision between passes.
+      DECISION_ARCHIVE_INTERVAL_HOURS: ${DECISION_ARCHIVE_INTERVAL_HOURS:-24}
     depends_on:
       db:
         condition: service_healthy

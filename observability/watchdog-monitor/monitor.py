@@ -96,17 +96,38 @@ def last_heartbeat_age(topic: str) -> float | None:
         return None
 
 
+_warned_bad_external_url = False
+
+
 def ping_external() -> None:
     """Forward proof-of-life to the external monitor. Best-effort and never fatal: this monitor's
-    own job is unaffected by whether the escalation path is reachable."""
+    own job is unaffected by whether the escalation path is reachable.
+
+    "Never fatal" was not true. urllib.request.Request raises ValueError -- not URLError, not
+    OSError -- on a string that is not a URL, so a watchdog_url file holding a stray word, a
+    shell prompt someone pasted, or an editor's swap content took the ValueError straight up
+    through main()'s loop and KILLED THE MONITOR. That is the worst available failure mode for a
+    dead man's switch: the thing that notices silence goes silent, and nothing notices that.
+
+    The file is edited by hand, by definition (it holds a credential, so it is gitignored and
+    pasted in), which makes malformed content the expected case rather than an exotic one.
+    """
+    global _warned_bad_external_url
     url = read(EXTERNAL_URL_FILE)
     if not url:
+        return
+    if not url.startswith(("http://", "https://")):
+        if not _warned_bad_external_url:
+            _warned_bad_external_url = True
+            print(f"external heartbeat URL is not an http(s) URL ({url[:12]!r}...); not pinging. "
+                  f"Re-copy the whole URL from the integration's Heartbeat panel.",
+                  file=sys.stderr, flush=True)
         return
     try:
         req = urllib.request.Request(url, data=b"", method="POST")
         with urllib.request.urlopen(req, timeout=15) as res:
             res.read()
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"external heartbeat ping failed: {exc}", file=sys.stderr, flush=True)
 
 

@@ -529,3 +529,57 @@ trip would imply — the fixed ~6.5 ms of request overhead dominates, and the wo
 deserialised model, so the marginal cost is one pool hop. The serial loop is real and is not
 worth parallelising: at 50 members this extrapolates to ~45 ms, for a screen an operator opens
 deliberately. The parity row's assertion was right; it now cites a measurement instead.
+
+---
+
+## Sizing — what a decision costs on disk
+
+Throughput has been measured for a while; **storage had not been measured at all**, and it is the
+number that decides what volume a deployment can carry. Taken from the soak stack's Postgres
+(385,076 real decisions, 3 days of diurnal traffic):
+
+| | bytes | share |
+|---|---:|---:|
+| `trace` | 6,149 | 47% |
+| `rule_results` | 2,454 | 19% |
+| `computed_variables` | 1,638 | 12% |
+| `scorecard_result` | 1,110 | 8% |
+| `payload_preview` | 604 | 5% |
+| row + index overhead | ~1,250 | 9% |
+| **total per decision** | **~13,250** | |
+
+    decisions: 385,076 rows -> 4,865 MB total
+      heap  538 MB · indexes 88 MB · TOAST 4,239 MB
+
+87% of the table is TOASTed JSON. So:
+
+| decisions/day | growth/day | 90-day window | 1-year window |
+|---:|---:|---:|---:|
+| 10,000 | 130 MB | ~12 GB | ~48 GB |
+| 100,000 | 1.3 GB | ~120 GB | ~480 GB |
+| 1,000,000 | 13 GB | ~1.2 TB | ~4.8 TB |
+
+**Size the volume for the retention window, and make sure the window is actually enforced** —
+`DECISION_ARCHIVE_SINK` gates the purge job, and its default (`none`) means nothing is ever
+deleted however the settings screen is configured. See the retention finding in
+`docs/PRODUCTION-READINESS.md`.
+
+### Two levers, if that is too much
+
+`COMPUTE_ONLY_USED_VARS=1` removes the variables the policy never read from
+`computed_variables` — 12% of the row here, and much more on a tenant with a large catalog than
+on the 55-variable demo. It is off by default because it shrinks the audit surface, which is a
+deliberate trade rather than a default.
+
+`trace` is 47% on its own and has no equivalent knob. A per-policy or per-tenant "record the
+trace only on non-approve outcomes" option is the obvious next win and does not exist yet; it is
+named here rather than quietly implemented, because how much of a decision a regulated customer
+must be able to reconstruct is their call, not ours.
+
+### Why this was not known
+
+The soak had been running for three days into a stated 30-day window on a Colima VM with a hard
+30 GiB allocation, 83% full and 4.8 GB free, growing 1.6 GB/day. It would have filled the disk
+and taken Postgres down around day six — silently, the same way the previous soak died. Nothing
+measured bytes-per-decision, nothing alerted on database growth, and the retention setting that
+looked like it bounded all this was inert.

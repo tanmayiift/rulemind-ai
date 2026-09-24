@@ -213,6 +213,83 @@ and re-running is what hides a real failure.
 
 ---
 
+## What running it found — 2026-09-23
+
+Six defects, all found by driving the running system rather than by adding tests, and every one
+of them invisible to a full green suite. They are grouped here because the pattern is the same
+every time: **a check existed, reported success, and never executed its assertion.**
+
+### 1. `/metrics` reported one uvicorn worker, not the pod
+
+`Dockerfile:55` runs `--workers 2`; `prometheus_client` counts per process. Twelve consecutive
+scrapes of `rulemind_decisions_total` on the running stack:
+
+    280781 280781 175310 175310 280781 175310 175310 280781 175310 280781 280781 280781
+
+A counter cannot decrease. `PROMETHEUS_MULTIPROC_DIR` fixes it and was already set in the Helm
+chart — but not in `docker-compose.yml`, so the deployment everyone runs first was the broken
+one. Five of the eight rules in `observability/alerts.yml` read these counters.
+`app/metrics_registry.py` predicted it in its own docstring. **Every Prometheus-derived number
+from before 2026-09-23 is void, including the soak's.**
+
+### 2. The alert that watches the alerting system could never fire
+
+`RuleMindPagingIsFailing` reads `alertmanager_notifications_failed_total`, and
+`observability/prometheus.yml` had **no scrape job for Alertmanager**. The `alerting:` block
+names `alertmanager:9093`, which looks like the two are wired together; it only says where to
+*send* alerts. The metric had no series, so the rule evaluated empty forever and rendered green —
+while this stack logged **440 real delivery failures** underneath it (a Colima DNS outage;
+alert-relay could not resolve ntfy.sh, Alertmanager retried 16× per cycle and gave up, every five
+minutes). `scripts/check_alert_metrics.py` is now a gate: every rule must query a metric
+something can produce.
+
+### 3. The ML feature was dead in every Linux deployment
+
+`MODEL_MEMORY_MB` defaulted to 512. Bisected inside the shipped image: 512 MB fails,
+**768 MB is the floor** for importing numpy + scipy + scikit-learn in a fresh worker. Model
+upload returned `422 Invalid model: failed to map segment from shared object`, and every `model`
+policy step failed. Verified live — 0 models could be uploaded before the fix, 10 after.
+
+Why ~5,000 tests could not see it: they all run on darwin, where `setrlimit(RLIMIT_AS)` is
+**refused outright**, `_model_worker_init` swallowed the `OSError` with a bare `pass`, and the
+cap was therefore never applied. *The mechanism under test does nothing on the only platform
+that tests it.*
+
+### 4. An unrecognised RBAC role granted OWNER
+
+`rbac.py` answered two questions with one default. Absent role → `owner` is correct (bootstrap
+keys). **Present but unrecognised → `owner` as well**, so a typo, a NULL column, or a role
+renamed in a future release granted full ownership. `test_rbac.py` contained a test named
+`test_unknown_role_defaults_to_owner` that pinned the fail-open as intended behaviour.
+
+### 5. Retention was advertised and never enforced
+
+`DECISION_ARCHIVE_SINK` gates the whole retention job, not just archiving, and defaults to
+`none` — so nothing was ever purged, while the settings screen showed *"Audit Retention Days:
+90"*. Measured here: **13.2 KB per decision row** (trace 6.1 KB, rule_results 2.5 KB,
+computed_variables 1.6 KB, scorecard_result 1.1 KB), 4,239 MB of 4,865 MB in TOAST. That is
+~13 GB/day at 1M decisions/day, unbounded.
+
+The disk consequence was imminent, not theoretical: the Colima VM was at 83% with 4.8 GB free
+and the soak adds ~1.6 GB/day, so the "30-day" soak would have filled the disk and taken
+Postgres down around **day three** — the same silent death the previous one had. The compliance
+consequence is worse: a workspace that set a window believes data older than it is gone.
+
+### 6. Seven endpoints had no test, and the tripwire was structurally blind to them
+
+`test_tenant_isolation_matrix` counted a mutating route as covered when it matched a probed
+*prefix*, so every verb hanging off `/api/v1/policies/{id}` rode in free. Narrowing coverage to
+CRUD shapes surfaced **27 sub-routes** at once. Writing the tests found `GET`/`DELETE .../shadow`
+answering 200 for another tenant's policy.
+
+### And the one that had to be watched rather than tested
+
+The dead man's switch **fired**, at 04:06:37Z on 2026-09-23: alertmanager stopped at 03:54:34Z,
+priority-5 `[ALERTING IS DOWN] no heartbeat` after 16 minutes of silence, `[RECOVERED]` at
+04:08:41Z once it came back. The first attempt at this test proved nothing, because the soak
+supervisor noticed the stack was incomplete 100 seconds in and repaired it — correctly. *You
+cannot test a dead man's switch while something is resurrecting what you killed.*
+
 ## Open
 
 ### ~~1. No CI has ever validated any of this~~ — CLOSED 2026-09-16
@@ -390,7 +467,31 @@ origin nobody can reconstruct gets "tuned" during the first incident by whoever 
 **Still to do:** re-derive from real production traffic after the first month. The table is a
 laptop, and a threshold calibrated against someone else's hardware is still a guess.
 
-### 4. Paging — wired end to end; only the destination URL is missing
+### ~~4. Paging — wired end to end; only the destination URL is missing~~ — CLOSED 2026-09-23
+
+The destination is configured (Grafana OnCall free tier, escalation chain `rulemind-heartbeat` →
+`tanmay_d21@iift.edu`), and — more to the point — **the switch has been watched firing**:
+
+| | |
+|---|---|
+| 03:54:34Z | alertmanager stopped; heartbeats stop at source |
+| 04:06:37Z | `[ALERTING IS DOWN] no heartbeat` — **priority 5**, on the on-call topic |
+| 04:08:41Z | `[RECOVERED] heartbeat is back` after alertmanager restarted |
+
+The original text below is kept because its reasoning is still right: a green tick on "the
+endpoint accepted a heartbeat" only proves it RECEIVES. Whether it ALERTS on silence is a
+different property and the only one that matters, and nobody had ever seen it happen.
+
+Two things the test itself taught, both worth keeping:
+
+* **The first attempt proved nothing.** The soak supervisor noticed the stack was incomplete 100
+  seconds after alertmanager stopped and repaired it, so heartbeats resumed well inside the
+  16-minute grace. You cannot test a dead man's switch while something is resurrecting what you
+  killed; the supervisor has to be paused for the duration.
+* **The monitor pages to ntfy and logs `PAGED:` locally** — the harness first grepped for the
+  wrong word and reported a silent switch that had in fact fired.
+
+
 
 **Alertmanager is deployed and receiving** (compose `observability` profile), with two inhibit
 rules so one outage pages once rather than five times. Proven under load: an alert fired and
