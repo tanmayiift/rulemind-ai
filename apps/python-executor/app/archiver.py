@@ -35,6 +35,7 @@ import json
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+import logging
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # ── Retention window ────────────────────────────────────────────────────────────────────────
@@ -170,6 +171,42 @@ class NullArchiver(DecisionArchiver):
 
     def write(self, decisions: List[Dict[str, Any]]) -> None:
         return None
+
+
+class DiscardArchiver(DecisionArchiver):
+    """Purge WITHOUT archiving: honour the retention window and keep no copy.
+
+    This sink exists because there was no way to say "delete after the window, I do not need an
+    OLAP copy". `archiving_enabled()` gates the whole retention job on a sink being configured,
+    and the only non-test sinks are ClickHouse and S3 -- so any deployment that did not want a
+    data warehouse retained every decision forever, while its settings screen displayed an
+    "Audit Retention Days" value that did nothing. Unbounded growth is the cheap half of that
+    problem; the expensive half is telling a customer their data ages out when it does not.
+
+    Deliberately NOT the default, and deliberately a separate name rather than making "none"
+    purge: "none" means "archiving is off" on every existing deployment, and changing what it
+    does would start deleting data on upgrade with no one having asked. An operator has to type
+    `DECISION_ARCHIVE_SINK=discard`, which is the point -- it is the one sink whose entire job is
+    to destroy data, so choosing it should be an explicit act.
+    """
+
+    name = "discard"
+
+    def write(self, decisions: List[Dict[str, Any]]) -> None:
+        return None
+
+    def available(self) -> Tuple[bool, str]:
+        """Always available -- it needs no client library, which is the other half of why it is
+        useful: every other real sink lazy-imports a package that is not in requirements.txt.
+
+        `available()` is the base-class hook (there is no `preflight`); a first draft of this
+        class overrode a method that does not exist, so the warning below would never have run.
+        """
+        logging.getLogger("rulemind.archiver").warning(
+            "DECISION_ARCHIVE_SINK=discard: decisions past each workspace's retention window "
+            "will be DELETED with no copy kept. This is irreversible and there is no archive to "
+            "restore from.")
+        return True, ""
 
 
 class MemoryArchiver(DecisionArchiver):
@@ -342,6 +379,7 @@ class S3Archiver(DecisionArchiver):
 
 _SINKS = {
     "none": NullArchiver,
+    "discard": DiscardArchiver,
     "memory": MemoryArchiver,
     "clickhouse": ClickHouseArchiver,
     "s3": S3Archiver,

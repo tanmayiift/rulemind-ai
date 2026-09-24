@@ -78,6 +78,11 @@ services:
       # process. See the connection-budget arithmetic in helm/rulemind/values.yaml.
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      # Gates the whole retention job, not just archiving: with `none` NOTHING is ever purged,
+      # while the settings screen shows "Audit Retention Days: 90". Declared here (default
+      # unchanged) so a deployment can turn retention on without editing this file --
+      # DECISION_ARCHIVE_SINK=discard purges with no copy kept. See .env.example.
+      DECISION_ARCHIVE_SINK: ${DECISION_ARCHIVE_SINK:-none}
       CORS_ORIGINS: ${RULEMIND_WEB_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       # Empty by default = tracing off. Set to http://otel-collector:4317 with the
       # observability profile to emit traces. Metrics are always on at /metrics.
@@ -132,6 +137,13 @@ services:
       REDIS_URL: redis://redis:6379/0
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      # The worker runs the scheduler, so this is the process that actually purges.
+      # Setting it only on `api` would leave retention off however it was configured.
+      # Gates the whole retention job, not just archiving: with `none` NOTHING is ever purged,
+      # while the settings screen shows "Audit Retention Days: 90". Declared here (default
+      # unchanged) so a deployment can turn retention on without editing this file --
+      # DECISION_ARCHIVE_SINK=discard purges with no copy kept. See .env.example.
+      DECISION_ARCHIVE_SINK: ${DECISION_ARCHIVE_SINK:-none}
     depends_on:
       db:
         condition: service_healthy
