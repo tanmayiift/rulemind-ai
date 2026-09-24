@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -225,3 +225,56 @@ def escalate_review(task_id: str, request: ReviewDecisionRequest) -> Dict[str, A
         raise HTTPException(status_code=404, detail="Review task not found.")
     updated = main.storage.update_review_task(task_id, {"status": "escalated", "reviewer_response": request.response, "reviewed_by": request.reviewer_id})
     return updated or task
+
+
+# ── Executions ────────────────────────────────────────────────────────────────────────────
+# NONE OF THIS EXISTED. A multi-step policy that pauses -- on a `review_gate`, or because an
+# SDK client resumes it at the edge -- writes a durable `workflow_executions` row, and the only
+# ways to reach one were `GET /sdk/v1/executions/{id}` and its resume twin: both need the id you
+# are trying to find. There was no list, no count, no screen. An execution that paused and was
+# never resumed was not merely un-resumed, it was INVISIBLE -- you could not have discovered it
+# existed. "Nothing ever resumes a paused execution" was not even an observable claim.
+
+
+@router.get("/api/v1/executions")
+def list_executions(request: Request,
+                    status: Optional[str] = None,
+                    policy_id: Optional[str] = None,
+                    paused_before: Optional[str] = None,
+                    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+                    offset: Annotated[int, Query(ge=0)] = 0) -> List[Dict[str, Any]]:
+    """Executions for this tenant, newest first.
+
+    `paused_before` (ISO-8601) is the operational query: "everything sitting paused since
+    before X". That is what an operator runs when the review queue is empty and work is still
+    stuck behind tasks that were deleted or expired.
+
+    The execution CONTEXT is omitted here on purpose -- it carries the full decision payload and
+    every computed variable, so 200 of them is megabytes of PII in a list view. Fetch one with
+    `GET /sdk/v1/executions/{id}`.
+    """
+    return main.storage.list_workflow_executions(
+        tenant_id=main.active_tenant_id(request), status=status, policy_id=policy_id,
+        paused_before=paused_before, limit=limit, offset=offset)
+
+
+@router.get("/api/v1/executions/stuck")
+def list_stuck_executions(request: Request,
+                          older_than_minutes: Annotated[int, Query(ge=1, le=100_000)] = 1440,
+                          limit: Annotated[int, Query(ge=1, le=1000)] = 200) -> Dict[str, Any]:
+    """Paused executions with NO open review task -- the genuinely orphaned ones.
+
+    A paused execution waiting on a human is not stuck, it is waiting; the review queue has its
+    own timeout job for those. What has no owner at all is an execution whose review task was
+    deleted, or which paused for a reason no queue tracks. Nothing resumes those, ever, and
+    until this endpoint nothing could even name them.
+
+    Read-only by design. The scheduler job that reports these does not expire them either --
+    see `sweep_stuck_executions`.
+    """
+    from ..scheduler import find_stuck_executions
+
+    # The same function the sweep calls -- see its docstring for why there is only one.
+    found = find_stuck_executions(main.storage, main.active_tenant_id(request),
+                                  older_than_minutes, limit=limit)
+    return {"older_than_minutes": older_than_minutes, **found}

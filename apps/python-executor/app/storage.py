@@ -583,6 +583,9 @@ class Storage:
         self._create_schema()
         self._reconcile_sqlite_columns()
         self.default_tenant_id: Optional[str] = None
+        # None = not yet counted. See _only_tenant: falling back to the first tenant is
+        # correct on a single-tenant install and a cross-tenant disclosure on any other.
+        self._single_tenant: Optional[bool] = None
         self.default_api_key: Optional[str] = None
         # Per-instance verified-API-key cache (see get_tenant_by_api_key). Keeping
         # it on the instance keeps it correct in prod (Storage is a singleton) and
@@ -624,11 +627,55 @@ class Storage:
         or one new field away from a cross-tenant write primitive, and the ordering should not be
         the thing standing between those. Internal callers that carry the tenant inside the
         payload (batch import, WAL replay) still work -- they simply no longer outrank auth.
+
+        THE LAST LINK USED TO BE `default_tenant_id` UNCONDITIONALLY -- the FIRST tenant in the
+        table. Any path that lost the contextvar (a background thread, a ThreadPoolExecutor
+        worker, an `asyncio.run` outside a request, a route that forgot to pass one) resolved to
+        somebody else's data and read OR WROTE it, silently. `routers/insights.py` documents
+        that exact disclosure mode and five of its own routes fell through it;
+        `main.active_tenant_id` was made fail-closed for the same reason and this, the layer
+        underneath it, was not.
+
+        It cannot simply raise: the fallback is genuinely correct for the single-tenant case,
+        and removing it would break seeding, the scheduler, WAL replay and every dev install.
+        So the condition is the honest one -- the fallback is right when there is exactly ONE
+        tenant, and is a cross-tenant disclosure the moment there are two. `_only_tenant()`
+        answers that, so a single-tenant deployment is untouched and a multi-tenant one fails
+        loudly at the point of the bug instead of quietly serving the wrong rows.
         """
-        resolved = tenant_id or get_current_tenant_id() or payload_tenant or self.default_tenant_id
-        if not resolved:
-            raise ValueError("Tenant context is required.")
-        return resolved
+        resolved = tenant_id or get_current_tenant_id() or payload_tenant
+        if resolved:
+            return resolved
+        resolved = self._only_tenant()
+        if resolved:
+            return resolved
+        raise ValueError(
+            "Tenant context is required. No tenant was passed, none is set on the request "
+            "context, and this deployment has more than one tenant -- so falling back to the "
+            "first one would read or write another customer's data. Pass tenant_id explicitly.")
+
+    def _only_tenant(self) -> Optional[str]:
+        """`default_tenant_id`, but ONLY while this install has a single tenant.
+
+        Cached, because this is reached on every fallback and a COUNT per call would sit on a
+        hot path. The cache is one-way by construction: once the install is multi-tenant the
+        answer cannot go back to "safe to fall back" without a tenant being deleted, so
+        `create_tenant` invalidates it by simply clearing the flag rather than recounting.
+
+        A failed count returns the old behaviour rather than raising: this runs inside the
+        resolution of some other operation, and turning a transient database error into a
+        tenant-context error would misattribute it.
+        """
+        if self._single_tenant is False:
+            return None
+        if self._single_tenant is None:
+            try:
+                with self.connect() as session:
+                    count = session.scalar(select(func.count()).select_from(Tenant)) or 0
+            except Exception:  # pragma: no cover - defensive
+                return self.default_tenant_id
+            self._single_tenant = count <= 1
+        return self.default_tenant_id if self._single_tenant else None
 
     def _seed_default_tenant(self, session: Session) -> Tenant:
         # env.env_str: a blank RULEMIND_DEV_API_KEY would seed a tenant whose API key is the
@@ -3092,6 +3139,10 @@ class Storage:
             ]
 
     def create_tenant(self, name: str, plan: str = "standard", config: Optional[Dict[str, Any]] = None, is_active: bool = True) -> Dict[str, Any]:
+        # The install stops being single-tenant here, so the fallback in _tenant_id stops being
+        # safe here. Cleared rather than recounted: _only_tenant re-derives it on next use, and
+        # a count at this point would race a concurrent create.
+        self._single_tenant = None
         with self.connect() as session:
             tenant = Tenant(name=name, plan=plan, config=copy.deepcopy(config or {}), is_active=is_active)
             session.add(tenant)
@@ -3954,6 +4005,57 @@ class Storage:
             if not model or model.tenant_id != resolved:
                 return None
             return self._workflow_execution_to_dict(model)
+
+    def list_workflow_executions(self, tenant_id: Optional[str] = None, status: Optional[str] = None,
+                                 policy_id: Optional[str] = None, paused_before: Optional[Any] = None,
+                                 limit: int = 200, offset: int = 0,
+                                 include_context: bool = False) -> List[Dict[str, Any]]:
+        """Executions, newest first. THIS DID NOT EXIST.
+
+        A multi-step policy that pauses -- on a `review_gate`, or because an SDK client is
+        resuming it at the edge -- writes a durable `workflow_executions` row. The only ways to
+        reach one were `GET /sdk/v1/executions/{id}` and its resume twin, both of which need the
+        id you are trying to find. There was no way to ENUMERATE them, so an execution that
+        paused and was never resumed was invisible: not in a list, not in a count, not in any
+        screen. "Nothing ever resumes it" was not even observable.
+
+        `paused_before` is the one that matters operationally -- "show me everything that has
+        been sitting paused since before X" is the query an operator runs when a review queue
+        has been drained and executions are still stuck behind deleted tasks.
+
+        `include_context` is off by default: the context carries the full payload and every
+        computed variable, so a list of 200 of them is megabytes and contains PII. A list view
+        does not need it; `get_workflow_execution` is there for the one you picked.
+        """
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            query = select(WorkflowExecution).where(WorkflowExecution.tenant_id == resolved)
+            if status:
+                query = query.where(WorkflowExecution.status == status)
+            if policy_id:
+                query = query.where(WorkflowExecution.policy_id == policy_id)
+            cutoff = _as_datetime(paused_before)
+            if cutoff is not None:
+                query = query.where(WorkflowExecution.paused_at.is_not(None),
+                                    WorkflowExecution.paused_at < cutoff)
+            query = (query.order_by(desc(WorkflowExecution.started_at))
+                     .limit(max(1, min(limit, 1000))).offset(max(0, offset)))
+            rows = session.scalars(query).all()
+            items = [self._workflow_execution_to_dict(row) for row in rows]
+        if not include_context:
+            for item in items:
+                item.pop("context", None)
+        return items
+
+    def count_workflow_executions(self, tenant_id: Optional[str] = None,
+                                  status: Optional[str] = None) -> int:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            query = select(func.count()).select_from(WorkflowExecution).where(
+                WorkflowExecution.tenant_id == resolved)
+            if status:
+                query = query.where(WorkflowExecution.status == status)
+            return int(session.scalar(query) or 0)
 
     @staticmethod
     def _workflow_execution_to_dict(model: WorkflowExecution) -> Dict[str, Any]:

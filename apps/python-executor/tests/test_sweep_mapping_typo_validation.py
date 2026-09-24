@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,6 +30,9 @@ os.environ.setdefault("RULEMIND_CONFIG_KEY", "rulemind-test-key")
 from fastapi import HTTPException  # noqa: E402
 
 import app.main as app_main  # noqa: E402
+from app.context import reset_current_tenant_id, set_current_tenant_id  # noqa: E402
+from app.storage import Storage  # noqa: E402
+from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
 def _transform(mapping):
@@ -36,6 +40,29 @@ def _transform(mapping):
 
 
 class MappingTypoValidationTests(unittest.TestCase):
+    """Isolated storage and an explicit tenant context.
+
+    This file used to have no setUp at all: it called `validate_policy_steps` as a plain
+    function against whatever `app_main.storage` the previous test module happened to leave
+    behind. That worked only because `Storage._tenant_id` fell back to the FIRST tenant in the
+    table when nothing else resolved -- so on a shared storage with several tenants it read
+    someone else's rules and did not care, which is the disclosure that fallback was closed for.
+    Closing it turned a silent dependency on global state into 7 loud errors, which is the
+    right outcome and is why the fix was worth making.
+
+    Same pattern as test_enterprise: these tests call route handlers as plain Python functions,
+    so the tenant middleware never runs; setUp establishes the context the middleware would
+    have set.
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tempdir.cleanup)
+        preserve_storage_global(self)
+        app_main.storage = Storage(path=os.path.join(self.tempdir.name, "typo.db"))
+        token = set_current_tenant_id(app_main.storage.default_tenant_id)
+        self.addCleanup(reset_current_tenant_id, token)
+
     def _validate(self, step):
         app_main.validate_policy_steps([step, {"type": "outcome", "ref_id": "approve"}])
 

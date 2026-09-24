@@ -68,6 +68,94 @@ async def _scheduled_review_timeouts(storage: Storage) -> None:
     await check_review_timeouts(storage)
 
 
+def find_stuck_executions(storage: Storage, tenant_id: str, older_than_minutes: int,
+                          limit: int = 1000) -> Dict[str, Any]:
+    """Paused executions older than the threshold with NO open review task.
+
+    ONE implementation, called by both the sweep below and `GET /api/v1/executions/stuck`.
+    There were two copies of this filter, and a mutation that broke the sweep's copy -- making
+    it count executions still awaiting review -- passed the whole suite, because the only test of
+    that rule went through the endpoint and exercised the OTHER copy. Two implementations of
+    "what counts as stuck" is the same drift this codebase keeps fixing between its two decision
+    paths, one level down.
+    """
+    cutoff = datetime.utcnow() - timedelta(minutes=older_than_minutes)
+    paused = storage.list_workflow_executions(
+        tenant_id=tenant_id, status="paused", paused_before=cutoff, limit=limit)
+    open_ids = {
+        task.get("execution_id")
+        for task in storage.list_review_tasks(tenant_id=tenant_id)
+        if task.get("status") in ("pending", "escalated")
+    }
+    stuck = [item for item in paused if item["id"] not in open_ids]
+    return {"paused": len(paused), "awaiting_review": len(paused) - len(stuck), "stuck": stuck}
+
+
+def sweep_stuck_executions(storage: Storage) -> Dict[str, Any]:
+    """Find paused executions that nothing will ever resume, and SAY SO.
+
+    A multi-step policy that pauses writes a durable `workflow_executions` row. If the thing
+    that was going to resume it goes away -- the review task deleted, the queue drained by an
+    operator, an SDK client that never came back -- the row sits paused forever. Nothing swept
+    it, nothing expired it, and until `GET /api/v1/executions` there was no way to enumerate
+    executions at all, so it was not merely un-resumed, it was undiscoverable.
+
+    WHAT THIS DOES NOT DO IS THE DESIGN. It does not expire, cancel or mutate anything. A
+    paused execution holds a real decision in flight -- a customer's application, mid-underwrite
+    -- and a sweeper that guessed wrong about "orphaned" would abandon a live case. So the
+    default is to REPORT: one error event per tenant naming the count and the oldest, which
+    surfaces in /api/v1/audit/errors and on the audit screen, plus the returned summary for the
+    caller.
+
+    Set `EXECUTION_SWEEP_EXPIRE=1` to have it mark them `expired` as well. Off by default for
+    the same reason `DECISION_ARCHIVE_SINK` defaults to `none`: a destructive default would
+    silently change what an upgrade does to data already in the table.
+
+    "Stuck" excludes anything with an OPEN review task. Those are not stuck, they are waiting,
+    and `check_review_timeouts` already owns them -- double-reporting would make this noise, and
+    a sweeper nobody reads is the same as no sweeper.
+    """
+    threshold_minutes = env.env_int("EXECUTION_SWEEP_AFTER_MINUTES", 1440)
+    expire = env.env_bool("EXECUTION_SWEEP_EXPIRE", False)
+    summary: Dict[str, Any] = {"threshold_minutes": threshold_minutes, "expired": expire,
+                               "tenants": {}}
+    for tenant in storage.list_tenants():
+        tenant_id = tenant.get("id")
+        if not tenant_id:
+            continue
+        try:
+            stuck = find_stuck_executions(storage, tenant_id, threshold_minutes)["stuck"]
+            if not stuck:
+                continue
+            oldest = min((item.get("paused_at") or "") for item in stuck)
+            summary["tenants"][tenant_id] = {"stuck": len(stuck), "oldest_paused_at": oldest}
+            storage.add_error_event({
+                "scope": "executions",
+                "stage": "sweep",
+                "entity_type": "workflow_execution",
+                "entity_id": stuck[0]["id"],
+                "message": ("{0} execution(s) have been paused for more than {1} minutes with no "
+                            "open review task. Nothing will resume them. Oldest paused at {2}."
+                            ).format(len(stuck), threshold_minutes, oldest),
+                "details": {"count": len(stuck),
+                            "execution_ids": [item["id"] for item in stuck[:25]]},
+            }, tenant_id=tenant_id)
+            if expire:
+                for item in stuck:
+                    storage.update_workflow_execution(
+                        item["id"], {"status": "expired", "completed_at": datetime.utcnow()},
+                        tenant_id=tenant_id)
+        except Exception as exc:  # one tenant's failure must not stop the sweep
+            logger.warning("execution sweep failed for tenant %s: %s", tenant_id, exc)
+    return summary
+
+
+async def _scheduled_sweep_stuck_executions(storage: Storage) -> None:
+    if not _IS_LEADER:
+        return
+    sweep_stuck_executions(storage)
+
+
 def archive_old_decisions(storage: Storage) -> Dict[str, Any]:
     """Per tenant, archive decisions older than its retention window to the configured OLAP sink
     and purge them from the hot DB. No-op unless a sink is configured (DECISION_ARCHIVE_SINK).
@@ -571,6 +659,13 @@ def init_scheduler(storage: Storage) -> None:
             args=[storage, report["id"], report.get("tenant_id", "")], replace_existing=True,
         )
     scheduler.add_job(_scheduled_review_timeouts, "interval", minutes=5, id="review-timeouts", args=[storage], replace_existing=True)
+    # Paused executions that nothing will resume. Leader-gated like every other sweep: N
+    # replicas each filing the same error event would turn the signal into noise. Hourly,
+    # because the threshold it reports against is a day by default -- checking more often
+    # cannot find anything sooner.
+    scheduler.add_job(_scheduled_sweep_stuck_executions, "interval",
+                      minutes=env.env_int("EXECUTION_SWEEP_INTERVAL_MINUTES", 60),
+                      id="execution-sweep", args=[storage], replace_existing=True)
     scheduler.add_job(retry_outbox, "interval", seconds=env.env_int("OUTBOX_RETRY_SECONDS", 60),
                       id="email-outbox-retry", args=[storage], replace_existing=True)
     # The decision outbox relay (parity P09). LEADER-GATED, and that is not optional: Kafka

@@ -589,6 +589,20 @@ class ReviewDecisionRequest(BaseModel):
     response: Dict[str, Any] = Field(default_factory=dict)
 
 
+# ── The current tenant's catalog ───────────────────────────────────────────────────────────
+# These five resolve the tenant through `Storage._tenant_id`, i.e. from the contextvar the
+# middleware sets. That is correct on a request and WRONG anywhere else, and until 2026-09-24
+# "anywhere else" silently meant the first tenant in the table. The fallback is now conditioned
+# on the install having exactly one tenant, so a caller outside a request context gets a loud
+# error instead of another customer's rules -- which is how `test_sweep_mapping_typo_validation`
+# turned out to have had no setUp at all, calling `validate_policy_steps` against whatever
+# storage the previous test module left behind.
+#
+# They are deliberately NOT given a tenant_id parameter: adding one would invite call sites to
+# pass a tenant they got from somewhere other than auth, which is the precedence bug
+# `_tenant_id`'s own docstring records. Call these from a request, or set the context first.
+
+
 def current_connectors() -> Dict[str, Dict[str, Any]]:
     return {item["id"]: item for item in storage.list_connectors()}
 

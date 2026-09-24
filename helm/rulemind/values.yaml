@@ -335,6 +335,14 @@ config:
   # REDIS_HEALTH_CHECK_INTERVAL: ""
   # REDIS_RETRY_AFTER_SECONDS: "30.0"
 
+  # ── Stuck-execution sweep ────────────────────────────────────────────────────────────────
+  # Paused executions that nothing will resume. Reports (an error event naming the count and
+  # the oldest); does NOT expire unless you ask, because a paused execution holds a real
+  # decision in flight and abandoning a live case is worse than leaving a stale row.
+  # EXECUTION_SWEEP_AFTER_MINUTES: "1440"
+  # EXECUTION_SWEEP_INTERVAL_MINUTES: "60"
+  # EXECUTION_SWEEP_EXPIRE: "0"     # "1" also marks them expired
+
   # ── Background scheduler ─────────────────────────────────────────────────────────────────
   # Leader-elected by a Postgres advisory lease, so these apply cluster-wide, not per pod.
   # RULEMIND_RUN_API_SCHEDULER: ""     # "1" runs the scheduler in the API pod instead of worker

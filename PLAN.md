@@ -1732,6 +1732,80 @@ calls it.
   routers actually raise has a name in the vocabulary, so a new status cannot silently degrade
   to the generic `"error"`.
 
+- [x] **R10.19 THE TENANT FALLBACK NO LONGER SERVES THE FIRST TENANT'S DATA TO WHOEVER ASKS.**
+  `Storage._tenant_id` resolved `tenant_id or contextvar or payload_tenant or
+  default_tenant_id` — and that last link is **the first tenant in the table**. Any path that
+  lost the contextvar — a background thread, a `ThreadPoolExecutor` worker, an `asyncio.run`
+  outside a request, a route that forgot to pass one — resolved to somebody else's data and
+  read **or wrote** it, silently. `routers/insights.py` carries a comment documenting exactly
+  this disclosure mode, and five of its own routes fell through it (R10.4).
+  `main.active_tenant_id` was made fail-closed for the same reason; the layer underneath it
+  was not.
+
+  **It cannot simply raise**, which is why this sat open: the fallback is genuinely correct for
+  a single-tenant install, and removing it breaks seeding, the scheduler, WAL replay and every
+  dev box. So the condition is the honest one — the fallback is right when there is exactly
+  **one** tenant and is a cross-tenant disclosure the moment there are two. `_only_tenant()`
+  answers that, cached one-way (an install cannot go back to single-tenant without a deletion,
+  so only `create_tenant` invalidates), and a failed count returns the old behaviour rather
+  than turning a transient DB error into a tenant-context error.
+
+  Single-tenant deployments are untouched. Multi-tenant ones now fail loudly at the point of
+  the bug instead of quietly returning the wrong customer's rows.
+
+  The test that pinned the old behaviour was written with the door open — *"if this is now an
+  error, that is an improvement and this test should assert the raise"*. It did, and it does.
+  Three tests now: the refusal, the single-tenant path still working, and that creating a
+  tenant closes the fallback **immediately** (a stale cache after the second tenant is created
+  is the original bug with an extra step). Two mutations, each failing named tests.
+
+  **And it immediately found a real one.** The full suite came back with 7 errors in
+  `test_sweep_mapping_typo_validation`, a file with **no setUp at all** — it called
+  `validate_policy_steps` as a plain function against whatever `app_main.storage` the previous
+  test module happened to leave behind, and `main.current_rule_map()` calls `list_rules()` with
+  no tenant. It passed only because the fallback quietly picked the first tenant of a shared,
+  multi-tenant storage. Closing the fallback turned a silent dependency on global state into
+  seven loud errors, which is the whole argument for the change. Fixed with the file's own
+  house pattern (isolated storage + the contextvar the middleware would have set), not by
+  weakening the guard.
+
+  This is the *minimum* from plan item 5.5, not the structural fix. Postgres row-level security
+  is still the right answer for 613 hand-written tenant predicates, and it is a schema change.
+
+- [x] **R10.20 A PAUSED EXECUTION THAT NOTHING RESUMES WAS UNDISCOVERABLE.** A multi-step policy
+  that pauses — on a `review_gate`, or for an SDK client resuming at the edge — writes a durable
+  `workflow_executions` row. The only ways to reach one were `GET /sdk/v1/executions/{id}` and
+  its resume twin, **both of which need the id you are trying to find**. There was no list, no
+  count, no screen and no sweeper. So an execution that paused and was never resumed was not
+  merely un-resumed, it could not be discovered at all — "nothing ever resumes it" was not even
+  an observable claim.
+
+  Added `GET /api/v1/executions` (filter by status / policy / `paused_before`, tenant-scoped,
+  **context omitted** because it carries the whole payload and every computed variable — 200 of
+  them is megabytes of PII in a list view), `GET /api/v1/executions/stuck`, and a leader-gated
+  hourly sweep that files an error event naming the count and the oldest, so they appear in
+  `/api/v1/audit/errors`.
+
+  Two design calls, both tested. **"Stuck" excludes anything with an open review task** — those
+  are waiting, not stuck, and `check_review_timeouts` already owns them; counting them would make
+  the signal noise. **The sweep reports and does not expire**: a paused execution is a customer's
+  application mid-underwrite, and a sweeper that guessed wrong about "orphaned" would abandon a
+  live case. `EXECUTION_SWEEP_EXPIRE=1` opts in; off by default for the same reason
+  `DECISION_ARCHIVE_SINK` defaults to `none`. The three new settings were caught by
+  `check_config_surface.py` the moment they were added and documented in `.env.example` and
+  `values.yaml` — the gate doing its job on its first real use.
+
+  **A mutation survived, and it found a duplicate.** The sweep and the `/stuck` endpoint each
+  had their own copy of the awaiting-review filter. Breaking the sweep's copy passed the whole
+  suite, because the only test of that rule went through the endpoint and exercised the *other*
+  copy. Collapsed into one `find_stuck_executions()`, plus a sweep-side test and a source check
+  that the filter is not re-copied. Re-run: all three mutations now fail named tests (expiry on
+  by default; the list leaking context; the shared filter counting awaiting executions — 2
+  tests, one per caller).
+
+  No Temporal, per the plan: this is built on the DB-lease leader election and error-event
+  machinery already in the repo, and adds no cluster dependency to a self-hosted product.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

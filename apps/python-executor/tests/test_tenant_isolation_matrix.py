@@ -225,6 +225,10 @@ EXEMPT = {
                "by a POST; isolation for them is covered where that gate is exercised",
     "evaluations": "POST /evaluations RUNS an evaluation against an uploaded model and rejects "
                    "an empty dataset, so it cannot be created as an inert fixture here",
+    "executions": "workflow executions are created by the executor PAUSING, not by a POST, so "
+                  "there is no create route to build a fixture through. Cross-tenant isolation of "
+                  "GET /api/v1/executions is asserted directly in test_stuck_executions."
+                  "test_the_list_is_tenant_scoped, against a real second tenant's API key",
 }
 
 

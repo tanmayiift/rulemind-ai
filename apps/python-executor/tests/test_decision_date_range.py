@@ -138,21 +138,58 @@ class AuditReadsAreTenantScopedTest(unittest.TestCase):
         res = self.client.get("/api/v1/audit/errors", headers=self.headers_b)
         self.assertEqual(res.status_code, 200, res.text)
 
-    def test_storage_falls_back_to_the_first_tenant(self):
-        """The hazard itself, pinned. With no argument and no contextvar, storage resolves to
-        `default_tenant_id` -- the FIRST tenant -- and returns its rows rather than raising.
-        That is why the routes must pass a tenant explicitly, and why this is a comment in
-        insights.py rather than a schema guarantee. Stage 5.5 is the structural answer (RLS)."""
+    def test_storage_REFUSES_to_fall_back_on_a_multi_tenant_install(self):
+        """The hazard, now closed. With no argument and no contextvar, storage used to resolve
+        to `default_tenant_id` -- the FIRST tenant -- and return its rows. Any path that lost
+        the contextvar (a background thread, a pool worker, an `asyncio.run` outside a request,
+        a route that forgot to pass one) read or WROTE another customer's data in silence.
+
+        The fallback is correct for a single-tenant install and only that, so it is now
+        conditioned on exactly that. This fixture creates a second tenant in setUp, so the
+        fallback must refuse.
+
+        (This test used to assert the OLD behaviour, with a message saying that if it ever
+        became an error that was an improvement and the test should assert the raise. It did,
+        and it does.)"""
         from app import context
 
         token = context.set_current_tenant_id(None)
         try:
-            rows = app_main.storage.list_decisions()
+            with self.assertRaises(ValueError) as caught:
+                app_main.storage.list_decisions()
         finally:
             context.reset_current_tenant_id(token)
-        self.assertIn("belongs-to-a", [r["id"] for r in rows],
-                      "storage no longer falls back to the first tenant -- if this is now an "
-                      "error, that is an improvement and this test should assert the raise")
+        self.assertIn("more than one tenant", str(caught.exception))
+
+    def test_a_single_tenant_install_still_falls_back(self):
+        """The other half, and the reason this is conditional rather than a flat refusal.
+        Seeding, the scheduler, WAL replay and every dev install resolve the tenant this way; a
+        blanket raise would break all of them to fix a multi-tenant bug they do not have."""
+        from app import context
+        from app.storage import Storage
+
+        solo = Storage(path=os.path.join(self.tempdir.name, "solo.db"))
+        token = context.set_current_tenant_id(None)
+        try:
+            self.assertEqual(solo._tenant_id(), solo.default_tenant_id)
+        finally:
+            context.reset_current_tenant_id(token)
+
+    def test_creating_a_tenant_closes_the_fallback_immediately(self):
+        """The cache must not outlive the condition it caches. A stale "still single-tenant"
+        after the second tenant is created is the original bug with an extra step."""
+        from app import context
+        from app.storage import Storage
+
+        solo = Storage(path=os.path.join(self.tempdir.name, "grows.db"))
+        token = context.set_current_tenant_id(None)
+        try:
+            self.assertEqual(solo._tenant_id(), solo.default_tenant_id)   # warms the cache
+            solo.create_tenant("Second Co")
+            with self.assertRaises(ValueError):
+                solo._tenant_id()
+        finally:
+            context.reset_current_tenant_id(token)
 
     def test_every_insights_route_passes_a_tenant_explicitly(self):
         """Source-level, because the HTTP tests above cannot discriminate (see the class

@@ -8290,6 +8290,170 @@
         "summary": "List Excel Functions"
       }
     },
+    "/api/v1/executions": {
+      "get": {
+        "description": "Executions for this tenant, newest first.\n\n`paused_before` (ISO-8601) is the operational query: \"everything sitting paused since\nbefore X\". That is what an operator runs when the review queue is empty and work is still\nstuck behind tasks that were deleted or expired.\n\nThe execution CONTEXT is omitted here on purpose -- it carries the full decision payload and\nevery computed variable, so 200 of them is megabytes of PII in a list view. Fetch one with\n`GET /sdk/v1/executions/{id}`.",
+        "operationId": "list_executions_api_v1_executions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "policy_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Policy Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "paused_before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Paused Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Executions Api V1 Executions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Executions"
+      }
+    },
+    "/api/v1/executions/stuck": {
+      "get": {
+        "description": "Paused executions with NO open review task -- the genuinely orphaned ones.\n\nA paused execution waiting on a human is not stuck, it is waiting; the review queue has its\nown timeout job for those. What has no owner at all is an execution whose review task was\ndeleted, or which paused for a reason no queue tracks. Nothing resumes those, ever, and\nuntil this endpoint nothing could even name them.\n\nRead-only by design. The scheduler job that reports these does not expire them either --\nsee `sweep_stuck_executions`.",
+        "operationId": "list_stuck_executions_api_v1_executions_stuck_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "older_than_minutes",
+            "required": false,
+            "schema": {
+              "default": 1440,
+              "maximum": 100000,
+              "minimum": 1,
+              "title": "Older Than Minutes",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Stuck Executions Api V1 Executions Stuck Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Stuck Executions"
+      }
+    },
     "/api/v1/executions/{execution_id}": {
       "get": {
         "operationId": "get_execution_detail_api_v1_executions__execution_id__get",
