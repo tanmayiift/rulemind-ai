@@ -1570,6 +1570,53 @@ calls it.
   with no single contributor above 1%. There is no large win hiding in it, which is itself a
   finding: the remaining levers are the four above.
 
+- [x] **R10.14 THE VARIABLE PROTOCOL — TWO HYPOTHESES MEASURED WRONG, ONE SCOPED.** Plan item
+  4.4 listed three ways to attack the 30–36% spent waiting on sandbox round trips, "cheapest
+  first". Two were built, measured and **reverted**. Writing that down because a negative
+  result nobody records gets re-attempted. Full detail in `docs/PERFORMANCE.md`.
+
+  **1. "Send only what the callee declares it reads" — the O(n²) pickling. Worth ~5% of one
+  round trip.** A trip costs **0.130 ms with an empty values map, 0.136 ms carrying 55 values,
+  0.133 ms carrying 55 × 200-character strings**. The plan called this "the 37%"; it is
+  0.006 ms. The cost is the trip, not the payload.
+
+  **2. Dispatch independent variables concurrently. Built, measured, REVERTED — slower.** The
+  premise held: a variable can be reordered only if it never reads the accumulated map, which
+  is statically decidable, and **55 of 55 seeded variables are independent** — the loop was
+  keeping one of `SANDBOX_POOL_SIZE` workers busy for no reason. But end to end it went
+  **15.5 → 18.3 ms**, and isolated: 55 sequential **6.97 ms**, waves of 4 with a thread pool
+  per wave **8.28 ms**, waves of 4 with a shared thread pool **5.90 ms**. A shared pool is
+  **15% better, not 4×**. `ProcessPoolExecutor` serialises every submit and every result
+  through one queue and one management thread, and the per-variable work is 0.3 µs — the
+  bottleneck is the queue, not the workers. Concurrency in front of a serial queue buys only
+  overlap of the pickling.
+
+  Reverted rather than kept at 15%, because it was a net regression as written and the honest
+  version (one shared thread pool, held across decisions) trades a real 15% for threads fanning
+  out over the untrusted-code path. Not a trade to make at the tail of a session, and not one
+  worth making at all once hypothesis 3 is on the table.
+
+  **3. One round trip for the whole group, executed inside the worker.** The only design that
+  attacks the actual cost: by parts, ~0.13 ms for the trip plus 55 × ~3 µs in-worker with
+  compilation already cached ≈ **0.35 ms against 6.97 ms — ~6.6 ms off a 15.5 ms decision,
+  ~40%**. Estimated by parts and **explicitly not measured end to end**, because measuring it
+  means building it.
+
+  Not built, and the constraint list is why — each is a guarantee the per-call design gets for
+  free: per-variable timeout with pool recycle (one trip means one deadline; restoring
+  granularity needs `signal.setitimer` inside the worker, which is new security-boundary code);
+  error isolation across the group; budget abandonment, which requires pool-sized waves rather
+  than one dispatch (the first attempt sent the whole catalog at once and the budget suite went
+  from 504 to 200 — the tests were right); and fail-closed on a broken pool per item.
+
+  **Two process notes worth more than the result.** The first end-to-end comparison of
+  hypothesis 2 was a single sample per side and said the cache in R10.12 was *slower*; repeats
+  said the opposite. And the first *design* for hypothesis 2 replaced `execute_variable` with a
+  new batch primitive in `sandbox.py`, which would have re-implemented the timeout, the pool
+  recycle and the fallback with group semantics — 13 test call sites patch that function
+  precisely because it is the seam those guarantees live on. Fanning out the existing call
+  instead kept every guarantee and made the revert a one-line `git checkout`.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.
