@@ -70,6 +70,13 @@ CONFIG_KEY="$(openssl rand -hex 32)"
 ADMIN_JWT="$(openssl rand -hex 32)"
 ADMIN_PW="$(openssl rand -hex 24)"
 DEV_API_KEY="rm_live_$(openssl rand -hex 16)"
+# The bundle signing key. It appeared in NO chart, manifest or compose file, so every install
+# ran on a per-PROCESS key generated at boot: at replicaCount.api > 1 an SDK fetching
+# /sdk/v1/signing-key from one pod and /sdk/v1/bundle from another fails verification, and the
+# SDK refuses a bundle it cannot verify. Generated here for the same reason as the four above
+# -- values-kind.yaml sets rulemindEnv=production, and the startup check now refuses an
+# ephemeral key there. Exercising that check beats tiptoeing around it.
+SIGNING_KEY="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
 helm upgrade --install "$RELEASE" helm/rulemind \
   -n "$NS" \
   -f helm/rulemind/values-kind.yaml \
@@ -77,6 +84,7 @@ helm upgrade --install "$RELEASE" helm/rulemind \
   --set-string env.adminJwtSecret="$ADMIN_JWT" \
   --set-string env.adminPassword="$ADMIN_PW" \
   --set-string env.devApiKey="$DEV_API_KEY" \
+  --set-string secretConfig.RULEMIND_SIGNING_PRIVATE_KEY="$SIGNING_KEY" \
   --wait --timeout 8m >/dev/null || {
     printf '\n  helm install failed — recent events:\n'
     kubectl -n "$NS" get pods
