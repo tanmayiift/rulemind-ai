@@ -14,6 +14,52 @@ readiness — the database, Redis and the sandbox pool are all usable. A contain
 and not ready, and that distinction is what stops Kubernetes restart-looping a pod whose only
 problem is that Postgres is briefly gone.
 
+
+---
+
+## The database volume is filling
+
+Not an alert — there is no rule for this, which is itself the finding. It arrives as a Postgres
+crash (`could not extend file ...: No space left on device`), and by then your options have
+narrowed.
+
+**A decision costs ~13 KB** (`docs/PERFORMANCE.md` has the per-column breakdown). So the arithmetic
+is simple and worth doing before you need it: 100k decisions/day is 1.3 GB/day, 1M is 13 GB/day.
+
+**First: is retention actually running?** `DECISION_ARCHIVE_SINK` gates the whole purge job, not
+just archiving, and it defaults to `none` — so the settings screen can show "Audit Retention
+Days: 90" while nothing is ever deleted. The scheduled job logs
+`RETENTION IS ADVERTISED BUT NOT ENFORCED` once per run when that is the case. Set a sink
+(`discard` purges with no copy kept; `clickhouse` / `s3` archive first) and the window becomes
+real.
+
+**Second, and this is the trap: purging does not give the disk back.** A Postgres `DELETE` marks
+rows dead; autovacuum makes the space reusable *by Postgres* and returns nothing to the
+filesystem. The table stops growing, which is what you want going forward, and the volume stays
+the same size.
+
+**`VACUUM FULL` is not the escape hatch it looks like.** It rewrites the table into new files, so
+it needs free space roughly equal to the table you are trying to shrink — which you do not have,
+because that is why you are reading this. Measured here: a 4.9 GB `decisions` table on a volume
+with 4.8 GB free. The same applies to `pg_dump`-based backup verification, which restores into a
+scratch database and therefore wants a second copy:
+
+    pg_restore: error: COPY failed for table "decisions": ERROR: could not extend file
+                ...: No space left on device
+
+So, in order of preference:
+
+1. **Grow the volume.** On Colima: `colima stop && colima start --disk <bigger>`. On a cloud
+   provider, expand the disk. This is almost always the right answer and the fastest.
+2. **`pg_repack`** rebuilds a table online and needs far less headroom than `VACUUM FULL`. Not
+   shipped in the API image; run it from a maintenance pod.
+3. **Delete oldest-first in batches, then let autovacuum settle**, and accept that the volume
+   stays large until (1) or (2).
+
+**Prevention:** size the volume for your retention window using the 13 KB figure, set a sink so
+the window is enforced, and alert on volume utilisation. Nothing in `observability/alerts.yml`
+watches database size today.
+
 ---
 
 ## The API is down
