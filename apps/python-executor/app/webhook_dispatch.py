@@ -28,7 +28,9 @@ DESIGN NOTES
   range-check, pin to the vetted IP, and never follow a redirect (a 3xx would connect to a host
   that never passed `vet_url`).
 
-* Delivery is BEST EFFORT FOR THE DECISION and durable for the event. A webhook that is slow or
+* Delivery is BEST EFFORT FOR THE DECISION and durable for the event. (This bullet was written
+  before it was true: until 2026-09-24 "durable" meant a daemon thread and last-known state.
+  It is now the `webhook_deliveries` table + a scheduler drain -- see "emission" below.) A webhook that is slow or
   down must never change or delay a decision -- so nothing here is awaited on the decision path;
   failures are recorded, retried by the scheduler, and dead-lettered after a bound. That is the
   opposite of `connector_fetch`, which fails a decision CLOSED, and the difference is the
@@ -40,8 +42,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 import threading
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -222,46 +224,162 @@ async def deliver(subscription: Dict[str, Any], event: Dict[str, Any],
     return {"delivered": False, "error": last_error, "status": status, "attempts": retries + 1}
 
 
-# ── emission ───────────────────────────────────────────────────────────────
-# FIRE AND FORGET, ON A THREAD, and both halves are deliberate.
+# ── emission: durable, then prompt ─────────────────────────────────────────
+# WRITE FIRST, DELIVER AFTER. This used to start one daemon thread per event per subscription,
+# retry inside that thread, and record only last-known state on the subscription row. So a
+# rolling deploy or a SIGTERM dropped every in-flight event with no record it had existed, a
+# receiver down for ten minutes lost everything emitted in those ten minutes, and there was no
+# dead-letter queue -- while this module's own docstring promised one. And one event x 50
+# subscriptions was 50 unbounded OS threads started from inside a request handler.
 #
-# Forget, because a subscriber is not a dependency of the decision. `connector_fetch` fails a
-# decision CLOSED when a source is unreachable, and that is right: the decision NEEDS the
-# connector's answer. A subscription merely ANNOUNCES, so a slow or dead receiver must not delay
-# a decision, change its outcome, or surface as an error to the caller who made it.
+# Now:
+#   1. `emit` INSERTS one `webhook_deliveries` row per matching subscription. A cheap write on
+#      the caller's path; still never delays or changes a decision, still never raises.
+#   2. ONE long-lived worker thread delivers them promptly. One, not one per delivery.
+#   3. A leader-gated scheduler drain (`drain`) is the durability guarantee: it delivers
+#      anything due -- retries whose backoff has elapsed, and rows a dead process claimed and
+#      never finished -- so nothing depends on the worker surviving.
+#   4. Failure reschedules with backoff; after WEBHOOK_MAX_ATTEMPTS the row is DEAD, kept,
+#      listable, and replayable. A target blocked by egress policy goes straight to dead: that is
+#      a configuration decision, and retrying it just repeats the refusal on a timer.
 #
-# On a thread, because the callers are synchronous. `add_audit_event` is called from request
-# handlers, from the scheduler and from the executor, some inside a running event loop and some
-# not, so there is no single correct `await`. A short-lived daemon thread per emission is the one
-# shape that works from all of them and cannot keep the process alive at shutdown.
-#
-# The bound is MAX_SUBSCRIPTIONS_PER_TENANT: one event fans out to at most that many threads,
-# which is why that cap exists.
+# Delivery is at-least-once (a process can die after the receiver accepted and before we record
+# it); the delivery id is sent so a receiver can dedupe.
 
 _EMIT_ENABLED = True
 
+# Seconds to wait before attempt N+1 after attempt N failed. ~9 hours end to end, so a receiver
+# down for an afternoon still gets its events; each subscription's own `retries` still governs
+# the immediate in-attempt retries inside `deliver()` that absorb a transient blip.
+BACKOFF_SECONDS = (10, 30, 120, 600, 1800, 7200, 21600)
+
+
+def _max_attempts() -> int:
+    return max(1, env.env_int("WEBHOOK_MAX_ATTEMPTS", len(BACKOFF_SECONDS) + 1))
+
 
 def set_emission_enabled(enabled: bool) -> None:
-    """Test hook. Delivery is network I/O on a thread; a suite that is not testing delivery wants
-    it off rather than racing with it."""
+    """Test hook. A suite that is not testing delivery wants it off rather than racing with it."""
     global _EMIT_ENABLED
     _EMIT_ENABLED = bool(enabled)
 
 
-def _deliver_and_record(storage: Any, subscription: Dict[str, Any], event: Dict[str, Any],
-                        delivery_id: str) -> None:
+def _retry_at(attempts_so_far: int) -> Optional[datetime]:
+    """When to try again after the (attempts_so_far)th failure, or None when it is dead."""
+    if attempts_so_far >= _max_attempts():
+        return None
+    delay = BACKOFF_SECONDS[min(attempts_so_far - 1, len(BACKOFF_SECONDS) - 1)]
+    return datetime.utcnow() + timedelta(seconds=delay)
+
+
+def deliver_claimed(storage: Any, delivery: Dict[str, Any]) -> Dict[str, Any]:
+    """Deliver ONE claimed row and record the outcome. Never raises."""
+    tenant_id = delivery.get("tenant_id")
     try:
-        result = asyncio.run(deliver(subscription, event, delivery_id))
-        storage.record_webhook_delivery(
-            subscription["id"], bool(result.get("delivered")),
-            error=result.get("error"), tenant_id=subscription.get("tenant_id"))
-    except Exception:  # pragma: no cover - a delivery thread must die quietly
-        logger.warning("webhook delivery thread failed for subscription %s",
-                       subscription.get("id"), exc_info=True)
+        subscription = storage.get_webhook_subscription(
+            delivery["subscription_id"], tenant_id=tenant_id, include_secret=True)
+    except Exception:  # pragma: no cover - a lookup failure is recorded like any other
+        subscription = None
+    if not subscription or not subscription.get("is_active", True):
+        # Deleted or disabled after the event was queued: dead, with the reason, rather than a
+        # delivery to a subscriber who has since said stop.
+        return storage.complete_webhook_delivery(
+            delivery["id"], ok=False, status=None, dead=True, retry_at=None,
+            error="subscription deleted or inactive") or {}
+    try:
+        result = asyncio.run(deliver(subscription, delivery["event"], delivery["id"]))
+    except Exception as exc:  # pragma: no cover - deliver() already never raises
+        result = {"delivered": False, "error": str(exc)[:500]}
+    ok = bool(result.get("delivered"))
+    attempts = int(delivery.get("attempts") or 0) + 1
+    retry_at = None if ok or result.get("blocked") else _retry_at(attempts)
+    record = storage.complete_webhook_delivery(
+        delivery["id"], ok=ok, status=result.get("status"), error=result.get("error"),
+        retry_at=retry_at, dead=bool(result.get("blocked")))
+    try:
+        storage.record_webhook_delivery(subscription["id"], ok, error=result.get("error"),
+                                        tenant_id=tenant_id)
+    except Exception:  # pragma: no cover - health is secondary to the delivery record
+        logger.warning("could not record webhook health for %s", subscription.get("id"))
+    return record or {}
+
+
+def drain(storage: Any, limit: int = 50, ids: Optional[List[str]] = None) -> Dict[str, int]:
+    """Deliver everything due. Shared by the prompt worker and the scheduler drain."""
+    stale = env.env_int("WEBHOOK_CLAIM_TIMEOUT_SECONDS", 300)
+    counts = {"delivered": 0, "retrying": 0, "dead": 0}
+    for delivery in storage.claim_due_webhook_deliveries(limit=limit, stale_after_seconds=stale, ids=ids):
+        outcome = deliver_claimed(storage, delivery).get("status")
+        if outcome == "delivered":
+            counts["delivered"] += 1
+        elif outcome == "dead":
+            counts["dead"] += 1
+        else:
+            counts["retrying"] += 1
+    return counts
+
+
+class _Worker:
+    """One thread, woken on emit. Replaces a thread per delivery.
+
+    It only delivers rows THIS process enqueued (by id), so N replicas do not all stampede the
+    same backlog -- the backlog is the leader-gated scheduler drain's job. If this thread dies, or
+    the process does, nothing is lost: the rows are in the table and the drain picks them up.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._idle = threading.Event()
+        self._idle.set()
+        self._pending: Dict[str, Any] = {}      # delivery id -> storage
+        self._thread: Optional[threading.Thread] = None
+
+    def submit(self, storage: Any, delivery_ids: List[str]) -> None:
+        with self._lock:
+            for delivery_id in delivery_ids:
+                self._pending[delivery_id] = storage
+            self._idle.clear()
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name="webhook-dispatcher", daemon=True)
+                self._thread.start()
+        self._wake.set()
+
+    def _run(self) -> None:
+        while True:
+            self._wake.wait(timeout=5.0)
+            self._wake.clear()
+            with self._lock:
+                batch = dict(self._pending)
+                self._pending.clear()
+            by_storage: Dict[int, Any] = {}
+            ids_by_storage: Dict[int, List[str]] = {}
+            for delivery_id, storage in batch.items():
+                by_storage[id(storage)] = storage
+                ids_by_storage.setdefault(id(storage), []).append(delivery_id)
+            for key, storage in by_storage.items():
+                try:
+                    drain(storage, limit=len(ids_by_storage[key]), ids=ids_by_storage[key])
+                except Exception:  # pragma: no cover - the scheduler drain is the backstop
+                    logger.warning("webhook worker drain failed", exc_info=True)
+            with self._lock:
+                if not self._pending:
+                    self._idle.set()
+
+    def flush(self, timeout: float = 10.0) -> bool:
+        """Block until everything submitted so far has been attempted. For tests and shutdown."""
+        return self._idle.wait(timeout)
+
+
+_WORKER = _Worker()
+
+
+def flush(timeout: float = 10.0) -> bool:
+    return _WORKER.flush(timeout)
 
 
 def emit(storage: Any, tenant_id: str, event_type: str, data: Dict[str, Any]) -> int:
-    """Deliver one event to every matching subscription. Returns how many were dispatched.
+    """Queue one event for every matching subscription. Returns how many were queued.
 
     Never raises: every call site is either a decision or an audit write, and neither may fail
     because a webhook subscription is misconfigured.
@@ -275,19 +393,18 @@ def emit(storage: Any, tenant_id: str, event_type: str, data: Dict[str, Any]) ->
         return 0
     event = {"type": event_type, "tenant_id": tenant_id,
              "created_at": _now_iso(), "data": data or {}}
-    dispatched = 0
+    queued: List[str] = []
     for subscription in candidates:
         if not event_matches(subscription, event):
             continue
-        delivery_id = "dlv_{0}".format(uuid.uuid4().hex[:16])
-        threading.Thread(
-            target=_deliver_and_record,
-            args=(storage, subscription, event, delivery_id),
-            name="webhook-delivery",
-            daemon=True,
-        ).start()
-        dispatched += 1
-    return dispatched
+        try:
+            row = storage.enqueue_webhook_delivery(tenant_id, subscription["id"], event)
+            queued.append(row["id"])
+        except Exception:  # pragma: no cover - one bad insert must not block the others
+            logger.warning("could not queue webhook for %s", subscription.get("id"), exc_info=True)
+    if queued:
+        _WORKER.submit(storage, queued)
+    return len(queued)
 
 
 def on_audit_event(storage: Any, event: Dict[str, Any]) -> None:

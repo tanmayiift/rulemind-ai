@@ -195,6 +195,19 @@ Beyond CRUD:
   what each one does.
 - `GET /api/v1/settings/data-protection`, `/governance`, `/slo`
 
+## Outbound webhooks
+
+- `GET`/`POST /api/v1/webhook-subscriptions`, `GET`/`PATCH`/`DELETE /api/v1/webhook-subscriptions/{subscription_id}`,
+  `POST /api/v1/webhook-subscriptions/{subscription_id}/test`, `GET /api/v1/webhook-subscriptions/event-types`
+- `GET /api/v1/webhook-subscriptions/{subscription_id}/deliveries` — every delivery, newest first.
+  `?status=dead` is the dead-letter queue.
+- `POST /api/v1/webhook-deliveries/{delivery_id}/redeliver` — replay one.
+
+Delivery is **durable and at-least-once**: an event is recorded before it is sent, retried with
+backoff for about nine hours, then dead-lettered where it can be listed and replayed. Each request
+carries its delivery id — dedupe on it, because a process can die after your endpoint accepted a
+delivery and before it was recorded, and the event will then be sent again.
+
 ## Operational
 
 - `GET /health` — liveness. Never consults the database; a liveness probe that did would

@@ -156,6 +156,22 @@ async def _scheduled_sweep_stuck_executions(storage: Storage) -> None:
     sweep_stuck_executions(storage)
 
 
+async def _scheduled_drain_webhooks(storage: Storage) -> None:
+    """The durability half of webhook delivery. The in-process worker delivers promptly; THIS is
+    what delivers retries whose backoff has elapsed and rows a dead process claimed and never
+    finished. Leader-gated: every replica draining the same backlog would deliver each event N
+    times over. Runs in a thread because delivery is blocking network I/O and this is the
+    scheduler's event loop."""
+    if not _IS_LEADER:
+        return
+    from .webhook_dispatch import drain
+
+    try:
+        await asyncio.to_thread(drain, storage, env.env_int("WEBHOOK_DRAIN_BATCH", 100))
+    except Exception as exc:  # the drain must not take the scheduler down
+        logger.warning("webhook drain failed: %s", exc)
+
+
 def archive_old_decisions(storage: Storage) -> Dict[str, Any]:
     """Per tenant, archive decisions older than its retention window to the configured OLAP sink
     and purge them from the hot DB. No-op unless a sink is configured (DECISION_ARCHIVE_SINK).
@@ -663,6 +679,9 @@ def init_scheduler(storage: Storage) -> None:
     # replicas each filing the same error event would turn the signal into noise. Hourly,
     # because the threshold it reports against is a day by default -- checking more often
     # cannot find anything sooner.
+    scheduler.add_job(_scheduled_drain_webhooks, "interval",
+                      seconds=env.env_int("WEBHOOK_DRAIN_SECONDS", 15),
+                      id="webhook-drain", args=[storage], replace_existing=True)
     scheduler.add_job(_scheduled_sweep_stuck_executions, "interval",
                       minutes=env.env_int("EXECUTION_SWEEP_INTERVAL_MINUTES", 60),
                       id="execution-sweep", args=[storage], replace_existing=True)

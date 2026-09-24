@@ -1916,6 +1916,49 @@ calls it.
   404s, so it was measuring the handler rather than the wrapper. It now drives the wrapper with a
   synthetic 404 app. 12 tests; with this, **plan item 5.3 is closed** (the envelope half was R10.18).
 
+- [x] **R10.24 WEBHOOK DELIVERY IS NOW DURABLE — AS ITS OWN DOCSTRING HAD CLAIMED ALL ALONG.**
+  `webhook_dispatch.py` said a failed delivery is *"retried by the scheduler, and dead-lettered
+  after a bound"*. What shipped was a bare daemon thread **per event per subscription**, retrying
+  in a tight loop inside that thread, persisting only last-known state onto the subscription row
+  (whose own comment says *"Not a delivery LOG"*). So a rolling deploy or a SIGTERM dropped every
+  in-flight event with no record it existed; a receiver down for ten minutes lost everything
+  emitted in those ten minutes; there was no dead-letter queue to replay from; and one event ×
+  50 subscriptions was 50 OS threads started inside a request handler. `decision_outbox.py`, one
+  file over, did all of this correctly.
+
+  Now, on that pattern: `emit` **inserts** one `webhook_deliveries` row per matching subscription
+  (migration `20260924_0032`, idempotent) — a cheap write, still never delaying or failing the
+  caller. **One** long-lived worker delivers promptly. A **leader-gated scheduler drain** is the
+  durability guarantee: it delivers retries whose backoff has elapsed *and* rows a dead process
+  claimed and never finished. Backoff 10s → 30s → 2m → 10m → 30m → 2h → 6h (~9 hours); after
+  `WEBHOOK_MAX_ATTEMPTS` the row is **dead**, kept, listable (`?status=dead`) and replayable
+  (`POST /api/v1/webhook-deliveries/{id}/redeliver`, which keeps the attempt count so the history
+  still shows it died). A target blocked by egress policy goes straight to dead — that is
+  configuration, and retrying it repeats the refusal on a timer for nine hours. At-least-once, with
+  the delivery id sent so receivers can dedupe; `API.md` says so.
+
+  **Three things the tests caught that reading would not have.**
+  * **The existing e2e tests would have lost their guarantee silently.** They joined every thread
+    named `webhook-delivery` to make ordering deterministic. That thread no longer exists, so the
+    join matched nothing and returned at once — **all 75 webhook tests kept passing** with the
+    guarantee gone. Replaced with an explicit `flush()` that waits for the dispatcher.
+  * **A mutation survived, and the reason was the interesting part.** Making the claim
+    non-exclusive (accept every write) passed. The exclusivity check only matters in a *race* —
+    two claimers both SELECT the same pending row before either UPDATEs, which Postgres READ
+    COMMITTED permits — and a sequential test cannot produce it because the second SELECT already
+    filters the row out. The guarded write is now its own method and tested directly: the loser
+    must get `False`. Mutation now caught.
+  * The config gate flagged all four new settings the moment they were added, and the
+    mutating-route tripwire refused the new `redeliver` route until it named the test that probes
+    it across tenants. Both gates doing their job.
+
+  13 durability tests: recorded before sent, marked delivered, rescheduled with backoff, dead after
+  the bound and listable, egress-blocked straight to dead, dead letters replayable, **a claim
+  abandoned by a dead process is recovered** (the SIGTERM case), a fresh claim is not stolen, the
+  claim is exclusive under a race, a deleted subscription's queue is not sent, one event to 11
+  subscriptions starts at most one thread, deliveries and replay are tenant-scoped, and the drain
+  is leader-gated. Four mutations, all caught.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.
