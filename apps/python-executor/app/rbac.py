@@ -95,6 +95,8 @@ _WRITE_PREFIX_CAPABILITY = [
     # Redelivery re-sends a stored event to a subscription's destination -- the same egress
     # authority as configuring the subscription, so the same capability.
     ("/api/v1/webhook-deliveries", MANAGE_ACCESS),
+    # Erasing a subject's personal data is irreversible and workspace-wide.
+    ("/api/v1/data-subjects", MANAGE_ACCESS),
     ("/api/v1/settings", MANAGE_ACCESS),
     ("/api/v1/branding", MANAGE_ACCESS),
     ("/api/v1/reports/email-config", MANAGE_ACCESS),
@@ -170,9 +172,24 @@ _DECIDE_PREFIXES = (
 )
 
 
+# Reads that are themselves access-management data, or personal data in bulk. Every GET used to
+# map to READ, so a VIEWER could list every member's email, the API keys (masked, but with the key
+# ids that are now OAuth client_ids) and the SSO configuration -- while the members handler's own
+# docstring said "requires manage_access". A data-subject export is everything held about one
+# person, so it belongs here from the start.
+_SENSITIVE_READ_PREFIXES = (
+    "/api/v1/access/members",
+    "/api/v1/access/keys",
+    "/api/v1/access/sso",
+    "/api/v1/data-subjects",
+)
+
+
 def required_capability(method: str, path: str) -> str:
     """Map a request to the single capability it requires."""
     if method in ("GET", "HEAD", "OPTIONS"):
+        if method != "OPTIONS" and path.startswith(_SENSITIVE_READ_PREFIXES):
+            return MANAGE_ACCESS
         return READ
     # `/policies/{id}/promote` is a deploy action even though it sits under /policies.
     if path.startswith("/api/v1/policies") and path.endswith("/promote"):

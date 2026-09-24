@@ -52,6 +52,7 @@ from .models import (
     Connector,
     CronSchedule,
     Decision,
+    DecisionOutbox,
     DecisionTable,
     EmailOutbox,
     EntityHistory,
@@ -502,11 +503,22 @@ def decision_payload_hash(payload: Any) -> str:
     return hmac.new(subkey, json_dumps(payload).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def is_secret_field(key: Any) -> bool:
+    """Is this config key a credential, by name? A `*_url` never is: it is an address. `token_url`
+    matched the "token" marker, so the OAuth2 token endpoint an author configured came back as
+    •••••••• and could not be read or checked. Values of genuine secrets are still redacted by VALUE
+    wherever they appear (connector_probe.redact_connector_secrets), so this loses no protection."""
+    name = str(key).lower()
+    if name.endswith("_url"):
+        return False
+    return any(marker in name for marker in SECRET_FIELD_MARKERS)
+
+
 def mask_secret_values(value: Any) -> Any:
     if isinstance(value, dict):
         masked: Dict[str, Any] = {}
         for key, item in value.items():
-            if any(marker in key.lower() for marker in SECRET_FIELD_MARKERS):
+            if is_secret_field(key):
                 masked[key] = "••••••••"
             else:
                 masked[key] = mask_secret_values(item)
@@ -1301,6 +1313,7 @@ class Storage:
             "policy_version": model.policy_version,
             "created_at": serialize_datetime(model.created_at),
             "received_at": serialize_datetime(model.received_at),
+            "erased_at": serialize_datetime(model.erased_at) if model.erased_at else None,
         }
 
     @staticmethod
@@ -2052,6 +2065,100 @@ class Storage:
         # its own session, and nesting one inside this transaction deadlocks on SQLite.
         self.record_usage(METRIC_DECISIONS, inserted, tenant_id=resolved)
         return {"received": len(decisions), "inserted": inserted, "duplicates": duplicates, "acked": acked}
+
+    # ── data subjects (plan 6.7) ─────────────────────────────────────────────────────────────
+    def list_subject_decisions(self, user_id: str, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Every decision about one subject, in full, oldest first -- for an access request."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(select(Decision).where(
+                Decision.tenant_id == resolved, Decision.user_id == user_id).order_by(Decision.created_at)).all()
+            return [self._decision_to_dict(row) for row in rows]
+
+    def list_subject_executions(self, user_id: str, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Paused/persisted executions whose context names this subject. Scanned in Python: the
+        context is a JSON document and erasure is a rare, admin-only operation."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            rows = session.scalars(select(WorkflowExecution).where(WorkflowExecution.tenant_id == resolved)).all()
+            return [{"id": row.id, "policy_id": row.policy_id, "status": row.status,
+                     "context": copy.deepcopy(row.context or {})}
+                    for row in rows if (row.context or {}).get("user_id") == user_id]
+
+    def erase_data_subject(self, user_id: str, pseudonym: str,
+                           preserved_reason_codes: Dict[str, List[Dict[str, Any]]],
+                           tenant_id: Optional[str] = None) -> Dict[str, int]:
+        """Redact one subject's personal data everywhere this database holds it, in ONE transaction:
+        either every store is redacted or none is. Returns counts per store."""
+        resolved = self._tenant_id(tenant_id)
+        erased_marker = {"erased": True}
+        now = datetime.utcnow()
+        counts = {"decisions": 0, "executions": 0, "review_tasks": 0, "webhook_deliveries": 0,
+                  "outbox_events": 0, "idempotency_records": 0, "error_events": 0}
+        with self.connect() as session:
+            decisions = session.scalars(select(Decision).where(
+                Decision.tenant_id == resolved, Decision.user_id == user_id)).all()
+            decision_ids = {row.id for row in decisions}
+            for row in decisions:
+                row.payload_preview = encrypt_decision_field(dict(erased_marker))
+                row.computed_variables = encrypt_decision_field({})
+                row.rule_results = encrypt_decision_field(
+                    [{"erased": True, "reason_codes": preserved_reason_codes.get(row.id, [])}])
+                row.scorecard_result = None
+                row.trace = encrypt_decision_field([{"type": "erased", "status": "erased"}])
+                row.user_id = pseudonym
+                row.erased_at = now
+                counts["decisions"] += 1
+
+            execution_ids = set()
+            for row in session.scalars(select(WorkflowExecution).where(WorkflowExecution.tenant_id == resolved)).all():
+                context = row.context or {}
+                if context.get("user_id") == user_id:
+                    row.context = {"erased": True, "execution_id": row.id, "policy_id": row.policy_id}
+                    execution_ids.add(row.id)
+                    counts["executions"] += 1
+            if execution_ids:
+                for row in session.scalars(select(ReviewTask).where(
+                        ReviewTask.tenant_id == resolved, ReviewTask.execution_id.in_(execution_ids))).all():
+                    response = row.reviewer_response or {}
+                    row.context_snapshot = dict(erased_marker)
+                    # The reviewer's verdict is the institution's record; anything they typed about
+                    # the applicant is not.
+                    verdict = response.get("decision") or response.get("outcome")
+                    row.reviewer_response = ({"erased": True, "decision": verdict} if verdict else None) if response else None
+                    counts["review_tasks"] += 1
+
+            for row in session.scalars(select(WebhookDelivery).where(WebhookDelivery.tenant_id == resolved)).all():
+                event = copy.deepcopy(row.event or {})
+                data = event.get("data") or {}
+                if data.get("user_id") == user_id or data.get("decision_id") in decision_ids:
+                    data["user_id"] = pseudonym
+                    event["data"] = data
+                    row.event = event
+                    counts["webhook_deliveries"] += 1
+
+            if decision_ids:
+                for row in session.scalars(select(DecisionOutbox).where(
+                        DecisionOutbox.tenant_id == resolved, DecisionOutbox.decision_id.in_(decision_ids))).all():
+                    row.payload = {"erased": True, "decision_id": row.decision_id}
+                    counts["outbox_events"] += 1
+                # An idempotency record is a cached RESPONSE -- the decision as returned. It is a
+                # cache, so it is deleted rather than redacted.
+                for decision_id in decision_ids:
+                    for row in session.scalars(select(IdempotencyRecord).where(
+                            IdempotencyRecord.tenant_id == resolved,
+                            IdempotencyRecord.response_body.contains(decision_id))).all():
+                        session.delete(row)
+                        counts["idempotency_records"] += 1
+
+            if execution_ids or decision_ids:
+                linked = execution_ids | decision_ids
+                for row in session.scalars(select(ErrorEvent).where(ErrorEvent.tenant_id == resolved)).all():
+                    details = row.details_json or {}
+                    if row.entity_id in linked or details.get("execution_id") in linked or details.get("decision_id") in linked:
+                        row.details_json = dict(erased_marker)
+                        counts["error_events"] += 1
+        return counts
 
     def list_decisions(self, tenant_id: Optional[str] = None, limit: int = 200, offset: int = 0,
                        client_id: Optional[str] = None, policy_id: Optional[str] = None,

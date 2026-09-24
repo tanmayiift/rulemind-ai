@@ -108,7 +108,9 @@ class UnknownWriteFailsClosedTest(unittest.TestCase):
                                 # party, so it needs what the subscription needs.
                                 "/api/v1/webhook-deliveries",
                                 # The OAuth2 token endpoint: identity, middleware-exempt.
-                                "/api/v1/oauth")):
+                                "/api/v1/oauth",
+                                # Irreversible redaction of a person's data across the workspace.
+                                "/api/v1/data-subjects")):
                 continue
             unclassified.append(path)
         self.assertEqual(unclassified, [],

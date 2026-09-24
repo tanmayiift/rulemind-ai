@@ -272,6 +272,10 @@ class Decision(Base):
     # Nullable: rows written before 20260924_0031 genuinely do not know, and backfilling a
     # guess would put fabricated lineage into an attestable record.
     policy_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Set when the subject's personal data was erased (data_subjects.erase_subject): the payload,
+    # variables, trace and scorecard are gone; the outcome, policy version, time and adverse-action
+    # reason codes are kept, because lenders must retain them. Migration 20260924_0035.
+    erased_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # created_at is the DECISION time (device clock for on-device decisions — subject to drift);
     # received_at is the trustworthy SERVER receipt time, used for ordering/retention/analytics.
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)

@@ -272,6 +272,21 @@ production key once, after verification. The dashboard walks through all of it a
 Every response carries CORS headers, including the 401/403/429 the auth layer returns before any
 route runs, so a browser can tell "not signed in" and "rate limited" from "the API is down".
 
+## Data residency and data subjects
+
+- `GET /api/v1/data-residency` — the install's declared region (`RULEMIND_DATA_REGION`), the
+  database engine and host (never its credentials), encryption at rest, and every configured egress
+  destination: connector hosts and token endpoints, webhook receivers, AI providers, archive sink,
+  Kafka, tracing.
+- `GET /api/v1/data-subjects/{subject_id}` — every decision about one subject, in full. Admin only.
+- `POST /api/v1/data-subjects/{subject_id}/erase` with `{reason}` — redacts that subject's personal
+  data in one transaction, keeping each decision's outcome, policy version and adverse-action reason
+  codes. The applicant's own values are removed, including from the reason text. The receipt lists
+  what was redacted and what it could not reach. Admin only; audited under a pseudonym.
+  After erasure `GET /api/v1/decisions/{id}/reason-codes` returns the kept codes.
+
+See [`docs/DATA-RESIDENCY.md`](docs/DATA-RESIDENCY.md).
+
 ## Access and settings
 
 - `GET /api/v1/access/keys`, `POST /api/v1/access/keys`,

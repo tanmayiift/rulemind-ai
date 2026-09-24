@@ -59,7 +59,7 @@ from . import oauth2_client
 from .egress import EgressBlocked, build_pinned_request, clamp_retries, clamp_timeout_ms
 from .executor import _redact_resolved_secrets
 from .logic import json_dumps, now_iso
-from .storage import SECRET_FIELD_MARKERS, mask_secret_values
+from .storage import mask_secret_values
 from .templates import resolve_template
 
 __all__ = [
@@ -104,7 +104,9 @@ class ConnectorMisconfigured(Exception):
 
 # ── secrets ────────────────────────────────────────────────────────────────
 def _is_secret_key(key: Any) -> bool:
-    return any(marker in str(key).lower() for marker in SECRET_FIELD_MARKERS)
+    from .storage import is_secret_field
+
+    return is_secret_field(key)
 
 
 def connector_secret_values(connector: Dict[str, Any]) -> Set[str]:
