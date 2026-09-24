@@ -16,6 +16,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import main
+from ..api_models import SdkBundleResponse, SdkDecideResponse, SigningKeyResponse
 from ..compiler import (
     signing_key_is_ephemeral,
     signing_public_key_pem,
@@ -78,7 +79,7 @@ def sdk_health(request: Request) -> Dict[str, Any]:
     return {"status": "ok", "latestBundleVersion": latest["version"] if latest else 0}
 
 
-@router.get("/sdk/v1/signing-key")
+@router.get("/sdk/v1/signing-key", responses={200: {"model": SigningKeyResponse}})
 def sdk_signing_key() -> Dict[str, Any]:
     """The public half of the bundle-signing keypair.
 
@@ -95,7 +96,7 @@ def sdk_signing_key() -> Dict[str, Any]:
     }
 
 
-@router.get("/sdk/v1/bundle")
+@router.get("/sdk/v1/bundle", responses={200: {"model": SdkBundleResponse}})
 def sdk_bundle(request: Request) -> Response:
     tenant_id = active_tenant_id(request)
     latest = main.storage.latest_bundle(tenant_id=tenant_id)
@@ -193,7 +194,7 @@ def sdk_policy_block(policy_id: str, request: Request) -> Response:
     )
 
 
-@router.post("/sdk/v1/decide")
+@router.post("/sdk/v1/decide", responses={200: {"model": SdkDecideResponse}})
 def sdk_decide(request: SdkDecideRequest) -> Dict[str, Any]:
     policy = ensure_exists(main.storage.get_policy(request.policyId), "policy", request.policyId)
     started = time.perf_counter()

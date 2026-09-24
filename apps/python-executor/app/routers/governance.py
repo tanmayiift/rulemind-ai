@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .. import main
+from ..api_models import DataSubjectExport, ErasureReceipt, ReasonCodesResponse, ReplayResponse, ResidencyReport
 from ..logic import now_iso
 
 router = APIRouter()
@@ -210,7 +211,7 @@ def get_slo_status(request: Request) -> Dict[str, Any]:
 
 
 # ── Adverse-action reason codes ────────────────────────────────────────────
-@router.get("/api/v1/decisions/{decision_id}/reason-codes")
+@router.get("/api/v1/decisions/{decision_id}/reason-codes", responses={200: {"model": ReasonCodesResponse}})
 def decision_reason_codes(request: Request, decision_id: str, limit: int = Query(default=3, ge=1, le=10)) -> Dict[str, Any]:
     """Deterministic adverse-action reason codes for a decision — the top failing conditions ranked
     by materiality, each with a stable code + human reason for a FCRA-style decline notice. Pure and
@@ -231,7 +232,7 @@ def decision_reason_codes(request: Request, decision_id: str, limit: int = Query
 
 
 # ── Data residency (plan 6.7) ─────────────────────────────────────────────
-@router.get("/api/v1/data-residency")
+@router.get("/api/v1/data-residency", responses={200: {"model": ResidencyReport}})
 def data_residency(request: Request) -> Dict[str, Any]:
     """Where this workspace's data is stored and every destination it can leave to, assembled from
     the live configuration. For a procurement review's residency questions."""
@@ -245,7 +246,7 @@ class DataSubjectEraseRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=500)
 
 
-@router.get("/api/v1/data-subjects/{subject_id}")
+@router.get("/api/v1/data-subjects/{subject_id}", responses={200: {"model": DataSubjectExport}})
 def data_subject_export(request: Request, subject_id: str) -> Dict[str, Any]:
     """Everything this workspace holds about one subject (the decide request's `userId`), for an
     access request. Admin only (MANAGE_ACCESS): it is one person's data, in bulk."""
@@ -254,7 +255,7 @@ def data_subject_export(request: Request, subject_id: str) -> Dict[str, Any]:
     return data_subjects.export_subject(main.storage, subject_id, main.active_tenant_id(request))
 
 
-@router.post("/api/v1/data-subjects/{subject_id}/erase")
+@router.post("/api/v1/data-subjects/{subject_id}/erase", responses={200: {"model": ErasureReceipt}})
 def data_subject_erase(request: Request, subject_id: str, body: DataSubjectEraseRequest) -> Dict[str, Any]:
     """Redact one subject's personal data everywhere this database holds it, keeping each decision's
     outcome and adverse-action reason codes. Returns a receipt, including the stores it cannot
@@ -265,7 +266,7 @@ def data_subject_erase(request: Request, subject_id: str, body: DataSubjectErase
 
 
 # ── Decision replay + bundle versions + policy backtest ────────────────────
-@router.post("/api/v1/decisions/{decision_id}/replay")
+@router.post("/api/v1/decisions/{decision_id}/replay", responses={200: {"model": ReplayResponse}})
 def replay_decision(request: Request, decision_id: str, bundle_version: Optional[int] = Query(default=None, alias="bundleVersion")) -> Dict[str, Any]:
     """Re-run a past decision against the current policy — or a historical compiled bundle version
     (`?bundleVersion=N`) — and report whether the outcome would change. Answers "did my policy

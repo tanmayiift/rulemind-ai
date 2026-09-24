@@ -28,10 +28,25 @@ not wrong.
 curl -s https://your-host/api/v1/openapi.json -H "x-api-key: $RULEMIND_API_KEY" > openapi.json
 ```
 
-**Known limitation of that spec:** every operation is annotated `-> Dict[str, Any]`, so it
-describes **279 operations and zero typed 2xx response schemas**. Paths, methods and request
-bodies are accurate; responses are not described, which is why typed client generation does not
-work yet and all five SDKs are hand-written.
+**What the spec types.** The responses an integration depends on — decide and batch decide,
+decision records, reason codes, replay, executions, OAuth2 tokens, the `/sdk/v1` endpoints, data
+subjects and residency, liveness and readiness — are typed schemas, checked against real
+responses on every decision path by `tests/test_api_contract.py`. Every operation documents the
+error envelope (`4XX`/`5XX`) and the credentials it needs, and a test sends each one without
+credentials to prove the document and the middleware agree. The authoring surface still
+documents its responses as open objects. Response objects may gain fields without a version
+bump: ignore fields you do not know.
+
+The JS SDK's response types are generated from this spec (`packages/sdk-js/src/generated/`), so
+a client generated with `openapi-typescript` or `openapi-generator` gets the same types:
+
+```bash
+npx openapi-typescript openapi.json -o rulemind-api.ts
+```
+
+> **Until 2026-09-24 the spec described 279 operations and zero typed responses**, documented
+> every 422 as FastAPI's `{detail: [...]}` (the app has sent `{error, detail}` since the error
+> envelope landed), and declared no security schemes at all.
 
 ## Authentication
 
@@ -103,6 +118,9 @@ ones where that is the useful thing, e.g. input validation:
 }
 ```
 
+A request the API cannot parse at all — a missing required field, a wrong type — is a `422`
+with `"error": "validation_error"` and `detail` as a list of `{loc, msg, type}`.
+
 `504` responses from the evaluation budget additionally carry `budget_ms`, `elapsed_ms` and
 `stage`. `429` responses carry `RateLimit-*` and `Retry-After` headers.
 
@@ -138,21 +156,42 @@ Response:
 ```json
 { "policy_id": "policy_pl_underwriting",
   "decision_id": "174970a3-c47d-4d8e-9849-032c511bc4dd",
+  "execution_id": null,
+  "status": "completed",
   "policy_version": 3,
   "outcome": "reject",
   "score": 400,
   "variables": { "bureau_score": 720 },
   "variable_errors": {},
-  "rule_results": [],
+  "rule_results": [
+    { "rule_id": "rule_bureau_floor", "ruleId": "rule_bureau_floor", "passed": false,
+      "outcome": "reject", "logic": "AND", "groupResults": [],
+      "conditions": [ { "variable_id": "bureau_score", "variable_name": "Bureau score",
+                        "source_id": "bureau", "operator": ">=", "threshold": 750,
+                        "value": 720, "passed": false, "group": "AND" } ] } ],
   "scorecard_result": null,
   "trace": [],
   "latency_ms": 15.2 }
 ```
 
+The full schema is `DecideResponse` in the spec.
+
 `decision_id` names the stored `Decision` row — use it for the reason codes and the replay
 below. `policy_version` is the lineage: policies are mutated in place, so `policy_id` alone
 cannot say which version decided. Both fields are returned on **either** decision path; a
 `FAST_DECIDE` change must never alter this shape.
+
+**A decision that pauses at a review gate** returns `"status": "paused"`, `decision_id: null` —
+no decision exists until a reviewer completes it — and an `execution_id` to follow:
+`GET /api/v1/executions/{execution_id}`. `execution_id` is null whenever the decision completed
+in the call.
+
+> **`rule_results` changed shape on 2026-09-24.** On the executor path (the default) it used to
+> be a filter of `trace` — items shaped `{step, result: {passed, conditions, ...}, duration_ms,
+> error}` — while the `FAST_DECIDE` path, the stored decision and the reason codes all used the
+> shape above. It is the shape above on every path now. If you read `rule_results[i].result.passed`
+> or `.step.id`, read `rule_results[i].passed` and `rule_results[i].rule_id` instead; the step
+> wrappers are still in `trace`.
 
 `payload` is either flat (`{"bureau_score": 720}`, matched against every source that declares
 the field) or source-keyed (`{"bureau": {"bureau_score": 720}}`, authoritative and complete for

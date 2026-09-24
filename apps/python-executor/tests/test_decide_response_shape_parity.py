@@ -41,8 +41,8 @@ from tests._storage_global import preserve_storage_global  # noqa: E402
 # Keys every /decide response carries, on either path. Asserted as a SET rather than one key at
 # a time so a future field added to one branch and not the other fails here.
 CONTRACT_KEYS = {
-    "policy_id", "decision_id", "policy_version", "outcome", "score", "variables",
-    "variable_errors", "rule_results", "scorecard_result", "trace", "latency_ms",
+    "policy_id", "decision_id", "execution_id", "status", "policy_version", "outcome", "score",
+    "variables", "variable_errors", "rule_results", "scorecard_result", "trace", "latency_ms",
 }
 
 
@@ -92,6 +92,26 @@ class DecideResponseShapeTests(unittest.TestCase):
         fast = set(self._decide("1"))
         self.assertEqual(slow - fast, set(), f"keys the FAST path dropped: {slow - fast}")
         self.assertEqual(fast - slow, set(), f"keys the SLOW path lacks: {fast - slow}")
+
+    def test_rule_results_have_the_same_item_shape_on_both_paths(self):
+        """Top-level keys were never the whole contract. `rule_results` was present on both
+        paths and held two incompatible shapes: the executor path rebuilt it from the trace
+        (`{step, result: {passed, ...}, duration_ms, error}`), the fast path returned the rule
+        results themselves (`{rule_id, passed, ...}`). `rule_results[0]["passed"]` was a
+        KeyError on one path and correct on the other, and the key-set tests above passed."""
+        slow = self._decide("0")["rule_results"]
+        fast = self._decide("1")["rule_results"]
+        self.assertTrue(slow and fast, "the policy decided no rules, so this compares nothing")
+        self.assertEqual([sorted(item) for item in slow], [sorted(item) for item in fast])
+
+    def test_rule_results_are_what_the_decision_row_records(self):
+        """The response and the row it wrote must agree, or reason codes computed from the row
+        and a client reading the response describe the same decision differently."""
+        for flag in ("0", "1"):
+            with self.subTest(fast_decide=flag):
+                body = self._decide(flag)
+                stored = app_main.storage.get_decision(body["decision_id"], tenant_id=self.tenant)
+                self.assertEqual(body["rule_results"], stored["rule_results"])
 
     def test_both_paths_carry_the_whole_contract(self):
         for flag in ("0", "1"):

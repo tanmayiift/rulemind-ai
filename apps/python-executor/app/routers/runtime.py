@@ -18,6 +18,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import decision_bus, main
+from ..api_models import BatchDecideResponse, DecideResponse
 from ..executor import ExecutionContext, PolicyExecutor
 from ..logic import export_bundle, json_dumps
 from ..main import (
@@ -165,7 +166,7 @@ def _record_decision_metrics(outcome: str, source: str, latency_ms: Optional[flo
         pass
 
 
-@router.post("/api/v1/decide")
+@router.post("/api/v1/decide", responses={200: {"model": DecideResponse}})
 def decide(request: DecideRequest) -> Dict[str, Any]:
     """Run a policy decision.
 
@@ -207,6 +208,13 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         # cannot answer it, and the fast path reports it -- so this path must too, or the
         # response shape depends on FAST_DECIDE again in the opposite direction.
         "policy_version": outcome["result"].get("policy_version"),
+        # A decision that pauses at a review gate records no Decision row yet, so decision_id is
+        # null -- and without these two the caller had no handle on what it had started. The id
+        # is returned only when paused: that is when the execution row is guaranteed to exist
+        # (a one-shot decision mints an id and never writes it, and an id that names nothing is
+        # worse than none).
+        "status": outcome["result"]["status"],
+        "execution_id": outcome["result"]["execution_id"] if outcome["result"]["status"] == "paused" else None,
         "outcome": outcome["result"]["outcome"],
         "score": outcome["result"].get("scorecard_result", {}).get("score") if outcome["result"].get("scorecard_result") else None,
         "variables": outcome["values"],
@@ -214,7 +222,11 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         # perfectly legitimate value -- so without this map an integrator cannot tell a real
         # null from a bureau call that timed out. Empty on a healthy decision.
         "variable_errors": outcome.get("variable_errors") or {},
-        "rule_results": [item for item in outcome["result"]["trace"] if item.get("step", {}).get("type") == "rule"],
+        # What the executor recorded, not a filter of the trace. The filter returned trace
+        # entries ({step, result: {passed, ...}}) while the fast path and the stored row hold the
+        # rule results themselves ({rule_id, passed, ...}): one field, two shapes, chosen by a
+        # performance flag. The trace is right below for anyone who wants the step wrapper.
+        "rule_results": outcome["result"]["rule_results"],
         "scorecard_result": outcome["result"].get("scorecard_result"),
         "trace": outcome["result"]["trace"],
         "latency_ms": outcome["latency_ms"],
@@ -442,7 +454,7 @@ def _run_decision_batch(policy: Dict[str, Any], payloads: List[Dict[str, Any]], 
     }
 
 
-@router.post("/api/v1/decide/batch")
+@router.post("/api/v1/decide/batch", responses={200: {"model": BatchDecideResponse}})
 def batch_decide(request: BatchSimulationRequest) -> Dict[str, Any]:
     """Backtest a policy over many cases. Runs concurrently and in *simulation*
     mode — no decision is logged and review gates don't pause — so thousands of

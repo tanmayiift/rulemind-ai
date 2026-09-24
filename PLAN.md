@@ -2273,6 +2273,62 @@ calls it.
   tests carried four `zip()`s without `strict=`, which would silently score fewer rows than expected
   and still pass. Now `strict=True`.
 
+- [x] **R10.33 THE API HAS A TYPED CONTRACT — AND WRITING IT FOUND FOUR DEFECTS.** (Plan 5.1.)
+  The spec described 291 operations and zero typed responses, no security schemes, and a 422
+  shape the app has not sent since the error envelope landed. `app/api_models.py` now types the
+  18 operations an integration depends on (decide, batch decide, decision records, reason codes,
+  replay, executions, OAuth2 token, `/sdk/v1` decide/bundle/signing-key, data subjects,
+  residency, liveness, readiness); `app/openapi_contract.py` adds the error envelope to every
+  operation, six security schemes, and each operation's credentials; every operation is tagged.
+  Routes document with `responses={200: ...}` and keep their runtime serialisation:
+  `response_model=None` would swap pydantic-core for `jsonable_encoder`, measured 164 → 240 µs on
+  a /decide body, and `response_model=X` would 500 a real decision the day a field comes back
+  null. The contract is enforced by `tests/test_api_contract.py` instead, which validates real
+  responses from **every path** and fails on any field the server sends that a model does not
+  declare.
+  * **`rule_results` had two shapes under one name.** The executor path rebuilt it from the trace
+    (`{step, result: {passed, ...}}`); the FAST_DECIDE path, the stored decision row and the
+    reason codes all used the rule results themselves (`{rule_id, passed, ...}`). So the default
+    path's response disagreed with the row it had just written, and flipping a performance flag
+    changed `rule_results[0]["passed"]` from a KeyError to a boolean. The parity test compared
+    top-level keys and passed. One schema cannot describe both — writing `RuleResult` is what
+    found it. The executor path now returns what it recorded; API.md carries the migration note.
+  * **A decision paused at a review gate returned no handle.** `decision_id` was null (no
+    decision exists yet) and `status`/`execution_id` were dropped between the executor and the
+    response. Both are returned now — the id only when paused, because a one-shot decision mints
+    an execution id and never writes the row, and an id that names nothing is worse than none.
+  * **Every real SAML sign-in was a 500.** The IdP's HTTP-POST binding is a browser form post; the
+    handler called `request.form()`, which needs python-multipart, installed nowhere. The tests
+    posted JSON, which no IdP does. Parsed with `parse_qs`, like the OAuth2 token endpoint.
+  * **`POST /api/mobile/v1/auth/demo` gave anyone the workspace's owner key.** Outside every
+    authenticated prefix, checked nothing, and returned the default tenant's key in plaintext.
+    Production must set `RULEMIND_DEV_API_KEY` to a real secret before it boots, the seed gives the
+    default workspace exactly that key, and its role is owner: one anonymous POST against a
+    correctly configured install returned full control of it. It now answers only when the key
+    is the published development default, which discloses nothing.
+  * Also: admin `POST`/`PATCH /api/admin/v1/tenants` answered unauthenticated callers with a 422
+    listing their fields (the check ran after body validation); the guard is a dependency now.
+
+  The credentials half is checked the same way as the types: a test sends every documented
+  operation with no credentials and fails where the document and the middleware disagree. That
+  sweep is what found the SAML, demo-key and admin findings.
+
+  **The gate was inert and would have been wrong.** `openapi_gate.py`'s "a response field
+  disappears" rule had no response fields to compare; and it treated every schema as a request,
+  so every new response guarantee would have read as a break and been refreshed on reflex. It
+  now derives each schema's direction from the operations that reference it: newly required is
+  breaking for requests and additive for responses; losing a guarantee or becoming nullable is
+  breaking for responses; a type change, a typed response changing type, and an operation
+  becoming public or newly guarded are flagged. The two approved breaks in this snapshot are
+  FastAPI's `HTTPValidationError`/`ValidationError`, which described a body the app never sends.
+
+  **A generated client compiles.** `packages/sdk-js` generates its response types from the
+  committed spec (`openapi-typescript`), `src/contract-check.ts` fails `tsc` if a field it hands
+  out is dropped or retyped, and a Vitest test regenerates the file and fails if it is stale.
+
+  Mutations caught: 10 on the contract and credentials tests, 4 on the gate's direction rules,
+  1 on the demo-key gate, a retyped field (tsc), and a stale generated file (Vitest).
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

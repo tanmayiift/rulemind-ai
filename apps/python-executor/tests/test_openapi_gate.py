@@ -89,6 +89,83 @@ class OpenApiGateTest(unittest.TestCase):
         self.assertIn("removed schema: Rule",
                       openapi_gate.compare(spec(schemas={"Rule": {}}), spec())["breaking"])
 
+    # ── direction: request and response schemas follow opposite rules ───────
+
+    @staticmethod
+    def _directed(schemas, request=None, response=None):
+        """A spec where `request` is a request body schema and `response` a 200 schema."""
+        operation = {}
+        if request:
+            operation["requestBody"] = {"content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{request}"}}}}
+        if response:
+            operation["responses"] = {"200": {"content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{response}"}}}}}
+        return spec(paths={"/api/v1/decide": {"post": operation}}, schemas=schemas)
+
+    def test_a_response_field_becoming_guaranteed_is_additive(self):
+        """The rule that made typing responses possible: before it, every new guarantee in a
+        response read as `newly required field` -- a break -- and the snapshot would have been
+        refreshed on reflex from the first commit."""
+        old = self._directed({"Out": {"properties": {"id": {}}}}, response="Out")
+        new = self._directed({"Out": {"properties": {"id": {}}, "required": ["id"]}}, response="Out")
+        report = openapi_gate.compare(old, new)
+        self.assertEqual(report["breaking"], [])
+        self.assertIn("field now always present: Out.id", report["additive"])
+
+    def test_a_response_field_losing_its_guarantee_is_breaking(self):
+        old = self._directed({"Out": {"properties": {"id": {}}, "required": ["id"]}}, response="Out")
+        new = self._directed({"Out": {"properties": {"id": {}}}}, response="Out")
+        self.assertIn("field no longer guaranteed: Out.id", openapi_gate.compare(old, new)["breaking"])
+
+    def test_a_request_field_becoming_optional_is_additive(self):
+        old = self._directed({"In": {"properties": {"id": {}}, "required": ["id"]}}, request="In")
+        new = self._directed({"In": {"properties": {"id": {}}}}, request="In")
+        report = openapi_gate.compare(old, new)
+        self.assertEqual(report["breaking"], [])
+        self.assertIn("field now optional: In.id", report["additive"])
+
+    def test_direction_follows_references_into_nested_schemas(self):
+        """RuleResult is only ever reached through DecideResponse; it must get the response
+        rules too, or every nested model reads as a request schema."""
+        schemas = lambda required: {  # noqa: E731
+            "Out": {"properties": {"rules": {"type": "array", "items": {"$ref": "#/components/schemas/Rule"}}}},
+            "Rule": {"properties": {"passed": {}}, "required": required}}
+        old = self._directed(schemas([]), response="Out")
+        new = self._directed(schemas(["passed"]), response="Out")
+        self.assertEqual(openapi_gate.compare(old, new)["breaking"], [])
+
+    def test_a_response_field_that_may_now_be_null_is_breaking(self):
+        old = self._directed({"Out": {"properties": {"id": {"type": "string"}}}}, response="Out")
+        new = self._directed({"Out": {"properties": {"id": {"anyOf": [{"type": "string"}, {"type": "null"}]}}}},
+                             response="Out")
+        self.assertIn("may now be null: Out.id", openapi_gate.compare(old, new)["breaking"])
+
+    def test_a_changed_field_type_is_breaking(self):
+        old = self._directed({"Out": {"properties": {"score": {"type": "number"}}}}, response="Out")
+        new = self._directed({"Out": {"properties": {"score": {"type": "string"}}}}, response="Out")
+        self.assertIn("changed type: Out.score (number -> string)", openapi_gate.compare(old, new)["breaking"])
+
+    def test_a_typed_response_changing_type_is_breaking_and_gaining_one_is_not(self):
+        untyped = spec(paths={"/api/v1/x": {"get": {"responses": {"200": {"content": {"application/json": {
+            "schema": {"type": "array", "items": {"type": "object"}}}}}}}}})
+        typed = spec(paths={"/api/v1/x": {"get": {"responses": {"200": {"content": {"application/json": {
+            "schema": {"type": "array", "items": {"$ref": "#/components/schemas/Rec"}}}}}}}}},
+            schemas={"Rec": {}})
+        gained = openapi_gate.compare(untyped, typed)
+        self.assertEqual(gained["breaking"], [])
+        self.assertIn("response now typed: GET /api/v1/x 200 (array<Rec>)", gained["additive"])
+        self.assertIn("response type changed: GET /api/v1/x 200 (array<Rec> -> array<object>)",
+                      openapi_gate.compare(typed, untyped)["breaking"])
+
+    def test_an_operation_becoming_public_is_flagged(self):
+        """No client breaks when an endpoint stops needing credentials -- which is exactly why
+        nothing else would notice. The gate makes someone approve it."""
+        schemes = {"ApiKey": {"type": "apiKey"}}
+        guarded = {"paths": {"/api/v1/x": {"get": {"security": [{"ApiKey": []}]}}},
+                   "components": {"securitySchemes": schemes}}
+        public = {"paths": {"/api/v1/x": {"get": {"security": []}}}, "components": {"securitySchemes": schemes}}
+        self.assertIn("now public (was guarded): GET /api/v1/x", openapi_gate.compare(guarded, public)["breaking"])
+        self.assertIn("now requires credentials: GET /api/v1/x", openapi_gate.compare(public, guarded)["breaking"])
+
     # ── additive: must NOT block ────────────────────────────────────────────
 
     def test_a_new_operation_is_additive(self):

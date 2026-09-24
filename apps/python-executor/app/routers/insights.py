@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .. import main
+from ..api_models import DecisionRecord
 from ..analytics import (
     decision_analytics,
     experiment_analytics,
@@ -107,7 +108,7 @@ def audit_events(request: Request,
         entity_type=entity_type, entity_id=entity_id, limit=limit, offset=offset)
 
 
-@router.get("/api/v1/audit/decisions")
+@router.get("/api/v1/audit/decisions", responses={200: {"model": List[DecisionRecord]}})
 def audit_decisions(request: Request,
                     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
                     offset: Annotated[int, Query(ge=0)] = 0,
@@ -148,7 +149,7 @@ def audit_decisions_count(request: Request) -> Dict[str, int]:
     return {"total": main.storage.count_decisions(tenant_id=main.active_tenant_id(request))}
 
 
-@router.get("/api/v1/audit/decisions/{decision_id}")
+@router.get("/api/v1/audit/decisions/{decision_id}", responses={200: {"model": DecisionRecord}})
 def audit_decision(decision_id: str, request: Request) -> Dict[str, Any]:
     """One decision by id.
 

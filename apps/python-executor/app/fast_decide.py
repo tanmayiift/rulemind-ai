@@ -697,6 +697,9 @@ def fast_decide(storage: Any, policy: Dict[str, Any], payload: Dict[str, Any], t
         # Same reasoning: the slow path reports which version of the policy decided, so this
         # one must too. (And `policy_version` here is what makes the logged row attributable.)
         "policy_version": policy.get("version"),
+        # The fast path never pauses: review_gate makes a policy ineligible for it.
+        "status": "completed",
+        "execution_id": None,
         "outcome": result["outcome"] if result["outcome"] != "pending" else policy.get("defaultOutcome", "review"),
         "score": result.get("score"),
         "variables": values,

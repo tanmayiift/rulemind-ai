@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import main
+from ..api_models import OAuthErrorResponse, OAuthTokenResponse
 from ..context import get_current_api_key_id
 from ..main import (
     AccessKeyRequest,
@@ -445,7 +446,13 @@ async def sso_saml_acs(http_request: Request) -> Dict[str, Any]:
         body = await http_request.json()
         saml_response, relay_state = body.get("saml_response"), body.get("relay_state")
     else:
-        form = await http_request.form()
+        # The HTTP-POST binding: an urlencoded form from the user's browser. Parsed here rather
+        # than with `request.form()`, which needs python-multipart -- a package this app does not
+        # install, so every real SAML sign-in was a 500 (the tests posted JSON, which no IdP does).
+        from urllib.parse import parse_qs
+
+        raw = (await http_request.body()).decode("utf-8", "replace")
+        form = {k: v[0] for k, v in parse_qs(raw).items() if v}
         saml_response = form.get("SAMLResponse") or form.get("saml_response")
         relay_state = form.get("RelayState") or form.get("relay_state")
     if not saml_response or not relay_state:
@@ -481,7 +488,7 @@ def _oauth_error(status: int, code: str, description: str) -> JSONResponse:
                         content={"error": code, "error_description": description, "detail": description})
 
 
-@router.post("/api/v1/oauth/token")
+@router.post("/api/v1/oauth/token", responses={200: {"model": OAuthTokenResponse}, 400: {"model": OAuthErrorResponse}, 401: {"model": OAuthErrorResponse}})
 async def oauth_token(request: Request) -> Any:
     """Exchange an API key for a short-lived access token.
 

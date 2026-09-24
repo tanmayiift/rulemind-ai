@@ -10,6 +10,7 @@ from typing import Annotated, Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from .. import main
+from ..api_models import ExecutionSummary
 from ..main import (
     ReviewDecisionRequest,
     ScheduleUpsertRequest,
@@ -236,7 +237,7 @@ def escalate_review(task_id: str, request: ReviewDecisionRequest) -> Dict[str, A
 # existed. "Nothing ever resumes a paused execution" was not even an observable claim.
 
 
-@router.get("/api/v1/executions")
+@router.get("/api/v1/executions", responses={200: {"model": List[ExecutionSummary]}})
 def list_executions(request: Request,
                     status: Optional[str] = None,
                     policy_id: Optional[str] = None,
