@@ -39,6 +39,8 @@ export SANDBOX_POOL_SIZE="${SANDBOX_POOL_SIZE:-2}"
 # report that silently omits the 68 browser tests is the kind of partial-coverage claim this
 # script exists to prevent. It adds ~30s.
 LANES="${*:-python python-pg web rust flutter kotlin e2e contracts lint migrations build qa}"
+
+
 # `smoke` is NOT in the default set: smoke_compose.sh builds and tears down the whole stack and
 # refuses to run when 8080/3000/55432/6380 are busy — which they are during a normal regression,
 # because the python-pg lane is using the database. Run it on its own: `run_all_tests.sh smoke`.
@@ -90,13 +92,30 @@ if [ -n "$_TMP" ] && [ -d "$_TMP" ]; then
   [ "$swept" -gt 0 ] && printf '  swept %s stale test temp dir(s) from earlier runs\n' "$swept"
 fi
 
-LOCK="$OUT/.run.lock"
+# OUTSIDE $OUT, deliberately. The lock used to live at "$OUT/.run.lock" -- inside the very
+# directory you delete to get a clean run. `rm -rf test-results && scripts/run_all_tests.sh` is
+# the obvious way to start fresh, and it takes the lock with it, so a second run starts happily
+# beside the first. Both then append to the same summary.tsv and the report renders the UNION:
+# measured on 2026-09-23, "30 lanes, 1 failed, 6266 tests" -- roughly double everything, with a
+# failure inherited from the older run's code. The file read as authoritative and was nonsense.
+#
+# A directory rather than flock, which macOS does not ship; mkdir is atomic everywhere.
+LOCK="$ROOT/.rulemind-test-run.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "another scripts/run_all_tests.sh is already running (lock: $LOCK)." >&2
-  echo "wait for it, or remove the lock directory if it is stale." >&2
-  exit 2
+  HOLDER="$(cat "$LOCK/pid" 2>/dev/null)"
+  if [ -n "$HOLDER" ] && kill -0 "$HOLDER" 2>/dev/null; then
+    echo "another scripts/run_all_tests.sh is already running (pid $HOLDER)." >&2
+    echo "Two runs share test-results/summary.tsv and the report renders the UNION of them," >&2
+    echo "so the numbers would be WRONG rather than merely slow. Wait for it, or kill it." >&2
+    exit 2
+  fi
+  # The holder is gone -- a crash or a kill. Take it over rather than blocking forever.
+  printf '  note  clearing a stale run lock from pid %s\n' "${HOLDER:-unknown}"
+  rm -rf "$LOCK"
+  mkdir "$LOCK" 2>/dev/null || { echo "could not take the run lock at $LOCK" >&2; exit 2; }
 fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM
 
 # Docker disk pre-flight, for the lanes that need a container.
 #
