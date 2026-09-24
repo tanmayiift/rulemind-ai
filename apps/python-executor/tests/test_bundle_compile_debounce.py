@@ -75,6 +75,26 @@ class TrailingCompileTest(unittest.TestCase):
             time.sleep(WINDOW + 0.5)
         self.assertEqual(compiles.call_count, 1, "a burst of writes should coalesce into one compile")
 
+    def test_a_failing_trailing_compile_is_logged_not_raised_into_the_thread(self):
+        """Found in a full run: a timer firing after its store's database was removed raised out
+        of the thread -- a bare stderr traceback, no log line."""
+        import threading
+
+        escaped = []
+        previous = threading.excepthook
+        threading.excepthook = lambda args: escaped.append(args.exc_value)
+        self.addCleanup(setattr, threading, "excepthook", previous)
+
+        class Broken:
+            def mark_bundle_compile_queued(self, *_args, **_kwargs):
+                raise RuntimeError("database is gone")
+
+        with self.assertLogs("rulemind.bundle", level="WARNING") as logged:
+            app_main._schedule_trailing_compile(Broken(), "tenant-x")
+            time.sleep(WINDOW + 0.5)
+        self.assertEqual(escaped, [], "the exception escaped the timer thread")
+        self.assertIn("database is gone", logged.output[0])
+
 
 if __name__ == "__main__":
     unittest.main()
