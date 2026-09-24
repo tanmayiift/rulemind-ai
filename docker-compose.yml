@@ -78,6 +78,19 @@ services:
       # observability profile to emit traces. Metrics are always on at /metrics.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: rulemind-api
+      # Prometheus multiprocess mmap dir. The Dockerfile runs uvicorn --workers 2, and
+      # prometheus_client keeps counters PER PROCESS: without this a scrape reports
+      # whichever worker happened to answer it, so rulemind_decisions_total appears to
+      # jump around and go backwards between scrapes and every rate() over it is
+      # meaningless. Measured on this stack before the fix: a 10-minute window ranged
+      # 175,073..280,562 and the counter decreased twice.
+      #
+      # helm/rulemind/templates/configmap.yaml has set this since the chart was written;
+      # compose did not, so the deployment everybody runs first was the broken one.
+      # entrypoint.sh wipes the directory once in the master before uvicorn forks.
+      # Not set on `worker`: it runs app.worker, which serves no /metrics endpoint, so
+      # the mmap files would be written and never read.
+      PROMETHEUS_MULTIPROC_DIR: ${PROMETHEUS_MULTIPROC_DIR:-/tmp/prom-multiproc}
     depends_on:
       db:
         condition: service_healthy
