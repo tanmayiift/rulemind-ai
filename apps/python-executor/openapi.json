@@ -4347,6 +4347,27 @@
               ],
               "title": "Rulemind Admin Session"
             }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -4584,6 +4605,27 @@
                 }
               ],
               "title": "Rulemind Admin Session"
+            }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
             }
           }
         ],
@@ -4865,6 +4907,29 @@
       "get": {
         "description": "List this workspace's API keys with their roles (keys are masked).",
         "operationId": "access_list_keys_api_v1_access_keys_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5043,6 +5108,29 @@
       "get": {
         "description": "List the workspace's human members and their roles (requires manage_access).",
         "operationId": "access_list_members_api_v1_access_members_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6278,6 +6366,29 @@
       "get": {
         "description": "Tenant passed explicitly. The promotion ledger is the maker/checker record \u2014 who moved\nwhat to prod \u2014 so a fallback to the first tenant here shows one customer's release history\nto another.",
         "operationId": "audit_promotions_api_v1_audit_promotions_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6698,6 +6809,29 @@
       "get": {
         "description": "The retained compiled bundle versions (for choosing a historical version to replay against).",
         "operationId": "list_bundle_versions_api_v1_bundles_versions_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6948,6 +7082,29 @@
     "/api/v1/connectors": {
       "get": {
         "operationId": "list_connectors_api_v1_connectors_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -7484,6 +7641,29 @@
     "/api/v1/decision-tables": {
       "get": {
         "operationId": "list_decision_tables_api_v1_decision_tables_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -8038,6 +8218,29 @@
     "/api/v1/evaluations": {
       "get": {
         "operationId": "list_evaluations_api_v1_evaluations_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -8539,6 +8742,29 @@
     "/api/v1/experiments": {
       "get": {
         "operationId": "list_experiments_api_v1_experiments_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -9016,6 +9242,29 @@
     "/api/v1/journeys": {
       "get": {
         "operationId": "list_journeys_api_v1_journeys_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -9340,6 +9589,29 @@
     "/api/v1/model-sets": {
       "get": {
         "operationId": "list_model_sets_api_v1_model_sets_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -9623,6 +9895,29 @@
     "/api/v1/models": {
       "get": {
         "operationId": "list_models_api_v1_models_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -10088,6 +10383,27 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
             }
           }
         ],
@@ -11000,6 +11316,29 @@
     "/api/v1/predictors": {
       "get": {
         "operationId": "list_predictors_api_v1_predictors_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11352,6 +11691,27 @@
               ],
               "title": "Category"
             }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -11428,6 +11788,29 @@
     "/api/v1/reports": {
       "get": {
         "operationId": "list_reports_api_v1_reports_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11888,6 +12271,27 @@
               ],
               "title": "Status"
             }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -12101,6 +12505,27 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
             }
           }
         ],
@@ -12411,6 +12836,29 @@
     "/api/v1/schedules": {
       "get": {
         "operationId": "list_schedules_api_v1_schedules_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -12612,6 +13060,27 @@
               "title": "Schedule Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -12703,6 +13172,27 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
             }
           }
         ],
@@ -13616,6 +14106,27 @@
               ],
               "title": "Category"
             }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -13928,6 +14439,27 @@
               "title": "Variable Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -14070,6 +14602,29 @@
     "/api/v1/webhook-subscriptions": {
       "get": {
         "operationId": "list_subscriptions_api_v1_webhook_subscriptions_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -14323,6 +14878,29 @@
     "/api/v1/webhooks": {
       "get": {
         "operationId": "list_webhooks_api_v1_webhooks_get",
+        "parameters": [
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {

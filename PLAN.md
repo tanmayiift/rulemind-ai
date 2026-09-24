@@ -1883,6 +1883,39 @@ calls it.
   a heading"** (mutation: remove it → fails). route-health went from 42/43 in ~4 minutes to
   **44/44 in one minute.**
 
+- [x] **R10.23 EVERY COLLECTION PAGES, THE SAME WAY.** Measured from the routing table rather than
+  grepped (a regex over the routers reported **0** paginated endpoints because it could not read
+  multi-line signatures — the app's own route objects said 4): of the **30 GET endpoints that
+  return a list, 4 paged** (`/audit`, `/audit/decisions`, `/audit/errors`, `/executions`, all in
+  SQL) and **26 returned a bare, unbounded array** — `/policies`, `/rules`, `/variables`,
+  `/scorecards`, `/reviews`, `/decision-tables`, `/schedules/{id}/history`, `/bundles/versions`
+  among them. No way to ask for less, learn how many, or walk a large collection.
+
+  `app/pagination.py` applies one contract at the route level, installed after every router so
+  it walks the routing table as it stands: `?limit=` (1–1000), `?offset=`, `X-Total-Count`, and
+  RFC 8288 `Link` `rel="next"`/`"prev"`. Done once rather than in 26 handlers because 26 copies of
+  the same bounds and headers would drift, and because it **covers the endpoint someone adds next
+  month** — the test enumerates the same table, so there is nothing to remember to extend.
+
+  Three properties, each mutation-checked:
+  * **Opt-in, so nothing changes for existing clients.** No parameters → the exact array as before,
+    no new headers. The dashboard's pickers load full lists and five SDKs expect an array.
+  * **The four self-paging endpoints are left alone.** Wrapping them applies the offset twice —
+    the handler returns rows 200–399 for `?offset=200` and a second slice of `[200:400]` is empty.
+    (Mutation: wrap them anyway → 4 named failures, one per endpoint.)
+  * **Bad values are a 422 in the error envelope, not a clamp.** `?limit=-1` had reached Postgres
+    as `LIMIT -1` and 500'd on the audit routes; on SQLite it meant *no* limit.
+
+  The parameters are also injected into the OpenAPI spec — applied at the ASGI layer they would
+  have been invisible to anyone generating a client, the audience that most needs to know a
+  collection can be paged. `API.md` documents the contract and states its limit honestly: it
+  bounds what is **sent**; the authoring collections are still read whole and sliced, which is the
+  right trade at hundreds per tenant, while the genuinely unbounded tables page in SQL.
+
+  One test was wrong on the first run and is recorded: it assumed an unknown variable's history
+  404s, so it was measuring the handler rather than the wrapper. It now drives the wrapper with a
+  synthetic 404 app. 12 tests; with this, **plan item 5.3 is closed** (the envelope half was R10.18).
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.
