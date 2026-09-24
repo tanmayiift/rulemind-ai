@@ -152,14 +152,23 @@ def rate_at(t: float, lo: float, hi: float, burst_hour: int, burst_mult: float,
     hour = (t / 3600.0) % 24.0
     phase = math.sin((hour - 10.0) / 24.0 * 2 * math.pi)  # -1 at 04:00, +1 at 16:00
     rate = lo + (hi - lo) * (phase + 1) / 2
+    # BURST FIRST, WINDOW SECOND, and the order matters. Applying the burst last multiplied the
+    # window: a 6x burst landing inside a 40 rps window asked for 240 rps on a system that
+    # flattens at 32, which produces a queue and a timeout, not a measurement. The burst hour is
+    # random, so that would have happened on roughly one day in twelve and quietly produced one
+    # unusable outlier per occurrence.
+    #
+    # This way the window is a FLOOR the burst cannot exceed, and outside it the burst still does
+    # its job -- 6x the sine peak is ~24 rps, close enough to the ceiling to exercise the queue
+    # without collapsing it.
+    if int(hour) == burst_hour:
+        rate *= burst_mult
     if peak_rps > 0 and peak_hours > 0:
         end = peak_start + peak_hours
         # The window may wrap past midnight; compare on the 24h circle rather than a raw range.
         in_window = (peak_start <= hour < end) or (end > 24 and hour < end - 24)
         if in_window:
             rate = max(rate, peak_rps)
-    if int(hour) == burst_hour:
-        rate *= burst_mult
     return max(0.1, rate)
 
 
