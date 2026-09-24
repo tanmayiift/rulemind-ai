@@ -353,6 +353,30 @@ This is the one item on the list with no engineering answer, so here is the oper
 is four steps and roughly a month, and **the order matters** — each step makes the next one's
 numbers mean something.
 
+> **RESTARTED 2026-09-23.** The first attempt ran 2026-09-20 → 2026-09-23 and its data is not
+> salvageable: `/metrics` was reporting a single uvicorn worker for the whole window (see *What
+> running it found*, §1), so every Prometheus-derived number from it — the sampled-minute count,
+> the latency quantiles, the calibration input — describes whichever of two processes answered
+> each scrape. The clock starts again, and **the month now ends 2026-10-23.**
+>
+> Two other things had to change before a restart was worth doing, because the run would have
+> died either way:
+>
+> * **It would have filled the disk around day six.** 13.2 KB per decision row, ~1.6 GB/day, on
+>   a Colima VM with a hard 30 GiB allocation that was already 83% full. Retention is now
+>   actually enforced (`DECISION_ARCHIVE_SINK=discard`, a 2-day window, purge every 6h) rather
+>   than advertised and inert.
+> * **The three days collected would have been calibrated from anyway.**
+>   `calibrate_thresholds.py` was happy to propose 72 ms / 192 ms from 3,917 sampled minutes
+>   whose per-minute p95 ranged 47.9 ms → 48.0 ms. It now reports INCONCLUSIVE on a flat
+>   distribution, which is the honest answer and was not available before.
+>
+> The generator still does not reach the knee (~100 rps measured; it peaks at 4), so a flat
+> distribution is the *expected* outcome of this month too. That is named here rather than
+> discovered at the end: **the soak proves the stack survives a month, not what the thresholds
+> should be.** Thresholds want real traffic, which is the item above this one and cannot be
+> closed from here.
+
 > **STARTED 2026-09-20, on this machine.** `scripts/soak_start.sh` runs the stack under the
 > observability profile with shaped traffic and holds the machine awake; `--status` reports
 > sampled minutes, which is the number that decides whether the month will be usable.
