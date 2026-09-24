@@ -16,6 +16,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -55,11 +56,10 @@ class MigrationChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = os.path.join(tmp, "fresh.db")
             url = f"sqlite:///{db}"
-            os.environ["DATABASE_URL"] = url
-            try:
+            # patch.dict RESTORES the variable; popping it removed the Postgres lane's
+            # DATABASE_URL for every module that ran after this one.
+            with mock.patch.dict(os.environ, {"DATABASE_URL": url}):
                 command.upgrade(_alembic_config(url), "head")
-            finally:
-                os.environ.pop("DATABASE_URL", None)
             conn = sqlite3.connect(db)
             version = list(conn.execute("SELECT version_num FROM alembic_version"))
             self.assertEqual(version, [(HEAD,)])
@@ -79,11 +79,10 @@ class MigrationChainTests(unittest.TestCase):
             db = os.path.join(tmp, "existing.db")
             url = f"sqlite:///{db}"
             Base.metadata.create_all(create_engine(url))
-            os.environ["DATABASE_URL"] = url
-            try:
+            # patch.dict RESTORES the variable; popping it removed the Postgres lane's
+            # DATABASE_URL for every module that ran after this one.
+            with mock.patch.dict(os.environ, {"DATABASE_URL": url}):
                 command.upgrade(_alembic_config(url), "head")  # must not raise "table already exists"
-            finally:
-                os.environ.pop("DATABASE_URL", None)
             conn = sqlite3.connect(db)
             self.assertEqual(list(conn.execute("SELECT version_num FROM alembic_version")), [(HEAD,)])
             conn.close()

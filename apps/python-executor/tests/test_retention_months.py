@@ -267,11 +267,10 @@ class RetentionMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = os.path.join(tmp, "fresh.db")
             url = "sqlite:///{0}".format(db)
-            os.environ["DATABASE_URL"] = url
-            try:
+            # patch.dict RESTORES the variable; popping it removed the Postgres lane's
+            # DATABASE_URL for every module that ran after this one.
+            with mock.patch.dict(os.environ, {"DATABASE_URL": url}):
                 command.upgrade(_alembic_config(url), "head")
-            finally:
-                os.environ.pop("DATABASE_URL", None)
             conn = sqlite3.connect(db)
             cols = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
             conn.close()
@@ -283,11 +282,10 @@ class RetentionMigrationTests(unittest.TestCase):
             db = os.path.join(tmp, "existing.db")
             url = "sqlite:///{0}".format(db)
             Base.metadata.create_all(create_engine(url))
-            os.environ["DATABASE_URL"] = url
-            try:
+            # patch.dict RESTORES the variable; popping it removed the Postgres lane's
+            # DATABASE_URL for every module that ran after this one.
+            with mock.patch.dict(os.environ, {"DATABASE_URL": url}):
                 command.upgrade(_alembic_config(url), "head")  # must not raise "duplicate column"
-            finally:
-                os.environ.pop("DATABASE_URL", None)
             conn = sqlite3.connect(db)
             cols = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
             conn.close()
