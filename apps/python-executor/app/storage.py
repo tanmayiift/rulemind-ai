@@ -1436,7 +1436,11 @@ class Storage:
                     entity_type="connector",
                     entity_id=payload["id"],
                     version=1,
-                    snapshot=copy.deepcopy(payload),
+                    # MASKED. The connector's own config is Fernet-encrypted one column over, and
+                    # this snapshot was the same config in plaintext JSON -- every credential a
+                    # connector was ever created with, readable in the database and in every
+                    # backup of it. History is for what changed, never for the secret itself.
+                    snapshot=mask_secret_values(copy.deepcopy(payload)),
                     created_at=now,
                 )
             )
