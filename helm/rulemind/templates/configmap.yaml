@@ -58,6 +58,13 @@ data:
   # restart. entrypoint.sh wipes it once in the master before the fork.
   PROMETHEUS_MULTIPROC_DIR: /tmp/prom-multiproc
 
+  # The two performance flags. Absent from this chart AND from docker-compose.yml, so neither
+  # could be enabled on any deployment however the docs described them. Default off, matching
+  # the code; COMPUTE_ONLY_USED_VARS changes what lands in a decision's computed_variables, so
+  # it is an audit-surface decision and not merely a speed one.
+  FAST_DECIDE: {{ .Values.env.fastDecide | quote }}
+  COMPUTE_ONLY_USED_VARS: {{ .Values.env.computeOnlyUsedVars | quote }}
+
   # Unauthenticated tenant creation, reachable through the Ingress. The code defaults it ON
   # (onboarding.py:50) and this chart set it nowhere, so every install shipped a public signup
   # endpoint. See the note in values.yaml.

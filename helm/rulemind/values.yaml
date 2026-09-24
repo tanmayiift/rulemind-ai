@@ -121,6 +121,14 @@ env:
   # Set to "1" if you actually want public signup, and put an authenticating proxy in front.
   selfServeSignup: "0"
 
+  # Performance flags, both previously unreachable -- absent from this chart and from
+  # docker-compose.yml, so they could not be turned on anywhere. Off by default, as the code is.
+  # COMPUTE_ONLY_USED_VARS shrinks a decision's recorded computed_variables from the tenant's
+  # whole catalog to what the policy actually read: a change to your audit surface, so decide it
+  # deliberately rather than for the throughput.
+  fastDecide: "0"
+  computeOnlyUsedVars: "0"
+
   # Was set in NO deployment artifact. app/security_config.py checks RULEMIND_ENV
   # first; with it unset (and NODE_ENV unset) the fail-closed default-secret check
   # takes its "warn and SKIP" branch, so a cluster would happily boot on the
