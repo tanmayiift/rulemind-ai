@@ -2,53 +2,19 @@
 
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
-import { flushSync } from "react-dom";
 import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  CircleHelp,
-  CircleSlash,
-  Eye,
-  FileSearch,
-  GitBranch,
-  Layers,
-  Plus,
-  Trash2,
-  Workflow,
-  XCircle,
-  type LucideIcon,
+CheckCircle2,
+CircleHelp,Eye,GitBranch,
+Layers,XCircle,
+type LucideIcon
 } from "lucide-react";
-import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../lib/api";
+import { apiJson } from "../lib/api";
 import { useRuleMindStore } from "../lib/store";
-import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "./theme";
+import { THEMES,type ThemeTokens } from "./theme";
 import { ConnectorIcon } from "./icons";
 import type {
-  AuditErrorRecord,
-  BootstrapPayload,
-  ConnectorRecord,
-  DeployStatusPayload,
-  ExecutionTraceStepRecord,
-  PolicyExecuteResponse,
-  PolicyRecord,
-  PolicyStepRecord,
-  PromotionRecord,
-  RuleConditionResult,
-  RuleNodeRecord,
-  RuleRecord,
-  RuleTreeNodeRecord,
-  RuleTestResponse,
-  ScorecardBinRecord,
-  ScorecardRangeRecord,
-  ScorecardRecord,
-  SettingsRecord,
-  DataProtection,
-  SloConfig,
-  SloStatus,
-  VariableBatchTestResponse,
-  VariableGraphResponse,
-  VariableRecord,
+BootstrapPayload,
+ConnectorRecord,RuleNodeRecord,VariableRecord
 } from "./types";
 
 

@@ -256,7 +256,7 @@ export default function ApiConsolePage() {
                   <div key={i} style={{ display: "flex", gap: 8 }}>
                     <input className="rm-input rm-mono" value={v.key} placeholder="key" onChange={(e) => setEnv((arr) => arr.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} style={{ flex: 1 }} />
                     <input aria-label="Variable value" className="rm-input rm-mono" value={v.value} placeholder="value" onChange={(e) => setEnv((arr) => arr.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} style={{ flex: 2 }} />
-                    <Button variant="ghost" size="sm" onClick={() => setEnv((arr) => arr.filter((_, j) => j !== i))}><Trash2 size={14} /></Button>
+                    <Button aria-label={"Remove variable " + (v.key || String(i + 1))} variant="ghost" size="sm" onClick={() => setEnv((arr) => arr.filter((_, j) => j !== i))}><Trash2 size={14} /></Button>
                   </div>
                 ))}
                 <Button variant="ghost" size="sm" onClick={() => setEnv((arr) => [...arr, { key: "", value: "" }])} style={{ justifySelf: "start" }}><Plus size={14} /> Add variable</Button>

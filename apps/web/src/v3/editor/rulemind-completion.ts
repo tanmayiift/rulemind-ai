@@ -75,7 +75,6 @@ const PARAMETERS: Array<{ label: string; detail: string; info: string }> = [
 /** Roots whose contents this module can describe, and where their shape comes from. */
 type Root = "payload" | "variables" | "apis";
 
-const ROOTS: Root[] = ["payload", "variables", "apis"];
 
 /**
  * A path segment written either as `.key` or as `["key"]` / `['key']`. Both appear in real

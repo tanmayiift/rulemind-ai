@@ -72,7 +72,7 @@ def main() -> None:
     # way SAS/R exporters write binary logistic: the "1" table carries the linear term, "0" is the
     # reference. Its predictions must equal sklearn's.
     predictors = "\n".join('        <NumericPredictor name={0} coefficient="{1!r}"/>'.format(
-        quoteattr(name), float(coef)) for name, coef in zip(FEATURES, lr.coef_[0]))
+        quoteattr(name), float(coef)) for name, coef in zip(FEATURES, lr.coef_[0], strict=True))
     pmml = """<?xml version="1.0" encoding="UTF-8"?>
 <PMML xmlns="http://www.dmg.org/PMML-4_4" version="4.4">
   <Header description="RuleMind test fixture: logistic regression"/>

@@ -3,81 +3,16 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { flushSync } from "react-dom";
-import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  CircleHelp,
-  CircleSlash,
-  Eye,
-  FileSearch,
-  GitBranch,
-  Layers,
-  Plus,
-  Trash2,
-  Workflow,
-  XCircle,
-  type LucideIcon,
-} from "lucide-react";
-import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../lib/api";
 import { useRuleMindStore } from "../../lib/store";
-import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
 import type {
-  AuditErrorRecord,
-  BootstrapPayload,
-  ConnectorRecord,
-  DeployStatusPayload,
-  ExecutionTraceStepRecord,
-  PolicyExecuteResponse,
-  PolicyRecord,
-  PolicyStepRecord,
-  PromotionRecord,
-  RuleConditionResult,
-  RuleNodeRecord,
-  RuleRecord,
-  RuleTreeNodeRecord,
-  RuleTestResponse,
-  ScorecardBinRecord,
-  ScorecardRangeRecord,
-  ScorecardRecord,
-  SettingsRecord,
-  DataProtection,
-  SloConfig,
-  SloStatus,
-  VariableBatchTestResponse,
-  VariableGraphResponse,
-  VariableRecord,
+BootstrapPayload
 } from "../types";
 
 
 
 import {
-  PageId,
-  PAGE_META,
-  NODE_TYPES,
-  STATUS_ORDER,
-  CATEGORY_ORDER,
-  useTheme,
-  useBootstrapData,
-  statusColorKey,
-  statusLabel,
-  tone,
-  toRuleNodeLabel,
-  cloneNode,
-  connectorLabel,
-  sourceMark,
-  useFilteredVariables,
-  StatCard,
-  Button,
-  StatusBadge,
-  InlineInput,
-  InlineSelect,
-  InlineTextarea,
-  SectionHeader,
-  InfoBanner,
-  EmptyState,
+PAGE_META,useTheme,StatCard,StatusBadge,SectionHeader
 } from "../kit";
 
 export function DashboardPage(props: { data: BootstrapPayload }) {

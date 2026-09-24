@@ -66,7 +66,7 @@ class NativeParityTest(unittest.TestCase):
 
     def _assert_matches(self, blob_name, expected_key, tolerance=1e-5):
         blob = _blob(blob_name)
-        for row, want in zip(PROBES, EXPECTED[expected_key]):
+        for row, want in zip(PROBES, EXPECTED[expected_key], strict=True):
             result = model_executor.execute_model(blob, row, features=FEATURES)
             self.assertIsNone(result.get("error"), result.get("error"))
             self.assertAlmostEqual(_proba1(result), want, delta=tolerance, msg=(blob_name, row))
@@ -109,7 +109,7 @@ class BatchScoringTest(unittest.TestCase):
         batch = model_executor.execute_model_batch(blob, PROBES, features=FEATURES)
         self.assertIsNone(batch["error"])
         self.assertEqual(len(batch["predictions"]), len(PROBES))
-        for got, want in zip(batch["probabilities"], EXPECTED["xgboost_proba1"]):
+        for got, want in zip(batch["probabilities"], EXPECTED["xgboost_proba1"], strict=True):
             self.assertAlmostEqual(got[-1], want, delta=1e-5)
 
     def test_batches_are_chunked_and_reassembled_in_order(self):
@@ -131,7 +131,7 @@ class BatchScoringTest(unittest.TestCase):
         with mock.patch.object(model_executor, "_run_isolated", wraps=model_executor._run_isolated) as spy:
             scored = score_rows_with_model(_blob("logistic.onnx"), rows, FEATURES, "label")
         self.assertEqual(spy.call_count, 1, "evaluation went back to one worker round trip per row")
-        for got, want in zip(scored, EXPECTED["sklearn_logistic_proba1"]):
+        for got, want in zip(scored, EXPECTED["sklearn_logistic_proba1"], strict=True):
             self.assertAlmostEqual(got["score"], want, delta=1e-5)
 
 

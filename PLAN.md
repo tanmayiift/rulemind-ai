@@ -2231,6 +2231,48 @@ calls it.
   6.6 full run's two migration-test failures were that run racing this migration's creation (the
   test fixes its expected head at import); both pass when run.
 
+- [x] **R10.32 A FRONTEND ENGINEERING BASELINE.** (Plan 6.8.)
+  * **ESLint, which did not exist** (`pnpm lint` was `tsc --noEmit`). `next/core-web-vitals` +
+    `next/typescript`, flat config, `--max-warnings=0`, run by the gate's lint lane. First run:
+    **19 errors, 752 warnings.** 746 were unused imports — copy-pasted import blocks left in 13
+    pages by the monolith split — removed with TypeScript's own organize-imports in
+    `RemoveUnused` mode (deletions only, verified by `tsc`). The 18 `any`s became real types
+    (the evaluation page now types every metric the API returns, so a renamed metric is a compile
+    error, not a silent "—"), except the decision trace, which is heterogeneous JSON by design and
+    gets one named, commented alias. Three dead rule-tree helpers, three stale disable directives
+    and a ternary-as-statement went. **Now 0 errors, 0 warnings.** One `react-hooks/exhaustive-deps`
+    finding was a latent stale closure in the variable save — harmless today only because `props`
+    is a new object every render; fixed rather than left to depend on that.
+  * **Component tests, which did not exist** (React Testing Library + jsdom): the accessible
+    `Dialog` (named, focus in and back, Tab trapped, Escape ignored while busy), the reviewed
+    promotion (no confirm below ten characters; the request carries the reason and never
+    `promoted_by`), the signup form's validation and plural hint, the history diff, i18n.
+  * **A web test no lane ran, failing unseen.** `apps/web/test/workflow-builder-palette.test.ts`
+    was outside the root Vitest `include`, and three of its checks had failed since Build Studio was
+    merged (they still read Studio's palette). Retargeted at the one canvas; `apps/web/test` is in
+    the web lane now. 20 web tests, 496 Vitest in total.
+  * **Ghost routes are redirects.** `/segments`, `/approvals`, `/batch`, `/workflows`, `/prototype`
+    and `/studio` were page files rendering another route's page under their own URL; they are
+    308s in `next.config.js` now (`/workflows` → Workflow Builder, the screen its name means).
+    route-health asserts each lands on its target and that no redirected path keeps a page file.
+  * **Accessibility:** step move/remove on Policies and Scorecards is keyboard-reachable (they are
+    buttons — the plan's "mouse-only" was not accurate) but **nine icon-only buttons had no
+    accessible name**; a screen reader read "button, button, button" beside every policy step. All
+    named ("Move step 3 up"), and a test parses every `.tsx` with the TypeScript compiler and fails
+    on any unnamed icon-only button.
+  * **i18n scaffold:** a typed English catalog, `t()` with interpolation and key-by-key fallback
+    (region → language → English), and plurals through `Intl.PluralRules` — found necessary on the
+    first conversion, where "7 more character(s)." replaced the correct plural. Sign-in and signup
+    render through it; no machine-translated second language is shipped, because a wrong
+    translation in a credit product is worse than none.
+
+  Four mutations caught: Escape-while-busy, the Tab trap, the promotion reason minimum, and the
+  icon-button guard.
+  Gate: Playwright 146 (the six deleted page files took their per-route checks with them; the three
+  redirect checks replace them), Vitest 496, `pnpm -r lint` clean -- which it was not: the 6.3 model
+  tests carried four `zip()`s without `strict=`, which would silently score fewer rows than expected
+  and still pass. Now `strict=True`.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

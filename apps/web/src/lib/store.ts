@@ -19,7 +19,6 @@ import { setBearerToken } from "./api";
  * The localhost fallback is for `pnpm dev` only.
  */
 declare global {
-  // eslint-disable-next-line no-var
   var __RULEMIND_CONFIG__: { apiBaseUrl?: string } | undefined;
 }
 

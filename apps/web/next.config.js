@@ -53,6 +53,21 @@ const nextConfig = {
   transpilePackages: ["@rulemind/widget", "@rulemind/shared", "@rulemind/rule-engine"],
   experimental: {
     typedRoutes: true
+  },
+  // Old and alias paths. Each was a page file that RENDERED another route's page under its own URL
+  // -- /segments showed the dashboard, /approvals the deploy board, /batch the test console -- so
+  // it passed route-health (it did not 404), kept a stale title in the shell, and split bookmarks
+  // and analytics across two URLs for one screen. A real redirect says where the screen lives.
+  // Permanent (308): these are old names, not temporary moves.
+  async redirects() {
+    return [
+      { source: "/studio", destination: "/workflow-builder", permanent: true },
+      { source: "/workflows", destination: "/workflow-builder", permanent: true },
+      { source: "/approvals", destination: "/deploy", permanent: true },
+      { source: "/batch", destination: "/test-console", permanent: true },
+      { source: "/segments", destination: "/", permanent: true },
+      { source: "/prototype", destination: "/", permanent: true }
+    ];
   }
 };
 

@@ -47,9 +47,12 @@ function refKeys(file: string): Set<string> {
   return new Set([...chunk.matchAll(/([a-z_]+)\s*:/g)].map((m) => m[1]));
 }
 
+// Workflow Builder is the one canvas since Build Studio was merged into it (PLAN R10.21); /studio
+// is a redirect in next.config.js. The Studio entry stayed in this list after the merge, and three
+// of these checks failed from then on -- unnoticed, because no lane ran this file. It runs in the
+// web lane now.
 const BUILDERS = [
   "apps/web/app/workflow-builder/page.tsx",
-  "apps/web/app/studio/page.tsx",
 ];
 
 describe("workflow builders stay in step with the executor", () => {

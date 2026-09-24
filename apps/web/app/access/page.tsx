@@ -311,7 +311,7 @@ export default function AccessPage() {
               </div>
               {issued ? (
                 <div style={{ marginTop: 14, padding: 12, borderRadius: 8, background: "var(--rm-success-bg)", border: "1px solid var(--rm-border)" }}>
-                  <div style={{ fontSize: 12, color: "var(--rm-success)", fontWeight: 700, marginBottom: 6 }}>New {ROLE_LABEL[issued.role] ?? issued.role} key — copy it now, it won't be shown again</div>
+                  <div style={{ fontSize: 12, color: "var(--rm-success)", fontWeight: 700, marginBottom: 6 }}>New {ROLE_LABEL[issued.role] ?? issued.role} key — copy it now, it won&apos;t be shown again</div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <code style={{ flex: 1, fontSize: 12, padding: "8px 10px", background: "var(--rm-bg)", borderRadius: 6, border: "1px solid var(--rm-border)", overflowX: "auto" }}>{issued.plaintext}</code>
                     <Button variant="secondary" onClick={() => navigator.clipboard?.writeText(issued.plaintext)}><Copy size={14} /> Copy</Button>

@@ -7,6 +7,7 @@ import { KeyRound, Mail, ShieldCheck, Building2 } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { humanMessage } from "../../src/lib/errors";
 import { safeNext } from "../../src/lib/navigation";
+import { useT } from "../../src/i18n";
 import { useRuleMindStore, type SessionMember } from "../../src/lib/store";
 import { Button, Card, Field, Input } from "../../src/v3/ui";
 
@@ -20,6 +21,7 @@ type SsoConfig = { enabled?: boolean; provider?: string };
 export default function LoginPage() {
   const router = useRouter();
   const { apiBaseUrl, setSession, member } = useRuleMindStore();
+  const t = useT();
   const [mode, setMode] = React.useState<"password" | "otp">("password");
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -106,9 +108,9 @@ export default function LoginPage() {
           <div style={{ width: 46, height: 46, margin: "0 auto 12px", borderRadius: 12, display: "grid", placeItems: "center", background: "var(--rm-accent)", color: "#fff" }}>
             <ShieldCheck size={24} />
           </div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Sign in to RuleMind</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>{t("signin.title")}</h1>
           <p style={{ fontSize: 13, color: "var(--rm-muted)", marginTop: 6 }}>
-            Access is scoped to your role. {member ? `You're currently signed in as ${member.email}.` : ""}
+            {t("signin.scope")} {member ? t("signin.signedInAs", { email: member.email }) : ""}
           </p>
         </div>
 
@@ -122,38 +124,38 @@ export default function LoginPage() {
                   boxShadow: mode === m ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
                   display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                 {m === "password" ? <KeyRound size={14} /> : <Mail size={14} />}
-                {m === "password" ? "Password" : "Email code"}
+                {m === "password" ? t("signin.mode.password") : t("signin.mode.code")}
               </button>
             ))}
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <Field label="Work email">
+            <Field label={t("signin.email")}>
               <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" autoComplete="email" />
             </Field>
 
             {mode === "password" ? (
               <>
-                <Field label="Password">
+                <Field label={t("signin.password")}>
                   <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") void loginPassword(); }} autoComplete="current-password" />
                 </Field>
-                <Button onClick={loginPassword} disabled={busy || !email || !password}>{busy ? "Signing in…" : "Sign in"}</Button>
+                <Button onClick={loginPassword} disabled={busy || !email || !password}>{busy ? t("signin.submitting") : t("signin.submit")}</Button>
               </>
             ) : (
               <>
                 {otpSent ? (
-                  <Field label="6-digit code">
+                  <Field label={t("signin.code")}>
                     <Input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" maxLength={6} placeholder="000000"
                       onKeyDown={(e) => { if (e.key === "Enter") void verifyOtp(); }} />
                   </Field>
                 ) : null}
                 {!otpSent ? (
-                  <Button onClick={requestOtp} disabled={busy || !email}>{busy ? "Sending…" : "Email me a code"}</Button>
+                  <Button onClick={requestOtp} disabled={busy || !email}>{busy ? t("signin.sending") : t("signin.sendCode")}</Button>
                 ) : (
                   <div style={{ display: "flex", gap: 8 }}>
-                    <Button onClick={verifyOtp} disabled={busy || code.length < 6}>{busy ? "Verifying…" : "Verify & sign in"}</Button>
-                    <Button variant="secondary" onClick={requestOtp} disabled={busy}>Resend</Button>
+                    <Button onClick={verifyOtp} disabled={busy || code.length < 6}>{busy ? t("signin.verifying") : t("signin.verify")}</Button>
+                    <Button variant="secondary" onClick={requestOtp} disabled={busy}>{t("signin.resend")}</Button>
                   </div>
                 )}
               </>
@@ -163,11 +165,11 @@ export default function LoginPage() {
               <>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 0" }}>
                   <div style={{ flex: 1, height: 1, background: "var(--rm-border)" }} />
-                  <span style={{ fontSize: 11, color: "var(--rm-muted)" }}>OR</span>
+                  <span style={{ fontSize: 11, color: "var(--rm-muted)" }}>{t("signin.or")}</span>
                   <div style={{ flex: 1, height: 1, background: "var(--rm-border)" }} />
                 </div>
                 <Button variant="secondary" onClick={startSso} disabled={busy}>
-                  <Building2 size={15} /> Sign in with SSO
+                  <Building2 size={15} /> {t("signin.sso")}
                 </Button>
               </>
             ) : null}
@@ -178,8 +180,8 @@ export default function LoginPage() {
         </Card>
 
         <p style={{ textAlign: "center", fontSize: 11.5, color: "var(--rm-muted)" }}>
-          No account yet? Ask a workspace admin to add you under Access &amp; Roles, or{" "}
-          <a href="/signup" style={{ color: "var(--rm-accent)" }}>create a new workspace</a>.
+          {t("signin.noAccount")}{" "}
+          <a href="/signup" style={{ color: "var(--rm-accent)" }}>{t("signin.createWorkspace")}</a>.
         </p>
       </div>
     </div>

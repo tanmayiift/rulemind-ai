@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { apiJson } from "../lib/api";
 import { useRuleMindStore } from "../lib/store";
-import { Button, useTheme } from "./kit";
+import { Button,useTheme } from "./kit";
 import { Dialog } from "./ui";
 
 /**

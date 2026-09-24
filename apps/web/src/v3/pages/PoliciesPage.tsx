@@ -2,85 +2,26 @@
 
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
-import { flushSync } from "react-dom";
 import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  CircleHelp,
-  CircleSlash,
-  Eye,
-  FileSearch,
-  GitBranch,
-  Layers,
-  Plus,
-  Trash2,
-  Workflow,
-  XCircle,
-  type LucideIcon,
+ArrowDown,
+ArrowUp,Layers,Trash2
 } from "lucide-react";
-import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../lib/api";
+import { apiJson } from "../../lib/api";
 import { useRuleMindStore } from "../../lib/store";
-import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
 import type {
-  AuditErrorRecord,
-  BootstrapPayload,
-  ConnectorRecord,
-  DeployStatusPayload,
-  ExecutionTraceStepRecord,
-  PolicyExecuteResponse,
-  PolicyRecord,
-  PolicyStepRecord,
-  PromotionRecord,
-  RuleConditionResult,
-  RuleNodeRecord,
-  RuleRecord,
-  RuleTreeNodeRecord,
-  RuleTestResponse,
-  ScorecardBinRecord,
-  ScorecardRangeRecord,
-  ScorecardRecord,
-  SettingsRecord,
-  DataProtection,
-  SloConfig,
-  SloStatus,
-  VariableBatchTestResponse,
-  VariableGraphResponse,
-  VariableRecord,
+BootstrapPayload,PolicyExecuteResponse,
+PolicyRecord,
+PolicyStepRecord
 } from "../types";
 
 
 
 import {
-  PageId,
-  PAGE_META,
-  NODE_TYPES,
-  STATUS_ORDER,
-  CATEGORY_ORDER,
-  useTheme,
-  useBootstrapData,
-  statusColorKey,
-  statusLabel,
-  tone,
-  toRuleNodeLabel,
-  cloneNode,
-  connectorLabel,
-  sourceMark,
-  useFilteredVariables,
-  StatCard,
-  Button,
-  StatusBadge,
-  InlineInput,
-  InlineSelect,
-  InlineTextarea,
-  SectionHeader,
-  InfoBanner,
-  EmptyState,
-  EnvironmentEmptyState,
+PAGE_META,useTheme,Button,InlineInput,
+InlineSelect,SectionHeader,EnvironmentEmptyState
 } from "../kit";
-import { DecisionFlow } from "./TestingPage";
+import { DecisionFlow, type TraceEntry } from "./TestingPage";
 import { usePromotionReview } from "../PromotionReview";
 import { PolicyLifecycle } from "./PolicyLifecycle";
 
@@ -330,9 +271,9 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                         <strong style={{ fontSize: "var(--rm-fs-body)" }}>{step.type.toUpperCase()}</strong>
                         <div style={{ display: "flex", gap: 4 }}>
-                          <button type="button" onClick={() => setSteps((items) => items.map((item, itemIndex) => itemIndex === index - 1 ? items[index] : itemIndex === index ? items[index - 1] : item))} disabled={index === 0} style={{ border: "none", background: "transparent", color: theme.dim, cursor: index === 0 ? "not-allowed" : "pointer" }}><ArrowUp size={13} /></button>
-                          <button type="button" onClick={() => setSteps((items) => items.map((item, itemIndex) => itemIndex === index ? items[index + 1] : itemIndex === index + 1 ? items[index] : item))} disabled={index === steps.length - 1} style={{ border: "none", background: "transparent", color: theme.dim, cursor: index === steps.length - 1 ? "not-allowed" : "pointer" }}><ArrowDown size={13} /></button>
-                          <button type="button" onClick={() => setSteps((items) => items.filter((_, itemIndex) => itemIndex !== index))} style={{ border: "none", background: "transparent", color: theme.dim, cursor: "pointer" }}>
+                          <button aria-label={"Move step " + (index + 1) + " up"} type="button" onClick={() => setSteps((items) => items.map((item, itemIndex) => itemIndex === index - 1 ? items[index] : itemIndex === index ? items[index - 1] : item))} disabled={index === 0} style={{ border: "none", background: "transparent", color: theme.dim, cursor: index === 0 ? "not-allowed" : "pointer" }}><ArrowUp size={13} /></button>
+                          <button aria-label={"Move step " + (index + 1) + " down"} type="button" onClick={() => setSteps((items) => items.map((item, itemIndex) => itemIndex === index ? items[index + 1] : itemIndex === index + 1 ? items[index] : item))} disabled={index === steps.length - 1} style={{ border: "none", background: "transparent", color: theme.dim, cursor: index === steps.length - 1 ? "not-allowed" : "pointer" }}><ArrowDown size={13} /></button>
+                          <button aria-label={"Remove step " + (index + 1)} type="button" onClick={() => setSteps((items) => items.filter((_, itemIndex) => itemIndex !== index))} style={{ border: "none", background: "transparent", color: theme.dim, cursor: "pointer" }}>
                             <Trash2 size={13} />
                           </button>
                         </div>
@@ -494,7 +435,7 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
               <div data-testid="policy-outcome" style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: execution.result.outcome === "approve" ? theme.success : execution.result.outcome === "review" ? theme.warning : theme.danger, textTransform: "uppercase", marginBottom: 10 }}>
                 {execution.result.outcome}
               </div>
-              <DecisionFlow trace={execution.result.trace as unknown as Array<Record<string, any>>} outcome={String(execution.result.outcome)} />
+              <DecisionFlow trace={execution.result.trace as unknown as TraceEntry[]} outcome={String(execution.result.outcome)} />
             </div>
           ) : null}
         </div>
