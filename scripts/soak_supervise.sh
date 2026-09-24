@@ -78,6 +78,9 @@ if docker ps >/dev/null 2>&1; then
       # measured: watchdog-monitor ran a build predating its own grace-vs-repeat guard for
       # days, and a crash fix committed to monitor.py would not have reached the process that
       # needed it. A supervisor that restores a stale binary is restoring the wrong thing.
+      # Tracing on, same as soak_start.sh: a repair that brings the stack back WITHOUT the
+      # endpoint would silently switch tracing off for the rest of the month.
+      OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}" \
       docker compose --profile observability up -d --build >/dev/null 2>&1 \
         && { say "  brought the stack up"; REPAIRED="$REPAIRED stack"; }
     fi
@@ -150,7 +153,9 @@ fi
 CAF_PID_FILE="$LOG_DIR/caffeinate.pid"
 if ! { [ -f "$CAF_PID_FILE" ] && kill -0 "$(cat "$CAF_PID_FILE")" 2>/dev/null; }; then
   if [ "$CHECK_ONLY" -eq 0 ] && command -v caffeinate >/dev/null 2>&1; then
-    nohup caffeinate -s -i >/dev/null 2>&1 &
+    # Guarded by the caller's check below, but re-checked here by PROCESS: the pid-file test
+    # alone let this add a caffeinate on every repair pass, and they never exit.
+    pgrep -x caffeinate >/dev/null 2>&1 || nohup caffeinate -s -i >/dev/null 2>&1 &
     echo $! > "$CAF_PID_FILE"
     say "restarted caffeinate"
     REPAIRED="$REPAIRED caffeinate"
