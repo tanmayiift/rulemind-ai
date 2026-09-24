@@ -251,8 +251,11 @@ def run(r: Runner):
 
     with r.case("5.2", "Trace exposes per-condition variable, operator, threshold, value") as c:
         b = r.post("/api/v1/decide", json={"policyId": pol, "payload": {"age": 34}, "userId": "e2e-5-2"}).json()
-        conds = [cc for rr in b.get("rule_results", [])
-                 for cc in (rr.get("result") or {}).get("conditions", [])]
+        # rule_results holds the rule results themselves, on every decision path. Until
+        # 2026-09-24 the executor path wrapped each in a trace entry ({step, result: {...}}), and
+        # this case read that wrapper -- the FAST_DECIDE path, the stored row and the reason codes
+        # never had it (plan 5.1, API.md).
+        conds = [cc for rr in b.get("rule_results", []) for cc in rr.get("conditions", [])]
         c.ok(conds, "no conditions in rule_results")
         if conds:
             need = {"variable_id", "operator", "threshold", "value", "passed"}
