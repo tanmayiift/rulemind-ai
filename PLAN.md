@@ -2076,6 +2076,42 @@ calls it.
   caught** — including the scoping, per-element progress checks, per-value hit codes, and reading
   the score from the first model.
 
+- [x] **R10.28 MODELS A CREDIT SHOP ACTUALLY HAS, AND AN EVALUATION SCREEN THAT TAKES A FILE.**
+  (Plan 6.3.) `model_executor` hosted pickles only, and the evaluation dataset went into a
+  `<textarea>`. Now:
+  * **ONNX** (onnxruntime, now a real requirement — it was in the dev venv only as `magika`'s
+    dependency, which the image never installs), **XGBoost JSON**, **LightGBM** model text, and
+    **PMML** — `Scorecard` with ranked reason codes, `RegressionModel`, `TreeModel` — through an
+    in-house pure-Python evaluator on `defusedxml`, because every maintained Python PMML scorer
+    runs on a JVM. Anything outside that subset is refused at upload **by name**, not scored
+    approximately. Pickle still works; `MODEL_ALLOW_PICKLE=0` refuses it before it reaches a
+    worker, for an install that wants no code-on-load format at all.
+  * **The format comes from the bytes, never from the declared type.** Pickle opens `0x80`, ONNX
+    `0x08`, PMML `<`, XGBoost `{`, LightGBM `tree`; nothing labelled ONNX can reach `pickle.loads`.
+    Stored as `model_format` (migration `20260924_0034`) for listing only; scoring re-reads the bytes.
+  * **Named boosters and PMML score by feature name.** A caller listing features in another order
+    got a confident wrong score from a positional loader; tested with the order reversed.
+  * **Evaluation scored one row per worker round trip** — a process hop and a full model
+    deserialize per account, so a real portfolio could not finish. It is one batch now, chunked
+    at 2,000 rows (`MODEL_BATCH_TIMEOUT_MS` per chunk), and a test asserts one worker call.
+  * **The evaluation screen takes a `.csv`/`.xlsx`/`.json`/`.jsonl` upload**, held as rows, never
+    dumped into the textarea; column inputs suggest the file's columns, and a named column the
+    file lacks is reported before any request. The upload parser is one shared function, now also
+    behind the simulation screen that had its own inline copy. The models page drops a "type"
+    dropdown the server always overrode and labels each model by its detected format.
+
+  **Evidence is the libraries, not us:** `tests/fixtures/models/generate_fixtures.py` fits one
+  dataset with scikit-learn, XGBoost and LightGBM, exports ONNX with skl2onnx and a PMML
+  regression with the fitted coefficients, and records each NATIVE library's predictions. Every
+  format, scored through the isolated worker, matches its library to 1e-5 (LightGBM 1e-9). 23
+  Python tests, 6 Vitest, 3 Playwright (a 20,000-row CSV evaluated end to end in the browser).
+  **13 mutations, two survived first:** chunk reassembly (the test compared only probabilities)
+  and reason-code ranking (the fixture's gaps were already in declaration order); both tests
+  fixed, both now caught. The entity-bomb test was also rewritten before it could pass for the
+  wrong reason — its document had no model element, so it would have failed as "no model" even
+  if entities were expanded. README's upload example used `model_blob_base64`; the field is
+  `model_base64`, so the example 422'd as written. Corrected.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

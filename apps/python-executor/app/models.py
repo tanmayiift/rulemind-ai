@@ -810,7 +810,7 @@ class Setting(Base):
 
 
 class HostedModel(Base):
-    """A hosted ML model (pickled sklearn/xgboost/…) usable as a policy "model" step.
+    """A hosted ML model (ONNX, PMML, XGBoost, LightGBM or pickle) usable as a policy "model" step.
     Persisted in the DB (not in-process memory) so it survives restarts and is
     consistent across uvicorn workers / replicas."""
 
@@ -823,6 +823,11 @@ class HostedModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     model_type: Mapped[str] = mapped_column(String(64), default="sklearn", nullable=False)
+    # Detected from the blob at upload (model_executor.detect_format), stored for listing only --
+    # scoring always re-reads the bytes. Migration 20260924_0034. Nullable so the SQLite
+    # reconciler can add it to an existing dev database; absent means pickle, the only format
+    # there was before this column.
+    model_format: Mapped[Optional[str]] = mapped_column(String(24), default="pickle", server_default="pickle", nullable=True)
     model_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     input_schema: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     output_schema: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

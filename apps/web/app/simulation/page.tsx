@@ -5,7 +5,7 @@ import { Upload, Sparkles, Braces, FileSpreadsheet } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { Button, Card, Field, Select, Textarea, Stat, Badge, EmptyState, PageHeader, SectionTitle } from "../../src/v3/ui";
-import { coerce, parseCsv } from "../../src/lib/csv";
+import { datasetColumns, parseDatasetFile } from "../../src/lib/csv";
 
 type Policy = { id: string; name: string };
 type BatchRow = { index: number; result: { outcome: string; latency_ms?: number; error?: string } };
@@ -144,36 +144,7 @@ export default function SimulationPage() {
     setParseError(null);
     setFileName(file.name);
     try {
-      let parsed: Record<string, unknown>[];
-      if (/\.(jsonl|ndjson)$/i.test(file.name)) {
-        // One JSON object per line — blank lines skipped, a bad line stops with its number.
-        parsed = [];
-        const lines = (await file.text()).split("\n");
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-          try {
-            const obj = JSON.parse(line);
-            parsed.push(obj && typeof obj === "object" ? obj : { _value: obj });
-          } catch {
-            throw new Error(`Line ${i + 1} is not valid JSON.`);
-          }
-        }
-      } else if (/\.csv$/i.test(file.name)) {
-        parsed = parseCsv(await file.text());
-      } else if (/\.xlsx?$/i.test(file.name)) {
-        const XLSX = await import("xlsx"); // dynamic — keeps SheetJS off the main bundle
-        const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        parsed = (XLSX.utils.sheet_to_json(sheet, { defval: "" }) as Record<string, unknown>[]).map((r) => {
-          const o: Record<string, unknown> = {};
-          for (const k of Object.keys(r)) o[k] = coerce(r[k]);
-          return o;
-        });
-      } else {
-        throw new Error("Unsupported file — use .csv, .xls, .xlsx, or .jsonl.");
-      }
-      if (!parsed.length) throw new Error("No rows found in the file.");
+      const parsed = await parseDatasetFile(file);
       setCases(parsed);
       setMode("upload");
     } catch (e) {
@@ -182,11 +153,7 @@ export default function SimulationPage() {
     }
   };
 
-  const columns = React.useMemo(() => {
-    const set = new Set<string>();
-    cases.slice(0, 50).forEach((c) => Object.keys(c).forEach((k) => set.add(k)));
-    return [...set];
-  }, [cases]);
+  const columns = React.useMemo(() => datasetColumns(cases), [cases]);
 
   const run = React.useCallback(async () => {
     if (!cases.length) { setError("No cases to run — add data first."); return; }
@@ -286,7 +253,7 @@ export default function SimulationPage() {
               <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--rm-text)" }}>Drop a CSV, Excel, or JSONL file</div>
               <div style={{ fontSize: 12, color: "var(--rm-dim)", margin: "4px 0 12px" }}>Each row / line becomes a decision payload. .csv · .xls · .xlsx · .jsonl</div>
               <label>
-                <input type="file" accept=".csv,.xls,.xlsx,.jsonl,.ndjson" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) ingestFile(f); }} />
+                <input type="file" accept=".csv,.xls,.xlsx,.json,.jsonl,.ndjson" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) ingestFile(f); }} />
                 <span className="rm-btn rm-btn-secondary rm-btn-sm" style={{ cursor: "pointer" }}>Browse files</span>
               </label>
               {fileName ? <div style={{ marginTop: 12, fontSize: 12, color: "var(--rm-muted)" }}>Loaded <strong>{fileName}</strong></div> : null}

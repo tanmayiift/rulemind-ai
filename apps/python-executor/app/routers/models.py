@@ -1,4 +1,4 @@
-"""Hosted-model endpoints — list/get/create, predict, test, delete (pickled scikit-style models).
+"""Hosted-model endpoints — list/get/create, predict, test, delete (ONNX, PMML, XGBoost, LightGBM, pickle).
 Extracted verbatim from app/main.py. Stable helpers/models imported by value from app.main; direct
 storage calls use main.storage live."""
 from __future__ import annotations
@@ -59,7 +59,10 @@ def create_model(request: ModelCreateRequest) -> Dict[str, Any]:
         "id": model_id,
         "name": request.name,
         "description": request.description,
-        "model_type": validation.get("model_type", request.model_type),
+        # Both from the bytes, not from the request: a declared type is a label the caller
+        # typed, and the loader is chosen by what the file actually is.
+        "model_type": validation.get("model_type") or request.model_type,
+        "model_format": validation.get("model_format", "pickle"),
         "model_blob": model_blob,
         "input_schema": request.input_schema,
         "output_schema": request.output_schema,
