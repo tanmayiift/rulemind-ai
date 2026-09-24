@@ -98,6 +98,17 @@ class RuleResult(ApiModel):
     logic: str
     conditions: List[ConditionResult]
     groupResults: List[GroupResult]
+    # The executor path's old per-item wrapper, kept on /decide responses until 2027-01-01 so an
+    # integration reading it keeps working (see runtime.LEGACY_RULE_FIELDS_SUNSET).
+    step: Optional[Dict[str, Any]] = Field(None, deprecated=True, description=(
+        "DEPRECATED, removed 2027-01-01. The policy step that ran this rule; read it from `trace`."))
+    result: Optional[Dict[str, Any]] = Field(None, deprecated=True, description=(
+        "DEPRECATED, removed 2027-01-01. The same passed/outcome/logic/conditions/groupResults "
+        "this item carries at its top level; read those instead."))
+    duration_ms: Optional[float] = Field(None, deprecated=True, description=(
+        "DEPRECATED, removed 2027-01-01. The step's duration; read it from `trace`."))
+    error: Optional[str] = Field(None, deprecated=True, description=(
+        "DEPRECATED, removed 2027-01-01. The step's error; read it from `trace`."))
 
 
 class ScorecardLine(ApiModel):

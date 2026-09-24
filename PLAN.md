@@ -2417,6 +2417,19 @@ calls it.
   the two lanes most often skipped locally. Fixed in `146e3b3`, then the whole gate re-run at
   that commit rather than patching the report from a two-lane run.
 
+- [x] **R10.37 THE `rule_results` CHANGE GETS A DEPRECATION WINDOW INSTEAD OF A NOTE.** R10.33 made
+  `rule_results` one shape and documented the migration — which leaves any integration reading
+  the executor path's old wrapper (`rule_results[i].result.passed`, `.step.id`) broken on upgrade.
+  Until **2027-01-01** every item on `/decide` also carries `step`, `result`, `duration_ms` and
+  `error`, rebuilt from the trace, **on both paths** (so the paths still agree) and **in the
+  response only** (the stored row stays canonical). They are `deprecated: true` in the spec with
+  the date in their descriptions; the gate classifies them as additive. The items are built as
+  new objects, because the decision log may still be serialising the originals — a test fails if
+  they are mutated. A rule run by two steps maps each result to its own step. And
+  `tests/test_legacy_rule_fields.py` **fails on the sunset date** while the fields remain: a
+  deprecation with no enforced end is permanent. Mutations caught: fields missing from the fast
+  path (and the path-parity test with it), originals mutated, sunset passed.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

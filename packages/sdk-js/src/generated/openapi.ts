@@ -6288,6 +6288,18 @@ export interface components {
         RuleResult: {
             /** Conditions */
             conditions: components["schemas"]["ConditionResult"][];
+            /**
+             * Duration Ms
+             * @deprecated
+             * @description DEPRECATED, removed 2027-01-01. The step's duration; read it from `trace`.
+             */
+            duration_ms?: number | null;
+            /**
+             * Error
+             * @deprecated
+             * @description DEPRECATED, removed 2027-01-01. The step's error; read it from `trace`.
+             */
+            error?: string | null;
             /** Groupresults */
             groupResults: components["schemas"]["GroupResult"][];
             /** Logic */
@@ -6300,12 +6312,28 @@ export interface components {
             /** Passed */
             passed: boolean;
             /**
+             * Result
+             * @deprecated
+             * @description DEPRECATED, removed 2027-01-01. The same passed/outcome/logic/conditions/groupResults this item carries at its top level; read those instead.
+             */
+            result?: {
+                [key: string]: unknown;
+            } | null;
+            /**
              * Ruleid
              * @description Same as rule_id; the spelling the on-device engines and /sdk/v1 use.
              */
             ruleId: string;
             /** Rule Id */
             rule_id: string;
+            /**
+             * Step
+             * @deprecated
+             * @description DEPRECATED, removed 2027-01-01. The policy step that ran this rule; read it from `trace`.
+             */
+            step?: {
+                [key: string]: unknown;
+            } | null;
         } & {
             [key: string]: unknown;
         };

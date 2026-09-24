@@ -4185,6 +4185,32 @@
             "title": "Conditions",
             "type": "array"
           },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "deprecated": true,
+            "description": "DEPRECATED, removed 2027-01-01. The step's duration; read it from `trace`.",
+            "title": "Duration Ms"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "deprecated": true,
+            "description": "DEPRECATED, removed 2027-01-01. The step's error; read it from `trace`.",
+            "title": "Error"
+          },
           "groupResults": {
             "items": {
               "$ref": "#/components/schemas/GroupResult"
@@ -4205,6 +4231,20 @@
             "title": "Passed",
             "type": "boolean"
           },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "deprecated": true,
+            "description": "DEPRECATED, removed 2027-01-01. The same passed/outcome/logic/conditions/groupResults this item carries at its top level; read those instead.",
+            "title": "Result"
+          },
           "ruleId": {
             "description": "Same as rule_id; the spelling the on-device engines and /sdk/v1 use.",
             "title": "Ruleid",
@@ -4213,6 +4253,20 @@
           "rule_id": {
             "title": "Rule Id",
             "type": "string"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "deprecated": true,
+            "description": "DEPRECATED, removed 2027-01-01. The policy step that ran this rule; read it from `trace`.",
+            "title": "Step"
           }
         },
         "required": [
