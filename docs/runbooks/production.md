@@ -75,8 +75,11 @@ For a real slowdown, in order of likelihood:
    saturated pool serialises them. `SANDBOX_POOL_SIZE` is the knob. `/ready` reports pool mode.
 2. **A connector is slow.** Decision-time fetches are bounded per connector, but a bureau at
    3s × several sources is 10s of wall clock. Check the circuit breaker state.
-3. **The database.** The executor is documented at "8+N queries" per decision. A missing index
-   or a bloated `decisions` table shows up here first.
+3. **The database.** A warm decision costs **6 queries** -- 1 INSERT into `decisions`, 1 UPDATE,
+   4 SELECT (`docs/PERFORMANCE.md`, measured with SQLAlchemy event hooks). This line used to
+   repeat the codebase's own comment, "8+N queries per decision"; the N was eliminated on
+   2026-09-03 and nobody updated the prose. A missing index or a bloated `decisions` table shows
+   up here first, and a count materially above 6 means the per-tenant catalog cache is missing.
 4. **Variables doing too much.** `COMPUTE_ONLY_USED_VARS=1` computes only what the policy can
    actually reach — measured at **−92.8%** on the serving path and **−76.0%** on the executor
    (`docs/PERFORMANCE.md`). It is correct and proven, and it is **off by default** because it

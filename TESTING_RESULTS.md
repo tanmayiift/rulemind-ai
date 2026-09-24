@@ -1,5 +1,11 @@
 # RuleMind.AI — Test Results (honest, evidence-backed)
 
+> **HISTORICAL — 2026-08-20. Superseded by `TEST_RESULTS.md` (generated) and
+> `docs/PRODUCTION-READINESS.md`.** Kept because its §6 findings list is the record of what that
+> pass actually caught. Read the resolutions with the findings: §6.1 reports a live sandbox
+> escape and names the PR that closed it in the same paragraph, which is easy to quote out of
+> context. Nothing in this file is a current claim about `main`.
+
 _This document was **rewritten** after a reviewer correctly challenged an earlier version that
 overclaimed the frontend/UX testing. It now records only what was actually executed, the real
 numbers observed, the **defects found**, and — explicitly — **what was NOT tested**. Where a run
