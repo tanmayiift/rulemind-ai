@@ -3,6 +3,11 @@
 One section per alert in `observability/alerts.yml`. Each alert's `runbook` annotation links
 here by anchor, so the page you need is one click from the notification rather than a search.
 
+**The deploy is bad and you need it undone:** `docs/runbooks/rollback.md`. Read its
+*Before you start* section first — `helm rollback` does not roll back the database, the
+migration Job deletes its own logs after 10 minutes, and a rollback between two `:latest` tags
+restores the same image it is leaving.
+
 **Read this first if you are new to the system:** `/health` and `/ready` answer *different
 questions on purpose*. `/health` is liveness — the process is alive and can serve. `/ready` is
 readiness — the database, Redis and the sandbox pool are all usable. A container can be healthy
