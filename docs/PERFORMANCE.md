@@ -212,7 +212,7 @@ is wrong:
 
 | | measured |
 |---|---|
-| SQL queries per warm decision | **6** (1 INSERT decisions, 1 UPDATE, 4 SELECT) |
+| SQL queries per warm decision | **6** (1 INSERT decisions, 1 UPDATE, 4 SELECT) — **superseded**, see "The other 63%" below: re-measured 2026-09-24 at 10 statements + 5 commits (14 + 7 with a `review_gate`) |
 | Sandbox calls per decision | **55** |
 | Time inside the sandbox | 11.6 ms of 31.5 ms — **37% of wall clock** |
 | Variables the policy actually reads | **6** |
@@ -373,6 +373,63 @@ were fixed rather than skipped.
 **Evidence for the verdict:** the full Python suite, 1928 tests, run twice consecutively with
 `COMPUTE_ONLY_USED_VARS=1` — **OK both times, zero failures, zero errors.** That had never been
 true before.
+
+## The other 63% — profiled 2026-09-24, because nobody ever had
+
+Everything above measures the sandbox, which the repo already knew about. The rest of a
+decision — middleware, the per-decision `asyncio.run()`, the SQL, serialization, encryption,
+the outbox — had **never been broken down**, so every optimisation proposed for it was a guess.
+This is the breakdown. `cProfile` inside the running API container, warm caches, 20 decisions,
+`policy_instant_personal_loan` (the shape the README's front page describes) and
+`policy_pl_underwriting` (rules + scorecard, no human step) side by side.
+
+Percentages are of profiled total, which is inflated ~45% by the profiler itself; the ratios
+hold, the absolute milliseconds do not. Warm wall-clock without the profiler is given first.
+
+| | `instant_personal_loan` | `pl_underwriting` |
+|---|---:|---:|
+| **warm wall clock** | **15.5 ms** | **13.5 ms** |
+| sandbox IPC wait (`_thread.lock.acquire`) | **29.8%** · 165 acquires | **35.6%** · 165 |
+| **deepcopy** | **14.6%** · **7,079 calls** | **10.3%** · **3,691** |
+| Postgres `execute` | 9.0% · **14 statements** | 6.8% · **10** |
+| Postgres `commit` | 4.8% · 7 | 4.6% · 5 |
+| `dataclasses.asdict` | 2.2% | 0% |
+| JSON encode/decode | 1.2% · 438 calls | 1.1% · 428 |
+| Fernet encrypt/decrypt | **0.3%** · 63 calls | 0.3% · 63 |
+| accounted | 61.9% | 58.8% |
+
+### What this changes
+
+**1. `deepcopy` is the second-largest cost and appears in no document, comment or plan.**
+7,079 calls per decision. It is not one call site — it is the ORM-to-dict conversions
+(`_variable_to_dict` × 55, `_rule_to_dict` × 39, `_connector_to_dict` × 18,
+`_scorecard_to_dict` × 8, each deep-copying its JSON columns), plus
+`ExecutionContext.to_dict()`'s `asdict(self)`, which deep-copies the *entire* context —
+payload, all 55 computed variables, rule results and trace — on any policy that persists.
+That last one explains the whole 2.2% / 0% asdict split: `pl_underwriting` never pauses, so
+it never persists, so it never pays it.
+
+**2. Two suspected costs are not costs.** The plan listed "4 Fernet encrypts" and "13.2 KB of
+JSON" among the unmeasured 63%. Measured: **Fernet is 0.3%** and **JSON is 1.2%**. Neither is
+worth touching, and saying so is the point of profiling before optimising.
+
+**3. The query count in this document is stale.** "6 SQL queries per warm decision", above and
+in `docs/runbooks/production.md`, is now **14 statements + 7 commits** for a policy with a
+`review_gate` and **10 + 5** without one. The number moved when execution persistence and the
+decision outbox landed; nobody re-measured it. Counts like this are why the test totals were
+moved to a generated file.
+
+**4. The sandbox is still the headline, and it is the IPC, not the work.** 29.8–35.6% is spent
+*waiting on a lock* — 165 acquires for 55 variables, three per round trip. The variable bodies
+themselves measure 0.3 µs (see the prepare-cache note in `PLAN.md` R10.12). This is the case
+for attacking the variable *protocol* — batching independent variables, or sending only what
+the callee declares it reads — rather than making the variables faster. They are already fast.
+
+**5. 38% is unaccounted and that is honest.** It is spread across 843 functions with no single
+contributor above 1% — interpreter overhead, SQLAlchemy ORM machinery, attribute access. There
+is no big win hiding in it, which is itself a finding: the remaining levers are the four above,
+not a mystery.
+
 
 ## Where it saturates, and how it behaves past that
 
