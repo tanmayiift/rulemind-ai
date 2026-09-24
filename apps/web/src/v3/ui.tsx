@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 /**
  * Shared design-system primitives (Stripe-refined). Style comes from the CSS
@@ -140,5 +141,94 @@ export function SectionTitle({ children, right }: { children: React.ReactNode; r
       <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--rm-text)" }}>{children}</h2>
       {right}
     </div>
+  );
+}
+
+/**
+ * A modal dialog. The app had none: consequential actions (promotion, rollback) went through
+ * `window.confirm()`, which cannot show structured context, cannot ask for a reason, is blocked
+ * outright in some embedded browsers, and gives a screen reader nothing but a string.
+ *
+ * Accessible by construction: `role="dialog"` + `aria-modal`, labelled by its title, focus moves
+ * into it on open and back to the opener on close, Tab cycles inside it, and Escape closes it
+ * (unless `busy`, so a request in flight cannot be orphaned by a keystroke).
+ */
+export function Dialog({
+  open,
+  title,
+  onClose,
+  children,
+  footer,
+  busy = false,
+  width = 560,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+  busy?: boolean;
+  width?: number;
+}) {
+  const panel = React.useRef<HTMLDivElement>(null);
+  const titleId = React.useId();
+  React.useEffect(() => {
+    if (!open) return;
+    const opener = document.activeElement as HTMLElement | null;
+    const focusables = () =>
+      Array.from(panel.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+      ) ?? []);
+    (focusables().find((el) => el.tagName !== "BUTTON") ?? focusables()[0] ?? panel.current)?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusables();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      opener?.focus?.();
+    };
+  }, [open, busy, onClose]);
+  if (!open || typeof document === "undefined") return null;
+  // Portalled to <body>: a fixed overlay rendered inside a card is clipped by any ancestor with a
+  // transform or overflow, and pages render the dialog next to the button that opens it.
+  return createPortal(
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 1000, display: "grid", placeItems: "center", padding: 16,
+               background: "color-mix(in srgb, var(--rm-text) 38%, transparent)" }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}
+    >
+      <div
+        ref={panel}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        style={{ width: "100%", maxWidth: width, maxHeight: "calc(100vh - 32px)", overflow: "auto",
+                 background: "var(--rm-card)", color: "var(--rm-text)", borderRadius: 14,
+                 border: "1px solid var(--rm-border)", boxShadow: "0 24px 64px rgba(0,0,0,0.28)", padding: 22 }}
+      >
+        <h2 id={titleId} style={{ margin: "0 0 12px", fontSize: 17, fontWeight: 700 }}>{title}</h2>
+        <div style={{ display: "grid", gap: 12, fontSize: 13.5, lineHeight: 1.5 }}>{children}</div>
+        {footer ? <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>{footer}</div> : null}
+      </div>
+    </div>,
+    document.body
   );
 }

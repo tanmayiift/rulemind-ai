@@ -375,6 +375,29 @@ def variable_history(variable_id: str) -> List[Dict[str, Any]]:
     return main.storage.get_history("variable", variable_id)
 
 
+# Every entity type storage snapshots on change. Variables had the only history route, so the
+# version history of a policy, rule, scorecard or decision table -- the thing a reviewer asks
+# about first -- was recorded on every write and readable by nothing.
+HISTORY_ENTITY_TYPES = ("policy", "rule", "scorecard", "decision_table", "variable", "connector")
+
+
+@router.get("/api/v1/history/{entity_type}/{entity_id}")
+def entity_history(entity_type: str, entity_id: str) -> List[Dict[str, Any]]:
+    """Versions of one entity, newest first: `{version, created_at, snapshot}`."""
+    if entity_type not in HISTORY_ENTITY_TYPES:
+        raise HTTPException(status_code=404, detail="No history for entity type '{0}'. Types: {1}.".format(
+            entity_type, ", ".join(HISTORY_ENTITY_TYPES)))
+    rows = main.storage.get_history(entity_type, entity_id)
+    if entity_type == "connector":
+        # New snapshots are written masked; rows from before migration 20260924_0033 on an
+        # install that has not run it would not be. Mask on read as well -- a history screen must
+        # never be the way a credential leaves the database.
+        from ..storage import mask_secret_values
+
+        rows = [{**row, "snapshot": mask_secret_values(row["snapshot"])} for row in rows]
+    return rows
+
+
 @router.get("/api/v1/variables/graph")
 def variable_graph() -> Dict[str, Any]:
     variables = main.storage.list_variables()

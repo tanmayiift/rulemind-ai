@@ -81,6 +81,8 @@ import {
   EnvironmentEmptyState,
 } from "../kit";
 import { DecisionFlow } from "./TestingPage";
+import { usePromotionReview } from "../PromotionReview";
+import { PolicyLifecycle } from "./PolicyLifecycle";
 
 // Step types this page shows but cannot edit. Policies is the per-policy view (Run, Promote, the
 // step list); control flow and these configurable steps are edited on the Workflow Builder canvas.
@@ -171,24 +173,19 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
     }
   }, [apiBaseUrl, apiKey, props, selectedId]);
 
-  const promotePolicy = React.useCallback(async () => {
-    if (!selectedId) {
-      return;
-    }
-    if (!window.confirm("Promote this policy to the next environment?")) {
-      return;
-    }
-    setBusy(true);
-    try {
-      await apiJson(apiBaseUrl, "/api/v1/policies/" + selectedId + "/promote", { method: "POST", body: JSON.stringify({ promoted_by: "web", reason: "Manual promotion from Policies page" }) }, apiKey);
+  const promotion = usePromotionReview({
+    onPromoted: () => {
       props.refresh();
       props.onNotify("Policy promoted.");
-    } catch (error) {
-      props.onNotify(error instanceof Error ? error.message : "Policy promotion failed.");
-    } finally {
-      setBusy(false);
+    },
+    onNotify: props.onNotify,
+  });
+  const promotePolicy = React.useCallback(() => {
+    const policy = props.data.policies.find((item) => item.id === selectedId);
+    if (policy) {
+      promotion.review("policy", policy.id, policy.name, policy.status);
     }
-  }, [apiBaseUrl, apiKey, props, selectedId]);
+  }, [promotion, props.data.policies, selectedId]);
 
   const analyzeMece = React.useCallback(async () => {
     if (!selectedId) {
@@ -234,6 +231,7 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
 
   return (
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
+      {promotion.dialog}
       <SectionHeader
         title={PAGE_META.policies.title}
         subtitle={PAGE_META.policies.subtitle}
@@ -255,7 +253,7 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
               </a>
             ) : null}
             {selectedId && props.data.policies.find((policy) => policy.id === selectedId)?.status !== "prod" ? (
-              <Button small variant="success" onClick={promotePolicy} disabled={busy} testId="policy-promote">
+              <Button small variant="success" onClick={promotePolicy} disabled={busy || promotion.busyKey !== null} testId="policy-promote">
                 Promote
               </Button>
             ) : null}
@@ -501,6 +499,14 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
           ) : null}
         </div>
       </div>
+      {selectedId && props.data.policies.some((policy) => policy.id === selectedId) ? (
+        <PolicyLifecycle
+          policyId={selectedId}
+          policies={props.data.policies.map((policy) => ({ id: policy.id, name: policy.name }))}
+          refresh={props.refresh}
+          onNotify={props.onNotify}
+        />
+      ) : null}
     </div>
   );
 }

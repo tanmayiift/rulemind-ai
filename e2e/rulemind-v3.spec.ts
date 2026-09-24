@@ -10,6 +10,16 @@ test.describe.configure({ mode: "serial" });
 // palette and were never updated, because this suite could not start at all —
 // playwright.config.ts invoked a bare `python3`, which on macOS is 3.9 and cannot
 // run the backend. Both are fixed; keep these in step with the theme.
+
+/** Promotion is reviewed in a dialog that requires a reason (it was window.confirm()). */
+async function confirmPromotion(page: import("@playwright/test").Page, reason = "e2e: promoting after a passing test run") {
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("promotion-reason").fill(reason);
+  await dialog.getByTestId("confirm-promotion").click();
+  await expect(dialog).toBeHidden();
+}
+
 test("theme toggle switches the full shell and persists after reload", async ({ page }) => {
   await page.goto("/variables");
 
@@ -141,6 +151,7 @@ test("variable creation, testing, promotion, and rule availability work end to e
   page.on("dialog", (dialog) => dialog.accept());
 
   await page.getByTestId("variable-promote").click();
+  await confirmPromotion(page);
   await expect(page.getByTestId("app-notice")).toContainText("Variable promoted.");
   await page.waitForTimeout(500);
 
@@ -150,6 +161,7 @@ test("variable creation, testing, promotion, and rule availability work end to e
   await expect(page.getByTestId("variable-name")).toHaveValue(variableName);
 
   await page.getByTestId("variable-promote").click();
+  await confirmPromotion(page);
   await expect(page.getByTestId("app-notice")).toContainText("Variable promoted.");
 
   await page.getByTestId("env-prod").click();
@@ -215,6 +227,7 @@ test("multi-source rule flow saves, tests, and promotes correctly", async ({ pag
   await page.getByRole("button", { name: "Saved Rules" }).click();
   const savedCard = page.getByText(ruleName).locator("xpath=ancestor::div[contains(@style,'border-radius')]");
   await savedCard.getByRole("button", { name: "Promote" }).click();
+  await confirmPromotion(page);
   await expect(page.getByTestId("app-notice")).toContainText("Rule promoted.");
 
   await page.getByTestId("env-uat").click();

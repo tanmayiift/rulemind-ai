@@ -66,7 +66,9 @@ _CONSTRUCTOR_ROUTES = {("GET", "/openapi.json"), ("GET", "/docs"), ("GET", "/red
 
 
 def _normalise(path: str) -> str:
-    """`/api/v1/rules/:id` and `/api/v1/rules/{rule_id}` are the same route."""
+    """`/api/v1/rules/:id` and `/api/v1/rules/{rule_id}` are the same route, and a documented
+    query string (`/replay?bundleVersion=N`) is not part of the route."""
+    path = path.split("?", 1)[0]
     path = re.sub(r":[A-Za-z_]+", "{}", path)
     path = re.sub(r"\{[A-Za-z_]+\}", "{}", path)
     return path.rstrip("/") or "/"

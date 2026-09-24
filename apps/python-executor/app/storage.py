@@ -3195,7 +3195,7 @@ class Storage:
             tenant.updated_at = datetime.utcnow()
         return self.get_tenant(tenant_id)
 
-    def mark_bundle_compile_queued(self, tenant_id: str, debounce_seconds: int = 5, force: bool = False) -> bool:
+    def mark_bundle_compile_queued(self, tenant_id: str, debounce_seconds: float = 5, force: bool = False) -> bool:
         with self.connect() as session:
             tenant = session.get(Tenant, tenant_id)
             if not tenant:

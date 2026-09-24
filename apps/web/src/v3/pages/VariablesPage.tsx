@@ -25,6 +25,7 @@ import { useRuleMindStore } from "../../lib/store";
 import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
 import { PythonCodeEditor } from "../editor/PythonCodeEditor";
+import { usePromotionReview } from "../PromotionReview";
 import type { RuleMindCompletionScope } from "../editor/rulemind-completion";
 import type {
   AuditErrorRecord,
@@ -267,29 +268,18 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
     }
   }, [apiBaseUrl, apiKey, category, code, description, environment, name, props, selectedVariableLocked, sourceId]);
 
-  const promoteVariable = React.useCallback(async () => {
-    if (!selectedVariableLocked) {
-      return;
-    }
-    if (!window.confirm("Promote this variable to the next environment?")) {
-      return;
-    }
-    setBusy(true);
-    try {
-      await apiJson<VariableRecord>(
-        apiBaseUrl,
-        "/api/v1/variables/" + selectedVariableLocked.id + "/promote",
-        { method: "POST", body: JSON.stringify({ promoted_by: "web", reason: "Manual promotion from Variables page" }) },
-        apiKey
-      );
+  const promotion = usePromotionReview({
+    onPromoted: () => {
       props.refresh();
       props.onNotify("Variable promoted.");
-    } catch (error) {
-      props.onNotify(error instanceof Error ? error.message : "Variable promotion failed.");
-    } finally {
-      setBusy(false);
+    },
+    onNotify: props.onNotify,
+  });
+  const promoteVariable = React.useCallback(() => {
+    if (selectedVariableLocked) {
+      promotion.review("variable", selectedVariableLocked.id, selectedVariableLocked.name, selectedVariableLocked.status);
     }
-  }, [apiBaseUrl, apiKey, props, selectedVariableLocked]);
+  }, [promotion, selectedVariableLocked]);
 
   const deleteVariable = React.useCallback(async () => {
     if (!selectedVariableLocked) {
@@ -313,6 +303,7 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
 
   return (
     <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", height: isMobile ? "auto" : "calc(100vh - 120px)" }}>
+      {promotion.dialog}
       {isMobile && (
         <div style={{ display: "flex", borderBottom: "1px solid " + theme.border }}>
           <button type="button" onClick={() => setMobileTab("list")} style={{ flex: 1, padding: "12px", background: mobileTab === "list" ? theme.accentBg : "transparent", color: mobileTab === "list" ? theme.accent : theme.muted, border: "none", fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, cursor: "pointer" }}>Variables</button>
@@ -522,7 +513,7 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
                   </Button>
                 ) : null}
                 {selectedVariableLocked && selectedVariableLocked.status !== "prod" ? (
-                  <Button small variant="success" onClick={promoteVariable} disabled={busy} testId="variable-promote">
+                  <Button small variant="success" onClick={promoteVariable} disabled={busy || promotion.busyKey !== null} testId="variable-promote">
                     Promote
                   </Button>
                 ) : null}

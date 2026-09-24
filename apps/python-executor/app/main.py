@@ -1,6 +1,7 @@
 import copy
 import asyncio
 import re
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -1220,21 +1221,61 @@ def workflow_executor() -> PolicyExecutor:
     return PolicyExecutor(storage)
 
 
+# The compile debounce, and its TRAILING edge. A change inside the window used to be DROPPED:
+# mark_bundle_compile_queued answered False and nothing was ever scheduled, so the bundle stayed
+# at the previous change until some later, unrelated write. That bundle is what SDKs download and
+# what replay, what-if and backtest read -- so promoting a rule and then its policy from the Deploy
+# board within five seconds shipped a bundle without the policy change. Now a change inside the
+# window schedules ONE deferred compile per tenant per process, when the window closes.
+BUNDLE_COMPILE_DEBOUNCE_SECONDS = 5.0
+_TRAILING_COMPILES: Dict[str, "threading.Timer"] = {}
+_TRAILING_LOCK = threading.Lock()
+
+
+def _schedule_trailing_compile(store: Any, tenant_id: str) -> None:
+    with _TRAILING_LOCK:
+        if tenant_id in _TRAILING_COMPILES:
+            return  # one is already pending; it will compile everything written before it fires
+
+        def fire() -> None:
+            with _TRAILING_LOCK:
+                _TRAILING_COMPILES.pop(tenant_id, None)
+            if store.mark_bundle_compile_queued(tenant_id, force=True):
+                _compile_bundle_now(store, tenant_id)
+
+        # The STORE is captured, not read from the module global when the timer fires: a test (or
+        # a reconfigured process) that swaps `storage` must not have a timer compile into the new
+        # one, or into one whose database has been removed.
+        timer = threading.Timer(BUNDLE_COMPILE_DEBOUNCE_SECONDS, fire)
+        timer.daemon = True
+        _TRAILING_COMPILES[tenant_id] = timer
+        timer.start()
+
+
 def maybe_compile_bundle(tenant_id: str, background_tasks: Optional[BackgroundTasks] = None, force: bool = False) -> None:
     # Any publish/update invalidates the fast-path serving cache for this tenant.
     from .fast_decide import invalidate as invalidate_fast_cache
 
     invalidate_fast_cache(tenant_id)
-    if not storage.mark_bundle_compile_queued(tenant_id, force=force):
+    store = storage
+    if not store.mark_bundle_compile_queued(tenant_id, debounce_seconds=BUNDLE_COMPILE_DEBOUNCE_SECONDS, force=force):
+        _schedule_trailing_compile(store, tenant_id)
         return
 
+    if background_tasks is not None:
+        background_tasks.add_task(_compile_bundle_now, store, tenant_id)
+    else:
+        _compile_bundle_now(store, tenant_id)
+
+
+def _compile_bundle_now(store: Any, tenant_id: str) -> None:
     def _compile() -> None:
         try:
-            compile_bundle(storage, tenant_id, force=True)
+            compile_bundle(store, tenant_id, force=True)
         except NoProductionAssetsError:
             return
         except BundleCompilationError as error:
-            storage.add_error_event(
+            store.add_error_event(
                 {
                     "tenant_id": tenant_id,
                     "scope": "bundle",
@@ -1247,7 +1288,7 @@ def maybe_compile_bundle(tenant_id: str, background_tasks: Optional[BackgroundTa
                 tenant_id=tenant_id,
             )
         except Exception as error:
-            storage.add_error_event(
+            store.add_error_event(
                 {
                     "tenant_id": tenant_id,
                     "scope": "bundle",
@@ -1260,10 +1301,7 @@ def maybe_compile_bundle(tenant_id: str, background_tasks: Optional[BackgroundTa
                 tenant_id=tenant_id,
             )
 
-    if background_tasks is not None:
-        background_tasks.add_task(_compile)
-    else:
-        _compile()
+    _compile()
 
 
 def active_tenant_id(request: Optional[Request] = None) -> str:

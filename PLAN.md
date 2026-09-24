@@ -2112,6 +2112,46 @@ calls it.
   if entities were expanded. README's upload example used `model_blob_base64`; the field is
   `model_base64`, so the example 422'd as written. Corrected.
 
+- [x] **R10.29 THE DIFFERENTIATED CAPABILITIES GET SCREENS; PROMOTION GETS A REVIEW.** (Plan 6.5.)
+  What-if, shadow deployment, releases/rollback, bundle versions and entity history all had working,
+  tested APIs and no UI. The Policies screen now has a **Release & impact** panel: what-if KPIs
+  (recorded vs would-be, against a chosen bundle version), shadow start/report/stop, the release
+  timeline with rollback, and version history with a field-level diff. The Decision Explorer can
+  **replay one decision under a retained bundle version** — the regulator's question about a single
+  applicant.
+
+  **Promotion went through `window.confirm()` on four pages** (Deploy, Rules, Variables, Policies),
+  each recording a fixed reason — "Manual promotion from Deploy board." — so the ledger said, on every
+  row, that someone clicked, never why. One shared review (`PromotionReview.tsx`) now shows the change
+  summary and the measured backtest impact and requires a written reason, which is what gets
+  recorded. Built on a new accessible `Dialog` in the UI kit (the app had none): labelled, focus
+  in and back, Tab trapped, Escape cancels, portalled so no card can clip it. Non-promotion confirms
+  (delete, import, editor mode switch) are unchanged and remain `window.confirm()`.
+
+  **Four backend defects found on the way, all fixed and mutation-checked:**
+  * **Rollback recorded whatever `actor` the caller sent.** Any caller could log a production
+    rollback under someone else's name; without one it said "system", because the fallback read
+    `request.state.user_id`, which nothing sets. It now records the authenticated caller, exactly
+    as promotion does.
+  * **Only variables had a history route.** Policy, rule, scorecard, decision-table and connector
+    versions were snapshotted on every write and readable by nothing. `GET /api/v1/history/{type}/{id}`,
+    tenant-scoped, and connector snapshots are masked on read as well as on write (R10.26).
+  * **The bundle-compile debounce dropped changes.** A write within 5 s of the previous one was not
+    deferred, it was discarded — no compile was ever scheduled, so the bundle SDKs download and that
+    replay/what-if/backtest read stayed at the previous change until some unrelated later write.
+    Promoting a rule and then its policy from the Deploy board inside five seconds shipped a bundle
+    without the policy change. The debounce now has a trailing edge: one deferred compile per tenant.
+    Found because the replay browser test's policy change never reached a bundle.
+  * `check_api_docs.py` treated a documented query string as part of the path.
+
+  **One test was wrong before it was right:** the replay browser test first used a decision whose
+  policy had not changed, so a screen hard-coded to say "the same outcome" passed it. It now records
+  a decision under an approving policy, changes the policy to reject, and requires the screen to
+  report the flip — which is what exposed the debounce bug. 5 Playwright tests for the panel and
+  replay, 1 for the reviewed promotion, the existing v3 promotion flows moved onto the dialog, and 7
+  Python tests (rollback actor, history ×4, debounce ×2); every guard mutation-checked, the replay
+  one only after the test was fixed.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

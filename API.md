@@ -225,6 +225,28 @@ Beyond CRUD:
   2,000 rows in the isolated worker, not one per row — then computes Gini/AUC/KS and the gate.
   The dashboard accepts the dataset as a `.csv`, `.xlsx`, `.json` or `.jsonl` upload.
 
+## Release, impact and history
+
+The Policies screen's **Release & impact** panel is built on these; each is also usable directly.
+
+- `POST /api/v1/policies/{id}/whatif` with `{kpis, bundle_version?, sample?, full?}` replays this
+  policy's recorded decisions through a compiled bundle and returns each KPI as recorded vs as it
+  would be now. KPI types: `outcome_rate`, `outcome_count`, `count`, `avg`, `sum`, `min`, `max`,
+  `count_where`. `GET /api/v1/bundles/versions` lists the retained bundle versions.
+- `POST|GET|DELETE /api/v1/policies/{id}/shadow` dark-launches a candidate policy on this one's live
+  traffic and reports how often it would have decided differently. The live decision never changes.
+- `GET /api/v1/policies/{id}/releases` and `POST /api/v1/policies/{id}/rollback` with
+  `{promotion_id, reason}` restore a release's snapshot, recorded as a new rollback entry.
+  **The ledger records the authenticated caller.** An `actor` in the body is honoured only when
+  there is no authenticated identity (`AUTH_MODE=none`); it used to be recorded as sent.
+- `POST /api/v1/decisions/{id}/replay?bundleVersion=N` re-decides one recorded decision under a
+  retained bundle version (latest when omitted): `{original_outcome, replayed_outcome, changed}`.
+- `GET /api/v1/history/{entity_type}/{entity_id}` — versions of a `policy`, `rule`, `scorecard`,
+  `decision_table`, `variable` or `connector`, newest first. Connector snapshots never carry
+  secrets. History outlives the entity, so a deleted policy's versions stay readable.
+
+Promotion from the dashboard asks for a reason, which is what the promotion records.
+
 ## Human review
 
 - `GET /api/v1/reviews` — the queue. `GET /api/v1/reviews/stats`,

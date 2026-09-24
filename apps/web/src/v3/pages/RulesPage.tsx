@@ -24,6 +24,7 @@ import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../
 import { useRuleMindStore } from "../../lib/store";
 import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
+import { usePromotionReview } from "../PromotionReview";
 import type {
   AuditErrorRecord,
   BootstrapPayload,
@@ -982,21 +983,13 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
     }
   }, [apiBaseUrl, apiKey, props]);
 
-  const promoteRule = React.useCallback(async (ruleId: string) => {
-    if (!window.confirm("Promote this rule to the next environment?")) {
-      return;
-    }
-    setBusy(true);
-    try {
-      await apiJson<RuleRecord>(apiBaseUrl, "/api/v1/rules/" + ruleId + "/promote", { method: "POST", body: JSON.stringify({ promoted_by: "web", reason: "Manual promotion from Rules page" }) }, apiKey);
+  const promotion = usePromotionReview({
+    onPromoted: () => {
       props.refresh();
       props.onNotify("Rule promoted.");
-    } catch (error) {
-      props.onNotify(error instanceof Error ? error.message : "Rule promotion failed.");
-    } finally {
-      setBusy(false);
-    }
-  }, [apiBaseUrl, apiKey, props]);
+    },
+    onNotify: props.onNotify,
+  });
 
   const filteredSavedRules = React.useMemo(() => {
     const query = savedSearch.trim().toLowerCase();
@@ -1021,6 +1014,7 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
         * the visual header and the layout cannot spare a second one. Found by route-health's
         * "every route has a heading" check. See .rm-sr-only. */}
       <h1 className="rm-sr-only">Rules</h1>
+      {promotion.dialog}
       <div style={{ display: "flex", gap: 18, padding: "0 20px", borderBottom: "1px solid " + theme.border }}>
         {[
           { id: "builder", label: "Builder" },
@@ -1330,7 +1324,7 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <StatusBadge status={rule.status} />
                     {rule.status !== "prod" ? (
-                      <Button small variant="success" onClick={() => promoteRule(rule.id)} disabled={!rule.last_test_result?.passed}>
+                      <Button small variant="success" onClick={() => promotion.review("rule", rule.id, rule.name, rule.status)} disabled={!rule.last_test_result?.passed || promotion.busyKey !== null}>
                         Promote
                       </Button>
                     ) : null}
