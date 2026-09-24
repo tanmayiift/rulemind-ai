@@ -2066,6 +2066,12 @@ app.include_router(webhook_subscriptions_router)
 app.include_router(collab_router)
 app.include_router(evaluations_router)
 
+# One paging contract for every collection endpoint -- see app/pagination.py. MUST be last: it
+# walks the routing table as it stands, so anything included after this line would not be paged.
+from .pagination import install as _install_pagination  # noqa: E402
+
+_install_pagination(app)
+
 # Back-compat: a couple of tests call these handlers as module attributes.
 batch_decide = _runtime.batch_decide
 

@@ -68,6 +68,23 @@ ones where that is the useful thing, e.g. input validation:
 `504` responses from the evaluation budget additionally carry `budget_ms`, `elapsed_ms` and
 `stage`. `429` responses carry `RateLimit-*` and `Retry-After` headers.
 
+## Paging collections
+
+Every endpoint that returns a list can be paged, the same way:
+
+- `?limit=N` — page size, 1–1000. `?offset=M` — items to skip.
+- `X-Total-Count` — the size of the whole collection, on every paged response.
+- `Link` — RFC 8288 `rel="next"` / `rel="prev"` URLs; follow them rather than doing arithmetic.
+
+**Omit both parameters and you get the whole collection as a plain array, exactly as before** —
+paging is opt-in, so existing integrations are unaffected. An out-of-range or non-integer value is
+a `422` in the error envelope above, never a silent clamp.
+
+This bounds what is *sent*. For the authoring collections (rules, variables, policies — hundreds
+per tenant) the collection is still read whole server-side and sliced; the ones that genuinely
+grow without bound — `/api/v1/audit`, `/api/v1/audit/decisions`, `/api/v1/audit/errors`,
+`/api/v1/executions` — page in the database.
+
 ## Deciding
 
 ### `POST /api/v1/decide`
