@@ -111,7 +111,11 @@ class DecideResponseShapeTests(unittest.TestCase):
             with self.subTest(fast_decide=flag):
                 body = self._decide(flag)
                 stored = app_main.storage.get_decision(body["decision_id"], tenant_id=self.tenant)
-                self.assertEqual(body["rule_results"], stored["rule_results"])
+                # The response also carries the deprecated wrapper fields until their sunset
+                # (runtime.LEGACY_RULE_FIELDS_SUNSET); the recorded result is everything else.
+                legacy = {"step", "result", "duration_ms", "error"}
+                self.assertEqual([{k: v for k, v in item.items() if k not in legacy} for item in body["rule_results"]],
+                                 stored["rule_results"])
 
     def test_both_paths_carry_the_whole_contract(self):
         for flag in ("0", "1"):

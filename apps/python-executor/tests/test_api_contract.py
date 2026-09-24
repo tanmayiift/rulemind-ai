@@ -55,11 +55,12 @@ def undeclared_fields(value: Any, path: str = "$") -> List[str]:
             return found
         for key in sorted((value.__pydantic_extra__ or {})):
             found.append(f"{path}.{key} ({type(value).__name__})")
+        # __dict__, not getattr: reading a deprecated field through the attribute warns.
         for name in type(value).model_fields:
-            found += undeclared_fields(getattr(value, name), f"{path}.{name}")
+            found += undeclared_fields(value.__dict__.get(name), f"{path}.{name}")
     elif isinstance(value, BaseModel):
         for name in type(value).model_fields:
-            found += undeclared_fields(getattr(value, name), f"{path}.{name}")
+            found += undeclared_fields(value.__dict__.get(name), f"{path}.{name}")
     elif isinstance(value, list):
         for index, item in enumerate(value):
             found += undeclared_fields(item, f"{path}[{index}]")

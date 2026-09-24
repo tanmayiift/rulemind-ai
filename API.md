@@ -186,12 +186,15 @@ no decision exists until a reviewer completes it — and an `execution_id` to fo
 `GET /api/v1/executions/{execution_id}`. `execution_id` is null whenever the decision completed
 in the call.
 
-> **`rule_results` changed shape on 2026-09-24.** On the executor path (the default) it used to
-> be a filter of `trace` — items shaped `{step, result: {passed, conditions, ...}, duration_ms,
-> error}` — while the `FAST_DECIDE` path, the stored decision and the reason codes all used the
-> shape above. It is the shape above on every path now. If you read `rule_results[i].result.passed`
-> or `.step.id`, read `rule_results[i].passed` and `rule_results[i].rule_id` instead; the step
-> wrappers are still in `trace`.
+> **`rule_results` changed shape on 2026-09-24, with a deprecation window to 2027-01-01.** On the
+> executor path (the default) it used to be a filter of `trace` — items shaped `{step, result:
+> {passed, conditions, ...}, duration_ms, error}` — while the `FAST_DECIDE` path, the stored
+> decision and the reason codes all used the shape above. Every item now has the shape above on
+> every path, **and until 2027-01-01 also still carries `step`, `result`, `duration_ms` and
+> `error`**, on both paths, so an integration reading `rule_results[i].result.passed` or
+> `.step.id` keeps working unchanged. They are marked `deprecated` in the spec. Move to
+> `rule_results[i].passed` / `.conditions` / `.rule_id`, and to `trace` for step metadata, before
+> that date. Stored decisions (`GET /api/v1/audit/decisions/{id}`) never had the old fields.
 
 `payload` is either flat (`{"bureau_score": 720}`, matched against every source that declares
 the field) or source-keyed (`{"bureau": {"bureau_score": 720}}`, authoritative and complete for

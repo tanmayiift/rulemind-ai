@@ -166,6 +166,40 @@ def _record_decision_metrics(outcome: str, source: str, latency_ms: Optional[flo
         pass
 
 
+# ── rule_results: the old per-item wrapper, for one deprecation window ──────────────────────
+#
+# Until 2026-09-24 the executor path returned each rule result wrapped in its trace entry --
+# {step, result: {passed, conditions, ...}, duration_ms, error} -- while the FAST_DECIDE path, the
+# stored row and the reason codes used the result itself. The response now carries the result
+# itself on every path. An integrator already reading `rule_results[i].result.passed` or
+# `.step.id` keeps working until the sunset below: each item ALSO carries those four fields,
+# built from the trace, on BOTH paths (so the paths still agree), in the response only (the
+# stored row stays canonical). tests/test_legacy_rule_fields.py fails once the date passes, so
+# the removal cannot be forgotten.
+LEGACY_RULE_FIELDS_SUNSET = "2027-01-01"
+
+
+def _with_legacy_rule_fields(rule_results: List[Dict[str, Any]], trace: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    entries: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in trace or []:
+        step = entry.get("step") or {}
+        if step.get("type") == "rule":
+            entries.setdefault(str(step.get("ref_id") or step.get("ref") or ""), []).append(entry)
+    legacy = []
+    for item in rule_results or []:
+        # A rule run by two steps has two results and two trace entries: take them in order.
+        queue = entries.get(str(item.get("rule_id")), [])
+        entry = queue.pop(0) if queue else {}
+        legacy.append({
+            **item,
+            "step": entry.get("step"),
+            "result": {key: item.get(key) for key in ("conditions", "groupResults", "logic", "outcome", "passed")},
+            "duration_ms": entry.get("duration_ms"),
+            "error": entry.get("error"),
+        })
+    return legacy
+
+
 @router.post("/api/v1/decide", responses={200: {"model": DecideResponse}})
 def decide(request: DecideRequest) -> Dict[str, Any]:
     """Run a policy decision.
@@ -189,6 +223,8 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
 
         if fast_path_eligible(main.storage, policy, active_tenant_id()):
             decision = fast_decide(main.storage, policy, request.payload or {}, active_tenant_id(), user_id=request.user_id)
+            # A NEW list and new items: the decision log may still be serialising the originals.
+            decision = {**decision, "rule_results": _with_legacy_rule_fields(decision["rule_results"], decision["trace"])}
             _record_decision_metrics(decision["outcome"], "api_fast", decision.get("latency_ms"))
             if decision["outcome"] == "reject":
                 record_error("decisions", "decide", "Decision outcome rejected.", "policy", request.policy_id, {})
@@ -226,7 +262,7 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         # entries ({step, result: {passed, ...}}) while the fast path and the stored row hold the
         # rule results themselves ({rule_id, passed, ...}): one field, two shapes, chosen by a
         # performance flag. The trace is right below for anyone who wants the step wrapper.
-        "rule_results": outcome["result"]["rule_results"],
+        "rule_results": _with_legacy_rule_fields(outcome["result"]["rule_results"], outcome["result"]["trace"]),
         "scorecard_result": outcome["result"].get("scorecard_result"),
         "trace": outcome["result"]["trace"],
         "latency_ms": outcome["latency_ms"],
