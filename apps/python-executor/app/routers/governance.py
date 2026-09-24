@@ -351,6 +351,13 @@ def unregister_shadow_endpoint(request: Request, policy_id: str) -> Dict[str, An
     from .. import shadow
 
     tenant_id = main.active_tenant_id(request)
+    # ensure_exists, like every sibling here. Without it these two answered 200 for a policy the
+    # caller cannot see -- no data crossed the boundary (the registry is tenant-scoped, so the
+    # answer was an empty report), but "200, nothing here" and "404, not yours" are different
+    # statements, and only one of them is true. The isolation matrix could not catch it: it
+    # counts a route as accounted-for when it matches a probed PREFIX, and /api/v1/policies is a
+    # probed collection.
+    main.ensure_exists(main.storage.get_policy(policy_id, tenant_id=tenant_id), "policy", policy_id)
     return shadow.unregister_shadow(main.storage, policy_id, tenant_id=tenant_id)
 
 
@@ -360,6 +367,7 @@ def shadow_report_endpoint(request: Request, policy_id: str) -> Dict[str, Any]:
     from .. import shadow
 
     tenant_id = main.active_tenant_id(request)
+    main.ensure_exists(main.storage.get_policy(policy_id, tenant_id=tenant_id), "policy", policy_id)
     return shadow.shadow_report(main.storage, policy_id, tenant_id=tenant_id)
 
 

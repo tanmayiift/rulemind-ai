@@ -51,6 +51,33 @@ from app.storage import Storage  # noqa: E402
 from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
+
+def _is_crud_shape(path: str, collections) -> bool:
+    """True when `path` is the CRUD surface of a probed collection, and ONLY then.
+
+    This used to be `path.startswith("/api/v1/" + name)`, which is why seven endpoints reached
+    production with no test: `/api/v1/policies` is a probed collection, so
+    `/api/v1/policies/{policy_id}/whatif`, `/shadow` and `/rollback` all matched the prefix and
+    counted as accounted-for. They are not CRUD on a policy -- they are distinct actions with
+    their own authorisation and their own tenant scoping, and two of them had neither tested.
+
+    A probe over a collection demonstrates isolation for the collection's own create/read/
+    update/delete. It demonstrates nothing about a verb hanging off one of its members. So
+    coverage now stops at `/api/v1/<name>` and `/api/v1/<name>/{id}`; anything deeper must name
+    the suite that covers it in MUTATING_ROUTE_COVERAGE.
+    """
+    for name in collections:
+        base = "/api/v1/{0}".format(name)
+        if path == base:
+            return True
+        if path.startswith(base + "/"):
+            rest = path[len(base) + 1:]
+            # exactly one segment, and it must be a path parameter -- `/{id}`, not `/whatif`
+            if "/" not in rest and rest.startswith("{") and rest.endswith("}"):
+                return True
+    return False
+
+
 class _Predictor:
     """Minimal object satisfying the model upload's `predict()` check."""
 
@@ -115,6 +142,43 @@ def discover_mutating_routes(app) -> set:
 #   * a prefix here, naming the suite that covers it or the reason it needs no tenant probe.
 # A route matching nothing fails test_every_mutating_route_is_classified.
 MUTATING_ROUTE_COVERAGE = {
+    # ── sub-actions on a probed collection ────────────────────────────────────────────────────
+    # These used to be accounted for by prefix alone: `/api/v1/policies` is a probed collection,
+    # so `/api/v1/policies/{id}/whatif` matched `startswith` and counted as covered. It was not
+    # covered; nothing called it. See `_is_crud_shape` -- coverage now stops at the collection
+    # and its `/{id}`, and every verb hanging off a member has to name its own suite here.
+    # Adding that check surfaced 27 such routes at once.
+    "/api/v1/policies/{policy_id}/whatif":
+        "tests/test_sweep_untested_endpoints.py -- 404 cross-tenant, 400 on an empty KPI list",
+    "/api/v1/policies/{policy_id}/shadow":
+        "tests/test_sweep_untested_endpoints.py -- register/report/unregister, all 404 cross-tenant",
+    "/api/v1/policies/{policy_id}/rollback":
+        "tests/test_sweep_untested_endpoints.py -- 404 cross-tenant, viewer refused",
+    "/api/v1/policies/{policy_id}/analyze-mece": "tests/test_smoke.py",
+    "/api/v1/policies/{policy_id}/backtest": "tests/test_backtest.py",
+    "/api/v1/policies/{policy_id}/execute": "tests/test_decide_hot_path_writes.py, test_sdk_runtime.py",
+    "/api/v1/policies/{policy_id}/lifecycle": "tests/test_lifecycle.py, test_sweep_api_governance.py",
+    "/api/v1/policies/{policy_id}/promote": "tests/test_rbac.py -- promotion is a MANAGE_ACCESS verb",
+    "/api/v1/connectors/{connector_id}/test": "tests/test_connector_probe.py",
+    "/api/v1/decision-tables/analyze": "tests/test_decision_tables.py",
+    "/api/v1/decision-tables/import": "tests/test_decision_table_import.py (BASE + \"/import\")",
+    "/api/v1/decision-tables/{table_id}/analyze": "tests/test_decision_tables.py",
+    "/api/v1/decision-tables/{table_id}/evaluate": "tests/test_decision_tables.py",
+    "/api/v1/journeys/{journey_id}/duplicate": "tests/test_journeys.py",
+    "/api/v1/journeys/{journey_id}/lock": "tests/test_journeys.py",
+    "/api/v1/journeys/{journey_id}/unlock": "tests/test_journeys.py",
+    "/api/v1/model-sets/{set_id}/compare": "tests/test_modelsets.py",
+    "/api/v1/predictors/{predictor_id}/backfill": "tests/test_predictor_backfill.py",
+    "/api/v1/rules/{rule_id}/promote": "tests/test_openapi_gate.py, test_lifecycle.py",
+    "/api/v1/rules/{rule_id}/test": "tests/test_edge_cases.py",
+    "/api/v1/scorecards/{scorecard_id}/promote": "tests/test_lifecycle.py",
+    "/api/v1/scorecards/{scorecard_id}/test": "tests/test_edge_cases.py",
+    "/api/v1/variables/lint": "tests/test_variable_lint.py",
+    "/api/v1/variables/test-draft": "tests/test_per_resource_rate_limits.py, test_sandbox_escape_matrix.py",
+    "/api/v1/variables/{variable_id}/promote": "tests/test_lifecycle.py",
+    "/api/v1/variables/{variable_id}/test": "tests/test_edge_cases.py",
+    "/api/v1/webhook-subscriptions/{subscription_id}/test": "tests/test_webhook_subscriptions_api.py",
+    # ── whole surfaces ────────────────────────────────────────────────────────────────────────
     "/ws/v1/collab": "tests/test_collab_websocket_authz.py -- authenticates before accept() and "
                      "asserts the hub is keyed by (tenant_id, doc_id)",
     "/api/v1/collab": "tests/test_collab_websocket_authz.py -- the REST siblings are probed "
@@ -268,7 +332,7 @@ class TenantIsolationMatrixTest(unittest.TestCase):
             f"probed there.")
 
     def test_every_mutating_route_is_classified(self):
-        """The widened tripwire (T3.2).
+        """The widened tripwire (T3.2), narrowed again in 2026-09 -- see `_is_crud_shape`.
 
         The original discovery matched only `/api/v1/<name>` CRUD pairs, so `/ws/v1`, `/scim/v2`,
         `/api/admin/v1` and every nested route were invisible to it -- and the collab WebSocket,
@@ -276,12 +340,13 @@ class TenantIsolationMatrixTest(unittest.TestCase):
         that matches neither a probed CRUD collection nor a MUTATING_ROUTE_COVERAGE prefix fails
         here, so the next such route cannot arrive unnoticed.
         """
-        probed_prefixes = tuple("/api/v1/{0}".format(name) for name in self._fixtures())
-        exempt_prefixes = tuple("/api/v1/{0}".format(name) for name in EXEMPT)
+        probed = tuple(self._fixtures())
+        exempt = tuple(EXEMPT)
         covered_prefixes = tuple(MUTATING_ROUTE_COVERAGE)
         unclassified = sorted(
             path for path in self.mutating_routes
-            if not path.startswith(probed_prefixes + exempt_prefixes + covered_prefixes))
+            if not (_is_crud_shape(path, probed + exempt)
+                    or path.startswith(covered_prefixes)))
         self.assertEqual(
             unclassified, [],
             "mutating route(s) {0} are not accounted for. Probe them, or add a prefix to "
