@@ -8,7 +8,7 @@ import { Menu, Moon, Sun, X, Search } from "lucide-react";
 import { CommandPalette, type Command } from "../v3/command-palette";
 import { AiCopilotFab } from "./ai-copilot-fab";
 import { useRuleMindStore } from "../lib/store";
-import { apiJson } from "../lib/api";
+import { ApiError, apiJson } from "../lib/api";
 import { ENVIRONMENT_ACCENT, THEMES, themeStyleBlock } from "../v3/theme";
 import {
   type Branding,
@@ -146,6 +146,43 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/decision-tables": { title: "Decision Tables", subtitle: "Grid-authored decision logic — condition columns, rows, hit policies, with a live optimiser flagging conflicts, gaps, unreachable rows, and invalid values." },
 };
 
+// Pages that must render for someone who is not signed in.
+const PUBLIC_PREFIXES = ["/login", "/signup", "/admin"];
+
+/**
+ * Is the caller authenticated? One probe (GET /api/v1/access/me), which the API answers for an
+ * x-api-key, a session cookie, or AUTH_MODE=none alike. Before this there was no gate: a visitor
+ * who was not signed in got the full navigation and 41 pages that each failed on their own 401,
+ * with no way to tell that signing in was the fix.
+ *
+ * Only a 401 means "not signed in". A network failure or a 5xx is an outage, and redirecting to a
+ * sign-in page the user cannot get past would hide it -- so those let the page render and report
+ * its own error.
+ */
+function useAuthGate(active: boolean): "checking" | "ok" | "anonymous" {
+  const { hydrated, apiBaseUrl, apiKey, sessionToken } = useRuleMindStore();
+  // The answer is KEYED to the credentials it was computed for. Holding a bare state let a stale
+  // "anonymous" outlive the redirect to /login: after signing in, the first render back in the
+  // app still read "anonymous", the redirect effect fired, cleared the brand-new session and
+  // bounced the user back to sign-in. A changed key now means "checking" until a fresh probe says
+  // otherwise.
+  const credentials = apiBaseUrl + "|" + apiKey + "|" + sessionToken;
+  const [answer, setAnswer] = React.useState<{ credentials: string; state: "ok" | "anonymous" } | null>(null);
+  React.useEffect(() => {
+    if (!active || !hydrated) return;
+    let cancelled = false;
+    apiJson(apiBaseUrl, "/api/v1/access/me", {}, apiKey)
+      .then(() => { if (!cancelled) setAnswer({ credentials, state: "ok" }); })
+      .catch((error) => {
+        if (cancelled) return;
+        setAnswer({ credentials, state: error instanceof ApiError && error.status === 401 ? "anonymous" : "ok" });
+      });
+    return () => { cancelled = true; };
+  }, [active, hydrated, apiBaseUrl, apiKey, credentials]);
+  if (!active) return "ok";
+  return answer && answer.credentials === credentials ? answer.state : "checking";
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const {
@@ -219,10 +256,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => mq.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
   }, [setIsMobile, setSidebarOpen]);
 
-  if ((pathname ?? "").startsWith("/admin") || (pathname ?? "").startsWith("/login")) {
+  const isPublic = PUBLIC_PREFIXES.some((prefix) => (pathname ?? "").startsWith(prefix));
+  const auth = useAuthGate(!isPublic);
+  React.useEffect(() => {
+    if (auth === "anonymous") {
+      // The persisted member is display state only; once the API says there is no session it is
+      // a lie, and the sign-in page would greet the user as someone who is signed in.
+      clearSession();
+      router.replace(("/login?next=" + encodeURIComponent(pathname ?? "/")) as Route);
+    }
+  }, [auth, pathname, router, clearSession]);
+
+  if (isPublic) {
     return (
       <div style={{ minHeight: "100vh", background: theme.bg, color: theme.text }}>
         {children}
+      </div>
+    );
+  }
+
+  // Not the app until the session is known: rendering the nav and the page first is exactly the
+  // "41 pages that quietly fail" this gate exists to stop.
+  if (auth !== "ok") {
+    return (
+      <div role="status" data-testid="auth-gate"
+           style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: theme.bg, color: theme.muted, fontSize: 13 }}>
+        {auth === "anonymous" ? "Redirecting to sign in…" : "Checking your session…"}
       </div>
     );
   }

@@ -31,6 +31,17 @@ function csrfHeaders(method?: string): Record<string, string> {
   return match ? { "X-CSRF-Token": decodeURIComponent(match[1]) } : {};
 }
 
+/** A non-2xx API response. `message` is still the raw body text (decision-tables parses it as JSON
+ *  on purpose); `status` is new, so a caller can tell "not signed in" from "the API is down". */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, body: string) {
+    super(body || `Request failed with status ${status}`);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function apiJson<T>(
   apiBaseUrl: string,
   path: string,
@@ -56,7 +67,7 @@ export async function apiJson<T>(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(body || `Request failed with status ${response.status}`);
+    throw new ApiError(response.status, body);
   }
 
   return response.json() as Promise<T>;

@@ -2098,12 +2098,42 @@
       "OnboardingSignupRequest": {
         "properties": {
           "company": {
+            "maxLength": 200,
+            "minLength": 1,
             "title": "Company",
             "type": "string"
           },
           "contact_email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "pattern": "^[^@\\s]+@[^@\\s]+$",
             "title": "Contact Email",
             "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 12,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
           },
           "plan": {
             "default": "standard",

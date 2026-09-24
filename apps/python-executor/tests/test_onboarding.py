@@ -27,7 +27,7 @@ from app.storage import Storage
 from tests._storage_global import preserve_storage_global  # noqa: E402
 
 
-class OnboardingTests(unittest.TestCase):
+class _OnboardingCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         preserve_storage_global(self)
@@ -42,6 +42,9 @@ class OnboardingTests(unittest.TestCase):
         return self.client.post("/api/v1/onboarding/signup",
                                 json={"company": company, "contact_email": "a@acme.com", "use_case": "loans"}).json()
 
+
+
+class OnboardingTests(_OnboardingCase):
     # ---- smoke: the happy path end to end ----
     def test_full_journey(self) -> None:
         s = self._signup()
@@ -102,6 +105,46 @@ class OnboardingTests(unittest.TestCase):
     def test_signup_is_public(self) -> None:
         resp = self.client.post("/api/v1/onboarding/signup", json={"company": "Public Co", "contact_email": "p@co.com"})
         self.assertEqual(resp.status_code, 200)
+
+
+class SignupOwnerTests(_OnboardingCase):
+    """Signup can create the workspace's first human member -- its owner -- and sign them in.
+    Before, a new workspace had only an API key: nobody could sign in by email."""
+
+    def _owner_signup(self, **extra):
+        body = {"company": "Owner Co", "contact_email": "owner@owner.co", "name": "Olu Owner",
+                "password": "correct horse battery", **extra}
+        return self.client.post("/api/v1/onboarding/signup", json=body)
+
+    def test_the_owner_is_created_signed_in_and_can_sign_in_again(self) -> None:
+        resp = self._owner_signup()
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["session"]["member"]["role"], "owner")
+        self.assertIn("rm_session", resp.headers.get("set-cookie", ""), "signed in via the session cookie")
+        # The session works for an authenticated call, and a fresh password login succeeds.
+        me = self.client.get("/api/v1/auth/session", headers={"Authorization": "Bearer " + body["session"]["token"]})
+        self.assertEqual(me.status_code, 200, me.text)
+        login = self.client.post("/api/v1/auth/login", json={"email": "owner@owner.co", "password": "correct horse battery",
+                                                            "tenant_id": body["tenant_id"]})
+        self.assertEqual(login.status_code, 200, login.text)
+
+    def test_a_short_password_is_refused_before_anything_is_created(self) -> None:
+        before = len(app_main.storage.list_tenants())
+        resp = self._owner_signup(password="short")
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(len(app_main.storage.list_tenants()), before, "a tenant was created by a refused signup")
+
+    def test_a_malformed_email_is_refused(self) -> None:
+        self.assertEqual(self._owner_signup(contact_email="not-an-email").status_code, 422)
+
+    def test_without_a_password_no_member_is_created(self) -> None:
+        body = self.client.post("/api/v1/onboarding/signup", json={"company": "Key Only", "contact_email": "k@k.co"}).json()
+        self.assertNotIn("session", body)
+        self.assertEqual(app_main.storage.list_members(body["tenant_id"]), [])
+
+    def test_the_password_is_never_returned(self) -> None:
+        self.assertNotIn("correct horse battery", self._owner_signup().text)
 
 
 class CleanInstallActivationTests(unittest.TestCase):

@@ -2152,6 +2152,46 @@ calls it.
   Python tests (rollback actor, history ×4, debounce ×2); every guard mutation-checked, the replay
   one only after the test was fixed.
 
+- [x] **R10.30 A WAY IN, AND A GATE AT THE DOOR.** (Plan 6.6.) The onboarding state machine — signup,
+  dev key, verified integration, AI choice, production key — was complete and had no screen, and
+  there was no auth gate: an anonymous visitor got the whole navigation and every page failing on
+  its own 401.
+  * **`/signup`** creates the workspace, shows the dev key once, and — new on the API — creates the
+    workspace's **owner** with a password and signs them in (the same session cookie as a password
+    login). Before, a new workspace had only a key; nobody could sign in by email. Password ≥ 12,
+    email shape checked, both refused before any tenant is written.
+  * **`/onboarding`** gains the five-step workspace setup: a test decision that verifies the
+    integration, the AI choice, and the production key — issued only after verification, shown
+    once in a dialog.
+  * **The shell's auth gate** probes `GET /api/v1/access/me` once per set of credentials: a 401 sends
+    the visitor to `/login?next=…` (and back after signing in, same-site paths only — `safeNext`,
+    unit-tested against protocol-relative and scheme URLs); a network failure or 5xx is an outage,
+    shown as one, not hidden behind a sign-in page.
+
+  **Four defects found by building it, each fixed and mutation-checked:**
+  * **The API's 401/403/429 carried no CORS headers.** `CORSMiddleware` was registered first, which
+    in Starlette is innermost, so the auth middleware's early responses bypassed it. A browser
+    cannot read such a response — `fetch` throws — so the dashboard showed "Unable to reach the API
+    server" for a wrong key, an expired session and a rate limit alike. CORS is now outermost
+    (`tests/test_cors_on_early_responses.py`).
+  * **Signing in as a member kept acting as the stored API key's tenant.** The API resolves a key
+    ahead of a session and the dev build ships a default key, so a member login on it was
+    decorative. A member session now replaces a stored key.
+  * **A stale gate answer bounced a fresh sign-in back to the login page**, clearing the new session
+    on the way: the gate held a bare "anonymous" across the redirect. Its answer is now keyed to the
+    credentials it was computed for.
+  * **The sign-in page greeted a dead session by name** ("currently signed in as …"); the gate now
+    clears the persisted member when the API says there is no session.
+
+  **Two tests were wrong first.** The "not greeted" assertion ran before hydration restored the
+  persisted member, so it was true by construction; and the anonymous-visitor setup rewrote storage
+  on every navigation, wiping the very state under test. Both fixed; the mutation that had survived
+  them is now caught. Separately, a mutation of the CORS order survived its restore because Python
+  reused the mutated bytecode (same size, same second) — recorded in memory; restores now `touch`.
+
+  5 Python tests for signup, 4 for CORS on early responses, 3 Vitest for `safeNext`, 3 Playwright
+  for signup/gate/key-vs-session; 7 mutations caught.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

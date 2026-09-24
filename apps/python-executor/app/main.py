@@ -120,6 +120,25 @@ app = FastAPI(
     redoc_url="/redoc" if _DOCS_ON else None,
     openapi_url="/openapi.json" if _DOCS_ON else None,
 )
+# Registered BEFORE TenantContextMiddleware so it ends up INSIDE it: Starlette makes the
+# last-added middleware outermost, and idempotency must run after auth has passed and after
+# request.state.tenant_id is set (keys are scoped per tenant).
+app.add_middleware(IdempotencyMiddleware, storage=current_storage)
+app.add_middleware(TenantContextMiddleware, storage=current_storage)
+# Registered LAST so it is OUTERMOST (Starlette wraps in reverse order of registration). It has
+# to wrap the tenant middleware rather than sit inside it, or the 401/403/429 responses that
+# middleware returns early would carry no correlation id -- the exact responses worth tracing.
+app.add_middleware(RequestIdMiddleware)
+# Outermost of all, so its headers land on EVERY response -- including the 401/403/429 the
+# tenant middleware returns early, and including responses from exception handlers. A browser
+# needs nosniff and frame-ancestors on an error page just as much as on a success.
+app.add_middleware(SecurityHeadersMiddleware)
+# CORS is the OUTERMOST layer, for the reason the two above give -- and it is the one that matters
+# most. It was registered FIRST, which put it INSIDE the tenant middleware, so the 401/403/429
+# that middleware returns early went out with no Access-Control-Allow-Origin. A browser cannot
+# read a cross-origin response without it: fetch() throws a network error, and the dashboard
+# reported a wrong or expired key -- and a rate limit -- as "Unable to reach the API server",
+# the same words as a real outage. Found when the dashboard's auth gate could not see a 401.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_origins(),
@@ -141,19 +160,6 @@ app.add_middleware(
         "X-Request-Id",
     ],
 )
-# Registered BEFORE TenantContextMiddleware so it ends up INSIDE it: Starlette makes the
-# last-added middleware outermost, and idempotency must run after auth has passed and after
-# request.state.tenant_id is set (keys are scoped per tenant).
-app.add_middleware(IdempotencyMiddleware, storage=current_storage)
-app.add_middleware(TenantContextMiddleware, storage=current_storage)
-# Registered LAST so it is OUTERMOST (Starlette wraps in reverse order of registration). It has
-# to wrap the tenant middleware rather than sit inside it, or the 401/403/429 responses that
-# middleware returns early would carry no correlation id -- the exact responses worth tracing.
-app.add_middleware(RequestIdMiddleware)
-# Outermost of all, so its headers land on EVERY response -- including the 401/403/429 the
-# tenant middleware returns early, and including responses from exception handlers. A browser
-# needs nosniff and frame-ancestors on an error page just as much as on a success.
-app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -1872,10 +1878,15 @@ class SamlAcsRequest(BaseModel):
 # ── Onboarding journey (self-serve: details → dev key → verify → prod key) ─────
 
 class OnboardingSignupRequest(BaseModel):
-    company: str
-    contact_email: str
+    company: str = Field(min_length=1, max_length=200)
+    contact_email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+$")
     use_case: Optional[str] = None
     plan: str = "standard"
+    # Optional: also create the workspace's first human member -- its owner -- and sign them in.
+    # Without it a new workspace had only an API key: nobody could sign in to the dashboard by
+    # email, and the key had to be pasted into the browser.
+    name: Optional[str] = Field(default=None, max_length=200)
+    password: Optional[str] = Field(default=None, min_length=12, max_length=200)
 
 
 class OnboardingAIRequest(BaseModel):
