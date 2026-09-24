@@ -373,6 +373,91 @@ def check_self_serve_signup_is_off(docs, problems):
             "no longer matches anything, so it is passing vacuously rather than verifying")
 
 
+def check_config_changes_roll_the_pods(docs, problems):
+    """A rotated secret must actually reach the running pods.
+
+    secret.yaml and configmap.yaml are `pre-install,pre-upgrade` hooks with
+    hook-delete-policy: before-hook-creation, consumed via `envFrom`. Changing env.configKey
+    therefore leaves the pod template BYTE-IDENTICAL: Helm sees no diff, performs no rollout,
+    and the pods keep the old key indefinitely. `helm upgrade` reports success. Rotation that
+    silently succeeds is worse than rotation that fails, because the operator files the ticket.
+    """
+    # NB: workloads() yields the POD SPEC, which has no metadata -- the annotations live on
+    # spec.template.metadata, one level up. A first draft read pod["metadata"], found nothing,
+    # and reported all four annotations missing while they were rendering correctly.
+    for doc in docs:
+        if doc.get("kind") != "Deployment":
+            continue
+        name = (doc.get("metadata") or {}).get("name", "<unnamed>")
+        template = ((doc.get("spec") or {}).get("template") or {})
+        pod = template.get("spec") or {}
+        if not any(c.get("envFrom") for c in containers(pod)):
+            continue
+        annotations = ((template.get("metadata") or {}).get("annotations") or {})
+        kind = "Deployment"
+        for key in ("checksum/config", "checksum/secret"):
+            if key not in annotations:
+                problems.append(
+                    "{0}/{1}: consumes envFrom but has no {2} pod annotation, so a rotated "
+                    "value changes nothing about the running pods".format(kind, name, key))
+
+
+def check_pdb_cannot_deadlock_a_drain(docs, problems):
+    """A PodDisruptionBudget must leave at least one pod evictable.
+
+    minAvailable >= the replica count is a budget the cluster can never satisfy, so
+    `kubectl drain` on that node blocks forever -- no patching, no spot reclaim, and the
+    autoscaler stalls. It rendered unconditionally at minAvailable: 2 while values-kind.yaml
+    sets replicaCount.api: 1.
+    """
+    replicas = {}
+    for kind, name, pod in workloads(docs):
+        if kind in ("Job", "CronJob"):
+            continue
+        replicas[name] = None  # filled from the Deployment spec below
+    for doc in docs:
+        if doc.get("kind") == "Deployment":
+            replicas[(doc.get("metadata") or {}).get("name")] = (doc.get("spec") or {}).get("replicas")
+        if doc.get("kind") == "HorizontalPodAutoscaler":
+            spec = doc.get("spec") or {}
+            target = ((spec.get("scaleTargetRef") or {}).get("name"))
+            if target and spec.get("minReplicas") is not None:
+                replicas[target] = spec["minReplicas"]
+    for doc in docs:
+        if doc.get("kind") != "PodDisruptionBudget":
+            continue
+        spec = doc.get("spec") or {}
+        name = (doc.get("metadata") or {}).get("name")
+        floor = spec.get("minAvailable")
+        have = replicas.get(name)
+        if isinstance(floor, int) and isinstance(have, int) and floor >= have:
+            problems.append(
+                "PodDisruptionBudget {0}: minAvailable {1} against {2} replica(s) -- no pod is "
+                "ever evictable, so kubectl drain on that node blocks forever"
+                .format(name, floor, have))
+
+
+def check_api_replicas_are_spread(docs, problems):
+    """Three replicas that can all land on one node are not high availability.
+
+    replicaCount.api: 3 and hpa.minReplicas: 3 read like HA. Without anti-affinity or a
+    topology spread constraint the scheduler may place every one of them on the same node, and
+    the replica count is the number people check.
+    """
+    for doc in docs:
+        if doc.get("kind") != "Deployment":
+            continue
+        name = (doc.get("metadata") or {}).get("name", "")
+        if not name.endswith("-api"):
+            continue
+        pod = (((doc.get("spec") or {}).get("template") or {}).get("spec") or {})
+        if not (pod.get("topologySpreadConstraints") or pod.get("affinity")):
+            problems.append(
+                "Deployment {0}: no topologySpreadConstraints and no affinity -- every replica "
+                "may be scheduled onto one node, so the replica count overstates availability"
+                .format(name))
+
+
 def check_ingress_routes_the_api(docs, problems):
     """The browser must be able to reach the API it is told to call.
 
@@ -438,6 +523,9 @@ CHECKS = (
     check_no_blank_env,
     check_production_env,
     check_self_serve_signup_is_off,
+    check_config_changes_roll_the_pods,
+    check_pdb_cannot_deadlock_a_drain,
+    check_api_replicas_are_spread,
     check_ingress_routes_the_api,
     check_migrate_job_is_upgrade_safe,
 )
