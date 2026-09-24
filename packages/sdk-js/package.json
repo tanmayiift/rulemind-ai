@@ -6,6 +6,7 @@
   "types": "dist/sdk-js/src/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "gen:types": "openapi-typescript ../../apps/python-executor/openapi.json -o src/generated/openapi.ts",
     "dev": "tsc -p tsconfig.json -w",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -15,6 +16,7 @@
     "@rulemind/shared": "workspace:*"
   },
   "devDependencies": {
+    "openapi-typescript": "^7.13.0",
     "typescript": "^5.7.3",
     "vitest": "^5.0.0"
   }

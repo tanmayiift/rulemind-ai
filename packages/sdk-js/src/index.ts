@@ -1,3 +1,5 @@
+import type { components } from "./generated/openapi";
+
 export interface RuleMindServerClientConfig {
   baseUrl: string;
   apiKey?: string;
@@ -20,31 +22,24 @@ export interface SdkEventRecord {
   data?: Record<string, unknown>;
 }
 
-export interface SdkDecideResponse {
-  outcome: string;
-  score?: number | null;
-  variables: Record<string, unknown>;
-  ruleResults: Array<Record<string, unknown>>;
-  experiment?: { id?: string | null; variant?: string | null } | null;
-  latencyMs: number;
-  requestId?: string | null;
-  serverOnlyStepsSkipped: string[];
-}
-
 export interface SdkEventsResponse {
   received: number;
   processed: number;
 }
 
-export interface SdkBundleResponse {
-  bundleVersion: number;
-  encryptedBundle: string;
-  encryptedKey?: string | null;
-  signature: string;
-  checksum: string;
-  compiledAt: string;
-  expiresAt: string;
-}
+/**
+ * Response types come from the API's own contract, generated from
+ * apps/python-executor/openapi.json by `pnpm --filter @rulemind/sdk-js gen:types`. They were
+ * hand-written, and a hand-written type is a second copy of the contract that nothing checks;
+ * test/sdk-generated-types.test.ts fails when the generated file falls behind the spec, and
+ * src/contract-check.ts stops this package compiling when a field it hands out changes.
+ */
+export type ApiSchemas = components["schemas"];
+export type SdkDecideResponse = ApiSchemas["SdkDecideResponse"];
+export type SdkBundleResponse = ApiSchemas["SdkBundleResponse"];
+export type DecideResponse = ApiSchemas["DecideResponse"];
+export type RuleResult = ApiSchemas["RuleResult"];
+export type ErrorResponse = ApiSchemas["ErrorResponse"];
 
 type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
 

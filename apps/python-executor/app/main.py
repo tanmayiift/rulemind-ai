@@ -17,6 +17,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import openapi_contract
+from .api_models import HealthResponse, ReadinessResponse
 from .auth import decode_admin_jwt
 from .compiler import (
     BundleCompilationError,
@@ -184,7 +186,7 @@ def _validation_exception_handler(request: Request, exc: RequestValidationError)
                         content={"error": "validation_error", "detail": jsonable_encoder(exc.errors())})
 
 
-@app.get("/api/v1/openapi.json")
+@app.get("/api/v1/openapi.json", tags=["system"])
 def authenticated_openapi(request: Request) -> Dict[str, Any]:
     """The machine-readable API contract, behind the ordinary API-key check.
 
@@ -207,10 +209,11 @@ def authenticated_openapi(request: Request) -> Dict[str, Any]:
     customer needs it, and `RULEMIND_ENABLE_DOCS` stays the separate switch for the PUBLIC
     Swagger UI.
 
-    Note the spec's own limitation, rather than letting the caller discover it: every operation
-    is annotated `-> Dict[str, Any]`, so there are **278 operations and zero typed 2xx response
-    schemas**. Paths, methods and request bodies are accurate; responses are not described.
-    That is plan item 5.1 and it is why all five SDKs are hand-written.
+    What it types (plan 5.1): the responses an integration depends on -- decide and batch
+    decide, decision records, reason codes, replay, OAuth2 tokens, the SDK endpoints, data
+    subjects and residency, executions, liveness and readiness -- plus the error envelope on
+    every operation and the credentials each one needs. The rest of the authoring surface still
+    documents its responses as open objects; `app/api_models.py` is where a type is added.
     """
     return app.openapi()
 
@@ -1083,6 +1086,9 @@ def test_policy_entity(policy: Dict[str, Any], payload: Optional[Dict[str, Any]]
         "policy_version": ctx.policy_version,
         "outcome": ctx.outcome if ctx.outcome != "pending" else (policy.get("defaultOutcome") or "review"),
         "scorecard_result": scorecard_result,
+        # The rule results the executor RECORDED -- the same list the Decision row stores and
+        # reason codes are computed from, and the shape the fast path returns.
+        "rule_results": copy.deepcopy(ctx.rule_results),
         "trace": copy.deepcopy(ctx.step_trace),
         "status": ctx.status,
         "execution_id": ctx.execution_id,
@@ -1748,8 +1754,8 @@ def _dependency_status() -> Dict[str, Any]:
     return payload
 
 
-@app.get("/health")
-@app.get("/api/v1/health")
+@app.get("/health", tags=["system"], responses={200: {"model": HealthResponse}})
+@app.get("/api/v1/health", tags=["system"], responses={200: {"model": HealthResponse}})
 async def health() -> Dict[str, Any]:
     """Liveness. Deliberately static: no database, no Redis, no I/O of any kind.
 
@@ -1773,8 +1779,8 @@ async def health() -> Dict[str, Any]:
 
 # /health/ready is the path k8s/rulemind.yaml probes; without it the probe 404s
 # forever and pods never become Ready.
-@app.get("/ready")
-@app.get("/health/ready")
+@app.get("/ready", tags=["system"], responses={200: {"model": ReadinessResponse}, 503: {"model": ReadinessResponse}})
+@app.get("/health/ready", tags=["system"], responses={200: {"model": ReadinessResponse}, 503: {"model": ReadinessResponse}})
 def ready(response: Response) -> Dict[str, Any]:
     """Readiness — the ONLY probe that touches the dependencies.
 
@@ -1790,7 +1796,7 @@ def ready(response: Response) -> Dict[str, Any]:
     return {"ready": is_ready, **state}
 
 
-@app.get("/metrics")
+@app.get("/metrics", tags=["system"])
 def metrics() -> Response:
     # Routed through metrics_registry so a multiprocess deployment aggregates across workers.
     # generate_latest() on the default registry reports only the worker that happened to serve
@@ -1997,7 +2003,7 @@ class EmailConfigRequest(BaseModel):
 # EXCEL FUNCTIONS INFO ENDPOINT
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/v1/excel-functions")
+@app.get("/api/v1/excel-functions", tags=["system"])
 def list_excel_functions() -> Dict[str, Any]:
     """List all available Excel functions in the sandbox."""
     from .excel_functions import EXCEL_FUNCTIONS
@@ -2098,29 +2104,31 @@ from .routers.evaluations import router as evaluations_router  # noqa: E402
 # which is exactly what noqa is for.
 from .webhooks import trigger_webhook  # noqa: F401
 
-app.include_router(scim_router)
-app.include_router(governance_router)
-app.include_router(insights_router)
-app.include_router(authoring_router)
-app.include_router(rules_router)
-app.include_router(policies_router)
-app.include_router(operations_router)
-app.include_router(reports_router)
-app.include_router(onboarding_router)
-app.include_router(identity_router)
-app.include_router(ai_router)
-app.include_router(experiments_router)
-app.include_router(models_router)
-app.include_router(platform_router)
-app.include_router(sdk_router)
-app.include_router(runtime_router)
-app.include_router(debugger_router)
-app.include_router(journeys_router)
-app.include_router(modelsets_router)
-app.include_router(predictors_router)
-app.include_router(webhook_subscriptions_router)
-app.include_router(collab_router)
-app.include_router(evaluations_router)
+app.include_router(scim_router, tags=["scim"])
+app.include_router(governance_router, tags=["governance"])
+app.include_router(insights_router, tags=["insights"])
+app.include_router(authoring_router, tags=["authoring"])
+app.include_router(rules_router, tags=["rules"])
+app.include_router(policies_router, tags=["policies"])
+app.include_router(operations_router, tags=["operations"])
+app.include_router(reports_router, tags=["reports"])
+app.include_router(onboarding_router, tags=["onboarding"])
+app.include_router(identity_router, tags=["identity"])
+app.include_router(ai_router, tags=["ai"])
+app.include_router(experiments_router, tags=["experiments"])
+app.include_router(models_router, tags=["models"])
+app.include_router(platform_router, tags=["platform"])
+app.include_router(sdk_router, tags=["sdk"])
+app.include_router(runtime_router, tags=["runtime"])
+app.include_router(debugger_router, tags=["debugger"])
+app.include_router(journeys_router, tags=["journeys"])
+app.include_router(modelsets_router, tags=["modelsets"])
+app.include_router(predictors_router, tags=["predictors"])
+app.include_router(webhook_subscriptions_router, tags=["webhook-subscriptions"])
+app.include_router(collab_router, tags=["collab"])
+app.include_router(evaluations_router, tags=["evaluations"])
+# Errors, authentication and response types, as the running app applies them (plan 5.1).
+openapi_contract.install(app)
 
 # One paging contract for every collection endpoint -- see app/pagination.py. MUST be last: it
 # walks the routing table as it stands, so anything included after this line would not be paged.

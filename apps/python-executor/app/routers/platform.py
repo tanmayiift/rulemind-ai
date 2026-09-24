@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Cookie, HTTPException, Request, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 
 from .. import main
 from ..auth import JWT_COOKIE_NAME, bcrypt_verify, create_admin_jwt
@@ -88,6 +88,23 @@ def _audit_login_failure(scope: str, email: str, source_ip: str, guard: Any) -> 
 # ── Mobile admin app ───────────────────────────────────────────────────────
 @router.post("/api/mobile/v1/auth/demo")
 def mobile_demo_access(request: Request) -> Dict[str, Any]:
+    """Unauthenticated demo access for the mobile sample app. Its response carries the default
+    workspace's API key, so it answers ONLY when that key is the published development default
+    -- when handing it out discloses nothing that is not already in this repository.
+
+    It used to answer everywhere. A production install must set RULEMIND_DEV_API_KEY to a real
+    secret before it will boot, the seed gives the default workspace exactly that key, with the
+    owner role, and this route is outside the middleware's authenticated prefixes: one anonymous
+    POST returned the owner key of the workspace the install exists to serve."""
+    import hmac
+
+    from ..security_config import PRODUCTION_SECRET_CHECKS
+
+    published = next(default for name, default, _ in PRODUCTION_SECRET_CHECKS if name == "RULEMIND_DEV_API_KEY")
+    if not hmac.compare_digest(str(main.storage.default_api_key or ""), published):
+        raise HTTPException(status_code=403, detail=(
+            "Demo access is available only on a development install. This install has its own "
+            "workspace key; sign in with POST /api/mobile/v1/auth/login instead."))
     tenant_id = str(main.storage.default_tenant_id or "")
     if not tenant_id:
         raise HTTPException(status_code=500, detail="Default tenant is unavailable.")
@@ -189,9 +206,15 @@ def admin_list_tenants(admin_token: Optional[str] = Cookie(default=None, alias=J
     return main.storage.list_tenants()
 
 
+def _platform_admin(admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
+    """The admin check as a dependency, for routes that take a body. FastAPI validates the body
+    before the handler runs, so a check inside the handler answered an unauthenticated caller
+    with a 422 listing the admin endpoint's fields; a dependency runs first, so they get a 401."""
+    return require_platform_admin(admin_token)
+
+
 @router.post("/api/admin/v1/tenants")
-def admin_create_tenant(request: TenantCreateRequest, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
-    require_platform_admin(admin_token)
+def admin_create_tenant(request: TenantCreateRequest, _admin: Dict[str, Any] = Depends(_platform_admin)) -> Dict[str, Any]:
     return main.storage.create_tenant(request.name, plan=request.plan, config=request.config, is_active=request.is_active)
 
 
@@ -205,8 +228,7 @@ def admin_get_tenant(tenant_id: str, admin_token: Optional[str] = Cookie(default
 
 
 @router.patch("/api/admin/v1/tenants/{tenant_id}")
-def admin_update_tenant(tenant_id: str, request: TenantUpdateRequest, admin_token: Optional[str] = Cookie(default=None, alias=JWT_COOKIE_NAME)) -> Dict[str, Any]:
-    require_platform_admin(admin_token)
+def admin_update_tenant(tenant_id: str, request: TenantUpdateRequest, _admin: Dict[str, Any] = Depends(_platform_admin)) -> Dict[str, Any]:
     tenant = main.storage.update_tenant(tenant_id, request.model_dump(exclude_none=True))
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found.")

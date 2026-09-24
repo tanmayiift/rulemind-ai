@@ -319,6 +319,24 @@ class SsoApiTests(unittest.TestCase):
         self.assertEqual(r.json()["member"]["email"], "sam@acme.com")
         self.assertEqual(r.json()["member"]["role"], "policy_maker")
 
+    def test_saml_acs_accepts_the_idps_form_post(self):
+        """The HTTP-POST binding is how an IdP actually delivers the assertion: the user's browser
+        posts `SAMLResponse` and `RelayState` as an urlencoded form. The test above posts JSON,
+        which no IdP does, and the form branch called `request.form()` -- which needs
+        python-multipart, installed nowhere. Every real SAML sign-in was a 500."""
+        key, pem = _rsa_keypair()
+        cert = _self_signed_cert(key)
+        self.client.put("/api/v1/access/sso", headers=self.admin, json={
+            "provider": "saml", "enabled": True, "sp_entity_id": SP_ENTITY_ID,
+            "sso_url": "https://idp/sso", "acs_url": ACS_URL, "idp_cert": cert,
+            "default_role": "policy_maker", "jit_provisioning": True,
+        })
+        state = sso.issue_state(self.tenant_id, "saml", "n", ACS_URL)
+        resp = _signed_saml_response(cert, pem, "form@acme.com", name="Form Post")
+        r = self.client.post("/api/v1/auth/sso/saml/acs", data={"SAMLResponse": resp, "RelayState": state})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["member"]["email"], "form@acme.com")
+
     def test_sso_endpoints_are_public(self):
         # No API key needed to reach the SSO login endpoints — they self-verify.
         # A bad state is a 401 (auth failure), NOT a 401 "Missing API key" from the
