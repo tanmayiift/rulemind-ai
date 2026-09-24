@@ -22,7 +22,9 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-LANE_VARIABLES = ("DATABASE_URL", "RULEMIND_TEST_PG_SCHEMA_PER_PATH")
+# The sandbox pair too: a leaked SANDBOX_MODE=inline would quietly turn every later test of the
+# pool -- the one-trip variable group included -- into a test of the inline path.
+LANE_VARIABLES = ("DATABASE_URL", "RULEMIND_TEST_PG_SCHEMA_PER_PATH", "SANDBOX_MODE", "SANDBOX_BATCH")
 AT_START = {name: os.environ.get(name) for name in LANE_VARIABLES}
 
 

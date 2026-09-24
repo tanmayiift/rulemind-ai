@@ -4,11 +4,13 @@ import inspect
 import json
 import multiprocessing
 import os
+import pickle
+import signal
 import time
 import threading
 from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import env
 
@@ -499,6 +501,160 @@ def _fallback_or_fail(exc: Exception, code: str, payload: Dict[str, Any], contex
         fallback["sandbox_error"] = str(exc)
         return fallback
     return {"value": None, "error": "Sandbox execution unavailable: {0}".format(exc), "latency_ms": 0.0, "variable_name": None}
+
+
+# ── One round trip for a decision's variables (plan 4.4) ──────────────────────────────────
+#
+# A decision computes up to ~55 variables, and the per-call path above makes one pool round trip
+# for each: measured at 6.97 ms of a 15.5 ms decision, of which the variables' own work is under
+# 20 us. R10.14 measured the two cheaper ideas and reverted both (trimming the pickled map saves
+# 0.006 ms a trip; fanning calls out concurrently is 15% at best, because ProcessPoolExecutor
+# funnels every submit through one queue). What is left is to make ONE trip and run the group
+# inside the worker -- which has to keep, per variable, every guarantee the per-call path gets
+# for free from its process boundary:
+#
+#   order and accumulation  each variable sees the values of the ones before it, as before.
+#   isolation               each gets its OWN copy of its source payload and of every earlier
+#                           mutable value (pickled once, unpickled per variable, 0.13 ms for 55),
+#                           because the per-call path's pickling gave it that: a variable that
+#                           appends to a list it was handed must not change what the next sees.
+#   its own deadline        an interval timer raises inside the variable at min(timeout, budget
+#                           left), and a result that arrives late is a timeout anyway -- variable
+#                           code may catch exceptions, including this one.
+#   error isolation         one variable raising, or returning something that cannot be pickled,
+#                           errors that variable only.
+#   the evaluation budget   the worker stops starting variables when the budget is spent and
+#                           marks the rest `abandoned`; the caller then raises exactly as before.
+#   fail closed             a broken pool is recycled and falls back (or fails) per the configured
+#                           policy for the whole group; a worker that ignores its timers is killed
+#                           at the group's own deadline and every variable in it errors -- which
+#                           sends the decision to review, as one failed variable already does.
+
+_IMMUTABLE = (type(None), bool, int, float, complex, str, bytes)
+_GROUP_GRACE_S = 0.5
+TIMED_OUT = "Variable execution timed out."
+
+
+class _VariableTimedOut(BaseException):
+    """Not an Exception: `_execute_in_process` catches Exception, and a timeout must get past it."""
+
+
+def batching_enabled() -> bool:
+    """One trip per decision in pool mode. SANDBOX_BATCH=0 restores one trip per variable."""
+    return os.getenv("SANDBOX_MODE", "pool") != "inline" and env.env_bool("SANDBOX_BATCH", True)
+
+
+def _timed_out(limit_ms: float) -> Dict[str, Any]:
+    return {"value": None, "error": TIMED_OUT, "latency_ms": float(limit_ms), "variable_name": None}
+
+
+def _execute_group_in_process(items: Sequence[Tuple[str, str, Optional[str]]], sources: Dict[Any, Any],
+                              timeout_ms: int, memory_mb: int, budget_ms: Optional[float]) -> List[Dict[str, Any]]:
+    """Runs in a pool worker. `items` is (variable_id, code, source_id), in evaluation order."""
+    started = time.perf_counter()
+    blobs = {source_id: pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+             for source_id, payload in sources.items()}
+    values: Dict[str, Any] = {}
+    mutable: Dict[str, bytes] = {}
+    results: List[Dict[str, Any]] = []
+    armed = {"on": False}
+
+    def _alarm(_signum: int, _frame: Any) -> None:
+        if armed["on"]:
+            raise _VariableTimedOut()
+
+    use_timer = hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()
+    previous = signal.signal(signal.SIGALRM, _alarm) if use_timer else None
+    try:
+        for index, (variable_id, code, source_id) in enumerate(items):
+            left = None if budget_ms is None else budget_ms - (time.perf_counter() - started) * 1000.0
+            if left is not None and left <= 0:
+                results.extend({"abandoned": True} for _ in items[index:])
+                break
+            limit = timeout_ms if left is None else max(1.0, min(float(timeout_ms), left))
+            payload = pickle.loads(blobs[source_id]) if source_id in blobs else {}
+            view = dict(values)
+            for key, blob in mutable.items():
+                view[key] = pickle.loads(blob)
+            variable_started = time.perf_counter()
+            # The except sits OUTSIDE the finally on purpose: an alarm landing inside the finally,
+            # before `armed` is cleared, raises there -- and with the except inside, it would
+            # escape the loop and reach the caller as an uncaught BaseException.
+            try:
+                try:
+                    armed["on"] = True
+                    if use_timer:
+                        # Re-fires every 50 ms after the first expiry, so one caught timeout is
+                        # not the end of it.
+                        signal.setitimer(signal.ITIMER_REAL, limit / 1000.0, 0.05)
+                    result = _execute_in_process(code, payload, view, int(limit), memory_mb)
+                finally:
+                    armed["on"] = False
+                    if use_timer:
+                        signal.setitimer(signal.ITIMER_REAL, 0)
+            except _VariableTimedOut:
+                armed["on"] = False
+                if use_timer:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                result = _timed_out(limit)
+            if (time.perf_counter() - variable_started) * 1000.0 > limit:
+                result = _timed_out(limit)
+            value = result.get("value")
+            try:
+                blob = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            except Exception as exc:  # noqa: BLE001 - one unpicklable result errors one variable
+                result = {"value": None, "error": "Variable returned a value that cannot be serialised: {0}".format(exc),
+                          "latency_ms": result.get("latency_ms", 0.0), "variable_name": result.get("variable_name")}
+                value, blob = None, None
+            if blob is not None and not isinstance(value, _IMMUTABLE):
+                mutable[variable_id] = blob
+            values[variable_id] = value
+            results.append(result)
+    finally:
+        if use_timer:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+    return results
+
+
+def _group_fallback_or_fail(exc: Exception, items: Sequence[Tuple[str, str, Optional[str]]],
+                            sources: Dict[Any, Any]) -> List[Dict[str, Any]]:
+    """`_fallback_or_fail` for a whole group, keeping accumulation when it falls back inline."""
+    values: Dict[str, Any] = {}
+    results = []
+    for variable_id, code, source_id in items:
+        result = _fallback_or_fail(exc, code, sources.get(source_id, {}), dict(values))
+        values[variable_id] = result.get("value")
+        results.append(result)
+    return results
+
+
+def execute_variable_group(items: Sequence[Tuple[str, str, Optional[str]]], sources: Dict[Any, Any],
+                           timeout_ms: int = MAX_EXECUTION_MS, memory_mb: int = MAX_MEMORY_MB,
+                           budget_ms: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Evaluate a decision's variables in ONE pool round trip. Returns one result per item, in
+    order, each shaped like `execute_variable`'s; items the budget did not reach are
+    `{"abandoned": True}`."""
+    if not items:
+        return []
+    wait_ms = budget_ms if budget_ms is not None else float(timeout_ms) * len(items)
+    pool = None
+    try:
+        pool = _get_pool()
+        future = pool.submit(_execute_group_in_process, list(items), dict(sources), timeout_ms, memory_mb, budget_ms)
+        return future.result(timeout=max(wait_ms / 1000.0, 0.1) + _GROUP_GRACE_S)
+    except (FuturesTimeoutError, _VariableTimedOut):
+        # The worker ignored its timers (variable code may catch them), or -- which the loop is
+        # built to prevent -- a timeout escaped it. Kill the worker with the pool.
+        if pool is not None:
+            _recycle_pool(pool)
+        return [_timed_out(timeout_ms) for _ in items]
+    except BrokenProcessPool as exc:
+        if pool is not None:
+            _recycle_pool(pool)
+        return _group_fallback_or_fail(exc, items, sources)
+    except Exception as exc:  # noqa: BLE001 - the same stance as execute_variable
+        return _group_fallback_or_fail(exc, items, sources)
 
 
 # Legacy API preserved for backward compatibility

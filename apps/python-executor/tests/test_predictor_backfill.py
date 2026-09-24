@@ -26,6 +26,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -117,8 +118,7 @@ class TheOtherTwoClausesAlreadyWorkedTest(unittest.TestCase):
         """`execute_variable(code, payload, variables_map)` -- the third argument is the map of
         already-computed variables, so a derived feature is an ordinary variable that reads it.
         That is P12's "define a derived feature", and it predates this work."""
-        os.environ["SANDBOX_MODE"] = "inline"
-        try:
+        with mock.patch.dict(os.environ, {"SANDBOX_MODE": "inline"}):
             from app.sandbox import execute_variable
 
             code = ('@variable(source="custom")\n'
@@ -127,8 +127,6 @@ class TheOtherTwoClausesAlreadyWorkedTest(unittest.TestCase):
             result = execute_variable(code, {}, {"total_emi": 25000, "income": 100000})
             self.assertIsNone(result.get("error"), result)
             self.assertEqual(result["value"], 0.25)
-        finally:
-            os.environ.pop("SANDBOX_MODE", None)
 
 
 class BackfillTest(_Base):

@@ -242,6 +242,8 @@ config:
   SANDBOX_POOL_SIZE: "4"           # subprocesses per uvicorn worker; see the budget below
   # SANDBOX_MEMORY_MB: ""              # RLIMIT_AS per sandbox subprocess; unset = no limit
   # SANDBOX_CODE_CACHE_SIZE: "2048"    # compiled-variable cache entries per subprocess
+  # SANDBOX_BATCH: "1"                 # a decision's variables in ONE sandbox round trip (measured
+  #                                    # 12.6 -> 6.8 ms p50 per decision); "0" = one trip per variable
 
   # ── Authentication and abuse budgets ─────────────────────────────────────────────────────
   # AUTH_MODE unset is NOT the same as "none": middleware.py tests `== "none"` exactly, so
