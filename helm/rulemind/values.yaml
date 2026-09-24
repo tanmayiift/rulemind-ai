@@ -49,8 +49,29 @@ ingress:
   apiPath: /api
   wsPath: /ws
 
+# Point at a Secret you provisioned yourself (External Secrets, Sealed Secrets, the CSI
+# driver, or `kubectl create secret`) instead of letting this chart create one.
+#
+# Why this exists: scripts/k8s_up.sh shows the only workflow the chart supported --
+#   helm install ... --set-string env.configKey="$CONFIG_KEY" ...
+# which puts four production secrets into shell history, into CI logs, and into the Helm
+# release Secret stored in the cluster. No security review passes that, so "bring your own
+# Secret" was a blocker for exactly the buyers this chart is aimed at.
+#
+# The Secret must carry the same keys this chart would have written: DATABASE_URL, REDIS_URL,
+# RULEMIND_CONFIG_KEY, RULEMIND_ADMIN_JWT_SECRET, RULEMIND_ADMIN_PASSWORD, RULEMIND_DEV_API_KEY.
+# When set, templates/secret.yaml is not rendered at all and the env.* values below are ignored.
+#
+# ONE TRADE-OFF, stated because it is easy to be surprised by: the checksum/secret annotation on
+# the Deployments hashes the Secret THIS CHART renders. With existingSecret that template is
+# empty, so rotating your external Secret will not roll the pods -- Helm cannot see content it
+# does not template. Trigger the rollout yourself (`kubectl rollout restart deploy/rulemind-api
+# deploy/rulemind-worker`), or let your secrets operator do it: External Secrets and the CSI
+# driver both have a reloader for exactly this.
+existingSecret: ""
+
 env:
-  databaseUrl: ""          # REQUIRED: postgresql://user:pass@host:5432/dbname
+  databaseUrl: ""          # REQUIRED unless existingSecret is set: postgresql://user:pass@host:5432/dbname
   redisUrl: ""             # REQUIRED: redis://host:6379/0
   configKey: ""            # REQUIRED: Fernet encryption key for config secrets
   adminJwtSecret: ""       # REQUIRED: JWT signing secret for admin sessions
