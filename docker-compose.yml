@@ -69,6 +69,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       PYTHON_SANDBOX_TIMEOUT: 2000
       PYTHON_SANDBOX_MEMORY: 128
+      # Address-space cap for the ML model workers. Explicit because the in-code default was
+      # 512 MB, which is BELOW the 768 MB the shipped scikit-learn/scipy stack needs just to
+      # import inside this image -- so every model upload returned 422 and every `model` policy
+      # step failed, in every Linux deployment. See app/model_executor.py for the bisection.
+      MODEL_MEMORY_MB: ${MODEL_MEMORY_MB:-2048}
       # Explicit, and small: app/db.py defaults to 20+20 PER uvicorn worker
       # process. See the connection-budget arithmetic in helm/rulemind/values.yaml.
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
