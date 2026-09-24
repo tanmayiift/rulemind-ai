@@ -81,6 +81,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -119,6 +120,7 @@ from .templates import resolve_template
 __all__ = [
     "ConnectorMisconfigured",
     "FetchResult",
+    "ProviderRefused",
     "SourceFetchFailed",
     "apply_response_mapping",
     "cache_ttl_ms",
@@ -216,6 +218,187 @@ def on_fetch_failure(connector: Any) -> str:
         if isinstance(raw, str) and raw.strip() in _ON_FAILURE_VALUES:
             return raw.strip()
     return ON_FAILURE_REVIEW
+
+
+# ── the provider contract: inputs, "200 but not an answer", documented errors ─────────────
+# Three optional connector-config keys, added for the named-provider templates (plan 6.1) but
+# generic -- any connector may use them:
+#
+#   required_inputs    [{"path": "payload.custom.ssn", "pattern": "^[0-9]{9}$"}]
+#                      Checked BEFORE a token is requested or a socket opened. A decision
+#                      missing the applicant's SSN fails as `missing_input` naming the field --
+#                      not as an opaque 400 from the bureau, and not after spending a bureau
+#                      pull on it. The reason names the PATH, never the value: these are PII.
+#   response_checks    [{"path": "$.status", "in": ["completed"], "code": "...",
+#                        "codes": {"processing": "..."}, "each": "status", "min_items": 1}]
+#                      A provider's 200 that is not an answer -- a statement still processing,
+#                      a bureau no-hit, a frozen file -- fails with a named code instead of
+#                      being mapped into a payload of Nones. `response_did_not_match_mapping`
+#                      only catches ALL fields missing; a no-hit that still carries its hit code
+#                      would pass it with every score field None, and a None fed to a gate
+#                      flips it silently.
+#   error_codes        {"404": "setu_pan_not_found"}  -- a DOCUMENTED status to a stable code.
+#   error_detail_path  "$.error.code" or a list of paths into the error body; the provider's own
+#                      error text rides along in the reason, redacted like everything else.
+_CONTRACT_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_ERROR_BODY_CHARS = 4096
+_DETAIL_CHARS = 120
+
+
+class ProviderRefused(Exception):
+    """The provider answered, and the answer is not one a decision can be made on. Distinct from
+    ConnectorMisconfigured (the author's mistake) and from a transport failure (the provider's
+    health): the provider is healthy, so it does not count against the circuit breaker."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+
+
+def _contract_code(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not _CONTRACT_CODE.match(value):
+        raise ConnectorMisconfigured(
+            "malformed_provider_contract",
+            "{0} must be a lower_snake_case code, got {1!r}.".format(where, value))
+    return value
+
+
+def _as_list(raw: Any, field_name: str) -> list:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise ConnectorMisconfigured(
+                "malformed_provider_contract", "{0} is not valid JSON: {1}".format(field_name, exc)) from exc
+    if not isinstance(raw, list):
+        raise ConnectorMisconfigured(
+            "malformed_provider_contract", "{0} must be a JSON array.".format(field_name))
+    return raw
+
+
+def check_required_inputs(config: Dict[str, Any], view: Dict[str, Any]) -> None:
+    """Raise ProviderRefused(missing_input | invalid_input) for the first input that is absent or
+    malformed. Malformed specs raise ConnectorMisconfigured."""
+    for position, spec in enumerate(_as_list(config.get("required_inputs"), "required_inputs")):
+        if not isinstance(spec, dict) or not isinstance(spec.get("path"), str) or not spec["path"].strip():
+            raise ConnectorMisconfigured(
+                "malformed_provider_contract",
+                "required_inputs[{0}] must be an object with a string path.".format(position))
+        path = spec["path"].strip()
+        expression = path if path.startswith("$.") else "$." + path.lstrip(".")
+        value = resolve_jsonpath(expression, view)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ProviderRefused("missing_input", "Required input {0} is missing.".format(path))
+        pattern = spec.get("pattern")
+        if pattern is None:
+            continue
+        try:
+            compiled = re.compile(str(pattern))
+        except re.error as exc:
+            raise ConnectorMisconfigured(
+                "malformed_provider_contract",
+                "required_inputs[{0}].pattern is not a valid regex: {1}".format(position, exc)) from exc
+        if isinstance(value, (dict, list)) or not compiled.fullmatch(str(value).strip()):
+            raise ProviderRefused(
+                "invalid_input", "Input {0} does not match {1}.".format(path, pattern))
+
+
+def _body_path(path: str) -> str:
+    """The same path normalisation response_mapping uses, so both keys read paths alike."""
+    expression = path.strip()
+    if not expression.startswith("$."):
+        expression = "$." + expression.lstrip(".")
+    if not expression.startswith("$.body") and not expression.startswith("$.response"):
+        expression = "$.body." + expression[2:]
+    return expression
+
+
+def _short(value: Any) -> str:
+    text = json.dumps(value) if not isinstance(value, str) else value
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
+class _Refusal:
+    """Raise ProviderRefused for one check: the code mapped from the value found, else the
+    check's default code; the check's own reason when it has one."""
+
+    def __init__(self, code: str, codes: Dict[str, Any], custom: Any) -> None:
+        self.code, self.codes, self.custom = code, codes, custom
+
+    def __call__(self, found: Any, default_reason: str) -> None:
+        mapped = self.codes.get(str(found), self.code) if found is not None else self.code
+        raise ProviderRefused(mapped, str(self.custom) if self.custom else default_reason)
+
+
+def apply_response_checks(raw_checks: Any, body: Any) -> None:
+    """Raise ProviderRefused when the parsed body is not an answer, per `response_checks`."""
+    view = {"body": body, "response": body}
+    for position, check in enumerate(_as_list(raw_checks, "response_checks")):
+        where = "response_checks[{0}]".format(position)
+        if not isinstance(check, dict) or not isinstance(check.get("path"), str) or not check["path"].strip():
+            raise ConnectorMisconfigured(
+                "malformed_provider_contract", "{0} must be an object with a string path.".format(where))
+        code = _contract_code(check.get("code"), where + ".code")
+        codes = check.get("codes") or {}
+        if not isinstance(codes, dict):
+            raise ConnectorMisconfigured("malformed_provider_contract", where + ".codes must be an object.")
+        for key, mapped in codes.items():
+            _contract_code(mapped, "{0}.codes[{1!r}]".format(where, key))
+        allowed = check.get("in")
+        if allowed is not None and not isinstance(allowed, list):
+            raise ConnectorMisconfigured("malformed_provider_contract", where + ".in must be an array.")
+        allowed_text = None if allowed is None else {str(item) for item in allowed}
+        path = check["path"].strip()
+        value = resolve_jsonpath(_body_path(path), view)
+        custom = check.get("reason")
+        refuse = _Refusal(code, codes, custom)
+
+        min_items = check.get("min_items")
+        if min_items is not None:
+            if not isinstance(value, list) or len(value) < int(min_items):
+                refuse(None, "{0} has fewer than {1} item(s).".format(path, int(min_items)))
+        each = check.get("each")
+        if each is not None:
+            if not isinstance(value, list) or not value:
+                refuse(None, "{0} is not a non-empty array.".format(path))
+            for item in value:
+                found = item.get(str(each)) if isinstance(item, dict) else None
+                if found is None or (allowed_text is not None and str(found) not in allowed_text):
+                    refuse(found, "{0}[].{1} is {2}, expected one of {3}.".format(
+                        path, each, _short(found), sorted(allowed_text or [])))
+            continue
+        if allowed_text is not None:
+            if value is None or isinstance(value, (dict, list)) or str(value) not in allowed_text:
+                refuse(value, "{0} is {1}, expected one of {2}.".format(
+                    path, _short(value), sorted(allowed_text)))
+        elif min_items is None and value is None:
+            refuse(None, "{0} is absent.".format(path))
+
+
+def _provider_error(config: Dict[str, Any], status: Optional[int], body: str) -> Tuple[Optional[str], str]:
+    """(code, provider detail) for a non-2xx response, per error_codes / error_detail_path."""
+    table = config.get("error_codes") or {}
+    if not isinstance(table, dict):
+        raise ConnectorMisconfigured("malformed_provider_contract", "error_codes must be an object.")
+    code = None
+    if status is not None and str(status) in table:
+        code = _contract_code(table[str(status)], "error_codes[{0!r}]".format(str(status)))
+    raw_paths = config.get("error_detail_path")
+    paths = [raw_paths] if isinstance(raw_paths, str) else (raw_paths or [])
+    detail = ""
+    if paths and body:
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            view = {"body": parsed, "response": parsed}
+            found = [resolve_jsonpath(_body_path(str(p)), view) for p in paths if isinstance(p, str)]
+            detail = " / ".join(str(v) for v in found if v not in (None, "", [], {}))[:_DETAIL_CHARS]
+    return code, detail
 
 
 # ── mapping parsing ────────────────────────────────────────────────────────
@@ -396,7 +579,7 @@ def _parse_body(text: str) -> Any:
             "unparseable_response", "Response body is not JSON: {0}".format(exc)) from exc
 
 
-def apply_response_mapping(raw_mapping: Any, body_text: str) -> Dict[str, Any]:
+def apply_response_mapping(raw_mapping: Any, body_text: str, checks: Any = None) -> Dict[str, Any]:
     """Turn the downstream's response into the source payload the variables read.
 
     Raises ConnectorMisconfigured (→ a failed fetch → fail closed) rather than returning a
@@ -405,6 +588,9 @@ def apply_response_mapping(raw_mapping: Any, body_text: str) -> Dict[str, Any]:
     """
     mapping = _as_object(raw_mapping, "response_mapping")
     body = _parse_body(body_text)
+    # Before the mapping, on the raw body: a "no hit" must fail as a no-hit, not be mapped into
+    # a payload whose score fields are None.
+    apply_response_checks(checks, body)
     if not mapping:
         # Identity: the partner already speaks the source's shape. Anything but an object is
         # refused — a list or a scalar cannot BE a source payload, and coercing one would put
@@ -433,15 +619,10 @@ def apply_response_mapping(raw_mapping: Any, body_text: str) -> Dict[str, Any]:
             raise ConnectorMisconfigured(
                 "malformed_response_mapping",
                 "response_mapping['{0}'] must be a JSONPath string.".format(field_name))
-        expression = path.strip()
         # `$.body.score` is the explicit form; a bare `body.score` and a bare `score` are both
         # accepted, because the rule-condition builder emits paths without the `$.` prefix and
         # an author should not have to know which surface they are on.
-        if not expression.startswith("$."):
-            expression = "$." + expression.lstrip(".")
-        if not expression.startswith("$.body") and not expression.startswith("$.response"):
-            expression = "$.body." + expression[2:]
-        payload[str(field_name)] = resolve_jsonpath(expression, view)
+        payload[str(field_name)] = resolve_jsonpath(_body_path(path), view)
 
     if payload and all(value is None for value in payload.values()):
         # Every mapped field missing means the mapping does not describe this response — a
@@ -518,12 +699,20 @@ def cache_ttl_ms(connector: Any) -> int:
 class _TransportFailed(Exception):
     """The request was attempted (or refused before it left) and did not produce a usable body."""
 
-    def __init__(self, outcome: str, reason: str, status: Optional[int] = None, blocked: bool = False) -> None:
+    def __init__(self, outcome: str, reason: str, status: Optional[int] = None, blocked: bool = False,
+                 body: str = "") -> None:
         super().__init__(reason)
         self.outcome = outcome
         self.reason = reason
         self.status = status
         self.blocked = blocked
+        # The error response body, bounded, for error_detail_path. Never surfaced whole.
+        self.body = body
+
+
+def _retryable_status(status: int) -> bool:
+    """5xx, 408 and 429 can succeed on a second attempt; every other non-2xx cannot."""
+    return status >= 500 or status in (408, 429)
 
 
 async def _send(request: _Request, deadline: Optional[float]) -> Tuple[int, str]:
@@ -601,7 +790,13 @@ async def _send(request: _Request, deadline: Optional[float]) -> Tuple[int, str]
                 ok, outcome, reason = _classify_status(response.status_code)
                 if ok:
                     return response.status_code, response.text[:MAX_BODY_BYTES]
-                last = _TransportFailed(outcome, reason, status=response.status_code)
+                last = _TransportFailed(outcome, reason, status=response.status_code,
+                                        body=response.text[:_ERROR_BODY_CHARS])
+                if not _retryable_status(response.status_code):
+                    # A 4xx is the provider's answer about THIS request; sending it again gets
+                    # the same answer. For a bureau it is worse than useless -- each retry of a
+                    # rejected pull can be another inquiry on the consumer's file.
+                    break
             if attempt >= request.retries or _attempt_timeout_s(request.timeout_ms, deadline) is None:
                 break
     raise last
@@ -684,6 +879,16 @@ async def fetch_source(
     # decision on a cold cache. A token failure fails the fetch CLOSED with its own code, the
     # same as any other reason a connector cannot supply its data.
     config = _config(connector)
+
+    # Inputs first: before a token is requested and before a socket opens. A decision that
+    # lacks the applicant's SSN must not spend a bureau pull finding that out.
+    try:
+        check_required_inputs(config, view)
+    except ProviderRefused as refused:
+        return _failure(connector, source_id, refused.code, refused.reason, started, input_rejected=True)
+    except ConnectorMisconfigured as bad:
+        return _failure(connector, source_id, bad.code, bad.reason, started, misconfigured=True)
+
     token_key = oauth2_client.cache_key(config, tenant_id, source_id)
     access_token: Optional[str] = None
     if oauth2_client.uses_token_endpoint(config) and not str(
@@ -768,15 +973,37 @@ async def fetch_source(
         # every OTHER decision in the workspace. `blocked` is excluded for the same reason: an
         # egress refusal never reached the partner.
         charge_to_downstream = failed.outcome != "timeout" or "budget" not in failed.reason
+        # Nor a non-retryable 4xx: that is the partner answering about THIS request -- a PAN that
+        # does not exist, a malformed applicant record. Counting it let five applicants with a
+        # typo in their PAN open the breaker on a healthy KYC provider and send every other
+        # applicant in the workspace to review for the cooldown.
+        if failed.status is not None and not _retryable_status(failed.status):
+            charge_to_downstream = False
         if breaker is not None and charge_to_downstream and not failed.blocked:
             breaker.record_failure()
-        return _failure(connector, source_id, failed.outcome, failed.reason, started,
+        try:
+            mapped, detail = _provider_error(config, failed.status, failed.body)
+        except ConnectorMisconfigured as bad:
+            return _failure(connector, source_id, bad.code, bad.reason, started, misconfigured=True,
+                            secrets=request.secrets, status_code=failed.status,
+                            url=request.display_url, method=request.method)
+        reason = failed.reason + (" -- provider: " + detail if detail else "")
+        return _failure(connector, source_id, mapped or failed.outcome, reason, started,
                         secrets=request.secrets,
                         status_code=failed.status, blocked=failed.blocked,
                         url=request.display_url, method=request.method)
 
     try:
-        payload = apply_response_mapping(_config(connector).get("response_mapping"), text)
+        payload = apply_response_mapping(config.get("response_mapping"), text,
+                                         checks=config.get("response_checks"))
+    except ProviderRefused as refused:
+        # The partner is healthy and said something definite -- "no hit", "still processing".
+        # Not a breaker failure, not a misconfiguration, and never a payload.
+        if breaker is not None:
+            breaker.record_success()
+        return _failure(connector, source_id, refused.code, refused.reason, started,
+                        secrets=request.secrets, status_code=status,
+                        url=request.display_url, method=request.method)
     except ConnectorMisconfigured as bad:
         # The transport worked, so this does NOT count against the breaker: the downstream is
         # healthy and the connector's mapping is wrong. Tripping on it would take a working

@@ -7,11 +7,14 @@ handler bodies go through the module object so the test harness's per-test stora
 (see the routers package docstring)."""
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
 
-from .. import main
+from pydantic import BaseModel, Field
+
+from .. import connector_templates, main
 from ..connector_probe import ConnectorMisconfigured, probe_connector, redact_connector_secrets
 from ..logic import now_iso
 from ..main import (
@@ -66,6 +69,60 @@ def create_connector(request: ConnectorCreateRequest) -> Dict[str, Any]:
 @router.get("/api/v1/connectors/{connector_id}")
 def get_connector(connector_id: str) -> Dict[str, Any]:
     return ensure_exists(main.storage.get_connector(connector_id), "connector", connector_id)
+
+
+# ── Connector templates: named providers ────────────────────────────────────
+class TemplateInstallRequest(BaseModel):
+    connector_id: Optional[str] = Field(None, description="Defaults to the template's default_connector_id.")
+    environment: Optional[str] = Field(None, description="One of the template's environments; defaults to the first.")
+    base_url: Optional[str] = Field(None, description="Required when the environment has no published base URL.")
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    secrets: Dict[str, str] = Field(default_factory=dict)
+    install_variables: bool = Field(True, description="Also create the template's starter variables, in dev.")
+
+
+@router.get("/api/v1/connector-templates")
+def list_connector_templates(category: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Prebuilt connectors for named providers, each with what was and was not verified."""
+    return connector_templates.list_templates(category)
+
+
+@router.get("/api/v1/connector-templates/{template_id}")
+def get_connector_template(template_id: str) -> Dict[str, Any]:
+    return ensure_exists(connector_templates.get_template(template_id), "connector template", template_id)
+
+
+@router.post("/api/v1/connector-templates/{template_id}/install")
+def install_connector_template(template_id: str, request: TemplateInstallRequest) -> Dict[str, Any]:
+    """Create a connector (and starter variables) from a template.
+
+    Every problem with the request is reported at once (422 `invalid_template_install`), and an
+    id that already exists is a 409 rather than a silent `_2` suffix -- the same stance as
+    `make_id`: re-running an install must not quietly create a second connector.
+    """
+    ensure_exists(connector_templates.get_template(template_id), "connector template", template_id)
+    try:
+        plan = connector_templates.build_install(template_id, request.model_dump())
+    except connector_templates.TemplateInstallError as bad:
+        raise HTTPException(status_code=422, detail={
+            "error": "invalid_template_install", "problems": bad.problems}) from bad
+    taken = [plan["connector"]["id"]] if plan["connector"]["id"] in current_connectors() else []
+    existing_variables = current_variable_map()
+    taken += [v["id"] for v in plan["variables"] if v["id"] in existing_variables]
+    if taken:
+        raise HTTPException(status_code=409, detail={
+            "error": "already_exists", "ids": taken,
+            "message": "Choose another connector_id; these already exist in this workspace."})
+    connector = main.storage.create_connector(plan["connector"])
+    variables = [main.storage.create_variable(variable) for variable in plan["variables"]]
+    template = connector_templates.TEMPLATES[template_id]
+    return {
+        "connector": connector,
+        "variables": variables,
+        "template": {"id": template_id, "provider": template["provider"],
+                     "verification": copy.deepcopy(template["verification"])},
+        "inputs": copy.deepcopy(template["inputs"]),
+    }
 
 
 @router.put("/api/v1/connectors/{connector_id}")

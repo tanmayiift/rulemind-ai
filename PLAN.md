@@ -2021,6 +2021,61 @@ calls it.
   with the same markers the API masks on read, and migration `20260924_0033` scrubs rows written
   before (idempotent; deliberately no downgrade). Three tests; both halves mutation-checked.
 
+- [x] **R10.27 THREE NAMED-PROVIDER CONNECTORS, BUILT FROM THE PROVIDERS' OWN CONTRACTS.** (Plan 6.1,
+  on your call to proceed with a documented request/response contract instead of live credentials.)
+  **Equifax** US Consumer Credit Report (bureau, OAuth2 client credentials), **FinBox BankConnect**
+  predictors (bank statements) and **Setu** PAN verification (KYC) — one per category, chosen
+  because their contracts can be read without an account. Experian (password grant, gated schema)
+  and Socure (gated) were checked and rejected on those grounds. `GET /api/v1/connector-templates`,
+  `…/{id}`, `POST …/{id}/install`; the contract page `docs/connectors/TEMPLATES.md` is **generated**
+  from the templates and a test fails when it drifts.
+
+  **What "documented" means here, stated per template:** Setu's endpoint, headers, bodies, error
+  codes and sandbox test PANs come from Setu's own OpenAPI in its public docs repo. FinBox's come
+  from its public REST docs. Equifax's auth flow comes from its quick start guide; its request and
+  response schema from Equifax's portal OpenAPI as republished in a public repo (the portal needs a
+  corporate login), so its token URL and production base URL are install settings, not guesses.
+  **None has been run against a live sandbox.** Each is tested end to end — installed through the
+  API and driven through a real decision — against a local server serving the provider's own
+  published example bodies. Each template carries `verified` / `not_verified` lists.
+
+  **Reading the contracts found three things a template written from memory would have got wrong.**
+  * Equifax's own example puts an **unrequested** FICO model first and the requested model second —
+    with score 0. `models[0].score` reads the wrong model; the template maps the array and the
+    starter variable selects by model number, and treats a non-positive score as no score.
+  * Equifax documents `status: "completed === Request Schema Validation Error"` — a 200 carrying a
+    failure. The check requires exactly `completed`.
+  * Setu's quickstart says `"success"`, its OpenAPI says `"SUCCESS"`. The check accepts both.
+
+  **Engine support, generic, any connector can use it** (`connector_fetch`): `required_inputs`
+  (checked before a token request or socket — a missing SSN is `missing_input` naming the field,
+  never the value, and spends no bureau pull; patterns stop a payload id walking the URL path),
+  `response_checks` (a 200 that is not an answer — still processing, no hit, file frozen — fails
+  with a named code instead of mapping into a payload of Nones, which the existing all-None guard
+  does not catch when one field, like the hit code, is present), `error_codes` +
+  `error_detail_path` (documented statuses to stable codes, provider text in the reason, redacted).
+
+  **Two engine defects the templates exposed, fixed:**
+  * **Installing a bureau connector made every decision in the workspace pull a credit report.**
+    With every variable computed (the default), every opted-in source any variable reads was
+    fetched — for a policy that never mentions the bureau. That is a billed call and, for a consumer
+    bureau, an inquiry with no permissible purpose for that application. Skipping the fetch alone
+    was no fix: the score variable fails closed on an absent report, and any failed variable sends
+    the decision to review. Now a variable whose source must be fetched and that the policy does not
+    reach (same transitive walk as `compute_only_used_vars`) is neither fetched nor computed. The
+    fast path declines fetching tenants entirely, so the two paths cannot diverge here.
+  * **4xx responses counted against the circuit breaker and were retried.** Five applicants with a
+    typo in their PAN opened the breaker on a healthy KYC provider and sent everyone else to review
+    for the cooldown; a rejected bureau pull was re-sent. Only 408, 429 and 5xx are retried or
+    charged now.
+
+  Secret keys are scoped to the connector id at install (`setu_pan_client_secret`) because
+  `{{secrets.*}}` is flattened across the tenant — a second install would otherwise silently
+  replace the first one's credentials. Installs are tenant-scoped (tested across tenants), 409 on
+  an existing id, 422 with every problem at once, author capability. 38 tests; **12 mutations, all
+  caught** — including the scoping, per-element progress checks, per-value hit codes, and reading
+  the score from the first model.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

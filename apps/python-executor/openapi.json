@@ -3865,6 +3865,66 @@
         "title": "SubscriptionRequest",
         "type": "object"
       },
+      "TemplateInstallRequest": {
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required when the environment has no published base URL.",
+            "title": "Base Url"
+          },
+          "connector_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to the template's default_connector_id.",
+            "title": "Connector Id"
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "One of the template's environments; defaults to the first.",
+            "title": "Environment"
+          },
+          "install_variables": {
+            "default": true,
+            "description": "Also create the template's starter variables, in dev.",
+            "title": "Install Variables",
+            "type": "boolean"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Secrets",
+            "type": "object"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          }
+        },
+        "title": "TemplateInstallRequest",
+        "type": "object"
+      },
       "TenantCreateRequest": {
         "properties": {
           "config": {
@@ -7077,6 +7137,172 @@
           }
         },
         "summary": "Get State"
+      }
+    },
+    "/api/v1/connector-templates": {
+      "get": {
+        "description": "Prebuilt connectors for named providers, each with what was and was not verified.",
+        "operationId": "list_connector_templates_api_v1_connector_templates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "description": "Page size. Omit for the whole collection.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items to skip.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Connector Templates Api V1 Connector Templates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Connector Templates"
+      }
+    },
+    "/api/v1/connector-templates/{template_id}": {
+      "get": {
+        "operationId": "get_connector_template_api_v1_connector_templates__template_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Connector Template Api V1 Connector Templates  Template Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Connector Template"
+      }
+    },
+    "/api/v1/connector-templates/{template_id}/install": {
+      "post": {
+        "description": "Create a connector (and starter variables) from a template.\n\nEvery problem with the request is reported at once (422 `invalid_template_install`), and an\nid that already exists is a 409 rather than a silent `_2` suffix -- the same stance as\n`make_id`: re-running an install must not quietly create a second connector.",
+        "operationId": "install_connector_template_api_v1_connector_templates__template_id__install_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateInstallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Install Connector Template Api V1 Connector Templates  Template Id  Install Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Install Connector Template"
       }
     },
     "/api/v1/connectors": {

@@ -581,6 +581,40 @@ class PolicyExecutor:
     # actually reads. A connector without the flag is untouched, so every policy that worked
     # before this existed still works unchanged.
 
+    def _without_unreached_fetch_sources(self, policy: Dict[str, Any], rules: Dict[str, Any],
+                                         scorecards: Dict[str, Any], tenant_id: str) -> Optional[set]:
+        """Compute-everything mode, minus variables whose source must be FETCHED and that this
+        policy never reaches. None (= every variable) when the tenant fetches nothing.
+
+        "Compute every variable" was harmless while every source was a payload the caller sent.
+        With `fetch_at_decision` it means every decision retrieves every opted-in source any
+        variable reads: install a bureau connector with a score variable, and a decision on a
+        policy that never mentions the bureau PULLS A CREDIT REPORT -- a billed call and, for a
+        consumer bureau, an inquiry made without a permissible purpose for that application.
+        Skipping the fetch but still computing the variable is no better: its source is absent,
+        a variable written to fail closed raises, and `_fail_closed_on_variable_errors` sends
+        every unrelated decision to review.
+
+        So a variable on an unreached fetch source is neither fetched nor computed; it is simply
+        not part of this decision. Everything computable from what the caller sent is still
+        computed and recorded, which is what compute-everything mode exists for. Reachability is
+        the same transitive walk `compute_only_used_vars` uses, so nothing the policy reads --
+        directly, through another variable, a scorecard, a decision table or a sub-workflow --
+        is dropped. A connector step names its source explicitly and always counts.
+        """
+        from . import connector_fetch
+
+        catalog = self._catalog_for(tenant_id)
+        fetching = {cid for cid, connector in catalog["connectors"].items()
+                    if connector_fetch.fetch_enabled(connector)}
+        if not fetching:
+            return None
+        reached = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
+        reached_sources = self._sources_in_use(policy, tenant_id, reached)
+        return {variable["id"] for variable in catalog["variables"]
+                if str(variable.get("source_id") or "") not in fetching
+                or str(variable.get("source_id") or "") in reached_sources}
+
     def _sources_in_use(self, policy: Dict[str, Any], tenant_id: str, needed_variable_ids: Optional[set]) -> set:
         """Source ids this run will read: every computed variable's source, plus any source a
         connector step names. Over-inclusive on purpose -- fetching a source nothing reads only
@@ -1351,6 +1385,8 @@ class PolicyExecutor:
             engine_config = self._catalog_for(tenant_id)["settings"].get("engine_config", {})
             if simulate or variable_reachability.compute_only_used_vars(engine_config):
                 needed = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
+            else:
+                needed = self._without_unreached_fetch_sources(policy, rules, scorecards, tenant_id)
             # Retrieve opted-in sources BEFORE the variables that read them. A connector step
             # runs after this point and so cannot supply data to a single variable; see the
             # block comment on _fetch_sources.
