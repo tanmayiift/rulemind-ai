@@ -206,7 +206,32 @@ record() {
     printf '        A skip here means the environment this lane needs was not provisioned.\n'
     status="FAIL (skipped)"
   fi
-  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$status" "$4" "$5" >> "$SUMMARY"
+  # $6 is the test-level skip count; absent for lanes that have no notion of one.
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$status" "$4" "$5" "${6:-}" >> "$SUMMARY"
+}
+
+# TEST-LEVEL SKIPS. "0 skipped" in TEST_RESULTS.md has always meant zero skipped LANES --
+# RULEMIND_REQUIRE_ALL_LANES=1 turns a skipped lane into a failure, and that guard works. It says
+# nothing about tests skipped INSIDE a lane, and 31 of them are gated off by an unset environment
+# variable: REDIS_URL (10), RULEMIND_AI_LIVE (5), KAFKA_BOOTSTRAP_SERVERS (5 -- the entire
+# delivery half of the P09 exactly-once row), CLICKHOUSE_URL (3), S3_TEST_ENDPOINT (3), and
+# RM_E2E_ALLOW_DESTRUCTIVE (5, Playwright). A reader of that file saw "0 skipped" and reasonably
+# concluded everything had run.
+#
+# Set the variables and these go to zero: the gate then covers what it appears to cover. Leaving
+# them unset is a legitimate choice; leaving it unreported is not.
+count_skips() {
+  local lane="$1" log="$2" n=""
+  [ -f "$log" ] || { printf '0'; return; }
+  case "$lane" in
+    python|python-pg)
+      n=$(grep -oE "skipped=[0-9]+" "$log" | grep -oE "[0-9]+" | tail -1) ;;
+    web|e2e)
+      n=$(grep -oE "[0-9]+ skipped" "$log" | grep -oE "[0-9]+" | tail -1) ;;
+    flutter)
+      n=$(grep -oE "~[0-9]+" "$log" | tr -d '~' | tail -1) ;;
+  esac
+  printf '%s' "${n:-0}"
 }
 
 count_tests() {
@@ -289,10 +314,15 @@ run_lane() {
   # Per-runner, not a guessing cascade. The first version tried three patterns in order and took
   # `tail -1` of whatever matched, which reported Rust as 0 tests: cargo prints a final
   # "test result: ok. 0 passed" for the empty doctest target, and that was the last match.
-  local count
+  local count skips
   count="$(count_tests "$name" "$log")"
-  record "$name" "$label" "$status" "${count}" "${dur}s"
-  printf '  %s — %s tests, %ss\n' "$status" "$count" "$dur"
+  skips="$(count_skips "$name" "$log")"
+  record "$name" "$label" "$status" "${count}" "${dur}s" "${skips}"
+  if [ "${skips:-0}" -gt 0 ] 2>/dev/null; then
+    printf '  %s — %s tests (%s skipped), %ss\n' "$status" "$count" "$skips" "$dur"
+  else
+    printf '  %s — %s tests, %ss\n' "$status" "$count" "$dur"
+  fi
 }
 
 has() { case " $LANES " in *" $1 "*) return 0;; *) return 1;; esac; }

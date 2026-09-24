@@ -53,11 +53,35 @@ class RetentionHonestyTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def _run(self, sink: str = "none"):
-        with mock.patch.dict(os.environ, {"DECISION_ARCHIVE_SINK": sink}):
-            with self.assertLogs("rulemind.scheduler", level="DEBUG") as captured:
-                logging.getLogger("rulemind.scheduler").debug("probe")  # ensure >=1 record
+        """Capture with an explicit handler rather than assertLogs.
+
+        assertLogs fails outright when no record arrives, which makes "did it warn?" and
+        "is logging globally suppressed right now?" the same failure -- and in a full-suite
+        run something upstream suppresses it, so these tests passed alone and failed in the
+        gate. The handler below also forces `disabled` and the level, so the assertion is
+        about this code's behaviour and not about what 2,000 earlier tests did to the
+        logging module.
+        """
+        logger = logging.getLogger("rulemind.scheduler")
+        records: list = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Capture()
+        saved = (logger.disabled, logger.level, logger.propagate)
+        logger.disabled = False
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+        try:
+            with mock.patch.dict(os.environ, {"DECISION_ARCHIVE_SINK": sink}):
                 result = scheduler.archive_old_decisions(self.storage)
-        return result, "\n".join(captured.output)
+        finally:
+            logger.removeHandler(handler)
+            logger.disabled, logger.propagate = saved[0], saved[2]
+            logger.setLevel(saved[1])
+        return result, "\n".join(records)
 
     def test_it_warns_when_a_window_is_set_and_nothing_enforces_it(self):
         self.storage.update_settings({"audit_retention_days": 90}, tenant_id=self.tenant)
