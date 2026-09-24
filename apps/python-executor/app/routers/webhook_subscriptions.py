@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .. import main, webhook_dispatch
@@ -184,3 +184,39 @@ async def test_subscription(subscription_id: str, request: Request) -> Dict[str,
                "delivered" if result.get("delivered") else result.get("error")),
            {"delivered": bool(result.get("delivered"))})
     return result
+
+
+# ── delivery log + dead-letter replay ────────────────────────────────────────────────────
+# NEITHER EXISTED. A subscription carried only last-known state (`last_delivery_ok`,
+# `consecutive_failures`) -- enough to ask "is it working?", not enough to ask "which events did
+# this receiver never get?", and there was nothing to replay them from even if you knew.
+
+
+@router.get("/api/v1/webhook-subscriptions/{subscription_id}/deliveries")
+def list_subscription_deliveries(subscription_id: str, request: Request,
+                                 status: Optional[str] = None,
+                                 limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+                                 offset: Annotated[int, Query(ge=0)] = 0) -> List[Dict[str, Any]]:
+    """Every delivery for this subscription, newest first. `?status=dead` is the dead-letter
+    queue: events that exhausted WEBHOOK_MAX_ATTEMPTS, or whose target egress policy blocks."""
+    tenant_id = main.active_tenant_id(request)
+    if not main.storage.get_webhook_subscription(subscription_id, tenant_id=tenant_id):
+        raise HTTPException(status_code=404, detail="Webhook subscription not found.")
+    return main.storage.list_webhook_deliveries(
+        subscription_id=subscription_id, status=status, tenant_id=tenant_id,
+        limit=limit, offset=offset)
+
+
+@router.post("/api/v1/webhook-deliveries/{delivery_id}/redeliver")
+def redeliver(delivery_id: str, request: Request) -> Dict[str, Any]:
+    """Replay one delivery -- a dead-letter queue you cannot drain is just a graveyard.
+
+    Requeues it as due now and hands it to the prompt worker. The attempt count is kept, so the
+    history still shows it was dead-lettered and replayed rather than looking like a clean first
+    delivery."""
+    tenant_id = main.active_tenant_id(request)
+    row = main.storage.requeue_webhook_delivery(delivery_id, tenant_id=tenant_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Webhook delivery not found.")
+    webhook_dispatch._WORKER.submit(main.storage, [delivery_id])
+    return row

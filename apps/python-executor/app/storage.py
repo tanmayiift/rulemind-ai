@@ -81,6 +81,7 @@ from .models import (
     Predictor,
     PredictorValue,
     Webhook,
+    WebhookDelivery,
     WebhookSubscription,
     WorkflowExecution,
     WorkspaceMember,
@@ -4671,6 +4672,155 @@ class Storage:
             model.last_delivery_ok = bool(ok)
             model.last_delivery_error = None if ok else (error or "")[:1000]
             model.consecutive_failures = 0 if ok else int(model.consecutive_failures or 0) + 1
+
+    # ── durable webhook deliveries ──────────────────────────────────────────────────────
+    # See models.WebhookDelivery. The event is written FIRST and delivered afterwards, so a crash,
+    # a SIGTERM or a rolling deploy between the two leaves a row the scheduler drain recovers --
+    # where a daemon thread per delivery simply vanished, taking the event with it.
+
+    def enqueue_webhook_delivery(self, tenant_id: str, subscription_id: str,
+                                 event: Dict[str, Any]) -> Dict[str, Any]:
+        with self.connect() as session:
+            model = WebhookDelivery(
+                tenant_id=tenant_id, subscription_id=subscription_id,
+                event_type=str(event.get("type") or ""), event=copy.deepcopy(event),
+                status="pending", attempts=0, next_attempt_at=datetime.utcnow())
+            session.add(model)
+            session.flush()
+            return self._webhook_delivery_to_dict(model)
+
+    def claim_due_webhook_deliveries(self, limit: int = 50, stale_after_seconds: int = 300,
+                                     ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Atomically take ownership of due deliveries. Cross-tenant: this is the drain.
+
+        A row is due when it is `pending` and its next attempt time has passed, or when it has
+        been `delivering` for longer than `stale_after_seconds` -- the process that claimed it
+        died mid-delivery, and without this the event would be stuck forever in a state nothing
+        retries. That is the SIGTERM case, and it is the one this table exists for.
+
+        The claim is a conditional UPDATE per row, and only rows whose update actually changed
+        the status are returned: the prompt worker and the scheduler drain can race for the same
+        row, and exactly one of them must win it. At-least-once is the contract regardless (a
+        process can die after delivering and before recording), which is why the delivery id is
+        sent to the receiver.
+        """
+        now = datetime.utcnow()
+        stale_before = now - timedelta(seconds=max(1, stale_after_seconds))
+        with self.connect() as session:
+            query = select(WebhookDelivery.id).where(or_(
+                (WebhookDelivery.status == "pending") & (WebhookDelivery.next_attempt_at <= now),
+                (WebhookDelivery.status == "delivering") & (WebhookDelivery.claimed_at < stale_before),
+            ))
+            if ids is not None:
+                query = query.where(WebhookDelivery.id.in_(list(ids) or ["__none__"]))
+            candidates = list(session.scalars(
+                query.order_by(WebhookDelivery.next_attempt_at).limit(max(1, limit))).all())
+            claimed: List[Dict[str, Any]] = []
+            for delivery_id in candidates:
+                if self._try_claim_webhook_delivery(session, delivery_id, now, stale_before):
+                    model = session.get(WebhookDelivery, delivery_id)
+                    if model is not None:
+                        claimed.append(self._webhook_delivery_to_dict(model))
+            return claimed
+
+    @staticmethod
+    def _try_claim_webhook_delivery(session: Session, delivery_id: str, now: datetime,
+                                    stale_before: datetime) -> bool:
+        """Take ONE row, only if it is still claimable at the moment of the write.
+
+        The status is re-checked in the UPDATE's own WHERE, and only a write that actually
+        changed a row counts. That is what makes the claim exclusive under a RACE: two claimers
+        can both SELECT the same pending row (Postgres READ COMMITTED lets them), and without
+        this both would deliver it. The second UPDATE re-evaluates its WHERE after the first
+        commits, finds `delivering`, changes nothing, and gets rowcount 0.
+
+        Separate from the loop so that race can be tested deterministically: a sequential test
+        of the whole claim cannot produce it, because the second claim's SELECT already filters
+        the row out -- which is exactly how the first mutation of this check survived."""
+        result = session.execute(
+            update(WebhookDelivery)
+            .where(WebhookDelivery.id == delivery_id,
+                   or_(WebhookDelivery.status == "pending",
+                       (WebhookDelivery.status == "delivering")
+                       & (WebhookDelivery.claimed_at < stale_before)))
+            .values(status="delivering", claimed_at=now))
+        return result.rowcount == 1
+
+    def complete_webhook_delivery(self, delivery_id: str, *, ok: bool, status: Optional[int],
+                                  error: Optional[str], retry_at: Optional[datetime],
+                                  dead: bool) -> Optional[Dict[str, Any]]:
+        with self.connect() as session:
+            model = session.get(WebhookDelivery, delivery_id)
+            if model is None:
+                return None
+            model.attempts = int(model.attempts or 0) + 1
+            model.last_status = status
+            model.last_error = None if ok else (error or "")[:1000]
+            model.claimed_at = None
+            if ok:
+                model.status = "delivered"
+                model.delivered_at = datetime.utcnow()
+            elif dead or retry_at is None:
+                model.status = "dead"
+            else:
+                model.status = "pending"
+                model.next_attempt_at = retry_at
+            return self._webhook_delivery_to_dict(model)
+
+    def list_webhook_deliveries(self, subscription_id: Optional[str] = None,
+                                status: Optional[str] = None, tenant_id: Optional[str] = None,
+                                limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            query = select(WebhookDelivery).where(WebhookDelivery.tenant_id == resolved)
+            if subscription_id:
+                query = query.where(WebhookDelivery.subscription_id == subscription_id)
+            if status:
+                query = query.where(WebhookDelivery.status == status)
+            rows = session.scalars(query.order_by(desc(WebhookDelivery.created_at))
+                                   .limit(max(1, min(limit, 1000))).offset(max(0, offset))).all()
+            return [self._webhook_delivery_to_dict(row) for row in rows]
+
+    def get_webhook_delivery(self, delivery_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookDelivery, delivery_id)
+            if model is None or model.tenant_id != resolved:
+                return None
+            return self._webhook_delivery_to_dict(model)
+
+    def requeue_webhook_delivery(self, delivery_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Replay a delivery -- the point of a dead-letter queue is that you can drain it.
+
+        Resets it to `pending`, due now. Attempts are NOT reset: the count is the history of what
+        happened to this event, and an operator reading it later needs to see that it was
+        dead-lettered and replayed, not a clean record."""
+        resolved = self._tenant_id(tenant_id)
+        with self.connect() as session:
+            model = session.get(WebhookDelivery, delivery_id)
+            if model is None or model.tenant_id != resolved:
+                return None
+            model.status = "pending"
+            model.next_attempt_at = datetime.utcnow()
+            model.claimed_at = None
+            return self._webhook_delivery_to_dict(model)
+
+    @staticmethod
+    def _webhook_delivery_to_dict(model: "WebhookDelivery") -> Dict[str, Any]:
+        return {
+            "id": model.id,
+            "tenant_id": model.tenant_id,
+            "subscription_id": model.subscription_id,
+            "event_type": model.event_type,
+            "event": copy.deepcopy(model.event or {}),
+            "status": model.status,
+            "attempts": int(model.attempts or 0),
+            "next_attempt_at": serialize_datetime(model.next_attempt_at),
+            "last_status": model.last_status,
+            "last_error": model.last_error,
+            "created_at": serialize_datetime(model.created_at),
+            "delivered_at": serialize_datetime(model.delivered_at),
+        }
 
     @staticmethod
     def _webhook_subscription_to_dict(model: "WebhookSubscription", include_secret: bool = False) -> Dict[str, Any]:

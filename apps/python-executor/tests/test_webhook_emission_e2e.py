@@ -139,15 +139,17 @@ class _Base(unittest.TestCase):
             with mock.patch.object(webhook_dispatch.httpx, "AsyncClient", client):
                 self.audit(**audit_overrides)
                 receiver.arrived.wait(timeout)
-                # JOIN, rather than sleeping until `received` is populated. The POST is recorded
-                # before record_webhook_delivery runs, so waiting on `received` returns while the
-                # health write is still in flight -- and a test that emits twice then gets the
-                # FIRST delivery's write landing after the second's, leaving consecutive_failures
-                # at 1 after a success. Joining makes the ordering deterministic instead of
-                # likely, and costs nothing because these deliveries are stubbed.
-                for thread in threading.enumerate():
-                    if thread.name == "webhook-delivery":
-                        thread.join(timeout=timeout + 2.0)
+                # FLUSH, rather than sleeping until `received` is populated. The POST is recorded
+                # before the delivery row and the health write are, so waiting on `received`
+                # returns while those are still in flight -- and a test that emits twice then gets
+                # the FIRST delivery's write landing after the second's.
+                #
+                # This used to JOIN every thread named "webhook-delivery". Delivery no longer runs
+                # on a thread per event (see webhook_dispatch "emission"), so that join matched
+                # nothing and returned at once -- every test here kept passing with the ordering
+                # guarantee silently gone. flush() waits for the dispatcher to finish what was
+                # submitted, which is the thing this line was always trying to express.
+                self.assertTrue(webhook_dispatch.flush(timeout + 2.0), "the dispatcher did not drain")
         return receiver.received
 
 
@@ -259,9 +261,7 @@ class DeliveryNeverAffectsTheEmitterTest(_Base):
         # sleeps 3s and then writes delivery health, while tearDown deletes the tempdir holding
         # the SQLite file underneath it. That surfaced as a tearDown error in an unrelated
         # module's slot during a full run, which is a miserable thing to debug.
-        for thread in threading.enumerate():
-            if thread.name == "webhook-delivery":
-                thread.join(timeout=6.0)
+        webhook_dispatch.flush(6.0)
 
     def test_delivery_health_is_recorded_so_a_silent_failure_is_visible(self):
         subscription = self.subscribe()

@@ -335,6 +335,15 @@ config:
   # REDIS_HEALTH_CHECK_INTERVAL: ""
   # REDIS_RETRY_AFTER_SECONDS: "30.0"
 
+  # ── Outbound webhook delivery ────────────────────────────────────────────────────────────
+  # Durable: an event is recorded before it is sent, retried with backoff for ~9 hours, then
+  # dead-lettered where it can be listed and replayed. At-least-once; receivers dedupe on the
+  # delivery id.
+  # WEBHOOK_MAX_ATTEMPTS: "8"
+  # WEBHOOK_CLAIM_TIMEOUT_SECONDS: "300"   # reclaim a delivery whose process died mid-send
+  # WEBHOOK_DRAIN_SECONDS: "15"
+  # WEBHOOK_DRAIN_BATCH: "100"
+
   # ── Stuck-execution sweep ────────────────────────────────────────────────────────────────
   # Paused executions that nothing will resume. Reports (an error event naming the count and
   # the oldest); does NOT expire unless you ask, because a paused execution holds a real

@@ -178,6 +178,9 @@ MUTATING_ROUTE_COVERAGE = {
     "/api/v1/variables/{variable_id}/promote": "tests/test_lifecycle.py",
     "/api/v1/variables/{variable_id}/test": "tests/test_edge_cases.py",
     "/api/v1/webhook-subscriptions/{subscription_id}/test": "tests/test_webhook_subscriptions_api.py",
+    "/api/v1/webhook-deliveries/{delivery_id}/redeliver": "tests/test_webhook_durability.py -- "
+        "test_deliveries_and_replay_are_tenant_scoped replays another tenant's delivery and "
+        "requires a 404",
     # ── whole surfaces ────────────────────────────────────────────────────────────────────────
     "/ws/v1/collab": "tests/test_collab_websocket_authz.py -- authenticates before accept() and "
                      "asserts the hub is keyed by (tenant_id, doc_id)",

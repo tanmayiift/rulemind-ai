@@ -692,6 +692,45 @@ class WebhookSubscription(Base, TimestampMixin):
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
+class WebhookDelivery(Base):
+    """One outbound webhook delivery, durable. THIS TABLE DID NOT EXIST.
+
+    `webhook_dispatch.py`'s own docstring promised that a failed delivery is "retried by the
+    scheduler, and dead-lettered after a bound". What shipped was a bare daemon thread per event
+    per subscription, retrying in a tight loop inside that thread, persisting only LAST-KNOWN
+    STATE onto the subscription row (whose own comment says "Not a delivery LOG"). So a rolling
+    deploy or a SIGTERM dropped every in-flight event with no record that it had existed, a
+    receiver down for ten minutes lost everything emitted in those ten minutes, and there was no
+    dead-letter queue to replay from. `decision_outbox`, one file over, did this correctly.
+
+    Now the event is written HERE first -- a cheap insert on the caller's path -- and delivery
+    happens afterwards: promptly by a single in-process worker, and durably by a leader-gated
+    scheduler drain that also picks up anything a crashed process left behind. Delivery is
+    AT-LEAST-ONCE by construction; the `id` is sent as the delivery id so a receiver can dedupe.
+    """
+
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (
+        # The drain's only hot query: "due rows, oldest first".
+        Index("ix_webhook_deliveries_due", "status", "next_attempt_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    subscription_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    event: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # pending -> delivering -> delivered | pending (retry) | dead
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class CronSchedule(Base, TimestampMixin):
     __tablename__ = "cron_schedules"
 
