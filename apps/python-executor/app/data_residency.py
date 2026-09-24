@@ -94,6 +94,9 @@ def residency_report(storage: Any, tenant_id: str) -> Dict[str, Any]:
                       "Data leaves only to the destinations listed under egress."),
         "database": _database(),
         "encryption_at_rest": {"decisions": decision_encryption_enabled(), "audit_log": audit_encryption_enabled()},
+        # Whether the database itself keeps this install's workspaces apart (plan 5.5), as found
+        # at startup -- not as configured, since a missing role or table owner silently disables it.
+        "tenant_isolation": storage.row_security,
         "egress": egress,
         "data_subject_endpoints": {"access": "GET /api/v1/data-subjects/{subject_id}",
                                    "erasure": "POST /api/v1/data-subjects/{subject_id}/erase"},

@@ -2329,6 +2329,48 @@ calls it.
   Mutations caught: 10 on the contract and credentials tests, 4 on the gate's direction rules,
   1 on the demo-key gate, a retyped field (tsc), and a stale generated file (Vitest).
 
+- [x] **R10.34 POSTGRES ENFORCES TENANT ISOLATION — AND THE POSTGRES LANE WAS HALF A LANE.**
+  (Plan 5.5, the structural half; R10.19 was the minimum.) Every one of the 38 tables with a
+  `tenant_id` has ENABLE + FORCE ROW LEVEL SECURITY and one policy: inside a transaction bound to
+  a workspace, only that workspace's rows are visible and only its rows can be written, whatever
+  the SQL says. A Session `after_begin` hook binds every transaction opened with a tenant context
+  — every authenticated request — with one transaction-local `set_config`. Transactions with no
+  tenant context are system scope: startup, migrations, the scheduler, the outbox relay, the
+  platform console, and the pre-auth lookups that exist to find out which workspace a caller is.
+  `app/rls.py` holds it; migration 0036 and `Storage._create_schema` both call it, and it reads
+  the catalogue first so a steady-state boot issues no DDL (ALTER TABLE takes an ACCESS
+  EXCLUSIVE lock, and a rolling restart re-issuing it on `decisions` would block live traffic).
+  * **The policies alone would have been decoration.** Postgres never applies row security to a
+    superuser or BYPASSRLS role, FORCE or not — and the compose database user is both. So a
+    tenant transaction also switches to `rulemind_tenant` (NOLOGIN NOSUPERUSER NOBYPASSRLS) in
+    the same statement. The test checks the effective role inside a tenant transaction rather
+    than trusting the design.
+  * **An install that cannot enforce it says so.** Without CREATEROLE the role cannot be created;
+    without table ownership the policies cannot be installed. Either way the API logs an ERROR at
+    startup naming what is missing, and `GET /api/v1/data-residency` reports `tenant_isolation`
+    from the catalogue as found, not as configured. SQLite reports that it relies on the
+    application's checks.
+  * Every assertion goes around the application's predicates: a SELECT with no WHERE, an UPDATE
+    with no WHERE, an INSERT naming another workspace, and a route whose storage read ignores its
+    tenant — through the API, 404 for the other workspace's decision. Upgrade → downgrade →
+    upgrade on a fresh database: 38/38 tables covered, then 0, then 38.
+
+  **The Postgres lane had been running 99 of its 204 modules on SQLite.** Four tests set
+  `DATABASE_URL` to a SQLite file for an alembic run and then *popped* it instead of restoring it;
+  from `test_migrations` onward (name order), `Storage(path=...)` resolved to SQLite, and every
+  full Postgres run since the lane existed reported green on half the suite. The RLS tests found
+  it: they decide whether to skip at import, while the variable was still set, and got SQLite at
+  run time. Fixed with `mock.patch.dict`, and `tests/test_zzz_lane_intact.py` runs last and fails
+  if the lane's variables changed. Its first honest run surfaced one test that had never run on
+  Postgres (`test_cli_create_admin_smoke` asserted through a global that is the CLI's file only in
+  the SQLite lane). **Full Postgres lane, every module on Postgres, row security enforced on
+  every request path: 2515 OK.** Nothing outside the RLS tests needed changing for RLS, which is
+  the evidence that no request path legitimately reads another workspace's rows.
+
+  Mutations caught: no role switch, hook never bound, scope surviving the transaction, no FORCE,
+  a predicate admitting every row, SQLite claiming enforcement, a missing policy going unnoticed,
+  and the lane's DATABASE_URL popped again.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

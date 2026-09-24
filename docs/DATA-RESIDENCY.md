@@ -23,6 +23,24 @@ makes it.
 Decisions and the audit log can be encrypted at rest: `DECISION_ENCRYPT_AT_REST` and
 `AUDIT_ENCRYPT_AT_REST`. Connector credentials are always encrypted at rest.
 
+## How workspaces on one install are kept apart
+
+On PostgreSQL the database enforces it, not only the application. Every table that holds a
+workspace's data has **row-level security** (ENABLE + FORCE) and one policy: a transaction
+acting for a workspace sees only that workspace's rows and cannot write anyone else's, whatever
+query the application sends. Every authenticated request runs that way. Work that is not on
+behalf of one workspace — startup, migrations, the scheduler, the platform-admin console, and
+the sign-in lookups that establish which workspace a caller belongs to — runs in system scope.
+
+PostgreSQL never applies row security to a superuser or a `BYPASSRLS` role, and the database
+user of a first install usually is one. So workspace transactions switch to `rulemind_tenant`, a
+`NOLOGIN NOSUPERUSER NOBYPASSRLS` role the migration creates. That needs the migrating user to
+hold `CREATEROLE`; without it the API logs an error at startup naming what is missing, and
+isolation rests on the application's own checks alone. `GET /api/v1/data-residency` reports
+which of the two is in force on the running install.
+
+SQLite, for local development, has no row security.
+
 ## Where it can go
 
 Data leaves the install only to destinations you configure. The residency report lists each one it
