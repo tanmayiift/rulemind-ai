@@ -77,14 +77,17 @@ make test                 # python unittest + vitest
 pnpm test:e2e             # Playwright
 ```
 
-Tests: **4,906 across 15 graded rows, all green** (2026-09-16) — 2033 Python SQLite + 2033
-Python PostgreSQL 16, 462 Vitest, 19 + 10 Rust, 163 Flutter, 88 Playwright, 46 Kotlin, 52 QA,
-plus the contract gates. **Do not hand-maintain these numbers here** — `make test-all` regenerates
+Tests: **6,096 across 18 graded rows, all green** (2026-09-24, `146e3b3`) — 2531 Python SQLite
++ 2531 Python PostgreSQL 16, 498 Vitest, 24 + 11 Rust, 163 Flutter, 146 Playwright, 140 Kotlin,
+52 QA, plus the contract gates, lint, migrations and the image build. **Do not hand-maintain these numbers here** — `make test-all` regenerates
 `TEST_RESULTS.md` from the runners' own output, and that file is the authority. The counts in
 this file were wrong by 500+ tests before that script existed. The Python suite runs in two lanes: SQLite by default, and real Postgres under
 `DATABASE_URL` + `RULEMIND_TEST_PG_SCHEMA_PER_PATH=1` (each test path gets its own Postgres
 schema — without that flag `Storage(path=...)` silently falls back to SQLite and the Postgres
-lane is a near-no-op).
+lane is a near-no-op). **Until 2026-09-24 it was half a lane even with both**: tests that set
+`DATABASE_URL` and then popped it sent every later module to SQLite. Any test touching the lane's
+variables uses `mock.patch.dict`; `tests/test_zzz_lane_intact.py` runs last and fails otherwise.
+On Postgres, workspace isolation is enforced by row-level security (`app/rls.py`).
 
 ## Configuration
 
