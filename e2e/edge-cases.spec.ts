@@ -10,6 +10,31 @@ const API_BASE = API_BASE_URL;
 // Shared state across tests (populated by "create a rule" test)
 let createdRuleIdShared: string | undefined;
 
+// Everything this file creates, removed when it finishes. These specs run against deployments too
+// (e2e/env.ts), and on 2026-09-24 two runs against a live soak left E2E connectors, rules and
+// scorecards in its workspace -- with ids that collide on the next run (`_2`), and a promoted rule
+// that later fixtures picked up as `rules[0]`.
+const createdIds = { connectors: [] as string[], rules: [] as string[], scorecards: [] as string[], variables: [] as string[] };
+
+test.afterAll(async ({ request }) => {
+  for (const id of createdIds.rules) {
+    // Only a DEV rule can be deleted; the promote test moves this one on.
+    const r = await (await request.get(`${API_BASE}/api/v1/rules/${id}`)).json().catch(() => null);
+    if (r) {
+      await request.put(`${API_BASE}/api/v1/rules/${id}`, {
+        data: { name: r.name, nodes: r.nodes ?? [], tree: r.tree ?? null, status: "dev" } });
+    }
+    await request.delete(`${API_BASE}/api/v1/rules/${id}`).catch(() => undefined);
+  }
+  for (const id of createdIds.scorecards) await request.delete(`${API_BASE}/api/v1/scorecards/${id}`).catch(() => undefined);
+  for (const id of createdIds.variables) await request.delete(`${API_BASE}/api/v1/variables/${id}`).catch(() => undefined);
+  for (const id of createdIds.connectors) {
+    // An active connector cannot be deleted: deactivate first.
+    await request.put(`${API_BASE}/api/v1/connectors/${id}`, { data: { is_active: false } }).catch(() => undefined);
+    await request.delete(`${API_BASE}/api/v1/connectors/${id}`).catch(() => undefined);
+  }
+});
+
 // Every test below that needs this id used to open with `if (!createdRuleIdShared) return;`.
 // A Playwright test that returns early PASSES, so if rule creation broke, six downstream tests
 // went green while asserting nothing at all -- the failure surfaced as one red test instead of
@@ -68,6 +93,7 @@ test("create a custom connector", async ({ request }) => {
   });
   expect(createRes.ok()).toBe(true);
   const connector = await createRes.json();
+  createdIds.connectors.push(connector.id);
   expect(connector.name).toBe("E2E Test Connector");
 });
 
@@ -119,6 +145,7 @@ test("create a rule via API", async ({ request }) => {
   });
   expect(res.ok()).toBe(true);
   const rule = await res.json();
+  createdIds.rules.push(rule.id);
   expect(rule.name).toBe("E2E Test Rule");
   createdRuleIdShared = rule.id;
 });
@@ -540,6 +567,8 @@ test("variable sandbox can use Excel functions (SUM, IF, ROUND)", async ({ reque
     }
   });
   expect(createRes.ok()).toBe(true);
+  const createdVariable = await createRes.json();
+  createdIds.variables.push(createdVariable.id);
 
   // Now test all variables — find our result in the results array
   const testRes = await request.post(`${API_BASE}/api/v1/test/variables`, {
@@ -552,11 +581,13 @@ test("variable sandbox can use Excel functions (SUM, IF, ROUND)", async ({ reque
   const body = await testRes.json();
   // Find our variable in the results
   const results = body.results ?? [];
-  const ourResult = results.find((r: any) => r.id === "excel_sum_test");
-  if (ourResult) {
-    // SUM(10,20,30)=60 + IF(True,100,0)=100 + ROUND(3.14159,2)=3.14 => 163.14
-    expect(ourResult.computed_value).toBeCloseTo(163.14, 1);
-  }
+  // By the id the create returned. This looked up the literal "excel_sum_test" inside an `if`, so
+  // once a previous run had taken that id (the new one is `_2`, `_3`, ...) it found nothing and
+  // passed without checking a single Excel function.
+  const ourResult = results.find((r: any) => r.id === createdVariable.id);
+  expect(ourResult, "the created variable must be among the results").toBeTruthy();
+  // SUM(10,20,30)=60 + IF(True,100,0)=100 + ROUND(3.14159,2)=3.14 => 163.14
+  expect(ourResult.computed_value).toBeCloseTo(163.14, 1);
 });
 
 test("variable sandbox can use financial Excel functions (PMT)", async ({ request }) => {
@@ -569,6 +600,8 @@ test("variable sandbox can use financial Excel functions (PMT)", async ({ reques
     }
   });
   expect(createRes.ok()).toBe(true);
+  const createdVariable = await createRes.json();
+  createdIds.variables.push(createdVariable.id);
 
   const testRes = await request.post(`${API_BASE}/api/v1/test/variables`, {
     data: {
@@ -579,10 +612,9 @@ test("variable sandbox can use financial Excel functions (PMT)", async ({ reques
   expect(testRes.ok()).toBe(true);
   const body = await testRes.json();
   const results = body.results ?? [];
-  const ourResult = results.find((r: any) => r.id === "excel_pmt_test");
-  if (ourResult) {
-    expect(ourResult.computed_value).toBeCloseTo(1073.64, 0);
-  }
+  const ourResult = results.find((r: any) => r.id === createdVariable.id);
+  expect(ourResult, "the created variable must be among the results").toBeTruthy();
+  expect(ourResult.computed_value).toBeCloseTo(1073.64, 0);
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -620,6 +652,7 @@ test("create and test WoE scorecard", async ({ request }) => {
   const status = createRes.status();
   if (status === 200 || status === 201) {
     const sc = await createRes.json();
+    createdIds.scorecards.push(sc.id);
     // Test the WoE scorecard
     const testRes = await request.post(`${API_BASE}/api/v1/test/scorecard/${sc.id}`, {
       data: {

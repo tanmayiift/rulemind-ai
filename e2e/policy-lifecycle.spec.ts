@@ -162,3 +162,21 @@ test.describe("policy release & impact", () => {
     await expect(result).toContainText("a different outcome");
   });
 });
+
+test("a long policy does not stretch the picker and name field", async ({ page }) => {
+  // Found by walking the live dashboard: the left card stretches to the pipeline's height, and its
+  // grid stretched the rows with it -- the picker and name field rendered ~180px tall and 304px
+  // wide inside a 280px column. Read-only: it opens a seeded PROD policy and measures.
+  await page.goto("/policies");
+  await page.getByTestId("env-prod").click();
+  await page.getByTestId("policy-select").selectOption("policy_instant_personal_loan");
+  await expect(page.getByLabel("Policy name")).toHaveValue(/Instant Personal Loan/);
+  // A caption the pipeline renders as plain text, so the tall pipeline is on the page.
+  await expect(page.getByText("loan_outcome", { exact: true })).toBeVisible();
+  for (const control of [page.getByTestId("policy-select"), page.getByLabel("Policy name")]) {
+    const box = await control.boundingBox();
+    const card = await control.locator("xpath=..").boundingBox();
+    expect(box && box.height, "a form control stretched to the pipeline's height").toBeLessThan(60);
+    expect(box && card && box.x + box.width, "a form control overflows its column").toBeLessThanOrEqual((card?.x ?? 0) + (card?.width ?? 0) + 1);
+  }
+});

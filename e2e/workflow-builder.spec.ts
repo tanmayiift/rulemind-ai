@@ -101,11 +101,17 @@ test("saving a PROD policy on the canvas does not demote it to DEV", async ({ pa
   await expect(name).toHaveValue(`zz wb prod ${PROD_POLICY_ID}`);
   await name.fill("zz wb prod renamed");
 
-  const saveRequest = page.waitForRequest(
-    (r) => r.method() === "PUT" && r.url().includes(`/api/v1/policies/${PROD_POLICY_ID}`)
+  // Wait for the RESPONSE, not the request. The status poll below cannot stand in for it: the
+  // policy was already prod before the save, so the poll passes at once and the name was read
+  // before the PUT landed -- invisible against a local dev server, a steady failure against the
+  // production build and Postgres.
+  const saveResponse = page.waitForResponse(
+    (r) => r.request().method() === "PUT" && r.url().includes(`/api/v1/policies/${PROD_POLICY_ID}`)
   );
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  const body = JSON.parse((await saveRequest).postData() ?? "{}");
+  const saved = await saveResponse;
+  expect(saved.status(), await saved.text()).toBe(200);
+  const body = JSON.parse(saved.request().postData() ?? "{}");
   expect(body.status, "PUT is a full replace and PolicyUpsertRequest defaults status to 'dev'").toBe("prod");
 
   await expect.poll(async () => (await readPolicy(request, PROD_POLICY_ID)).status, { timeout: 15_000 }).toBe("prod");

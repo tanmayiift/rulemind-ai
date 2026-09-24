@@ -13,7 +13,7 @@
  */
 import { expect, test } from "@playwright/test";
 
-import { API_BASE_URL } from "./env";
+import { API_BASE_URL, TARGETS_LOCAL_API } from "./env";
 
 const PAYLOAD = { bureau_score: 540, monthly_income: 18000 };
 
@@ -67,7 +67,10 @@ test("stepping a policy reaches the same outcome production does", async ({ requ
 
     // Values, not just the verdict: an outcome can agree by coincidence on a two-branch policy.
     // Every variable the debugger showed must equal what production computed for the same input.
-    const productionVariables = production.computed_variables || {};
+    // `variables`, the key /decide returns. This read `computed_variables` -- the name on a
+    // STORED decision -- so the map was always empty and the loop below compared nothing.
+    const productionVariables = production.variables || {};
+    expect(Object.keys(productionVariables).length, "production returned no variables to compare").toBeGreaterThan(0);
     for (const [name, value] of Object.entries(snap.variables || {})) {
       if (name in productionVariables) {
         expect(
@@ -92,6 +95,17 @@ test("stepping writes no decision", async ({ request }) => {
     return (await res.json()).total as number;
   };
 
+  // Scoped to what the debugger would write -- source "loop_debug", this policy, since the test
+  // started -- so it holds on a live deployment where other traffic is writing decisions. The
+  // whole-table count is kept for a local run, where nothing else writes.
+  const since = new Date(Date.now() - 1000).toISOString();
+  const debuggerDecisions = async () => {
+    const res = await request.get(`${API_BASE_URL}/api/v1/audit/decisions`, {
+      params: { policy_id: policyId as string, created_from: since, limit: 1000 },
+    });
+    expect(res.status()).toBe(200);
+    return (await res.json()) as Array<{ id: string; source?: string }>;
+  };
   const before = await countOf();
   const started = await request.post(`${API_BASE_URL}/api/v1/debug/sessions`, {
     data: { policy_id: policyId, payload: PAYLOAD },
@@ -99,7 +113,15 @@ test("stepping writes no decision", async ({ request }) => {
   const sessionId = (await started.json()).session_id as string;
   try {
     await request.post(`${API_BASE_URL}/api/v1/debug/sessions/${sessionId}/run`);
-    expect(await countOf()).toBe(before);
+    // Positive control: a real decision in the same window IS visible to this query, so an
+    // empty answer below means "none written", not "the query sees nothing".
+    const real = await (await request.post(`${API_BASE_URL}/api/v1/decide`, {
+      data: { policy_id: policyId, payload: PAYLOAD },
+    })).json();
+    const seen = await debuggerDecisions();
+    expect(seen.map((d) => d.id), "the window query cannot see a decision made inside it").toContain(real.decision_id);
+    expect(seen.filter((d) => d.source === "loop_debug"), "stepping wrote a decision").toEqual([]);
+    if (TARGETS_LOCAL_API) expect(await countOf()).toBe(before + 1);
   } finally {
     await request.delete(`${API_BASE_URL}/api/v1/debug/sessions/${sessionId}`);
   }
