@@ -2401,6 +2401,22 @@ calls it.
   Mutations caught: shared payload, shared earlier values, no post-hoc deadline, budget ignored,
   no timer, stand-in ignored, never batched, and the kill switch undocumented.
 
+- [x] **R10.36 ROUND 5 CLOSED: EVERY LANE GREEN, 6,096 TESTS, AT `146e3b3`.** The full gate under
+  `RULEMIND_REQUIRE_ALL_LANES=1` (a skipped lane fails): 18/18 — Python SQLite 2531, Python
+  PostgreSQL 2531 (every module on Postgres, row security enforced), Vitest 498, Rust 24 + 11,
+  Flutter 163, Playwright 146, Kotlin 140, QA 52 (core 31 + the 21-case sandbox-escape matrix),
+  the six contract gates, lint, migrations and the image build. Run beside the live soak without
+  touching it: its own database (`rulemind_lane`) and its own QA port (8123).
+
+  **The first run of the gate was not green, and both failures were mine, from 5.1**: the API
+  image did not build (a lockfile specifier left at `^7` after `package.json` was hand-edited to
+  `^7.13.0` — every local install tolerated it, `--frozen-lockfile` does not), and QA case 5.2
+  still read `rule_results` through the old trace-entry wrapper, which the sweep before the 5.1
+  change missed because it matched `["result"]` and `.result` but not `.get("result")`. Only the
+  build lane builds the artifact, and only the QA lane exercises the running API from outside —
+  the two lanes most often skipped locally. Fixed in `146e3b3`, then the whole gate re-run at
+  that commit rather than patching the report from a two-lane run.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.
