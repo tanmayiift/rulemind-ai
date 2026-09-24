@@ -1169,6 +1169,24 @@ calls it.
   must produce different codes — plus a source guard, because no Python test could have caught a
   frontend literal. Both mutations fail the named test.
 
+- [x] **R10.2 THE AUDIT TRAIL NOW NAMES WHO.** `AuditEvent.user_id` is one of
+  `audit_chain.CHAINED_FIELDS` — the tamper-evident hash has always covered it — and **no
+  caller ever set it**, so every `user_id` in the product was NULL and the chain was protecting
+  the absence of an answer. `routers/insights.py:73` claims the trail answers "who changed which
+  rule/variable/scorecard/policy, when"; it answered what and when. Defaulted inside
+  `add_audit_event` from the contextvar the middleware already populates (an API key id, or
+  `member:<id>` for a session — exactly what `active_actor()` returns), rather than at the ~14
+  call sites, because the next emitter added would have missed it the same way. An explicit
+  actor still wins; a scheduler job with no request context still gets NULL, which is correct
+  rather than a fabrication. 7 tests, including that the chain still verifies across a mix of
+  pre-fix (NULL) and post-fix rows — adding a field the chain already covers is exactly the
+  change that could silently fork every existing row. Mutation fails 2 named tests.
+
+  Also found and fixed in passing: `app/__init__.py` calls `load_dotenv()`, so setting
+  `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env` for the soak leaked into every host-side test run and
+  made the suite retry OTLP exports against a container hostname. The soak scripts export it
+  themselves; `.env` no longer does.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

@@ -38,7 +38,7 @@ from .auth import (
     session_token_hash,
 )
 from . import env
-from .context import get_current_tenant_id
+from .context import get_current_api_key_id, get_current_tenant_id
 from .db import engine_for, session_factory
 from .logic import generate_rule_expression_definition, json_dumps, now_iso
 from . import ai as ai_module
@@ -2704,6 +2704,25 @@ class Storage:
         would be the alternative and would make audit logging a throughput ceiling.
         """
         resolved = self._tenant_id(tenant_id, payload_tenant=payload.get("tenant_id"))
+
+        # THE ACTOR, DEFAULTED FROM THE REQUEST CONTEXT. `user_id` is one of audit_chain's
+        # CHAINED_FIELDS -- the tamper-evident hash has always covered it -- and no caller ever
+        # set it, so every AuditEvent.user_id in the product was NULL and the chain was
+        # protecting the absence of an answer. The read endpoint's docstring claims the trail
+        # answers "who changed which rule/variable/scorecard/policy, when"
+        # (routers/insights.py:73). It answered what and when.
+        #
+        # Defaulted HERE rather than at the ~14 call sites, because the next emitter added would
+        # have missed it the same way these did. The middleware already resolves the identity
+        # and pushes it into the contextvar (middleware.py:543, :552, :601) -- an API key id, or
+        # "member:<id>" for a session -- which is exactly what active_actor() returns. A payload
+        # that supplies user_id explicitly still wins; a scheduler job with no request context
+        # gets None, which is correct rather than a lie.
+        if payload.get("user_id") is None:
+            actor = get_current_api_key_id()
+            if actor:
+                payload = {**payload, "user_id": str(actor)}
+
         attempts = 0
         while True:
             attempts += 1
