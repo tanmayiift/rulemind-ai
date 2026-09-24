@@ -82,6 +82,13 @@ import {
 } from "../kit";
 import { DecisionFlow } from "./TestingPage";
 
+// Step types this page shows but cannot edit. Policies is the per-policy view (Run, Promote, the
+// step list); control flow and these configurable steps are edited on the Workflow Builder canvas.
+// Build Studio used to be a third editor over the same entity -- it was merged into Workflow
+// Builder on 2026-09-24, and this page kept its role rather than growing a second canvas.
+// (`transform`, `review_gate`, `action` are NOT here -- this page has its own editors for them.)
+const CANVAS_ONLY_STEPS = new Set(["branch", "loop", "workflow", "decision_table", "model", "monitor"]);
+
 export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
   const { apiBaseUrl, apiKey, environment, setEnvironment, isMobile } = useRuleMindStore();
@@ -101,7 +108,15 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
     });
     return counts;
   }, [props.data.policies]);
-  const [selectedId, setSelectedId] = React.useState<string | null>(environmentPolicies[0]?.id ?? null);
+  // `?policy=<id>` selects that policy -- how Workflow Builder's "Run / promote" link lands on the
+  // policy it was editing instead of on whichever one sorts first. Only honoured when the policy
+  // is in the active environment's list, since that is what the picker below can show.
+  const [selectedId, setSelectedId] = React.useState<string | null>(() => {
+    const requested = typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("policy") : null;
+    if (requested && environmentPolicies.some((policy) => policy.id === requested)) return requested;
+    return environmentPolicies[0]?.id ?? null;
+  });
   const [policyName, setPolicyName] = React.useState("");
   const [steps, setSteps] = React.useState<PolicyStepRecord[]>([]);
   const [execution, setExecution] = React.useState<PolicyExecuteResponse | null>(null);
@@ -233,6 +248,12 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
             <Button small variant="primary" onClick={savePolicy} disabled={busy} testId="policy-save">
               Save
             </Button>
+            {selectedId ? (
+              <a href={`/workflow-builder?policy=${encodeURIComponent(selectedId)}`} data-testid="policy-open-canvas"
+                style={{ alignSelf: "center", fontSize: "var(--rm-fs-small)", color: theme.accent, whiteSpace: "nowrap" }}>
+                Open in Workflow Builder ↗
+              </a>
+            ) : null}
             {selectedId && props.data.policies.find((policy) => policy.id === selectedId)?.status !== "prod" ? (
               <Button small variant="success" onClick={promotePolicy} disabled={busy} testId="policy-promote">
                 Promote
@@ -399,6 +420,17 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
                         {isConnector ? <ConnectorIcon connectorId={stepRef} color={connectorMap[stepRef]?.color} size={12} /> : null}
                         <span>{label}</span>
                       </div>
+                      {/* This page is the per-policy view -- Run, Promote, the step list. It has no
+                          editor for control flow or for these step types, and it does not pretend
+                          to: the step is shown and SAVED UNCHANGED, and editing it is one click
+                          away on the canvas, opened on THIS policy. */}
+                      {CANVAS_ONLY_STEPS.has(step.type) && selectedId ? (
+                        <a href={`/workflow-builder?policy=${encodeURIComponent(selectedId)}`}
+                          data-testid="policy-step-open-canvas"
+                          style={{ fontSize: "var(--rm-fs-small)", color: theme.accent }}>
+                          Edit on the canvas ↗
+                        </a>
+                      ) : null}
                     </div>
                     {index < steps.length - 1 ? <span style={{ color: theme.dim }}>→</span> : null}
                   </React.Fragment>

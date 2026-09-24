@@ -1015,6 +1015,12 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)" }}>
+      {/* The page heading. This page had NONE -- no h1, no h2 -- so to a screen reader it had no
+        * outline and nothing to jump to, and it was the only route in the app in that state.
+        * Visually hidden for the same reason as the two full-height canvases: the tab strip is
+        * the visual header and the layout cannot spare a second one. Found by route-health's
+        * "every route has a heading" check. See .rm-sr-only. */}
+      <h1 className="rm-sr-only">Rules</h1>
       <div style={{ display: "flex", gap: 18, padding: "0 20px", borderBottom: "1px solid " + theme.border }}>
         {[
           { id: "builder", label: "Builder" },

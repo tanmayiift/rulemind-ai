@@ -1806,6 +1806,83 @@ calls it.
   No Temporal, per the plan: this is built on the DB-lease leader election and error-event
   machinery already in the repo, and adds no cluster dependency to a self-hosted product.
 
+- [x] **R10.21 THREE POLICY EDITORS → A CANVAS AND A PER-POLICY VIEW.** Your decision: keep
+  **Workflow Builder** (the drag-and-drop canvas) and **Policies** (the per-policy view), and
+  solve Build Studio entirely inside Workflow Builder *if a thorough evaluation said it could be*.
+  It could. All three saved to the same `PUT /api/v1/policies/{id}` — one entity, three UIs —
+  because Studio was written as *"a single canvas-first surface that replaces the split
+  Policies-step-list / Workflow-Builder editors"*, shipped, and the editor it replaced was never
+  removed.
+
+  **The evaluation, line by line.** Studio could do nine things Workflow Builder could not —
+  and two of its features were silently broken:
+
+  | Studio had | Workflow Builder before | Now |
+  |---|---|---|
+  | create a policy (`+ New`, POST) and rename it | **could only edit an existing policy** | ported |
+  | author a rule inline and link it | no | ported (and fixed — below) |
+  | reorder with ↑/↓ buttons | drag only — **impossible from a keyboard** | ported |
+  | review-gate settings | **no editor at all**, not even JSON | *expanded* to every key the executor reads |
+  | referenced rule/scorecard shown by name | raw `ref_id` | ported |
+  | environment on the picker ("(PROD)") | name only | ported |
+  | the late-load guard (`+ New` not clobbered) | n/a — could not create | ported, or creating reintroduces the bug |
+  | resilient loading | `Promise.all` — one failed GET blanked the page | ported |
+  | grouped palette | flat list of 13 | ported |
+  | **branch "condition"** | real `BranchEditor` | **not carried over — broken** |
+  | **loop editor** | real `LoopEditor` with a body | **not carried over — broken** |
+
+  The two broken ones, verified against the executor rather than read off the UI: Studio's
+  branch field wrote `config.condition` on the branch step, but `executor._execute_branch` routes
+  on `config.branches[].condition` and `config.default`, and Studio had no way to add a branch —
+  **so a branch built in Studio routed nothing.** Its loop editor had no way to add body steps,
+  **so a loop built there iterated nothing.** Both looked configured.
+
+  Also added while there: the sub-workflow step is a policy **picker** instead of a typed id (a
+  typo was only discovered at decision time, as a fail-closed "unreachable child"), excluding the
+  current policy, which is the cycle `_visited_workflows` exists to catch.
+
+  `/studio` is now a real `redirect()` — bookmarks and links land on a working canvas, not a 404.
+  Workflow Builder took Studio's nav slot. **Policies stays** as the per-policy view with Run and
+  Promote; for the six step types it cannot edit (`branch`, `loop`, `workflow`,
+  `decision_table`, `model`, `monitor`) it shows **"Edit on the canvas ↗"**, and both pages honour
+  `?policy=<id>` so each opens the other *on the same policy*. It still saves those steps
+  unchanged — verified that `update_policy` skips `None`, so its partial body cannot wipe
+  `trigger` or `defaultOutcome` (a suspected data-loss path that turned out not to be one).
+
+  **A real bug, inherited from Studio, found by the retargeted tests.** The inline rule editor
+  said **"Rule created and linked." before it linked**: it set the message, reloaded seven lists,
+  and only then patched `ref_id` onto the step. A Save in that window stored a rule step pointing
+  at nothing. Now it links synchronously and confirms after. **And the first mutation check of
+  that test passed with the bug restored** — it reproduced on a cold run and hid on a warm one,
+  because the reload beat the click. Made deterministic by slowing the rules GET; the mutation
+  now fails.
+
+  Workflow Builder had **no behavioural browser coverage at all** before this — only
+  route-health rendered it. Studio's four e2e tests (status preserved on save, confirmation
+  survives reload, `+ New` survives the late load, MECE disabled until saved) are retargeted
+  rather than deleted, plus seven for what the merge added and what it refused to carry over:
+  creating a policy, keyboard reorder, inline rule linking, review-gate settings reaching the
+  saved policy, **a branch saved in the shape the executor routes on**, `/studio` redirecting,
+  and Policies opening the canvas on the right policy. **11 of 11.** Three mutations, each
+  caught: the late-load guard removed, a partial save body, and Studio's link ordering.
+
+- [x] **R10.22 A CORRECTION: THE `/rules` TIMEOUT WAS MINE, NOT PRE-EXISTING.** R10.19's commit
+  (`7a199af`) says `/rules` had been failing on `waitUntil: "networkidle"` — *"pre-existing,
+  verified by stashing every change: a `next dev` first-visit compile of a 1400-line page blew
+  the 60s budget."* **That is wrong.** The timeout was caused by the heading capture I added in
+  the same change: `/rules` has **no `h1` or `h2` at all**, and a Playwright locator's
+  `innerText()` auto-waits for its element for the *whole* test timeout — the `.catch` only ran
+  after it. The stash check was invalid because it covered the app files and not the spec, which
+  is where the line was. The `test.slow()` added on that false diagnosis is removed (it made
+  every genuine hang take three minutes to report); the `domcontentloaded` + best-effort-idle
+  change is kept on its own merits, with its comment rewritten to say what actually happened.
+
+  **And the mistake surfaced a real defect.** `/rules` was the only route in the app with no
+  heading — no outline and nothing to jump to for a screen reader. It now has a visually hidden
+  `h1`, the same fix the two full-height canvases use, and route-health gained **"every route has
+  a heading"** (mutation: remove it → fails). route-health went from 42/43 in ~4 minutes to
+  **44/44 in one minute.**
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.
