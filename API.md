@@ -257,6 +257,21 @@ Promotion from the dashboard asks for a reason, which is what the promotion reco
 > Previously documented here as `GET /api/v1/approvals` and
 > `POST /api/v1/approvals/:id/approve` / `:id/reject`. No such routes exist.
 
+## Signing up
+
+`POST /api/v1/onboarding/signup` (public, rate-limited per IP; off with
+`RULEMIND_SELF_SERVE_SIGNUP=0`) with `{company, contact_email, name?, password?, use_case?}` creates
+a workspace, loads the sample inventory and returns its **development API key once**. With a
+`password` (12+ characters) it also creates the workspace's first member, its **owner**, and signs
+them in (session cookie plus `session` in the body). The rest of setup is
+`GET /api/v1/onboarding/status`, `POST /api/v1/onboarding/verify` (needs one decision),
+`POST /api/v1/onboarding/ai`, and `POST /api/v1/onboarding/request-prod`, which issues the
+production key once, after verification. The dashboard walks through all of it at `/signup` and
+`/onboarding`.
+
+Every response carries CORS headers, including the 401/403/429 the auth layer returns before any
+route runs, so a browser can tell "not signed in" and "rate limited" from "the API is down".
+
 ## Access and settings
 
 - `GET /api/v1/access/keys`, `POST /api/v1/access/keys`,

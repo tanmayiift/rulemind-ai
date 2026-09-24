@@ -114,7 +114,10 @@ export const useRuleMindStore = create<RuleMindUiState>()(
       setApiKey: (value) => set({ apiKey: value }),
       setSession: (token, member) => {
         setBearerToken(token);
-        set({ sessionToken: token, member });
+        // The member session IS the identity from here on. A stored key is sent as x-api-key on
+        // every request, and the API resolves a key AHEAD of a session -- so on a build that ships
+        // a default dev key, signing in as a member still acted as the dev key's tenant.
+        set({ sessionToken: token, member, apiKey: "" });
       },
       clearSession: () => {
         setBearerToken("");

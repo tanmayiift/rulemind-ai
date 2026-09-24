@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
 from .. import main
 from ..env import env_bool
@@ -36,7 +36,7 @@ def _onboarding_view(tenant_id: str) -> Dict[str, Any]:
 
 
 @router.post("/api/v1/onboarding/signup")
-def onboarding_signup(request: OnboardingSignupRequest) -> Dict[str, Any]:
+def onboarding_signup(request: OnboardingSignupRequest, response: Response) -> Dict[str, Any]:
     """Public: create a workspace + issue a DEV key (shown once). Prod key comes later,
     after the client verifies their integration.
 
@@ -54,9 +54,21 @@ def onboarding_signup(request: OnboardingSignupRequest) -> Dict[str, Any]:
     main.storage.seed_sample_inventory(tenant["id"])  # so they can try a decision immediately
     key = main.storage.generate_api_key_for_tenant(tenant["id"], environment="dev", label="Onboarding dev key")
     main.storage.update_onboarding({"dev_key_issued": True}, tenant_id=tenant["id"])
-    return {"tenant_id": tenant["id"], "company": request.company,
-            "api_key": key["plaintext"], "environment": "dev",
-            "status": _onboarding_view(tenant["id"])}
+    result: Dict[str, Any] = {"tenant_id": tenant["id"], "company": request.company,
+                              "api_key": key["plaintext"], "environment": "dev"}
+    if request.password:
+        # The owner -- the bootstrap role -- signed in exactly as a password login would sign
+        # them in: a session, the httpOnly cookie, the CSRF cookie.
+        from ..session_cookie import set_session_cookies
+
+        member = main.storage.create_member(tenant["id"], request.contact_email,
+                                            request.name or request.contact_email, "owner",
+                                            password=request.password)
+        session = main.storage.create_member_session(tenant["id"], member["id"])
+        result["session"] = {"token": session["token"], "expires_at": session["expires_at"],
+                             "member": member, "csrf_token": set_session_cookies(response, session["token"])}
+    result["status"] = _onboarding_view(tenant["id"])
+    return result
 
 
 @router.get("/api/v1/onboarding/status")

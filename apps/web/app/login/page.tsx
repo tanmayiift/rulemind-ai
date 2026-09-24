@@ -1,9 +1,12 @@
 "use client";
 
 import * as React from "react";
+import type { Route } from "next";
 import { useRouter } from "next/navigation";
 import { KeyRound, Mail, ShieldCheck, Building2 } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
+import { humanMessage } from "../../src/lib/errors";
+import { safeNext } from "../../src/lib/navigation";
 import { useRuleMindStore, type SessionMember } from "../../src/lib/store";
 import { Button, Card, Field, Input } from "../../src/v3/ui";
 
@@ -12,34 +15,7 @@ type OtpReq = { requested: boolean; delivered?: boolean; debug_code?: string };
 type SsoStart = { provider: string; redirect_url: string };
 type SsoConfig = { enabled?: boolean; provider?: string };
 
-/**
- * Turn a thrown API error into a sentence a person can read.
- *
- * `apiJson` rejects with the raw response TEXT as the message (src/lib/api.ts:57-59), so a 401
- * arrives here as the literal string `{"detail":"Invalid email or password."}`. Rendering
- * `e.message` therefore printed that JSON on the sign-in screen -- the first screen a new user
- * sees. Deliberately local rather than a change to `apiJson`: at least one caller
- * (decision-tables/page.tsx:274) parses `e.message` as JSON on purpose to recover a per-row
- * `problems` list, so changing the shared contract would break it.
- */
-function humanMessage(error: unknown, fallback: string): string {
-  const raw = error instanceof Error ? error.message : "";
-  if (!raw) return fallback;
-  try {
-    const detail = (JSON.parse(raw) as { detail?: unknown })?.detail;
-    if (typeof detail === "string" && detail) return detail;
-    // FastAPI validation errors are a list of {loc, msg} objects, not a string.
-    if (Array.isArray(detail)) {
-      const parts = detail
-        .map((d) => (d && typeof (d as { msg?: unknown }).msg === "string" ? (d as { msg: string }).msg : null))
-        .filter((m): m is string => Boolean(m));
-      if (parts.length) return parts.join("; ");
-    }
-  } catch {
-    /* Not JSON -- e.g. apiJson's own "Unable to reach the API server…". Show it as-is. */
-  }
-  return raw;
-}
+
 
 export default function LoginPage() {
   const router = useRouter();
@@ -56,7 +32,7 @@ export default function LoginPage() {
 
   const finish = React.useCallback((resp: LoginResp) => {
     setSession(resp.token, resp.member);
-    router.push("/");
+    router.push(safeNext(window.location.search) as Route);
   }, [setSession, router]);
 
   // Is SSO enabled for this workspace? (Public probe — no secrets, just on/off.)
@@ -202,7 +178,8 @@ export default function LoginPage() {
         </Card>
 
         <p style={{ textAlign: "center", fontSize: 11.5, color: "var(--rm-muted)" }}>
-          No account yet? Ask a workspace admin to add you under Access &amp; Roles.
+          No account yet? Ask a workspace admin to add you under Access &amp; Roles, or{" "}
+          <a href="/signup" style={{ color: "var(--rm-accent)" }}>create a new workspace</a>.
         </p>
       </div>
     </div>
