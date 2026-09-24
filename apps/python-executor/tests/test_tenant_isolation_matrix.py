@@ -197,6 +197,9 @@ MUTATING_ROUTE_COVERAGE = {
     "/sdk/v1": "SDK evaluation + sync; tenant from the auth context, covered by the SDK suites",
     "/api/mobile/v1": "mobile session establishment; identity routes, covered by the auth suites",
     "/api/v1/auth": "establishes identity before one exists -- no tenant to cross",
+    "/api/v1/connector-templates/{template_id}/install": "creates a connector and variables in the "
+        "caller's tenant from the auth context; another tenant's install neither conflicts with "
+        "nor appears in it -- tests/test_connector_templates.py",
     "/api/v1/oauth/token": "exchanges a key for a token bound to THAT key's tenant; a token naming another tenant is refused -- tests/test_oauth2_server.py",
     "/api/v1/onboarding": "creates a NEW tenant (signup) or seeds the caller's own",
     "/api/v1/import": "bulk-writes into the caller's own tenant from the auth context",
@@ -225,6 +228,9 @@ MUTATING_ROUTE_COVERAGE = {
 EXEMPT = {
     "providers": "read-only catalogue of AI providers; global, not tenant-owned, so there is "
                  "no cross-tenant object to leak",
+    "connector-templates": "read-only catalogue of named-provider templates; global, not "
+                           "tenant-owned. Install writes into the CALLER's tenant, covered by "
+                           "tests/test_connector_templates.py",
     "reviews": "human-review tasks are created by the executor pausing on a review gate, not "
                "by a POST; isolation for them is covered where that gate is exercised",
     "evaluations": "POST /evaluations RUNS an evaluation against an uploaded model and rejects "

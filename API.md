@@ -233,6 +233,25 @@ Beyond CRUD:
   what each one does.
 - `GET /api/v1/settings/data-protection`, `/governance`, `/slo`
 
+## Connector templates
+
+Prebuilt decision-time connectors for named providers — Equifax (bureau), FinBox BankConnect (bank
+statements) and Setu PAN verification (KYC). The full contract for each — inputs, request, mapped
+fields, error taxonomy, and what was and was not verified — is generated into
+[`docs/connectors/TEMPLATES.md`](docs/connectors/TEMPLATES.md).
+
+- `GET /api/v1/connector-templates` (`?category=bureau|bank_statement|kyc`) and
+  `GET /api/v1/connector-templates/{template_id}`.
+- `POST /api/v1/connector-templates/{template_id}/install` with
+  `{connector_id?, environment?, base_url?, settings, secrets, install_variables?}` creates the
+  connector and its starter variables (in `dev`). Every problem is reported at once as
+  `422 invalid_template_install` with a `problems` list; an id that already exists is
+  `409 already_exists` rather than a silently suffixed copy. Needs the author capability.
+
+A fetch failure from a template carries a stable code in the decision's source-fetch trace
+(`setu_pan_not_found`, `finbox_statement_processing`, `equifax_no_hit`, …) and, by default, sends
+the decision to review.
+
 ## Outbound webhooks
 
 - `GET`/`POST /api/v1/webhook-subscriptions`, `GET`/`PATCH`/`DELETE /api/v1/webhook-subscriptions/{subscription_id}`,

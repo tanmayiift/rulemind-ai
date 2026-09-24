@@ -124,6 +124,8 @@ _IDENTITY_PREFIXES = (
 # Authoring resource prefixes — write methods here need the AUTHOR capability.
 _AUTHOR_PREFIXES = (
     "/api/v1/connectors",
+    # Installing a template creates a connector and variables -- authoring, like POSTing them.
+    "/api/v1/connector-templates",
     "/api/v1/variables",
     "/api/v1/rules",
     "/api/v1/scorecards",
