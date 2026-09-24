@@ -197,6 +197,7 @@ MUTATING_ROUTE_COVERAGE = {
     "/sdk/v1": "SDK evaluation + sync; tenant from the auth context, covered by the SDK suites",
     "/api/mobile/v1": "mobile session establishment; identity routes, covered by the auth suites",
     "/api/v1/auth": "establishes identity before one exists -- no tenant to cross",
+    "/api/v1/oauth/token": "exchanges a key for a token bound to THAT key's tenant; a token naming another tenant is refused -- tests/test_oauth2_server.py",
     "/api/v1/onboarding": "creates a NEW tenant (signup) or seeds the caller's own",
     "/api/v1/import": "bulk-writes into the caller's own tenant from the auth context",
     "/api/v1/executions": "resumes an execution looked up in the caller's tenant",

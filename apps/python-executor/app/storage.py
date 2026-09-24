@@ -592,6 +592,7 @@ class Storage:
         # it on the instance keeps it correct in prod (Storage is a singleton) and
         # isolated in tests (each Storage/DB gets its own cache).
         self._api_key_cache: Dict[str, Any] = {}
+        self._api_key_kid_cache: Dict[str, Any] = {}
         # Resolved human-login sessions (token_hash -> (result, expiry)). Same
         # rationale as the API-key cache; role is read live so a role change /
         # deactivation takes effect within the TTL (and eagerly, see _invalidate_member).
@@ -3461,8 +3462,10 @@ class Storage:
                 return False
             row.is_active = False
             row.revoked_at = datetime.utcnow()
-            # Eagerly drop any cached verification so the revoke takes effect now.
+            # Eagerly drop any cached verification so the revoke takes effect now -- for the key
+            # AND for any OAuth2 access token minted from it, which resolve through the kid cache.
             self._api_key_cache.clear()
+            self._api_key_kid_cache.clear()
             return True
 
     def get_tenant_by_api_key(self, api_key: str) -> Optional[Dict[str, Any]]:
@@ -3507,6 +3510,35 @@ class Storage:
             self._api_key_cache[api_key] = (result, now + _API_KEY_CACHE_TTL)
         return result
 
+    def get_tenant_by_api_key_kid(self, kid: str) -> Optional[Dict[str, Any]]:
+        """The same shape as get_tenant_by_api_key, resolved by key ID -- for OAuth2 access tokens,
+        which carry the kid and never the key.
+
+        Re-resolved on every request (behind the same TTL cache as the plaintext path) so that a
+        token can never outlive its key: revoke the key and its tokens stop working within the
+        same window the key itself does. Both caches are cleared together on revoke and on a
+        role change, so a token also picks up a changed role immediately.
+        """
+        now = _time.time()
+        cached = self._api_key_kid_cache.get(kid)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+        with self.connect() as session:
+            row = session.scalar(select(ApiKey).where(ApiKey.kid == kid, ApiKey.is_active.is_(True)))
+            if not row:
+                return None
+            tenant = session.get(Tenant, row.tenant_id)
+            if not tenant:
+                return None
+            result = {
+                "tenant": {"id": tenant.id, "name": tenant.name, "plan": tenant.plan,
+                           "is_active": tenant.is_active, "config": copy.deepcopy(tenant.config or {})},
+                "api_key": {"id": row.id, "kid": row.kid, "masked_key": row.masked_key, "role": row.role},
+            }
+        if _API_KEY_CACHE_TTL > 0:
+            self._api_key_kid_cache[kid] = (result, now + _API_KEY_CACHE_TTL)
+        return result
+
     def update_api_key_role(self, tenant_id: str, kid: str, role: str) -> Optional[Dict[str, Any]]:
         """Change a key's role in place (role-change-in-place). Eagerly clears the
         verified-key cache so the new role takes effect on the next request."""
@@ -3519,6 +3551,7 @@ class Storage:
                 return None
             row.role = resolved_role
             self._api_key_cache.clear()
+            self._api_key_kid_cache.clear()
             return {"kid": row.kid, "role": resolved_role}
 
     # ── Workspace members (human accounts with RBAC roles) ───────────────

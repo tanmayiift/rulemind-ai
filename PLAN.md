@@ -1959,6 +1959,58 @@ calls it.
   subscriptions starts at most one thread, deliveries and replay are tenant-scoped, and the drain
   is leader-gated. Four mutations, all caught.
 
+- [x] **R10.25 OAUTH2, BOTH DIRECTIONS — AND IT WAS WORSE THAN "NOT IMPLEMENTED".** (Plan 6.2.)
+  **Outbound, connectors.** `auth_type: oauth2` was a bearer token in disguise: the probe took the
+  first of `access_token`, `token`, `api_key`, **`client_secret`** and sent it as
+  `Authorization: Bearer`. So a connector configured the normal way — `client_id` +
+  `client_secret`, no pre-issued token — **sent its client secret to the data provider's API on
+  every call**, where only the token endpoint should ever see it. And one given a pre-issued token
+  failed every decision from the moment that token expired, because nothing renewed it. The seeded
+  GST connector is `oauth2`.
+
+  Now `app/oauth2_client.py` does RFC 6749 §4.4 client credentials when `config.token_url` is set:
+  `client_secret_basic` (form-encoded before base64, which matters the moment either value has a
+  `:`) or `client_secret_post`, optional `scope`/`audience`; the token endpoint goes through the
+  **same SSRF-pinned egress** as a fetch, redirects off, because it receives the secret. Tokens are
+  cached per (tenant, connector, endpoint, client, scope, audience) until `expires_in` minus 60 s,
+  single-flighted so a cold cache under load makes one token request, and **a 401 from the
+  resource invalidates the token and retries once** with a fresh one. Without `token_url`,
+  `oauth2` still means a static token — and `client_secret` is no longer on the list it will send.
+  Token failures come back with stable codes (`oauth2_client_rejected`, `oauth2_token_unreachable`,
+  …), and the probe reports a rejected client as an auth failure, not as unreachable. The token is
+  added to the redaction set so a transport error quoting the request cannot carry it into a
+  trace or a 502 body — tested by injecting exactly that, and mutation-checked. 35 tests.
+
+  One thing only running it found: the 401-recovery was first written after `_send` returned — but
+  `_send` *raises* on a 401, so the recovery was unreachable code that every test around it passed.
+  Moved into the exception path; a test now asserts the second request carries the new token.
+
+  **Inbound, the product's own API.** The only machine credential was a long-lived `x-api-key` on
+  every request, which standard OAuth2 client libraries cannot use at all.
+  `POST /api/v1/oauth/token` now exchanges a key (`client_id` = its `kid`, `client_secret` = the
+  key) for a bearer token with **exactly the key's tenant and role**, re-resolved to the key on
+  every request — so revoking the key kills its tokens, and a role change applies to them. Signed
+  with a key **derived** from the admin JWT secret under a fixed label and typed `rm_access`, so a
+  platform-admin JWT is not an access token and an access token is not an admin JWT — no new secret
+  to provision, and no confusion between the two. Rate-limited on the login budget, because it
+  accepts a guess. `OAUTH2_ACCESS_TOKEN_TTL_SECONDS` (default 3600, clamped 60–86400) in
+  `.env.example` and `values.yaml`. 20 tests.
+
+  **Seven guards mutation-checked, one survived first.** `typ` check, domain separation, the tenant
+  binding, re-resolving the key per request, the `client_id` ↔ key binding, and the kid-cache clear
+  on revoke were all caught. The kid-cache clear on **role change** survived: the test never used
+  the token before changing the role, so the cache was cold and there was nothing stale to serve.
+  It now uses the token first; caught.
+
+  **Two corrections found on the way.**
+  * `API.md` said a key could be sent as `Authorization: Bearer rm_live_...`. **It returns 401** —
+    a bearer value is read as a session or access token, never a key. Checked by request, not by
+    reading; the doc is fixed rather than the behaviour widened.
+  * R10.24's `redeliver` route was never mapped in `rbac.py`. The anti-rot test caught it. It had
+    fallen to the fail-closed default, which is MANAGE_ACCESS — the same capability subscriptions
+    need — so it was never wrong, only undeclared. Mapped, and a test pins that a `policy_maker`
+    cannot replay a delivery.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

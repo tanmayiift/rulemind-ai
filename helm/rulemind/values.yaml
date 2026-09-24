@@ -328,6 +328,9 @@ config:
   # FAST_CACHE_MAX_ENTRIES: "2048"
   # RUNTIME_CACHE_MAX_ENTRIES: "4096"
   # API_KEY_CACHE_TTL: "300.0"
+  # OAuth2 access tokens (POST /api/v1/oauth/token). Clamped to 60..86400 seconds; a token
+  # stops working when its key is revoked, within API_KEY_CACHE_TTL.
+  # OAUTH2_ACCESS_TOKEN_TTL_SECONDS: "3600"
 
   # ── Redis client behaviour ───────────────────────────────────────────────────────────────
   # REDIS_SOCKET_TIMEOUT: ""

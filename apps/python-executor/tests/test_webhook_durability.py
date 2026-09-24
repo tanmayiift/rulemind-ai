@@ -241,6 +241,21 @@ class DurableWebhookTests(unittest.TestCase):
         replay = self.client.post(f"/api/v1/webhook-deliveries/{row['id']}/redeliver", headers=key)
         self.assertEqual(replay.status_code, 404, "nor replay its deliveries")
 
+    def test_replay_needs_the_same_capability_as_the_subscription(self):
+        """Redelivery re-sends workspace data to a third party -- the authority a subscription
+        needs. It was left out of rbac.py's map and fell to the fail-closed default; mapped now,
+        and the documented role boundary holds: a policy_maker cannot."""
+        with self._deliver_returns({"delivered": True, "status": 200}):
+            self._emit()
+            webhook_dispatch.flush(5)
+        row = self._only_delivery()
+        tenant = self.storage.default_tenant_id
+        maker = {"x-api-key": self.storage.generate_api_key_for_tenant(tenant, role="policy_maker")["plaintext"]}
+        admin = {"x-api-key": self.storage.generate_api_key_for_tenant(tenant, role="admin")["plaintext"]}
+        path = f"/api/v1/webhook-deliveries/{row['id']}/redeliver"
+        self.assertEqual(self.client.post(path, headers=maker).status_code, 403)
+        self.assertEqual(self.client.post(path, headers=admin).status_code, 200)
+
     def test_the_drain_job_is_leader_gated(self):
         """Every replica draining the same backlog would deliver each event N times."""
         source = (APP_ROOT / "app" / "scheduler.py").read_text(encoding="utf-8")
