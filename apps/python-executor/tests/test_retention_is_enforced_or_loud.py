@@ -141,11 +141,35 @@ class DiscardSinkTest(unittest.TestCase):
         self.assertTrue(ok, reason)
 
     def test_choosing_it_warns_that_data_is_destroyed(self):
+        """Captured with an explicit handler, not assertLogs.
+
+        This used assertLogs and passed alone while failing in the full gate with
+        "no logs of level WARNING or higher triggered on rulemind.archiver" -- the identical
+        fragility already fixed in RetentionHonestyTest._run, in this same file, which I did
+        not carry across. assertLogs makes "did it warn?" and "is logging globally suppressed
+        right now?" the same failure, and something in a 2,149-test run suppresses it.
+        """
         from app import archiver
 
-        with self.assertLogs("rulemind.archiver", level="WARNING") as captured:
+        logger = logging.getLogger("rulemind.archiver")
+        records: list = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Capture()
+        saved = (logger.disabled, logger.level)
+        logger.disabled = False
+        logger.setLevel(logging.WARNING)
+        logger.addHandler(handler)
+        try:
             archiver.DiscardArchiver().available()
-        self.assertIn("DELETED with no copy kept", "\n".join(captured.output))
+        finally:
+            logger.removeHandler(handler)
+            logger.disabled = saved[0]
+            logger.setLevel(saved[1])
+        self.assertIn("DELETED with no copy kept", "\n".join(records))
 
     def test_it_writes_nothing(self):
         from app import archiver
