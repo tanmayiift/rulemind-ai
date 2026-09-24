@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from . import env, input_schema
-from . import variable_reachability
+from . import variable_reachability, variable_runner
 from .core import decide as core_decide
 # Imported (not redeclared) so the exception the fast path raises is the SAME CLASS the
 # executor raises: main.py dispatches its 504 on `@app.exception_handler(EvaluationBudgetExceeded)`
@@ -593,8 +593,6 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
                 if field in flat_fields:
                     target[field] = flat_fields[field]
     payloads["custom"] = dict(flat_fields) if flat_fields else dict(payload)
-    values: Dict[str, Any] = {}
-    errors: Dict[str, str] = {}
     timeout_ms = bundle["timeout_ms"]
     # Per-request, never baked into the cached bundle -- see the note in _build_serving_bundle.
     # `.get`, not `[...]`, because "needed_variable_ids" is an OPTIONAL bundle key: tests and
@@ -604,33 +602,14 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
                   if variable_reachability.compute_only_used_vars(bundle.get("engine_config"))
                   else None)
 
-    for variable in bundle["variables"]:
-        # Skip BEFORE the budget check, exactly as PolicyExecutor._compute_variables does --
-        # a variable that is never computed must not consume budget either, or the two paths
-        # would abandon the run at different points for the same policy.
-        if needed_ids is not None and variable["id"] not in needed_ids:
-            continue
-        # Two-part enforcement, mirroring PolicyExecutor._compute_variables. The check abandons
-        # the run between variables; the clamp stops the NEXT variable from overshooting the
-        # budget on its own -- without it a 2000ms variable started with 5ms of budget left
-        # still runs the full 2000ms, and across a 55-variable catalog that error compounds
-        # until the effective bound is timeout_ms x variable_count again.
-        effective_timeout = timeout_ms
-        if budget is not None:
-            budget.check("variable computation")
-            remaining = budget.remaining_ms()
-            if remaining is not None:
-                effective_timeout = max(1, min(timeout_ms, remaining))
-        source_payload = payloads.get(variable.get("source_id"), {})
-        execution = execute_variable(
-            variable["code"], source_payload, values,
-            timeout_ms=effective_timeout, memory_mb=bundle["memory_mb"],
-        )
-        values[variable["id"]] = execution.get("value")
-        # A variable that errors becomes None here; surface the error to the caller so it is
-        # never silently swallowed (a None fed to a gate can flip a decision).
-        if execution.get("error"):
-            errors[variable["id"]] = str(execution.get("error"))
+    # The loop lives in variable_runner, shared with PolicyExecutor, so the two cannot drift;
+    # in pool mode it is one sandbox round trip for the whole group (plan 4.4).
+    values, errors = variable_runner.compute_variables(
+        bundle["variables"], payloads, execute=execute_variable,
+        timeout_ms=timeout_ms, memory_mb=bundle["memory_mb"],
+        check_budget=budget.check if budget is not None else (lambda _stage: None),
+        remaining_ms=budget.remaining_ms if budget is not None else (lambda: None),
+        needed_ids=needed_ids)
     return values, payloads, errors
 
 

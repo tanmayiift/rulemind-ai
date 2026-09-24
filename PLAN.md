@@ -2371,6 +2371,36 @@ calls it.
   a predicate admitting every row, SQLite claiming enforcement, a missing policy going unnoticed,
   and the lane's DATABASE_URL popped again.
 
+- [x] **R10.35 A DECISION'S VARIABLES IN ONE SANDBOX ROUND TRIP: −46% PER DECISION.** (Plan 4.4,
+  hypothesis 3 of R10.14, which recorded it as estimated and deliberately unbuilt.) Both decision
+  paths now call one loop, `app/variable_runner.py` — they carried it line for line, each with a
+  comment saying it must match the other — and in pool mode it is **one** trip to the sandbox for
+  the whole catalog (`sandbox.execute_variable_group`). Measured, three agreeing rounds: variables
+  **5.6 → 0.34 ms**, `POST /decide` p50 **12.6 → 6.8 ms**. Throughput at 8 concurrent in-process
+  clients did not move (88 vs 90/s) and the reason is stated rather than hidden: that harness is
+  bound by the API process's CPU, and the old trips were mostly GIL-releasing waits.
+  * **Every per-variable guarantee the process boundary gave for free is rebuilt, and each is a
+    test against the real pool**: order and accumulation; isolation (a variable appending to a
+    list or its payload could not affect the next under per-call pickling, so each gets its own
+    unpickled copy — 0.13 ms for 55); its own deadline via an in-worker interval timer, plus a
+    post-hoc check, because variable code may use a bare `except`; a group-level deadline that
+    kills a worker which swallows every timer; error isolation including an unpicklable return;
+    the evaluation budget, enforced inside the worker — no pool-sized waves, which R10.14
+    predicted would be needed; and the fallback policy for a broken pool, keeping accumulation.
+  * **One race found in review, before any test**: an interval timer landing inside the `finally`
+    would have escaped the loop as a BaseException and 500'd a real decision. The `except` sits
+    outside the `finally`, and the caller catches the class as well.
+  * Every seeded policy decides identically (outcome, score, variables, errors, rule results) one
+    trip or one call per variable, on both paths. The 13 older tests that replace
+    `execute_variable` keep the per-call path — a replaced primitive is honoured call by call,
+    because batching is a property of the sandbox, not of a stand-in. `SANDBOX_BATCH=0` is the
+    kill switch, documented in `.env.example` and `values.yaml`, and the config gate fails without it.
+  * The lane guard now also watches `SANDBOX_MODE`/`SANDBOX_BATCH`: a leaked `inline` would have
+    silently turned these tests into tests of the other path. One test was leaving it popped.
+
+  Mutations caught: shared payload, shared earlier values, no post-hoc deadline, budget ignored,
+  no timer, stand-in ignored, never batched, and the kill switch undocumented.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

@@ -15,6 +15,7 @@ import httpx
 from . import circuit_breaker, input_schema, variable_reachability
 from .experiments import apply_experiment_overrides, resolve_experiment_assignment
 from .jsonpath import evaluate_math_expr, resolve_jsonpath
+from . import variable_runner
 from .logic import compare, evaluate_rule_definition, evaluate_scorecard, json_dumps, redact_payload
 from .sandbox import execute_variable
 from .storage import Storage, mask_secret_values
@@ -815,28 +816,18 @@ class PolicyExecutor:
         limits = catalog["settings"].get("engine_config", {})
         timeout_ms = int(limits.get("timeout_ms", 2000))
         memory_mb = int(limits.get("memory_mb", 128))
-        values: Dict[str, Any] = {}
-        for variable in catalog["variables"]:
-            if needed_ids is not None and variable["id"] not in needed_ids:
-                continue
-            # Two-part enforcement. The check abandons the run between variables; the clamp
-            # stops the NEXT variable from overshooting the budget on its own -- without it a
-            # 2000ms variable started with 5ms of budget left would still run the full 2000ms,
-            # and with 55 variables that error compounds.
-            self._check_budget(ctx, "variable computation")
-            remaining = self._budget_remaining_ms(ctx)
-            effective_timeout = timeout_ms if remaining is None else max(1, min(timeout_ms, remaining))
-            source_payload = payloads.get(variable["source_id"], {})
-            execution = execute_variable(variable["code"], source_payload, values, timeout_ms=effective_timeout, memory_mb=memory_mb)
-            values[variable["id"]] = execution.get("value")
-            # The error used to be discarded here. A sandbox timeout returns
-            # {"value": None, "error": "..."} rather than raising, so the variable became a
-            # silent None -- and under load the sandbox queue manufactures those from perfectly
-            # healthy code. The fast path already recorded them (fast_decide.py:216-219, with a
-            # comment saying a None fed to a gate can flip a decision); this is the DEFAULT
-            # path, and it did not.
-            if execution.get("error"):
-                ctx.variable_errors[variable["id"]] = str(execution.get("error"))
+        # The loop lives in variable_runner, shared with the fast path, so the two cannot drift;
+        # in pool mode it is one sandbox round trip for the whole catalog (plan 4.4). A failed
+        # variable used to be discarded here -- a sandbox timeout returns {"value": None,
+        # "error": ...} rather than raising, and under load the queue manufactures those from
+        # healthy code -- so the errors are kept and the decision fails closed on them.
+        values, errors = variable_runner.compute_variables(
+            catalog["variables"], payloads, execute=execute_variable,
+            timeout_ms=timeout_ms, memory_mb=memory_mb,
+            check_budget=lambda stage: self._check_budget(ctx, stage),
+            remaining_ms=lambda: self._budget_remaining_ms(ctx),
+            needed_ids=needed_ids)
+        ctx.variable_errors.update(errors)
         ctx.variables = values
         ctx.payload = payloads
         self._record_variable_errors(ctx)

@@ -493,6 +493,45 @@ current per-call design gets for free:
 It is small, and hypothesis 3 needs the same analysis; the tests for it are in the commit that
 reverted it.
 
+**Hypothesis 3, built (plan 4.4, 2026-09-24).** `sandbox.execute_variable_group`, called by both
+decision paths through `app/variable_runner.py`. Measured on this laptop, seeded catalog, pool
+of 2, 200 alternating samples per side, three rounds that agree to within 0.3 ms:
+
+| | one trip per variable | one trip per decision | change |
+|---|---:|---:|---:|
+| 55 variables, p50 | 5.6 ms | 0.34 ms | **−94%** |
+| `POST /api/v1/decide`, p50 | 12.6 ms | 6.8 ms | **−46%** |
+| `POST /api/v1/decide`, p95 | 14.6–15.2 ms | 7.8–9.3 ms | |
+| 8 concurrent clients, in-process | 88.0 decisions/s | 89.8 decisions/s | none |
+
+The by-parts estimate (0.35 ms, ~40%) held. **Throughput did not move, and that is not a
+contradiction:** at saturation this harness is bound by the API process's own CPU (~11 ms a
+decision under the GIL), and the per-call trips were mostly time spent *waiting* on IPC, which
+releases the GIL. The change buys latency at any load below saturation; it adds throughput only
+where the pool itself was the bottleneck.
+
+How each constraint above was met, and where the prediction was wrong:
+
+1. **Per-variable timeout** — an interval timer in the worker raises at min(timeout, budget
+   left), re-firing every 50 ms, and a result that arrives after its deadline is a timeout even if
+   the code caught the timer and returned (variable code may use a bare `except`). Code that
+   swallows every timer is killed at the group's own deadline and every variable in the group
+   errors — which sends the decision to review, exactly as one failed variable already does.
+2. **Error isolation** — per variable, including a return value that cannot be pickled.
+3. **Budget abandonment** — *no waves were needed*, which the note above predicted they would
+   be. The worker is given the remaining budget and stops starting variables when it is spent;
+   the caller's own check then raises the 504 as before.
+4. **Fail-closed on a broken pool** — the whole group follows `SANDBOX_FALLBACK_MODE`; the inline
+   fallback keeps accumulation.
+
+Also kept, and not on the list above: **isolation**. The per-call path handed every variable a
+freshly unpickled payload and map, so a variable appending to a list could not change what the
+next one saw. Inside one worker that is done on purpose — one pickle per source, one unpickle
+per variable, 0.13 ms for 55 (deepcopy measured 0.8 ms). **No independence analysis was needed**:
+the group runs in order, so accumulation is exactly what it was. `SANDBOX_BATCH=0` is the kill
+switch; tests that replace `execute_variable` keep the per-call path, and 13 new tests run the
+real pool.
+
 
 ## Where it saturates, and how it behaves past that
 
