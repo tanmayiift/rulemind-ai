@@ -102,13 +102,47 @@ status() {
 case "${1:-}" in
   --status) status; exit 0 ;;
   --stop)
-    [ -f "$LOG_DIR/supervisor.pid" ] && kill "$(cat "$LOG_DIR/supervisor.pid")" 2>/dev/null \
-      && ok "stopped the supervisor"
+    # STOP THE SUPERVISOR FIRST, AND WAIT FOR IT TO ACTUALLY BE GONE.
+    #
+    # `kill` returning 0 means the signal was delivered, not that the process died, and this
+    # printed "stopped the supervisor" on that basis. The loop traps TERM -- but bash defers a
+    # trap while a foreground child runs, and the loop spends almost all its time inside
+    # `sleep 300`. So the supervisor stayed alive for up to five more minutes after --stop
+    # reported success, and its next pass RESTARTED the generator this command had just killed.
+    # Measured: --stop reported three green ticks and left pid 82565 running.
+    #
+    # It also has to happen before the generators are killed, for the same reason: kill them
+    # first and a live supervisor simply puts them back.
+    if [ -f "$LOG_DIR/supervisor.pid" ]; then
+      SUP_PID="$(cat "$LOG_DIR/supervisor.pid" 2>/dev/null)"
+    else
+      SUP_PID="$(pgrep -f 'soak_supervise.sh --loop' 2>/dev/null | head -1)"
+    fi
+    if [ -n "${SUP_PID:-}" ] && kill -0 "$SUP_PID" 2>/dev/null; then
+      kill "$SUP_PID" 2>/dev/null
+      for _ in $(seq 20); do kill -0 "$SUP_PID" 2>/dev/null || break; sleep 0.5; done
+      if kill -0 "$SUP_PID" 2>/dev/null; then
+        # Deferred trap, still sleeping. SIGKILL is correct here: there is no state to flush,
+        # and leaving it alive is what breaks the command.
+        kill -9 "$SUP_PID" 2>/dev/null
+        sleep 1
+      fi
+      kill -0 "$SUP_PID" 2>/dev/null \
+        && bad "the supervisor (pid $SUP_PID) would not die — kill it by hand before restarting" \
+        || ok "stopped the supervisor (pid $SUP_PID), confirmed gone"
+    fi
+    # Anything else still looping, by process rather than by pid file.
+    for pid in $(pgrep -f 'soak_supervise.sh --loop' 2>/dev/null); do
+      kill -9 "$pid" 2>/dev/null && ok "stopped a second supervisor loop ($pid)"
+    done
     rm -f "$LOG_DIR/supervisor.pid"
     # Every generator, not just the one in the pid file.
     for pid in $(pgrep -f "soak_traffic.py" 2>/dev/null); do
       kill "$pid" 2>/dev/null && ok "stopped generator $pid"
     done
+    sleep 1
+    LEFT="$(pgrep -f 'soak_traffic.py' 2>/dev/null | tr '\n' ' ')"
+    [ -n "$LEFT" ] && bad "generator(s) still running after --stop: $LEFT"
     [ -f "$CAF_PID_FILE" ] && kill "$(cat "$CAF_PID_FILE")" 2>/dev/null && ok "released caffeinate"
     rm -f "$PID_FILE" "$CAF_PID_FILE"
     note "the compose stack is left running; 'docker compose --profile observability down' stops it"
@@ -162,17 +196,39 @@ else
   ok "supervisor already running (pid $(cat "$LOG_DIR/supervisor.pid"))"
 fi
 
+# ONE OWNER FOR THE GENERATOR, AND IT IS THE SUPERVISOR.
+#
+# This block used to start a generator directly, and that raced with the supervisor launched
+# immediately above: the guard near the top of this script checks `pgrep -f soak_traffic.py`
+# BEFORE the supervisor exists, the supervisor's first pass then sees no generator and starts
+# one, and this block started a second. Measured after a clean restart: two generators, both
+# orphaned to PPID 1, identical arguments.
+#
+# Two generators is not a tidiness problem. The whole point of the run is a shaped arrival rate
+# -- a diurnal curve between --min-rps and --max-rps -- and two of them silently double it, so
+# every quantile the month produces describes traffic nobody configured. It is the same class as
+# the /metrics worker bug: the measurement is wrong and nothing looks wrong.
+#
+# The guard could have been moved later, but the real fix is that two things were allowed to
+# create the same singleton. The supervisor already owns restart-if-missing; let it own start-up
+# too, and wait for it here.
 VENV="${RULEMIND_VENV:-$PWD/.venv-rulemind/bin/python}"
 [ -x "$VENV" ] || VENV="python3"
-nohup "$VENV" scripts/soak_traffic.py \
-  --min-rps "${RULEMIND_SOAK_MIN_RPS:-0.4}" \
-  --max-rps "${RULEMIND_SOAK_MAX_RPS:-4.0}" \
-  >> "$LOG_DIR/soak.log" 2>&1 &
-echo $! > "$PID_FILE"
-sleep 3
-kill -0 "$(cat "$PID_FILE")" 2>/dev/null \
-  && ok "traffic generator running (pid $(cat "$PID_FILE"))" \
-  || { bad "generator exited immediately — see $LOG_DIR/soak.log"; tail -5 "$LOG_DIR/soak.log"; exit 1; }
+for _ in $(seq 24); do
+  pgrep -f "soak_traffic.py" >/dev/null 2>&1 && break
+  sleep 5
+done
+GEN_PIDS="$(pgrep -f 'soak_traffic.py' 2>/dev/null | tr '\n' ' ')"
+GEN_COUNT="$(printf '%s' "$GEN_PIDS" | wc -w | tr -d ' ')"
+case "$GEN_COUNT" in
+  0) bad "the supervisor did not start a generator within 2m — see $LOG_DIR/soak.log"
+     tail -5 "$LOG_DIR/soak.log"; exit 1 ;;
+  1) printf '%s' "$GEN_PIDS" | tr -d ' ' > "$PID_FILE"
+     ok "traffic generator running (pid $(cat "$PID_FILE")), owned by the supervisor" ;;
+  *) bad "MORE THAN ONE generator is running (pids $GEN_PIDS) — the arrival rate is multiplied"
+     note "stop them all and restart: scripts/soak_start.sh --stop && scripts/soak_start.sh"
+     exit 1 ;;
+esac
 
 printf '\n'
 note "log:     $LOG_DIR/soak.log"
