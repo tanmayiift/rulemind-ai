@@ -308,8 +308,73 @@ export default function DecisionExplorerPage() {
                   ))}
                 </>
               ) : null}
+              <ReplayAgainstBundle decisionId={selected.id} theme={theme} />
             </div>
           ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type ReplayResult = { bundle_version: number | null; original_outcome: string; replayed_outcome: string; changed: boolean };
+
+/**
+ * Replay THIS decision through a retained bundle version (plan 6.5). The regulator's question is
+ * not "what does the policy say today" but "would this applicant have been decided the same way
+ * under the version that was live then -- or under the one live now". The endpoint existed
+ * (POST /decisions/{id}/replay?bundleVersion=N) and no screen called it.
+ */
+function ReplayAgainstBundle(props: { decisionId: string; theme: (typeof THEMES)[keyof typeof THEMES] }) {
+  const { apiBaseUrl, apiKey } = useRuleMindStore();
+  const { theme } = props;
+  const [versions, setVersions] = React.useState<Array<{ version: number; superseded?: boolean }>>([]);
+  const [version, setVersion] = React.useState("");
+  const [result, setResult] = React.useState<ReplayResult | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    apiJson<Array<{ version: number; superseded?: boolean }>>(apiBaseUrl, "/api/v1/bundles/versions", {}, apiKey)
+      .then(setVersions).catch(() => setVersions([]));
+  }, [apiBaseUrl, apiKey]);
+  React.useEffect(() => { setResult(null); setError(null); }, [props.decisionId]);
+
+  const replay = async () => {
+    setBusy(true); setError(null); setResult(null);
+    try {
+      const query = version ? "?bundleVersion=" + encodeURIComponent(version) : "";
+      setResult(await apiJson<ReplayResult>(apiBaseUrl,
+        "/api/v1/decisions/" + encodeURIComponent(props.decisionId) + "/replay" + query, { method: "POST" }, apiKey));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Replay failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div data-testid="decision-replay" style={{ marginTop: 14 }}>
+      <h3 style={{ fontSize: 13, margin: "0 0 8px" }}>Replay against a bundle version</h3>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select aria-label="Bundle version" value={version} onChange={(e) => setVersion(e.target.value)}
+                style={{ height: 30, borderRadius: 8, border: "1px solid " + theme.border, background: theme.card, color: theme.text, padding: "0 8px" }}>
+          <option value="">Latest bundle</option>
+          {versions.map((v) => <option key={v.version} value={v.version}>v{v.version}{v.superseded ? " (superseded)" : ""}</option>)}
+        </select>
+        <button onClick={() => void replay()} disabled={busy}
+                style={{ height: 30, padding: "0 12px", borderRadius: 8, border: "1px solid " + theme.border, background: theme.hover, color: theme.text, cursor: "pointer" }}>
+          {busy ? "Replaying…" : "Replay"}
+        </button>
+      </div>
+      {error ? <div role="alert" style={{ marginTop: 8, fontSize: 12.5, color: theme.danger }}>{error}</div> : null}
+      {result ? (
+        <div data-testid="decision-replay-result" style={{ marginTop: 8, fontSize: 12.5 }}>
+          Recorded <strong>{result.original_outcome}</strong>; bundle v{result.bundle_version ?? "?"} decides{" "}
+          <strong>{result.replayed_outcome}</strong> —{" "}
+          <span style={{ color: result.changed ? theme.danger : theme.success, fontWeight: 600 }}>
+            {result.changed ? "a different outcome" : "the same outcome"}
+          </span>.
         </div>
       ) : null}
     </div>

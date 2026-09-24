@@ -218,10 +218,64 @@ class RollbackEndpointTest(_Case):
                                json={"promotion_id": 1})
         self.assertEqual(res.status_code, 403, res.text)
 
+    def test_the_ledger_records_the_caller_not_the_actor_it_claims(self):
+        """`actor` in the body was written to the promotion ledger as-is: any caller could record
+        a rollback of production under someone else's name."""
+        # Promotion is gated on a passing test; record one so there is a snapshot to roll back to.
+        app_main.storage.update_policy("pol_live", {"last_test_result": {"passed": True}},
+                                       tenant_id=self.tenant_a)
+        promoted = self.client.post("/api/v1/policies/pol_live/promote", headers=self.headers_a,
+                                    json={"reason": "baseline for rollback"})
+        self.assertEqual(promoted.status_code, 200, promoted.text)
+        promotion_id = app_main.storage.list_promotions(tenant_id=self.tenant_a)[0]["id"]
+        res = self.client.post("/api/v1/policies/pol_live/rollback", headers=self.headers_a,
+                               json={"promotion_id": promotion_id, "actor": "mallory", "reason": "test"})
+        self.assertEqual(res.status_code, 200, res.text)
+        key_id = app_main.storage.get_tenant_by_api_key(self.headers_a["x-api-key"])["api_key"]["id"]
+        rollback_rows = [row for row in app_main.storage.list_promotions(tenant_id=self.tenant_a)
+                         if row.get("entity_id") == "pol_live" and row["id"] != promotion_id]
+        self.assertTrue(rollback_rows, "the rollback left no ledger row")
+        self.assertEqual(rollback_rows[0]["promoted_by"], key_id)
+
     def test_a_missing_promotion_id_is_422_not_500(self):
         res = self.client.post("/api/v1/policies/pol_live/rollback", headers=self.headers_a,
                                json={})
         self.assertEqual(res.status_code, 422, res.text)
+
+
+class EntityHistoryTest(_Case):
+    """GET /api/v1/history/{entity_type}/{entity_id} -- version history for every entity type that
+    storage snapshots. Only variables had a route; a policy's history was written on every change
+    and readable by nothing."""
+
+    def test_versions_come_back_newest_first(self):
+        app_main.storage.update_policy("pol_live", {"name": "renamed"}, tenant_id=self.tenant_a)
+        res = self.client.get("/api/v1/history/policy/pol_live", headers=self._key("viewer"))
+        self.assertEqual(res.status_code, 200, res.text)
+        versions = [row["version"] for row in res.json()]
+        self.assertGreaterEqual(len(versions), 2)
+        self.assertEqual(versions, sorted(versions, reverse=True))
+        self.assertEqual(res.json()[0]["snapshot"]["name"], "renamed")
+
+    def test_another_tenant_sees_no_versions(self):
+        res = self.client.get("/api/v1/history/policy/pol_live", headers=self.headers_b)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json(), [])
+
+    def test_an_unknown_entity_type_is_404(self):
+        res = self.client.get("/api/v1/history/tenant/x", headers=self.headers_a)
+        self.assertEqual(res.status_code, 404, res.text)
+
+    def test_connector_history_never_returns_a_secret(self):
+        """Even a snapshot written in plaintext before the masking fix -- written directly here."""
+        from app.models import EntityHistory
+
+        with app_main.storage.connect() as session:
+            session.add(EntityHistory(tenant_id=self.tenant_a, entity_type="connector", entity_id="c1",
+                                      version=1, snapshot={"id": "c1", "config": {"api_key": "PLAINTEXT-SECRET"}}))
+        res = self.client.get("/api/v1/history/connector/c1", headers=self.headers_a)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertNotIn("PLAINTEXT-SECRET", res.text)
 
 
 class LatencyAnalyticsTest(_Case):

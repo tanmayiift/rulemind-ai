@@ -395,7 +395,13 @@ def rollback_endpoint(request: Request, policy_id: str, body: RollbackRequest) -
     from .. import release
 
     tenant_id = main.active_tenant_id(request)
-    actor = body.actor or (getattr(request.state, "user_id", None) or "system")
+    # The AUTHENTICATED actor, exactly as promote_entity records it. This read `body.actor` first,
+    # so any caller could write any name into the ledger as the person who rolled production back
+    # -- and `request.state.user_id` is set by nothing, so without a body.actor it said "system".
+    # The body's value is honoured only when there is no authenticated identity (AUTH_MODE=none).
+    actor = main.active_actor(request)
+    if actor == "system":
+        actor = body.actor or "system"
     try:
         return release.rollback_policy(
             main.storage, policy_id, body.promotion_id, actor, tenant_id=tenant_id, reason=body.reason)

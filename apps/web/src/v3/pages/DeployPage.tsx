@@ -24,6 +24,7 @@ import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../
 import { useRuleMindStore } from "../../lib/store";
 import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
+import { usePromotionReview } from "../PromotionReview";
 import type {
   AuditErrorRecord,
   BootstrapPayload,
@@ -80,55 +81,10 @@ import {
   EmptyState,
 } from "../kit";
 
-type PolicyDiffBucket = { added: string[]; removed: string[]; changed: string[] };
-type PolicyDiff = {
-  hasBaseline: boolean;
-  changed: boolean;
-  steps: { added: Array<{ type: string; ref_id: string }>; removed: Array<{ type: string; ref_id: string }> };
-  rules: PolicyDiffBucket;
-  scorecards: PolicyDiffBucket;
-  decisionTables: PolicyDiffBucket;
-};
-
-function summarizePolicyDiff(diff: PolicyDiff): string {
-  if (!diff.hasBaseline) return "First promotion — the whole policy is new.";
-  const parts: string[] = [];
-  if (diff.steps.added.length) parts.push("+" + diff.steps.added.length + " step(s)");
-  if (diff.steps.removed.length) parts.push("−" + diff.steps.removed.length + " step(s)");
-  const count = (b: PolicyDiffBucket) => b.added.length + b.removed.length + b.changed.length;
-  if (count(diff.rules)) parts.push(count(diff.rules) + " rule change(s)");
-  if (count(diff.scorecards)) parts.push(count(diff.scorecards) + " scorecard change(s)");
-  if (count(diff.decisionTables)) parts.push(count(diff.decisionTables) + " decision-table change(s)");
-  return parts.length
-    ? "Changes since the last live version: " + parts.join(", ") + "."
-    : "No decision-logic changes since the last promotion.";
-}
-
-type PolicyBacktest = {
-  policy_id: string;
-  bundle_version: number | null;
-  sample: number;
-  changed: number;
-  change_rate_pct: number;
-  errors: number;
-  transition_matrix: { from: string; to: string; count: number }[];
-};
-
-function summarizeBacktest(bt: PolicyBacktest): string {
-  if (!bt.sample) return "Backtest: no recent decisions for this policy to measure against.";
-  const flips = bt.transition_matrix
-    .filter((t) => t.from !== t.to)
-    .slice(0, 4)
-    .map((t) => t.from + "→" + t.to + " (" + t.count + ")");
-  const head = "Backtest vs " + bt.sample + " recent decision(s): " + bt.changed + " would change (" + bt.change_rate_pct + "%)";
-  return flips.length ? head + " — " + flips.join(", ") + "." : head + ".";
-}
-
 export function DeployPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
   const { apiBaseUrl, apiKey, isMobile } = useRuleMindStore();
   const [deployData, setDeployData] = React.useState<DeployStatusPayload | null>(null);
-  const [busyKey, setBusyKey] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     apiJson<DeployStatusPayload>(apiBaseUrl, "/api/v1/deploy/status", {}, apiKey)
@@ -136,49 +92,13 @@ export function DeployPage(props: { data: BootstrapPayload; refresh: () => void;
       .catch(() => setDeployData(null));
   }, [apiBaseUrl, apiKey, props.data]);
 
-  const promote = React.useCallback(
-    async (entityType: "variable" | "rule" | "scorecard" | "policy", entityId: string) => {
-      // For a policy, show exactly what decision logic changed since the last promotion before
-      // shipping it — and record that summary on the approval.
-      let changeSummary = "";
-      let impactSummary = "";
-      if (entityType === "policy") {
-        try {
-          const diff = await apiJson<PolicyDiff>(apiBaseUrl, "/api/v1/policies/" + entityId + "/diff", {}, apiKey);
-          changeSummary = summarizePolicyDiff(diff);
-        } catch {
-          /* diff is best-effort context; fall through to a plain confirm */
-        }
-        try {
-          // Measured impact of the current bundle on this policy's real recent traffic.
-          const bt = await apiJson<PolicyBacktest>(apiBaseUrl, "/api/v1/policies/" + entityId + "/backtest?sample=200", { method: "POST" }, apiKey);
-          impactSummary = summarizeBacktest(bt);
-        } catch {
-          /* backtest is best-effort context */
-        }
-      }
-      const context = [changeSummary, impactSummary].filter(Boolean).join("\n");
-      const prompt = context
-        ? context + "\n\nPromote this policy to the next environment?"
-        : "Promote this item to the next environment?";
-      if (!window.confirm(prompt)) {
-        return;
-      }
-      setBusyKey(entityType + ":" + entityId);
-      try {
-        const route = "/api/v1/" + entityType + "s/" + entityId + "/promote";
-        const reason = "Manual promotion from Deploy board." + (changeSummary ? " " + changeSummary : "");
-        await apiJson(apiBaseUrl, route, { method: "POST", body: JSON.stringify({ promoted_by: "web", reason }) }, apiKey);
-        props.refresh();
-        props.onNotify("Promotion completed.");
-      } catch (error) {
-        props.onNotify(error instanceof Error ? error.message : "Promotion failed.");
-      } finally {
-        setBusyKey(null);
-      }
+  const promotion = usePromotionReview({
+    onPromoted: (done) => {
+      props.refresh();
+      props.onNotify("Promoted " + done.label + " to " + done.to.toUpperCase() + ".");
     },
-    [apiBaseUrl, apiKey, props]
-  );
+    onNotify: props.onNotify,
+  });
 
   const columns = deployData ?? {
     dev: { variables: [], rules: [], scorecards: [], policies: [] },
@@ -214,7 +134,7 @@ export function DeployPage(props: { data: BootstrapPayload; refresh: () => void;
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                       <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: theme.text }}>{item.label}</div>
                       {statusName !== "prod" ? (
-                        <Button small variant="success" disabled={!item.promotable || busyKey === item.entityType + ":" + item.id} onClick={() => promote(item.entityType, item.id)}>
+                        <Button small variant="success" disabled={!item.promotable || promotion.busyKey === item.entityType + ":" + item.id} onClick={() => promotion.review(item.entityType, item.id, item.label, statusName)}>
                           Promote
                         </Button>
                       ) : null}
@@ -241,6 +161,8 @@ export function DeployPage(props: { data: BootstrapPayload; refresh: () => void;
           ))
         )}
       </div>
+
+      {promotion.dialog}
     </div>
   );
 }
