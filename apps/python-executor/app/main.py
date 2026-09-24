@@ -1,4 +1,5 @@
 import copy
+import logging
 import asyncio
 import re
 import threading
@@ -1246,8 +1247,14 @@ def _schedule_trailing_compile(store: Any, tenant_id: str) -> None:
         def fire() -> None:
             with _TRAILING_LOCK:
                 _TRAILING_COMPILES.pop(tenant_id, None)
-            if store.mark_bundle_compile_queued(tenant_id, force=True):
-                _compile_bundle_now(store, tenant_id)
+            # A timer thread has no caller to raise to: an exception here (a database blip, or in
+            # tests a store whose database is already gone) would end the thread with a bare
+            # stderr traceback and no log line. The next write schedules another compile.
+            try:
+                if store.mark_bundle_compile_queued(tenant_id, force=True):
+                    _compile_bundle_now(store, tenant_id)
+            except Exception as error:  # noqa: BLE001 - see above
+                logging.getLogger("rulemind.bundle").warning("trailing bundle compile for tenant %s failed: %s", tenant_id, error)
 
         # The STORE is captured, not read from the module global when the timer fires: a test (or
         # a reconfigured process) that swaps `storage` must not have a timer compile into the new
