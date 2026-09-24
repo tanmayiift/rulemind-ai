@@ -2011,6 +2011,16 @@ calls it.
     need — so it was never wrong, only undeclared. Mapped, and a test pins that a `policy_maker`
     cannot replay a delivery.
 
+- [x] **R10.26 CONNECTOR CREDENTIALS WERE IN PLAINTEXT IN `entity_histories`.** Found while building
+  6.1, and checked by running it rather than reading it: `create_connector` wrote the whole payload
+  — config included — into the history snapshot as plaintext JSON, one column over from the config
+  it had just Fernet-encrypted. Every credential any connector was created with was readable in the
+  database and in every backup. No route serves connector history (probed: 404), and neither the
+  audit trail nor `/api/v1/export` carries it, so this was at-rest exposure, not an API leak — and
+  6.1's template install would have added provider credentials to it. The snapshot is now masked
+  with the same markers the API masks on read, and migration `20260924_0033` scrubs rows written
+  before (idempotent; deliberately no downgrade). Three tests; both halves mutation-checked.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.
