@@ -2,85 +2,33 @@
 
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
-import { flushSync } from "react-dom";
 import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  CircleHelp,
-  CircleSlash,
-  Eye,
-  FileSearch,
-  GitBranch,
-  Layers,
-  Plus,
-  Trash2,
-  Workflow,
-  XCircle,
-  type LucideIcon,
+CheckCircle2,FileSearch,XCircle
 } from "lucide-react";
-import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../lib/api";
+import { apiJson } from "../../lib/api";
 import { useRuleMindStore } from "../../lib/store";
-import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
 import type {
-  AuditErrorRecord,
-  BootstrapPayload,
-  ConnectorRecord,
-  DeployStatusPayload,
-  ExecutionTraceStepRecord,
-  PolicyExecuteResponse,
-  PolicyRecord,
-  PolicyStepRecord,
-  PromotionRecord,
-  RuleConditionResult,
-  RuleNodeRecord,
-  RuleRecord,
-  RuleTreeNodeRecord,
-  RuleTestResponse,
-  ScorecardBinRecord,
-  ScorecardRangeRecord,
-  ScorecardRecord,
-  SettingsRecord,
-  DataProtection,
-  SloConfig,
-  SloStatus,
-  VariableBatchTestResponse,
-  VariableGraphResponse,
-  VariableRecord,
+BootstrapPayload,PolicyExecuteResponse,RuleTestResponse,VariableBatchTestResponse
 } from "../types";
 
 
 
 import {
-  PageId,
-  PAGE_META,
-  NODE_TYPES,
-  STATUS_ORDER,
-  CATEGORY_ORDER,
-  useTheme,
-  useBootstrapData,
-  statusColorKey,
-  statusLabel,
-  tone,
-  toRuleNodeLabel,
-  cloneNode,
-  connectorLabel,
-  sourceMark,
-  useFilteredVariables,
-  StatCard,
-  Button,
-  StatusBadge,
-  InlineInput,
-  InlineSelect,
-  InlineTextarea,
-  SectionHeader,
-  InfoBanner,
-  EmptyState,
+PAGE_META,useTheme,Button,
+StatusBadge,InlineSelect,
+InlineTextarea,
+SectionHeader,EmptyState
 } from "../kit";
 
-function decisionStepStatus(entry: Record<string, any>): { key: string; label: string } {
+/** One step of a decision trace. Deliberately loose: the trace is heterogeneous JSON -- every
+ *  step type (rule, scorecard, connector, model, review gate, ...) records its own shape, and the
+ *  renderer below reads whichever fields the step has. Named once so the looseness is one decision,
+ *  not a pattern repeated at every call site. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type TraceEntry = Record<string, any>;
+
+function decisionStepStatus(entry: TraceEntry): { key: string; label: string } {
   if (entry.skipped) return { key: "skipped", label: "Skipped" };
   if (entry.error) return { key: "error", label: "Error" };
   const result = entry.result;
@@ -96,7 +44,7 @@ function decisionStepStatus(entry: Record<string, any>): { key: string; label: s
 // Node-wise decision-flow visualization: renders the execution trace as a
 // connected sequence of steps, showing where each check passed/failed and where
 // the final outcome was decided. Used by the Policy designer and Test Console.
-export function DecisionFlow(props: { trace: Array<Record<string, any>>; outcome: string }) {
+export function DecisionFlow(props: { trace: TraceEntry[]; outcome: string }) {
   const theme = useTheme();
   const colorFor = (key: string): string => {
     if (key === "pass" || key === "approve") return theme.success;
@@ -125,7 +73,7 @@ export function DecisionFlow(props: { trace: Array<Record<string, any>>; outcome
         const stepType = String(step.type ?? entry.type ?? "step");
         const label = String(step.label ?? step.ref_id ?? entry.label ?? entry.ref_id ?? stepType);
         const result = entry.result ?? {};
-        const conditions: Array<Record<string, any>> = Array.isArray(result.conditions) ? result.conditions : [];
+        const conditions: TraceEntry[] = Array.isArray(result.conditions) ? result.conditions : [];
         const isDeciding = index === decidingIndex;
         return (
           <div key={index} style={{ display: "grid", gridTemplateColumns: "28px 1fr", gap: 12 }}>
@@ -384,7 +332,7 @@ export function TestingPage(props: { data: BootstrapPayload; onNotify: (message:
               <div data-testid="policy-console-outcome" style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: policyResult.result.outcome === "approve" ? theme.success : policyResult.result.outcome === "review" ? theme.warning : theme.danger, textTransform: "uppercase" }}>
                 {policyResult.result.outcome}
               </div>
-              <DecisionFlow trace={policyResult.result.trace as unknown as Array<Record<string, any>>} outcome={String(policyResult.result.outcome)} />
+              <DecisionFlow trace={policyResult.result.trace as unknown as TraceEntry[]} outcome={String(policyResult.result.outcome)} />
             </div>
           ) : null}
         </div>

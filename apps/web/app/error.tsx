@@ -16,7 +16,6 @@ export default function ScreenError({
   reset: () => void;
 }) {
   React.useEffect(() => {
-    // eslint-disable-next-line no-console
     console.error("RuleMind screen error:", error);
   }, [error]);
 

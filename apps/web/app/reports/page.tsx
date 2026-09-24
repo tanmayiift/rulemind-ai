@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Trash2, Play, Download, Mail, FileBarChart, Send } from "lucide-react";
-import { apiJson, apiText } from "../../src/lib/api";
+import { Plus,Trash2,Play,Download,Mail,FileBarChart,Send } from "lucide-react";
+import { apiJson,apiText } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
-import { Button, Card, Field, Input, Select, Badge, EmptyState, PageHeader, SectionTitle } from "../../src/v3/ui";
+import { Button,Card,Field,Input,Select,Badge,EmptyState,PageHeader,SectionTitle } from "../../src/v3/ui";
 
 type Column = { key: string; label?: string; path: string; source_id?: string; sample?: unknown };
 type Schedule = { enabled?: boolean; cron?: string; recipients?: string[] };
@@ -18,7 +18,6 @@ type EmailCfg = { host?: string; from_addr?: string; username?: string; configur
 
 const TIMEZONES = ["UTC", "Asia/Kolkata", "America/New_York", "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Asia/Singapore", "Australia/Sydney"];
 const OUTCOMES = ["approve", "review", "reject"];
-const uid = () => Math.random().toString(36).slice(2, 8);
 
 function emptyReport(): Report {
   return {
@@ -61,7 +60,8 @@ export default function ReportsPage() {
   });
   const toggleOutcome = (o: string) => {
     const cur = new Set(draft.filters.outcomes ?? []);
-    cur.has(o) ? cur.delete(o) : cur.add(o);
+    if (cur.has(o)) cur.delete(o);
+    else cur.add(o);
     patch({ filters: { ...draft.filters, outcomes: [...cur] } });
   };
 

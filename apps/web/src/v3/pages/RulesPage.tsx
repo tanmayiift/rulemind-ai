@@ -2,84 +2,38 @@
 
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
-import { flushSync } from "react-dom";
 import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  CircleHelp,
-  CircleSlash,
-  Eye,
-  FileSearch,
-  GitBranch,
-  Layers,
-  Plus,
-  Trash2,
-  Workflow,
-  XCircle,
-  type LucideIcon,
+ArrowDown,
+ArrowUp,
+CheckCircle2,CircleSlash,FileSearch,
+GitBranch,
+Layers,
+Plus,
+Trash2,
+Workflow,
+XCircle
 } from "lucide-react";
-import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../lib/api";
+import { apiJson } from "../../lib/api";
 import { useRuleMindStore } from "../../lib/store";
-import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
 import { usePromotionReview } from "../PromotionReview";
 import type {
-  AuditErrorRecord,
-  BootstrapPayload,
-  ConnectorRecord,
-  DeployStatusPayload,
-  ExecutionTraceStepRecord,
-  PolicyExecuteResponse,
-  PolicyRecord,
-  PolicyStepRecord,
-  PromotionRecord,
-  RuleConditionResult,
-  RuleNodeRecord,
-  RuleRecord,
-  RuleTreeNodeRecord,
-  RuleTestResponse,
-  ScorecardBinRecord,
-  ScorecardRangeRecord,
-  ScorecardRecord,
-  SettingsRecord,
-  DataProtection,
-  SloConfig,
-  SloStatus,
-  VariableBatchTestResponse,
-  VariableGraphResponse,
-  VariableRecord,
+BootstrapPayload,
+ConnectorRecord,RuleConditionResult,
+RuleNodeRecord,
+RuleRecord,
+RuleTreeNodeRecord,
+RuleTestResponse,VariableRecord
 } from "../types";
 
 
 
 import {
-  PageId,
-  PAGE_META,
-  NODE_TYPES,
-  STATUS_ORDER,
-  CATEGORY_ORDER,
-  useTheme,
-  useBootstrapData,
-  statusColorKey,
-  statusLabel,
-  tone,
-  toRuleNodeLabel,
-  cloneNode,
-  connectorLabel,
-  sourceMark,
-  useFilteredVariables,
-  StatCard,
-  Button,
-  StatusBadge,
-  InlineInput,
-  InlineSelect,
-  InlineTextarea,
-  SectionHeader,
-  InfoBanner,
-  EmptyState,
-  EnvironmentEmptyState,
+NODE_TYPES,useTheme,tone,cloneNode,Button,
+StatusBadge,
+InlineInput,
+InlineSelect,SectionHeader,EmptyState,
+EnvironmentEmptyState
 } from "../kit";
 
 type RuleBuilderMode = "simple" | "advanced";
@@ -409,57 +363,6 @@ function treeExpression(node: RuleTreeNodeRecord, variables: VariableRecord[], d
     return wrapped;
   }
   return "IF " + wrapped + " → " + String(node.onPass ?? "approve").toUpperCase() + " ELSE → " + String(node.onFail ?? "reject").toUpperCase();
-}
-
-function updateRuleTreeNode(node: RuleTreeNodeRecord, targetId: string, updater: (current: RuleTreeNodeRecord) => RuleTreeNodeRecord): RuleTreeNodeRecord {
-  if (node.id === targetId) {
-    return normalizeRuleTree(updater(node));
-  }
-  if (node.type === "not" && node.child) {
-    return { ...node, child: updateRuleTreeNode(node.child, targetId, updater) };
-  }
-  if (node.type === "group") {
-    return { ...node, children: (node.children ?? []).map((child) => updateRuleTreeNode(child, targetId, updater)) };
-  }
-  return node;
-}
-
-function removeRuleTreeNode(node: RuleTreeNodeRecord, targetId: string, defaultVariable?: VariableRecord): RuleTreeNodeRecord {
-  if (node.type === "not") {
-    if (node.child?.id === targetId) {
-      return { ...node, child: createTreeCondition(defaultVariable) };
-    }
-    return { ...node, child: node.child ? removeRuleTreeNode(node.child, targetId, defaultVariable) : createTreeCondition(defaultVariable) };
-  }
-  if (node.type === "group") {
-    const nextChildren = (node.children ?? [])
-      .filter((child) => child.id !== targetId)
-      .map((child) => removeRuleTreeNode(child, targetId, defaultVariable));
-    return {
-      ...node,
-      children: nextChildren.length ? nextChildren : [createTreeCondition(defaultVariable)],
-    };
-  }
-  return node;
-}
-
-function moveRuleTreeNode(node: RuleTreeNodeRecord, targetId: string, direction: -1 | 1): RuleTreeNodeRecord {
-  if (node.type === "not" && node.child) {
-    return { ...node, child: moveRuleTreeNode(node.child, targetId, direction) };
-  }
-  if (node.type === "group") {
-    const children = [...(node.children ?? [])];
-    const index = children.findIndex((child) => child.id === targetId);
-    if (index >= 0) {
-      const nextIndex = index + direction;
-      if (nextIndex >= 0 && nextIndex < children.length) {
-        [children[index], children[nextIndex]] = [children[nextIndex], children[index]];
-      }
-      return { ...node, children };
-    }
-    return { ...node, children: children.map((child) => moveRuleTreeNode(child, targetId, direction)) };
-  }
-  return node;
 }
 
 function simulateRuleTreeDraft(
@@ -833,7 +736,7 @@ function AdvancedRuleTreeEditor(props: {
 
 export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
   const theme = useTheme();
-  const { apiBaseUrl, apiKey, environment, setEnvironment, isMobile } = useRuleMindStore();
+  const { apiBaseUrl, apiKey, environment, setEnvironment } = useRuleMindStore();
   const connectorMap = React.useMemo(
     () => Object.fromEntries(props.data.connectors.map((connector) => [connector.id, connector])),
     [props.data.connectors]
@@ -1217,7 +1120,7 @@ export function RulesPage(props: { data: BootstrapPayload; refresh: () => void; 
                             ) : (
                               <div style={{ fontSize: "var(--rm-fs-body)", fontWeight: "var(--rm-fw-bold)" as unknown as number, color: palette.fg, flex: 1 }}>{spec.label}</div>
                             )}
-                            <button
+                            <button aria-label={"Remove " + spec.label + " node"}
                               type="button"
                               onClick={() => setNodes((items) => items.filter((item) => item.id !== node.id))}
                               style={{ border: "none", background: "transparent", color: theme.dim, cursor: "pointer", fontSize: "var(--rm-fs-heading)" }}

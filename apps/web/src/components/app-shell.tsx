@@ -132,11 +132,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   // Alias routes: these render another page outright, so the header names what you are
   // actually looking at. They are deliberately NOT in the sidebar -- advertising
   // "Approvals" and opening Deploy would be a broken promise.
-  "/approvals": { title: "Deploy", subtitle: "Promote tested assets through DEV, UAT, and PROD with audit-safe controls." },
-  "/segments": { title: "Dashboard", subtitle: "System overview, source health, and underwriting flow coverage." },
-  "/batch": { title: "Test Console", subtitle: "Single-run, batch simulation, and production API preview workflows." },
   "/ab-tests": { title: "A/B Tests", subtitle: "Champion vs challenger experiments with traffic ramps, guardrails, and significance." },
-  "/workflows": { title: "Dashboard", subtitle: "System overview, source health, and underwriting flow coverage." },
   "/simulation": { title: "Simulation", subtitle: "Replay historical payloads against a draft policy to see what would have changed." },
   "/lifecycle": { title: "Lifecycle", subtitle: "What is in DEV, UAT and PROD right now, and what changed between them." },
   "/collab": { title: "Collab Editor", subtitle: "Edit a draft with teammates in real time, with presence and version history." },

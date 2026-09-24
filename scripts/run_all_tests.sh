@@ -589,7 +589,7 @@ fi
 if has lint; then
   say "Lint"
   if (cd "$ROOT" && pnpm -r lint) > "$OUT/lint.log" 2>&1; then
-    record lint "Lint (ruff + tsc)" "pass" "—" "—"
+    record lint "Lint (ruff + tsc + eslint)" "pass" "—" "—"
     printf '  pass — pnpm -r lint\n'
   else
     record lint "Lint (ruff + tsc)" "FAIL" "—" "—"

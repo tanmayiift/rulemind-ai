@@ -6,6 +6,7 @@ import { Building2, Copy, KeyRound } from "lucide-react";
 
 import { apiJson } from "../../src/lib/api";
 import { humanMessage } from "../../src/lib/errors";
+import { useT } from "../../src/i18n";
 import { useRuleMindStore, type SessionMember } from "../../src/lib/store";
 import { Button, Card, Field, Input, Select } from "../../src/v3/ui";
 
@@ -28,6 +29,7 @@ const MIN_PASSWORD = 12;
 export default function SignupPage() {
   const router = useRouter();
   const { apiBaseUrl, setSession } = useRuleMindStore();
+  const t = useT();
   const [company, setCompany] = React.useState("");
   const [email, setEmail] = React.useState("");
   const [name, setName] = React.useState("");
@@ -77,16 +79,16 @@ export default function SignupPage() {
           <div style={{ width: 46, height: 46, margin: "0 auto 12px", borderRadius: 12, display: "grid", placeItems: "center", background: "var(--rm-accent)", color: "#fff" }}>
             <Building2 size={24} />
           </div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>{created ? "Your workspace is ready" : "Create a RuleMind workspace"}</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>{created ? t("signup.ready") : t("signup.title")}</h1>
           <p style={{ fontSize: 13, color: "var(--rm-muted)", marginTop: 6 }}>
-            {created ? "Keep the key below — it is not shown again." : "You'll be its owner. Sample lending policies are loaded so you can make a decision straight away."}
+            {created ? t("signup.keepKey") : t("signup.lead")}
           </p>
         </div>
 
         <Card>
           {created ? (
             <div style={{ display: "grid", gap: 12 }}>
-              <Field label={`Development API key for ${created.company}`}>
+              <Field label={t("signup.devKey", { company: created.company })}>
                 <div style={{ display: "flex", gap: 8 }}>
                   <Input mono readOnly value={created.api_key} aria-label="Development API key" data-testid="signup-api-key"
                          onFocus={(e) => e.currentTarget.select()} />
@@ -98,32 +100,32 @@ export default function SignupPage() {
                 from setup once a decision has been made with this one.
               </div>
               <Button onClick={() => router.push("/onboarding")} data-testid="signup-continue">
-                <KeyRound size={15} /> Continue to setup
+                <KeyRound size={15} /> {t("signup.continue")}
               </Button>
             </div>
           ) : (
             <form onSubmit={submit} style={{ display: "grid", gap: 12 }} noValidate>
-              <Field label="Company">
+              <Field label={t("signup.company")}>
                 <Input value={company} onChange={(e) => setCompany(e.target.value)} autoComplete="organization" required />
               </Field>
-              <Field label="Work email">
+              <Field label={t("signup.email")}>
                 <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email"
                        placeholder="you@company.com" required />
               </Field>
-              <Field label="Your name (optional)">
+              <Field label={t("signup.name")}>
                 <Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
               </Field>
-              <Field label={`Password — at least ${MIN_PASSWORD} characters`}>
+              <Field label={t("signup.password", { min: MIN_PASSWORD })}>
                 <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
                        autoComplete="new-password" minLength={MIN_PASSWORD} required
                        aria-describedby="signup-password-hint" />
               </Field>
               {password && password.length < MIN_PASSWORD ? (
                 <div id="signup-password-hint" style={{ fontSize: 12, color: "var(--rm-muted)" }}>
-                  {MIN_PASSWORD - password.length} more character{MIN_PASSWORD - password.length === 1 ? "" : "s"}.
+                  {t.plural("signup.passwordShort", MIN_PASSWORD - password.length)}
                 </div>
               ) : null}
-              <Field label="What will you decide?">
+              <Field label={t("signup.useCase")}>
                 <Select value={useCase} onChange={(e) => setUseCase(e.target.value)}>
                   <option value="lending">Lending / credit</option>
                   <option value="bnpl">Buy now, pay later</option>
@@ -132,14 +134,14 @@ export default function SignupPage() {
                   <option value="other">Something else</option>
                 </Select>
               </Field>
-              <Button type="submit" disabled={busy || !valid}>{busy ? "Creating…" : "Create workspace"}</Button>
+              <Button type="submit" disabled={busy || !valid}>{busy ? t("signup.submitting") : t("signup.submit")}</Button>
               {error ? <div role="alert" style={{ fontSize: 12.5, color: "var(--rm-danger)" }}>{error}</div> : null}
             </form>
           )}
         </Card>
 
         <p style={{ textAlign: "center", fontSize: 11.5, color: "var(--rm-muted)" }}>
-          Already have a workspace? <a href="/login" style={{ color: "var(--rm-accent)" }}>Sign in</a>.
+          {t("signup.haveWorkspace")} <a href="/login" style={{ color: "var(--rm-accent)" }}>{t("signup.signIn")}</a>.
         </p>
       </div>
     </div>

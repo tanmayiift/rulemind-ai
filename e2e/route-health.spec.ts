@@ -139,18 +139,19 @@ for (const route of ROUTES) {
  * So the aliases are declared, and anything else that collides fails. Declaring them is the
  * point: the list is the difference between "this is intentional" and "nobody noticed".
  */
-const DECLARED_ALIASES: Record<string, string> = {
-  // Build Studio was merged into Workflow Builder and /studio is now a real redirect, so it
-  // renders the canvas -- declared, because that is exactly the intent.
+// Old paths that are REDIRECTS now (apps/web/next.config.js), not pages. Each used to be a page
+// file rendering another route's page under its own URL -- which passed this spec, because it did
+// not 404 -- so the allow-list below this used to be an allow-list of ghosts.
+const REDIRECTS: Record<string, string> = {
   "/studio": "/workflow-builder",
+  "/workflows": "/workflow-builder",
   "/approvals": "/deploy",
   "/batch": "/test-console",
   "/segments": "/",
-  "/workflows": "/",
   "/prototype": "/"
 };
 
-test("no two routes render the same page, except the declared aliases", async () => {
+test("no two routes render the same page", async () => {
   const byBody = new Map<string, string[]>();
   for (const [route, { body }] of RENDERED) {
     if (!body) continue;
@@ -158,44 +159,27 @@ test("no two routes render the same page, except the declared aliases", async ()
     group.push(route);
     byBody.set(body, group);
   }
+  const duplicates = [...byBody.values()].filter((group) => group.length > 1).map((group) => group.join(" = "));
+  expect(duplicates,
+    "these routes render the same page -- give each its own page, or make the old one a redirect in "
+    + "next.config.js and list it in REDIRECTS").toEqual([]);
+});
 
-  const undeclared: string[] = [];
-  for (const group of byBody.values()) {
-    if (group.length < 2) continue;
-    // One of the colliding routes is the real page; every OTHER one has to declare it.
-    for (const route of group) {
-      const target = DECLARED_ALIASES[route];
-      if (target && group.includes(target)) continue;
-      if (!group.some((other) => other !== route && !DECLARED_ALIASES[other])) continue;
-      if (!target) undeclared.push(`${route} renders the same page as ${group.filter((r) => r !== route).join(", ")}`);
-    }
+test("every old path redirects to the screen it names", async ({ page }) => {
+  const wrong: string[] = [];
+  for (const [from, to] of Object.entries(REDIRECTS)) {
+    await page.goto(from, { waitUntil: "domcontentloaded" });
+    const landed = new URL(page.url()).pathname;
+    if (landed !== to) wrong.push(`${from} landed on ${landed}, expected ${to}`);
   }
-  expect(undeclared,
-    "these routes render another route's page and are not declared aliases -- either give them "
-    + "their own page, redirect them, or add them to DECLARED_ALIASES with the route they mirror"
-  ).toEqual([]);
+  expect(wrong).toEqual([]);
 });
 
-test("every declared alias still points at a route that exists", async () => {
-  // Otherwise the allow-list outlives the thing it allows, and a genuinely broken alias hides
-  // behind an entry nobody re-checked -- the failure mode every allow-list in this repo has.
-  const missing = Object.entries(DECLARED_ALIASES)
-    .filter(([, target]) => !ROUTES.includes(target))
-    .map(([route, target]) => `${route} -> ${target}`);
-  expect(missing, "a declared alias points at a route that does not exist").toEqual([]);
-});
-
-test("every declared alias is actually still an alias", async () => {
-  // The other direction: if someone gives /approvals its own page, this entry becomes a lie
-  // that suppresses a real future collision. Shrink the list when the code shrinks it.
-  const stale = Object.entries(DECLARED_ALIASES)
-    .filter(([route, target]) => {
-      const a = RENDERED.get(route);
-      const b = RENDERED.get(target);
-      return a && b && a.body && a.body !== b.body;
-    })
-    .map(([route, target]) => `${route} no longer renders the same page as ${target}`);
-  expect(stale, "remove these from DECLARED_ALIASES -- they have their own page now").toEqual([]);
+test("no redirected path still has a page file", async () => {
+  // Otherwise the page and the redirect disagree about what the URL is, and whichever wins today
+  // is an accident of Next's precedence.
+  const shadowed = Object.keys(REDIRECTS).filter((from) => ROUTES.includes(from));
+  expect(shadowed, "delete these page directories -- next.config.js redirects them").toEqual([]);
 });
 
 test("every route has a heading", async () => {

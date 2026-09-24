@@ -8,16 +8,32 @@ import { Button, Card, Field, Input, Select, Textarea, Badge, EmptyState, PageHe
 import { datasetColumns, parseDatasetFile, parseRows } from "../../src/lib/csv";
 
 type EvalSummary = { id: string; name: string; task: string; gate_status: string; model_id?: string | null; created_at?: string };
+// The shapes model_evaluation.run_evaluation returns. Typed rather than Record<string, any>, so a
+// renamed metric is a compile error here instead of a silent "—" on the screen.
+type Num = number | null | undefined;
+type CalibrationPoint = { mean_predicted: Num; fraction_positive: Num; count: Num };
+type GateCheck = { check: string; passed: boolean; value: Num; threshold: Num };
+type DecileBand = { band: string | number; count: Num; events: Num; event_rate: Num; avg_score: Num; woe?: Num };
+type Bucket = { bucket: string; n: Num; gini: Num; ks: Num; base_rate: Num };
+type Confusion = { threshold: Num; accuracy: Num; precision: Num; recall: Num; f1: Num; tp: Num; fn: Num; fp: Num; tn: Num };
+type Metrics = {
+  auc?: Num; gini?: Num; ks?: Num; pr_auc?: Num; brier?: Num; ece?: Num; base_rate?: Num; n?: Num;
+  macro_auc?: Num; mean_average_precision?: Num; precision_at_1?: Num; precision_at_3?: Num;
+  qini_coefficient?: Num; n_treatment?: Num; n_control?: Num;
+  calibration_curve?: CalibrationPoint[];
+  confusion?: Confusion;
+  decile_table?: { bands: DecileBand[]; monotonic?: boolean };
+};
 type EvalDetail = EvalSummary & {
-  metrics: Record<string, any>;
-  segments: Record<string, any>;
-  temporal: Record<string, any>;
-  gate_result: Record<string, any>;
-  dataset_summary: Record<string, any>;
+  metrics: Metrics;
+  segments: { by?: string; slices?: Bucket[] };
+  temporal: { by?: string; buckets?: Bucket[] };
+  gate_result: { checks?: GateCheck[] };
+  dataset_summary: Record<string, unknown>;
 };
 type Model = { id: string; name: string };
 
-const fmt = (v: any, d = 4) => (v === null || v === undefined ? "—" : typeof v === "number" ? v.toFixed(d) : String(v));
+const fmt = (v: unknown, d = 4) => (v === null || v === undefined ? "—" : typeof v === "number" ? v.toFixed(d) : String(v));
 
 export default function EvaluationsPage() {
   const { apiBaseUrl, apiKey } = useRuleMindStore();
@@ -120,7 +136,7 @@ export default function EvaluationsPage() {
           apiKey
         );
       } else {
-        const config: Record<string, any> = { score_col: scoreCol, label_col: labelCol };
+        const config: Record<string, string> = { score_col: scoreCol, label_col: labelCol };
         if (segmentCol) config.segment_col = segmentCol;
         if (dateCol) {
           config.date_col = dateCol;
@@ -161,8 +177,8 @@ export default function EvaluationsPage() {
     }
   }
 
-  const m = detail?.metrics ?? {};
-  const gateTone = detail?.gate_status === "pass" ? "success" : detail?.gate_status === "fail" ? "danger" : "neutral";
+  const m: Metrics = detail?.metrics ?? {};
+  const gateTone: "success" | "danger" | "neutral" = detail?.gate_status === "pass" ? "success" : detail?.gate_status === "fail" ? "danger" : "neutral";
 
   return (
     <div className="space-y-6">
@@ -248,7 +264,7 @@ export default function EvaluationsPage() {
 
       {detail && (
         <Card>
-          <SectionTitle right={<Badge tone={gateTone as any}>Gate: {detail.gate_status.toUpperCase()}</Badge>}>
+          <SectionTitle right={<Badge tone={gateTone}>Gate: {detail.gate_status.toUpperCase()}</Badge>}>
             {detail.name} · {detail.task}
           </SectionTitle>
           {detail.task === "binary" && (
@@ -336,7 +352,7 @@ export default function EvaluationsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {m.calibration_curve.map((c: any, i: number) => (
+                  {m.calibration_curve.map((c, i) => (
                     <tr key={i} style={{ borderTop: "1px solid var(--rm-border)" }}>
                       <td style={{ padding: "4px 8px" }}>{i + 1}</td>
                       <td style={{ padding: "4px 8px", fontVariantNumeric: "tabular-nums" }}>{fmt(c.mean_predicted)}</td>
@@ -354,7 +370,7 @@ export default function EvaluationsPage() {
               <SectionTitle>Promotion gate</SectionTitle>
               <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
                 <tbody>
-                  {detail.gate_result.checks.map((c: any, i: number) => (
+                  {detail.gate_result.checks.map((c, i) => (
                     <tr key={i} style={{ borderTop: "1px solid var(--border,#eee)" }}>
                       <td style={{ padding: "4px 8px" }}>{c.check}</td>
                       <td style={{ padding: "4px 8px" }}>{fmt(c.value)}</td>
@@ -376,7 +392,7 @@ export default function EvaluationsPage() {
                     <th style={{ padding: "4px 8px" }}>Band</th><th>Count</th><th>Avg score</th><th>Events</th><th>Event rate</th><th>WoE</th>
                   </tr></thead>
                   <tbody>
-                    {m.decile_table.bands.map((b: any) => (
+                    {m.decile_table.bands.map((b) => (
                       <tr key={b.band} style={{ borderTop: "1px solid var(--border,#eee)" }}>
                         <td style={{ padding: "4px 8px" }}>{b.band}</td><td>{b.count}</td><td>{fmt(b.avg_score)}</td>
                         <td>{b.events}</td><td>{fmt(b.event_rate)}</td><td>{fmt(b.woe)}</td>
@@ -395,7 +411,7 @@ export default function EvaluationsPage() {
                 <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
                   <thead><tr style={{ textAlign: "left", color: "var(--muted,#666)" }}><th style={{ padding: "4px 8px" }}>Bucket</th><th>N</th><th>Base rate</th><th>Gini</th><th>KS</th></tr></thead>
                   <tbody>
-                    {detail.temporal.buckets.map((b: any) => (
+                    {detail.temporal.buckets.map((b) => (
                       <tr key={b.bucket} style={{ borderTop: "1px solid var(--border,#eee)" }}>
                         <td style={{ padding: "4px 8px" }}>{b.bucket}</td><td>{b.n}</td><td>{fmt(b.base_rate)}</td><td>{fmt(b.gini)}</td><td>{fmt(b.ks)}</td>
                       </tr>
@@ -413,7 +429,7 @@ export default function EvaluationsPage() {
                 <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
                   <thead><tr style={{ textAlign: "left", color: "var(--muted,#666)" }}><th style={{ padding: "4px 8px" }}>Segment</th><th>N</th><th>Base rate</th><th>Gini</th><th>KS</th></tr></thead>
                   <tbody>
-                    {detail.segments.slices.map((b: any) => (
+                    {detail.segments.slices.map((b) => (
                       <tr key={b.bucket} style={{ borderTop: "1px solid var(--border,#eee)" }}>
                         <td style={{ padding: "4px 8px" }}>{b.bucket}</td><td>{b.n}</td><td>{fmt(b.base_rate)}</td><td>{fmt(b.gini)}</td><td>{fmt(b.ks)}</td>
                       </tr>
@@ -439,7 +455,7 @@ export default function EvaluationsPage() {
                 </button>
                 <div className="flex items-center gap-2">
                   <Badge tone={e.gate_status === "pass" ? "success" : e.gate_status === "fail" ? "danger" : "neutral"}>{e.gate_status}</Badge>
-                  <Button variant="ghost" onClick={() => remove(e.id)}><Trash2 size={14} /></Button>
+                  <Button aria-label={"Delete evaluation " + e.name} variant="ghost" onClick={() => remove(e.id)}><Trash2 size={14} /></Button>
                 </div>
               </div>
             ))}

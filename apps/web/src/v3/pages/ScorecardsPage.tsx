@@ -2,83 +2,24 @@
 
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
-import { flushSync } from "react-dom";
 import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  CircleHelp,
-  CircleSlash,
-  Eye,
-  FileSearch,
-  GitBranch,
-  Layers,
-  Plus,
-  Trash2,
-  Workflow,
-  XCircle,
-  type LucideIcon,
+ArrowDown,
+ArrowUp,Layers,Trash2
 } from "lucide-react";
-import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../lib/api";
+import { apiJson } from "../../lib/api";
 import { useRuleMindStore } from "../../lib/store";
-import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
-import { ConnectorIcon } from "../icons";
 import type {
-  AuditErrorRecord,
-  BootstrapPayload,
-  ConnectorRecord,
-  DeployStatusPayload,
-  ExecutionTraceStepRecord,
-  PolicyExecuteResponse,
-  PolicyRecord,
-  PolicyStepRecord,
-  PromotionRecord,
-  RuleConditionResult,
-  RuleNodeRecord,
-  RuleRecord,
-  RuleTreeNodeRecord,
-  RuleTestResponse,
-  ScorecardBinRecord,
-  ScorecardRangeRecord,
-  ScorecardRecord,
-  SettingsRecord,
-  DataProtection,
-  SloConfig,
-  SloStatus,
-  VariableBatchTestResponse,
-  VariableGraphResponse,
-  VariableRecord,
+BootstrapPayload,ScorecardBinRecord,
+ScorecardRangeRecord,
+ScorecardRecord
 } from "../types";
 
 
 
 import {
-  PageId,
-  PAGE_META,
-  NODE_TYPES,
-  STATUS_ORDER,
-  CATEGORY_ORDER,
-  useTheme,
-  useBootstrapData,
-  statusColorKey,
-  statusLabel,
-  tone,
-  toRuleNodeLabel,
-  cloneNode,
-  connectorLabel,
-  sourceMark,
-  useFilteredVariables,
-  StatCard,
-  Button,
-  StatusBadge,
-  InlineInput,
-  InlineSelect,
-  InlineTextarea,
-  SectionHeader,
-  InfoBanner,
-  EmptyState,
-  EnvironmentEmptyState,
+PAGE_META,useTheme,tone,Button,InlineInput,
+InlineSelect,SectionHeader,EmptyState,
+EnvironmentEmptyState
 } from "../kit";
 
 export function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
@@ -292,9 +233,9 @@ export function ScorecardsPage(props: { data: BootstrapPayload; refresh: () => v
                     return (
                       <div key={rangeIndex} style={{ background: active ? palette.bg : theme.hover, borderRadius: 10, padding: 8, display: "grid", gap: 6, opacity: active ? 1 : 0.78 }}>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 4 }}>
-                          <button type="button" onClick={() => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.map((candidate, candidateIndex) => candidateIndex === rangeIndex - 1 ? item.ranges[rangeIndex] : candidateIndex === rangeIndex ? item.ranges[rangeIndex - 1] : candidate) } : item))} disabled={rangeIndex === 0} style={{ border: "none", background: "transparent", color: theme.dim, cursor: rangeIndex === 0 ? "not-allowed" : "pointer" }}><ArrowUp size={13} /></button>
-                          <button type="button" onClick={() => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.map((candidate, candidateIndex) => candidateIndex === rangeIndex ? item.ranges[rangeIndex + 1] : candidateIndex === rangeIndex + 1 ? item.ranges[rangeIndex] : candidate) } : item))} disabled={rangeIndex === bin.ranges.length - 1} style={{ border: "none", background: "transparent", color: theme.dim, cursor: rangeIndex === bin.ranges.length - 1 ? "not-allowed" : "pointer" }}><ArrowDown size={13} /></button>
-                          <button type="button" onClick={() => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.filter((_, candidateIndex) => candidateIndex !== rangeIndex) } : item))} style={{ border: "none", background: "transparent", color: theme.dim, cursor: "pointer" }}><Trash2 size={13} /></button>
+                          <button aria-label={"Move band " + (rangeIndex + 1) + " earlier"} type="button" onClick={() => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.map((candidate, candidateIndex) => candidateIndex === rangeIndex - 1 ? item.ranges[rangeIndex] : candidateIndex === rangeIndex ? item.ranges[rangeIndex - 1] : candidate) } : item))} disabled={rangeIndex === 0} style={{ border: "none", background: "transparent", color: theme.dim, cursor: rangeIndex === 0 ? "not-allowed" : "pointer" }}><ArrowUp size={13} /></button>
+                          <button aria-label={"Move band " + (rangeIndex + 1) + " later"} type="button" onClick={() => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.map((candidate, candidateIndex) => candidateIndex === rangeIndex ? item.ranges[rangeIndex + 1] : candidateIndex === rangeIndex + 1 ? item.ranges[rangeIndex] : candidate) } : item))} disabled={rangeIndex === bin.ranges.length - 1} style={{ border: "none", background: "transparent", color: theme.dim, cursor: rangeIndex === bin.ranges.length - 1 ? "not-allowed" : "pointer" }}><ArrowDown size={13} /></button>
+                          <button aria-label={"Remove band " + (rangeIndex + 1)} type="button" onClick={() => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.filter((_, candidateIndex) => candidateIndex !== rangeIndex) } : item))} style={{ border: "none", background: "transparent", color: theme.dim, cursor: "pointer" }}><Trash2 size={13} /></button>
                         </div>
                         <div style={{ display: "flex", gap: 6 }}>
                           <InlineInput type="number" value={String(range.min)} onChange={(event) => setBins((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ranges: item.ranges.map((candidate, candidateIndex) => candidateIndex === rangeIndex ? { ...candidate, min: Number(event.target.value || 0) } : candidate) } : item))} style={{ width: 80 }} />

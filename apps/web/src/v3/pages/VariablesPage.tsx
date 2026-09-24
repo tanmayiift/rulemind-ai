@@ -2,84 +2,27 @@
 
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import { flushSync } from "react-dom";
-import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  CircleHelp,
-  CircleSlash,
-  Eye,
-  FileSearch,
-  GitBranch,
-  Layers,
-  Plus,
-  Trash2,
-  Workflow,
-  XCircle,
-  type LucideIcon,
-} from "lucide-react";
-import { apiJson, apiText, streamDecisions, type StreamedDecision } from "../../lib/api";
+import { apiJson } from "../../lib/api";
 import { useRuleMindStore } from "../../lib/store";
-import { ENVIRONMENT_ACCENT, THEMES, type ThemeTokens } from "../theme";
 import { ConnectorIcon } from "../icons";
 import { PythonCodeEditor } from "../editor/PythonCodeEditor";
 import { usePromotionReview } from "../PromotionReview";
 import type { RuleMindCompletionScope } from "../editor/rulemind-completion";
 import type {
-  AuditErrorRecord,
-  BootstrapPayload,
-  ConnectorRecord,
-  DeployStatusPayload,
-  ExecutionTraceStepRecord,
-  PolicyExecuteResponse,
-  PolicyRecord,
-  PolicyStepRecord,
-  PromotionRecord,
-  RuleConditionResult,
-  RuleNodeRecord,
-  RuleRecord,
-  RuleTreeNodeRecord,
-  RuleTestResponse,
-  ScorecardBinRecord,
-  ScorecardRangeRecord,
-  ScorecardRecord,
-  SettingsRecord,
-  DataProtection,
-  SloConfig,
-  SloStatus,
-  VariableBatchTestResponse,
-  VariableGraphResponse,
-  VariableRecord,
+BootstrapPayload,VariableGraphResponse,
+VariableRecord
 } from "../types";
 
 
 
 import {
-  PageId,
-  PAGE_META,
-  NODE_TYPES,
-  STATUS_ORDER,
-  CATEGORY_ORDER,
-  useTheme,
-  useBootstrapData,
-  statusColorKey,
-  statusLabel,
-  tone,
-  toRuleNodeLabel,
-  cloneNode,
-  connectorLabel,
-  sourceMark,
-  useFilteredVariables,
-  StatCard,
-  Button,
-  StatusBadge,
-  InlineInput,
-  InlineSelect,
-  SectionHeader,
-  InfoBanner,
-  EmptyState,
+PAGE_META,CATEGORY_ORDER,
+useTheme,useFilteredVariables,Button,
+StatusBadge,
+InlineInput,
+InlineSelect,
+SectionHeader
 } from "../kit";
 
 export function VariablesPage(props: { data: BootstrapPayload; refresh: () => void; onNotify: (message: string) => void }) {
@@ -266,7 +209,10 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
     } finally {
       setBusy(false);
     }
-  }, [apiBaseUrl, apiKey, category, code, description, environment, name, props, selectedVariableLocked, sourceId]);
+    // testResult IS a dependency -- the save reads it to decide whether to persist the passing run.
+    // Omitted, it only worked because `props` is a new object on every parent render and rebuilds
+    // this callback anyway; memoise the props and "edit, Test, Save" would persist a stale result.
+  }, [apiBaseUrl, apiKey, category, code, description, environment, name, props, selectedVariableLocked, sourceId, testResult]);
 
   const promotion = usePromotionReview({
     onPromoted: () => {
@@ -660,5 +606,4 @@ export function VariablesPage(props: { data: BootstrapPayload; refresh: () => vo
   );
 }
 
-type RuleBuilderMode = "simple" | "advanced";
 
