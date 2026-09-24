@@ -126,7 +126,10 @@ printf '\n\033[1mStarting the soak run\033[0m\n'
 
 # The observability profile, because the point of the month is the metric history. Without
 # Prometheus there is nothing to calibrate from at the end.
-docker compose --profile observability up -d >/dev/null 2>&1 \
+# --build so the month runs the code in the working tree, not whatever image happened to be
+# tagged when the last run started. Without it a soak can spend weeks measuring a build nobody
+# has on disk any more.
+docker compose --profile observability up -d --build >/dev/null 2>&1 \
   && ok "compose stack up (observability profile)" \
   || { bad "compose failed to start"; exit 1; }
 
