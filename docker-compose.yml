@@ -33,6 +33,32 @@ services:
       dockerfile: apps/python-executor/Dockerfile
     command: ["python3", "-m", "alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
     restart: "no"
+    # EVERY OTHER SETTING. The backend reads 111 environment variables
+    # (scripts/config_surface.py); the `environment:` block below names the ones this file is
+    # opinionated about. Without this, the other 84 were settable by nothing here either -- a
+    # compose operator could not turn on encryption at rest or raise LOG_LEVEL during an
+    # incident, however thoroughly .env.example documented them.
+    #
+    # `.env.runtime`, NOT `.env`. Deliberately a different file: compose already reads `.env`
+    # for ${VAR} INTERPOLATION in this file, and that copy holds host-side values -- a
+    # DATABASE_URL pointing at 127.0.0.1:55432, an AUTH_MODE for running the suite. Injecting
+    # it into the containers would silently change what the stack does, and AUTH_MODE is the
+    # one that would hurt. Two roles, two files.
+    #
+    # Optional (`required: false`), so the stack still comes up when it does not exist.
+    # Real environment-variable names, one per line:
+    #
+    #   LOG_LEVEL=DEBUG
+    #   DECISION_ENCRYPT_AT_REST=1
+    #
+    # `environment:` below WINS over anything in this file, which is what you want -- it holds
+    # the wiring compose owns (DATABASE_URL, REDIS_URL), and a stray line must not repoint the
+    # database.
+    #
+    # The Helm equivalent is `config:` in helm/rulemind/values.yaml.
+    env_file:
+      - path: .env.runtime
+        required: false
     environment:
       DATABASE_URL: postgresql://rulemind:${POSTGRES_PASSWORD:-rulemind}@db:5432/rulemind
       RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
@@ -49,6 +75,32 @@ services:
       dockerfile: apps/python-executor/Dockerfile
     ports:
       - "${RULEMIND_API_PORT:-8080}:8080"
+    # EVERY OTHER SETTING. The backend reads 111 environment variables
+    # (scripts/config_surface.py); the `environment:` block below names the ones this file is
+    # opinionated about. Without this, the other 84 were settable by nothing here either -- a
+    # compose operator could not turn on encryption at rest or raise LOG_LEVEL during an
+    # incident, however thoroughly .env.example documented them.
+    #
+    # `.env.runtime`, NOT `.env`. Deliberately a different file: compose already reads `.env`
+    # for ${VAR} INTERPOLATION in this file, and that copy holds host-side values -- a
+    # DATABASE_URL pointing at 127.0.0.1:55432, an AUTH_MODE for running the suite. Injecting
+    # it into the containers would silently change what the stack does, and AUTH_MODE is the
+    # one that would hurt. Two roles, two files.
+    #
+    # Optional (`required: false`), so the stack still comes up when it does not exist.
+    # Real environment-variable names, one per line:
+    #
+    #   LOG_LEVEL=DEBUG
+    #   DECISION_ENCRYPT_AT_REST=1
+    #
+    # `environment:` below WINS over anything in this file, which is what you want -- it holds
+    # the wiring compose owns (DATABASE_URL, REDIS_URL), and a stray line must not repoint the
+    # database.
+    #
+    # The Helm equivalent is `config:` in helm/rulemind/values.yaml.
+    env_file:
+      - path: .env.runtime
+        required: false
     environment:
       DATABASE_URL: postgresql://rulemind:${POSTGRES_PASSWORD:-rulemind}@db:5432/rulemind
       RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
@@ -142,6 +194,32 @@ services:
     # skip. (This service is built from the API Dockerfile — there is no separate
     # worker image, which is also why helm's image.worker defaults to the api repo.)
     command: ["python3", "-m", "app.worker"]
+    # EVERY OTHER SETTING. The backend reads 111 environment variables
+    # (scripts/config_surface.py); the `environment:` block below names the ones this file is
+    # opinionated about. Without this, the other 84 were settable by nothing here either -- a
+    # compose operator could not turn on encryption at rest or raise LOG_LEVEL during an
+    # incident, however thoroughly .env.example documented them.
+    #
+    # `.env.runtime`, NOT `.env`. Deliberately a different file: compose already reads `.env`
+    # for ${VAR} INTERPOLATION in this file, and that copy holds host-side values -- a
+    # DATABASE_URL pointing at 127.0.0.1:55432, an AUTH_MODE for running the suite. Injecting
+    # it into the containers would silently change what the stack does, and AUTH_MODE is the
+    # one that would hurt. Two roles, two files.
+    #
+    # Optional (`required: false`), so the stack still comes up when it does not exist.
+    # Real environment-variable names, one per line:
+    #
+    #   LOG_LEVEL=DEBUG
+    #   DECISION_ENCRYPT_AT_REST=1
+    #
+    # `environment:` below WINS over anything in this file, which is what you want -- it holds
+    # the wiring compose owns (DATABASE_URL, REDIS_URL), and a stray line must not repoint the
+    # database.
+    #
+    # The Helm equivalent is `config:` in helm/rulemind/values.yaml.
+    env_file:
+      - path: .env.runtime
+        required: false
     environment:
       DATABASE_URL: postgresql://rulemind:${POSTGRES_PASSWORD:-rulemind}@db:5432/rulemind
       RULEMIND_CONFIG_KEY: ${RULEMIND_CONFIG_KEY:-rulemind-dev-master-key}
