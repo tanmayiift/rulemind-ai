@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -212,11 +213,10 @@ class RuleMindPlatformTests(unittest.TestCase):
         config = Config(str(REPO_ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(REPO_ROOT / "apps" / "python-executor" / "alembic"))
         config.set_main_option("sqlalchemy.url", "sqlite:///{0}".format(upgrade_path))
-        os.environ["DATABASE_URL"] = "sqlite:///{0}".format(upgrade_path)
-        try:
+        # patch.dict RESTORES the variable; popping it removed the Postgres lane's
+        # DATABASE_URL for every module that ran after this one.
+        with mock.patch.dict(os.environ, {"DATABASE_URL": "sqlite:///{0}".format(upgrade_path)}):
             command.upgrade(config, "head")
-        finally:
-            os.environ.pop("DATABASE_URL", None)
         self.assertTrue(os.path.exists(upgrade_path))
 
     def test_admin_tenant_management_requires_cookie_and_works(self) -> None:
@@ -440,7 +440,10 @@ class RuleMindPlatformTests(unittest.TestCase):
             else:
                 os.environ["DATABASE_URL"] = previous_database_url
         self.assertEqual(exit_code, 0)
-        created = app_main.storage.get_platform_admin_by_email("cli-admin@example.com")
+        # Read the database the CLI wrote to -- the SQLite file named in DATABASE_URL -- not
+        # app_main.storage, which is that same file only in the SQLite lane. In the Postgres lane
+        # it is a per-path schema the CLI never touched, and this assertion could not pass there.
+        created = Storage(path=self.database_path, force_sqlite=True).get_platform_admin_by_email("cli-admin@example.com")
         self.assertIsNotNone(created)
 
     def test_sdk_python_client_sends_bundle_headers_and_handles_304(self) -> None:
