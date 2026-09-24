@@ -384,11 +384,35 @@ numbers mean something.
 >   whose per-minute p95 ranged 47.9 ms → 48.0 ms. It now reports INCONCLUSIVE on a flat
 >   distribution, which is the honest answer and was not available before.
 >
-> The generator still does not reach the knee (~100 rps measured; it peaks at 4), so a flat
-> distribution is the *expected* outcome of this month too. That is named here rather than
-> discovered at the end: **the soak proves the stack survives a month, not what the thresholds
-> should be.** Thresholds want real traffic, which is the item above this one and cannot be
-> closed from here.
+> **FIXED 2026-09-23 — the generator now reaches the knee.** Three defects stood between the
+> soak and a calibratable distribution, and all three were silent:
+>
+> 1. **The generator was single-threaded and blocking**, so its ceiling was 1/latency ≈ 22 rps —
+>    and it printed the *configured* rate as `rps=`, never the achieved one. Asked for 60 it
+>    logged `rps=60.00` while sending 22. Raising `--max-rps` would have changed the log line and
+>    not the load. It is now a worker pool that reports target, achieved and shed.
+> 2. **The rate limiter capped real decisions at ~17 rps** (`DEFAULT_RPM = 1000`), and a 429
+>    returns in ~8 ms against ~195 ms for a decision — so an overloaded, 57%-rejected soak
+>    reported `p50=2ms` and looked excellent. Rejections are now counted separately and excluded
+>    from the latency sample, with a warning above 5%. The soak tenant's `rate_limit_rpm` is
+>    raised to 9000.
+> 3. **The target was set from the wrong benchmark.** A single-policy bench saturates near
+>    90 rps; soak-shaped traffic — mixed policies, varied payloads, decisions written — flattens
+>    at ~32 rps with both uvicorn workers pegged at 185% of 4 VM cores. Quoting 90 would have set
+>    a target this workload cannot reach.
+>
+> The shape is now a 2-hour daily contention window at 40 rps on top of the 0.4–4 rps sine. A
+> window rather than a taller sine because retention granularity is whole days and a decision
+> costs ~13.2 KB: a sine averaging 37 rps writes ~43 GB/day. Two hours is 8.3% of the day —
+> more than the top 5% that q0.95 reads — for ~6 GB/day.
+>
+> **Verified end to end, 2026-09-23.** Per-minute p95 over a 45-minute window containing the
+> contention run: q0.05 47.9 ms, q0.50 77.1 ms, q0.95 888.1 ms — a **11.5× spread** against
+> **1.002×** for the three flat days before. `calibrate_thresholds.py` went from
+> `INCONCLUSIVE — the distribution is FLAT` to proposing numbers. Those particular numbers were
+> NOT applied: 45 minutes containing an API cold start and a deliberately over-driven run is not
+> a month, and 1.33 s would be far too lenient. Producing them from real time is what the month
+> is for.
 
 > **STARTED 2026-09-20, on this machine.** `scripts/soak_start.sh` runs the stack under the
 > observability profile with shaped traffic and holds the machine awake; `--status` reports

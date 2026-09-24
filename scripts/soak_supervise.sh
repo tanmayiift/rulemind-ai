@@ -130,9 +130,16 @@ if [ "$GEN_ALIVE" -eq 0 ]; then
   if [ "$CHECK_ONLY" -eq 0 ] && [ "$API_OK" -eq 1 ]; then
     VENV="${RULEMIND_VENV:-$PWD/.venv-rulemind/bin/python}"
     [ -x "$VENV" ] || VENV="python3"
+    # The contention window and worker count travel with the restart. Without them the
+    # supervisor would silently restore a generator that cannot reach the knee -- which is how
+    # three weeks of flat, uncalibratable data happened the first time.
     nohup "$VENV" scripts/soak_traffic.py \
       --min-rps "${RULEMIND_SOAK_MIN_RPS:-0.4}" \
-      --max-rps "${RULEMIND_SOAK_MAX_RPS:-4.0}" >> "$LOG_DIR/soak.log" 2>&1 &
+      --max-rps "${RULEMIND_SOAK_MAX_RPS:-4.0}" \
+      --peak-rps "${RULEMIND_SOAK_PEAK_RPS:-40}" \
+      --peak-start "${RULEMIND_SOAK_PEAK_START:-13}" \
+      --peak-hours "${RULEMIND_SOAK_PEAK_HOURS:-2}" \
+      --workers "${RULEMIND_SOAK_WORKERS:-16}" >> "$LOG_DIR/soak.log" 2>&1 &
     echo $! > "$PID_FILE"
     say "  restarted the generator (pid $(cat "$PID_FILE"))"
     REPAIRED="$REPAIRED generator"
