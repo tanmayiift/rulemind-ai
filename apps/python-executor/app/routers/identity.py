@@ -9,6 +9,7 @@ import os
 import secrets
 from typing import Any, Dict, List, Optional
 
+from fastapi.responses import JSONResponse
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import main
@@ -462,3 +463,74 @@ async def sso_saml_acs(http_request: Request) -> Dict[str, Any]:
     except sso.SsoError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return _sso_finish_login(tenant_id, identity, "saml", cfg)
+
+
+# ── OAuth2 client credentials for this API (RFC 6749 section 4.4) ────────────────────────
+# The only machine credential used to be a long-lived x-api-key sent on every request, which
+# standard OAuth2 client libraries cannot use and which security reviews object to first. See
+# app/oauth2_server.py for the design: an API key is exchanged for a short-lived bearer token that
+# carries exactly the key's tenant and role and dies with the key.
+
+
+def _oauth_error(status: int, code: str, description: str) -> JSONResponse:
+    """RFC 6749 section 5.2's error body is `{"error", "error_description"}` -- and `error` is
+    already this API's envelope field, so one body satisfies both an OAuth2 client library and
+    a client that parses RuleMind's envelope. 401s carry WWW-Authenticate, as 6749 requires."""
+    headers = {"WWW-Authenticate": 'Basic realm="rulemind"'} if status == 401 else None
+    return JSONResponse(status_code=status, headers=headers,
+                        content={"error": code, "error_description": description, "detail": description})
+
+
+@router.post("/api/v1/oauth/token")
+async def oauth_token(request: Request) -> Any:
+    """Exchange an API key for a short-lived access token.
+
+    client_id = the key's id (kid), client_secret = the key. Credentials in an HTTP Basic header
+    (client_secret_basic, the RFC default) or in the form body (client_secret_post). Accepts
+    `application/x-www-form-urlencoded`, which is what every OAuth2 client sends, and JSON.
+    """
+    from base64 import b64decode
+    from urllib.parse import parse_qs, unquote
+
+    from .. import oauth2_server
+
+    raw = await request.body()
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    form: Dict[str, str] = {}
+    if content_type == "application/json":
+        try:
+            import json
+
+            parsed = json.loads(raw or b"{}")
+            form = {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
+        except ValueError:
+            return _oauth_error(400, "invalid_request", "The body is not valid JSON.")
+    else:
+        form = {k: v[0] for k, v in parse_qs(raw.decode("utf-8", "replace")).items() if v}
+
+    if form.get("grant_type") != "client_credentials":
+        return _oauth_error(400, "unsupported_grant_type",
+                            "Only grant_type=client_credentials is supported.")
+
+    client_id, client_secret = form.get("client_id", ""), form.get("client_secret", "")
+    header = request.headers.get("authorization") or ""
+    if header.lower().startswith("basic "):
+        try:
+            decoded = b64decode(header[6:].strip()).decode("utf-8")
+            user, _, password = decoded.partition(":")
+            # RFC 6749 2.3.1: both halves were form-urlencoded before the base64.
+            client_id, client_secret = unquote(user), unquote(password)
+        except (ValueError, UnicodeDecodeError):
+            return _oauth_error(400, "invalid_request", "The Basic authorization header is malformed.")
+    if not client_id or not client_secret:
+        return _oauth_error(401, "invalid_client", "client_id and client_secret are required.")
+
+    resolved = main.storage.get_tenant_by_api_key(client_secret)
+    # The id must MATCH the secret. Without this check the client_id would be decorative -- any
+    # valid key would mint a token no matter what id it was presented under -- and an audit trail
+    # reading "client_id=X authenticated" would be naming the wrong key.
+    if not resolved or resolved["api_key"].get("kid") != client_id:
+        return _oauth_error(401, "invalid_client", "Unknown client or wrong secret.")
+    if not resolved["tenant"].get("is_active", True):
+        return _oauth_error(401, "invalid_client", "The tenant for this client is inactive.")
+    return oauth2_server.issue(resolved)

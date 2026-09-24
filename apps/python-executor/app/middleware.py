@@ -22,6 +22,7 @@ from .context import (
 )
 from .env import env_int, env_str
 from .errors import error_body
+from . import oauth2_server
 from .mtls import MtlsSettings, evaluate_client_cert
 from .rbac import is_allowed
 from .runtime import is_local_dev
@@ -45,6 +46,10 @@ EXEMPT_PATHS = {
     "/docs",
     "/redoc",
     "/openapi.json",
+    # OAuth2 token exchange: it is HOW a client authenticates, so it cannot require auth. It
+    # accepts a guess (the client secret), so it is in CREDENTIAL_PATHS below and shares the
+    # login budget -- otherwise it would be an unthrottled API-key oracle.
+    "/api/v1/oauth/token",
 }
 
 # The human-auth endpoints manage their own identity: login/OTP establish it,
@@ -123,6 +128,7 @@ CREDENTIAL_PATHS = (
     "/api/v1/auth/otp/request",
     "/api/v1/auth/otp/verify",
     "/api/mobile/v1/auth/login",
+    "/api/v1/oauth/token",
 )
 
 
@@ -547,6 +553,18 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
             resolved = storage.get_tenant_by_api_key(api_key)
             if not resolved:
                 return JSONResponse(status_code=401, content=error_body(401, "Invalid API key."))
+            tenant = resolved["tenant"]
+            role = resolved["api_key"].get("role", "owner")
+            api_key_id = resolved["api_key"]["id"]
+        elif session_token and oauth2_server.looks_like_access_token(session_token):
+            # An OAuth2 access token (POST /api/v1/oauth/token). It carries the KEY ID, never the
+            # key, and is re-resolved to that key here on every request -- so it has exactly the
+            # key's tenant and role, and stops working when the key is revoked.
+            claims = oauth2_server.verify(session_token)
+            resolved = storage.get_tenant_by_api_key_kid(claims["sub"]) if claims else None
+            if not resolved or resolved["tenant"]["id"] != claims.get("tid"):
+                return JSONResponse(status_code=401,
+                                    content=error_body(401, "Invalid or expired access token."))
             tenant = resolved["tenant"]
             role = resolved["api_key"].get("role", "owner")
             api_key_id = resolved["api_key"]["id"]

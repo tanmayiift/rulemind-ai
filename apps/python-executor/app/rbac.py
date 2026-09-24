@@ -92,6 +92,9 @@ _WRITE_PREFIX_CAPABILITY = [
     # is that the role documented as "cannot manage access" should not be able to point the
     # workspace's event stream at a new destination.
     ("/api/v1/webhook-subscriptions", MANAGE_ACCESS),
+    # Redelivery re-sends a stored event to a subscription's destination -- the same egress
+    # authority as configuring the subscription, so the same capability.
+    ("/api/v1/webhook-deliveries", MANAGE_ACCESS),
     ("/api/v1/settings", MANAGE_ACCESS),
     ("/api/v1/branding", MANAGE_ACCESS),
     ("/api/v1/reports/email-config", MANAGE_ACCESS),
@@ -115,6 +118,7 @@ _IDENTITY_PREFIXES = (
     "/api/admin/v1",
     "/api/v1/auth",
     "/api/mobile/v1/auth",
+    "/api/v1/oauth",
 )
 
 # Authoring resource prefixes — write methods here need the AUTHOR capability.

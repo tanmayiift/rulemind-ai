@@ -55,6 +55,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from .auth import hmac_signature
+from . import oauth2_client
 from .egress import EgressBlocked, build_pinned_request, clamp_retries, clamp_timeout_ms
 from .executor import _redact_resolved_secrets
 from .logic import json_dumps, now_iso
@@ -174,8 +175,18 @@ def _auth_headers(config: Dict[str, Any], body: bytes) -> Dict[str, str]:
         key = _first_str(config, "api_key", "apikey", "token")
         if key:
             headers[_first_str(config, "api_key_header") or "X-API-Key"] = key
+    elif auth_type == "oauth2" and _first_str(config, "token_url"):
+        # Real client credentials: the caller fetches a token from the token endpoint and sets
+        # Authorization itself (see oauth2_client). Nothing is attached here -- in particular NOT
+        # the client secret, which belongs to the token endpoint and nowhere else.
+        pass
     elif auth_type in ("bearer", "oauth2"):
-        token = _first_str(config, "access_token", "token", "api_key", "client_secret")
+        # `client_secret` is deliberately NOT in this list any more. It was, so an oauth2
+        # connector configured the normal way (client id + secret) sent
+        # `Authorization: Bearer <client_secret>` to the DATA PROVIDER -- handing the credential
+        # for the token endpoint to every resource server, and to anything logging its headers.
+        # `oauth2` without a token_url now means a pre-issued static access token, and only that.
+        token = _first_str(config, "access_token", "token", "api_key")
         if token:
             headers["Authorization"] = "Bearer {0}".format(token)
     elif auth_type == "basic":
@@ -354,6 +365,33 @@ def probe_connector(connector: Dict[str, Any]) -> Dict[str, Any]:
     if body_bytes:
         headers["Content-Type"] = "application/json"
     headers.update(_auth_headers(config, body_bytes))
+    token_secret: Optional[str] = None
+    if oauth2_client.uses_token_endpoint(config):
+        # A probe of an OAuth2 connector tests the token endpoint too -- it is the first thing
+        # that fails when client credentials are wrong, and "the URL resolves" would hide it.
+        try:
+            token_secret = oauth2_client.access_token(
+                config, oauth2_client.cache_key(config, "probe", str(connector.get("id") or "")))
+        except oauth2_client.OAuth2Error as failure:
+            # Rejected client credentials are an AUTH failure -- the same outcome a 401 from the
+            # resource produces -- and everything else (unreachable, malformed, blocked) is the
+            # token endpoint being unusable. `reason` carries the stable oauth2_* code so an
+            # operator can tell "wrong secret" from "wrong URL" without reading logs.
+            return {
+                "probed": True,
+                "passed": False,
+                "outcome": (OUTCOME_AUTH_FAILED if failure.code == "oauth2_client_rejected"
+                            else OUTCOME_UNREACHABLE),
+                "reason": "{0}: {1}".format(failure.code, failure.reason)[:MAX_REASON_CHARS],
+                "status": None,
+                "latency_ms": 0,
+                "attempts": 1,
+                "url": _display_url(url),
+                "method": method,
+                "auth_type": str(config.get("auth_type") or "api_key"),
+                "checked_at": started_wall,
+            }
+        headers["Authorization"] = "Bearer {0}".format(token_secret)
     headers["Host"] = pinned.host_header
     headers.setdefault("User-Agent", "RuleMind-ConnectorProbe/1")
 

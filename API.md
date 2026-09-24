@@ -35,14 +35,52 @@ work yet and all five SDKs are hand-written.
 
 ## Authentication
 
-- `AUTH_MODE=apikey` (the default): send `x-api-key: rm_live_...` or
-  `Authorization: Bearer rm_live_...`. Keys are minted by `auth.generate_api_key` and always
-  carry the `rm_live_` prefix.
+- `AUTH_MODE=apikey` (the default): send `x-api-key: rm_live_...`. Keys are minted by
+  `auth.generate_api_key` and always carry the `rm_live_` prefix. **A key sent as
+  `Authorization: Bearer rm_live_...` is rejected with 401** — a bearer value is read as a
+  session or OAuth2 access token, never as a key. (This page said otherwise until 2026-09-24.)
+- `Authorization: Bearer <access token>` from the OAuth2 token endpoint below, for clients
+  built on a standard OAuth2 library.
 - `AUTH_MODE=jwt`: send a bearer JWT; verification uses the configured issuer/JWKS.
 - `AUTH_MODE=none`: every request executes as a local admin profile. **Leaving `AUTH_MODE`
   unset is not the same as `none`** — `app/middleware.py` tests for the literal string, so
   unset leaves authentication ON. That is the safe direction, and it is stated because the
   README implied otherwise for a long time.
+
+### OAuth2 client credentials
+
+`POST /api/v1/oauth/token` (RFC 6749 §4.4) exchanges an API key for a short-lived bearer token,
+so the key itself is sent once rather than on every request.
+
+| field | value |
+|---|---|
+| `grant_type` | `client_credentials` — anything else is `400 unsupported_grant_type` |
+| `client_id` | the key's id (`kid`, listed by `GET /api/v1/access/keys`) |
+| `client_secret` | the key |
+
+Client authentication by HTTP Basic (`client_secret_basic`, preferred) or in the body
+(`client_secret_post`); the body may be form-encoded or JSON.
+
+```bash
+curl -s -u "$KID:$RULEMIND_API_KEY" -d grant_type=client_credentials \
+  https://your-host/api/v1/oauth/token
+# {"access_token": "eyJ...", "token_type": "Bearer", "expires_in": 3600}
+```
+
+- The token has **exactly the key's tenant and role**, and is re-resolved to the key on every
+  request: revoke the key and its tokens stop working; change the key's role and its tokens
+  carry the new role. Both take effect immediately in the process that made the change and
+  within `API_KEY_CACHE_TTL` (default 300 s) in every other worker and replica — the cache is
+  per process, so this is the same window in which revoking the key itself takes effect.
+- Lifetime is `OAUTH2_ACCESS_TOKEN_TTL_SECONDS` (default 3600, clamped to 60–86400). There is no
+  refresh token: a client-credentials client just requests a new one.
+- A secret presented under a `client_id` that is not its own is `401 invalid_client`, with
+  `WWW-Authenticate`. Error bodies carry both the RFC fields (`error`, `error_description`) and
+  this API's `detail`, so either kind of client can parse them.
+- The endpoint is rate-limited per IP on the same budget as login, since it accepts a guess.
+- Tokens are signed with a key derived from `RULEMIND_ADMIN_JWT_SECRET` under a fixed label, so
+  a platform-admin JWT is not accepted as an access token, nor the reverse. Rotating that
+  secret invalidates every outstanding access token.
 
 ## Errors
 

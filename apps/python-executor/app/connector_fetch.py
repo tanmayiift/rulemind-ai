@@ -103,6 +103,7 @@ from .connector_probe import (
     connector_secret_values,
     redact_connector_secrets,
 )
+from . import oauth2_client
 from .egress import (
     EgressBlocked,
     build_pinned_request,
@@ -287,7 +288,7 @@ class _Request:
 
 
 def _build_request(connector: Dict[str, Any], view: Dict[str, Any],
-                   tenant_id: str = "") -> _Request:
+                   tenant_id: str = "", access_token: Optional[str] = None) -> _Request:
     """Turn the connector's config + request_mapping into one concrete HTTP request.
 
     Raises ConnectorMisconfigured for anything an author must fix; the caller turns that into a
@@ -340,6 +341,10 @@ def _build_request(connector: Dict[str, Any], view: Dict[str, Any],
     if body_bytes:
         headers.setdefault("Content-Type", "application/json")
     headers.update(_auth_headers(config, body_bytes))
+    if access_token:
+        # Fetched by the async caller from the connector's token endpoint (oauth2_client) --
+        # never the client secret, which only ever goes to the token endpoint.
+        headers["Authorization"] = "Bearer {0}".format(access_token)
     headers.setdefault("User-Agent", "RuleMind-ConnectorFetch/1")
 
     timeout_ms = min(
@@ -355,7 +360,9 @@ def _build_request(connector: Dict[str, Any], view: Dict[str, Any],
         retries=retries,
         fingerprint=_fingerprint(method, url, headers, body),
         display_url=_display_url(url),
-        secrets=resolved | connector_secret_values(connector),
+        # The access token is a secret too: it is not a config KEY, so connector_secret_values
+        # cannot know it, and without adding it here it would be echoed into traces and errors.
+        secrets=resolved | connector_secret_values(connector) | ({access_token} if access_token else set()),
         # Built here rather than in _send so that a bad bundle surfaces as a configuration
         # failure on THIS connector -- with a code an operator can act on -- instead of as an
         # opaque TLS handshake error attributed to the partner.
@@ -671,8 +678,25 @@ async def fetch_source(
     source_id = str(connector.get("id") or "")
     started = time.perf_counter()
 
+    # OAuth2 client credentials: obtain (or reuse) an access token BEFORE building the request.
+    # Here, in the async layer, via a thread -- the token request is blocking network I/O and
+    # _build_request is synchronous, so doing it there would stall the event loop for every
+    # decision on a cold cache. A token failure fails the fetch CLOSED with its own code, the
+    # same as any other reason a connector cannot supply its data.
+    config = _config(connector)
+    token_key = oauth2_client.cache_key(config, tenant_id, source_id)
+    access_token: Optional[str] = None
+    if oauth2_client.uses_token_endpoint(config) and not str(
+            config.get("base_url") or "").startswith(SIMULATE_SCHEME):
+        try:
+            access_token = await asyncio.to_thread(oauth2_client.access_token, config, token_key)
+        except oauth2_client.OAuth2Error as failure:
+            return _failure(connector, source_id, failure.code, failure.reason, started,
+                            misconfigured=failure.code in ("oauth2_client_credentials_missing",
+                                                           "oauth2_bad_auth_method"))
+
     try:
-        request = _build_request(connector, view, tenant_id)
+        request = _build_request(connector, view, tenant_id, access_token=access_token)
     except ConnectorMisconfigured as bad:
         # An author error, not a downstream one — but it still fails closed. A connector that
         # says "fetch me" and cannot be turned into a request has not supplied its data.
@@ -714,7 +738,28 @@ async def fetch_source(
                             circuit_open=True, url=request.display_url, method=request.method)
 
     try:
-        status, text = await _send(request, deadline)
+        try:
+            status, text = await _send(request, deadline)
+        except _TransportFailed as rejected:
+            if rejected.status != 401 or not access_token:
+                raise
+            # The provider rejected a token we believed was valid -- revoked or rotated before
+            # its stated expiry. Drop it and try ONCE with a fresh one. Without this the
+            # connector fails every decision until the cached expiry runs out; with more than
+            # one retry a genuinely broken client would hammer the token endpoint. A 401 on the
+            # retry falls through to the normal failure handling below.
+            #
+            # (In the exception path, not after the send: _send raises _TransportFailed for any
+            # non-2xx, so a `status == 401` check on its return value never fires. The first
+            # version of this did exactly that, and the test that serves a revoked token caught
+            # it -- one request went out, not two.)
+            oauth2_client.invalidate(token_key)
+            try:
+                access_token = await asyncio.to_thread(oauth2_client.access_token, config, token_key)
+            except oauth2_client.OAuth2Error as failure:
+                return _failure(connector, source_id, failure.code, failure.reason, started)
+            request = _build_request(connector, view, tenant_id, access_token=access_token)
+            status, text = await _send(request, deadline)
     except _TransportFailed as failed:
         # A budget that ran out is OUR clock, not the downstream's health. Counting it would let
         # a tenant with a tight evaluation_budget_ms trip the breaker on a partner that answered

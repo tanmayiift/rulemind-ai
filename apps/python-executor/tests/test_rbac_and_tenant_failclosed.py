@@ -103,7 +103,12 @@ class UnknownWriteFailsClosedTest(unittest.TestCase):
                                 # about reaching the network -- it is that the role documented
                                 # as "cannot manage access" should not be able to repoint the
                                 # workspace's event stream.
-                                "/api/v1/webhook-subscriptions")):
+                                "/api/v1/webhook-subscriptions",
+                                # Replaying a delivery re-sends data to that same third
+                                # party, so it needs what the subscription needs.
+                                "/api/v1/webhook-deliveries",
+                                # The OAuth2 token endpoint: identity, middleware-exempt.
+                                "/api/v1/oauth")):
                 continue
             unclassified.append(path)
         self.assertEqual(unclassified, [],
