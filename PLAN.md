@@ -2453,6 +2453,49 @@ calls it.
     peak, the two A runs disagreed with each other (67 vs 58 rps) by more than either differed from
     B. Running both modes simultaneously is what made the comparison mean something.
 
+- [x] **R10.39 THE SUITE, RUN AGAINST THE LIVE BUILT STACK, AND THE DASHBOARD WALKED BY HAND.**
+  Playwright pointed at the rebuilt compose stack (the docker web image, real soak data,
+  `RM_E2E_API/WEB/KEY`) instead of the dev server the gate uses. **Final: 131 passed, 15
+  destructive specs correctly skipped, 0 failed — and the workspace inventory identical before and
+  after the run.** Locally, as the gate runs it: 146 passed. Getting there found:
+  * **My first live run damaged the soak.** "Non-destructive" specs left entities in the shared
+    workspace — one promoted a variable to PROD whose code reads a field real payloads lack; the
+    decision-tables sweep created two dev variables with no valid function. Every production
+    decision computes the whole catalog and fails closed on any variable error, so for **3.5
+    minutes (13:59:20–14:02:50 UTC) 4,862 soak decisions went to review instead of reject**. No
+    alert fired (the outcome-mix rule needs 30 minutes). Removed through the product's own paths
+    (demote, then delete — audited), along with every other entity the two runs left: 5 rules, 2
+    scorecards, 2 connectors, 6 variables, 2 predictors, 2 model sets, 2 hosted models. The
+    promotion test is now behind `RM_E2E_ALLOW_DESTRUCTIVE` (the gate sets it; its database is
+    thrown away) and retires its variable in `finally`; every other creating spec cleans up.
+  * **Three tests that asserted nothing.** The debugger's parity check read `computed_variables`
+    from a `/decide` response that returns `variables` — an empty map, so its value comparison
+    never compared anything. Two Excel-function tests looked up a hardcoded id inside an `if`,
+    and from the second run on (ids `_2`, `_3`) passed without checking a function. All three
+    assert unconditionally now, and still pass.
+  * **Four tests that could only pass on a quiet database** — whole-table counts, an exact
+    backfill equality, and a save test that waited for the request instead of the response (the
+    PUT lost a race against the read). Scoped to what they measure; the strict forms kept for a
+    local run.
+  * **A real UI bug, found only by looking.** On Policies, loading a long policy stretched the
+    picker and name field to 182 px (268 px in the live build) and 304 px wide inside a 280 px
+    column — the card stretches to the pipeline's height and its grid rows stretched with it.
+    Fixed (`alignContent: start`, `minmax(0, 1fr)`), with a read-only regression test that fails
+    against the old image and passes against the new one; the web image was rebuilt and swapped.
+  * **Walked in the browser**, every route, redirect and the flows Round 5 built — against live
+    data, read-only: real reason codes differing per decision, the actor-stamped change trail and
+    "chain intact — 1022 verified", what-if replaying 200 real decisions through bundle v15,
+    releases and history, the reviewed promotion dialog (opened, reason required, cancelled —
+    nothing moved), the six redirects, signup and sign-in. No console errors beyond the admin-only
+    pages' expected 401.
+
+  **Open, and a product decision rather than a fix:** a production decision computes every
+  variable in the workspace — including unpromoted drafts no policy uses — and fails closed on
+  any error, so one broken draft sends every live decision to review. Either stop evaluating
+  unused drafts (changes what each decision records — the audit trade R10.15 made per-tenant) or
+  stop letting an unused draft's error fail the decision (narrows a guard its author kept broad
+  on purpose). Put to the owner rather than chosen silently.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

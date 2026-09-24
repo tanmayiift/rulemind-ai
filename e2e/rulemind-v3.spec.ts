@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
-import { ALLOW_DESTRUCTIVE, DESTRUCTIVE_SKIP } from "./env";
+import { ALLOW_DESTRUCTIVE, API_BASE_URL, DESTRUCTIVE_SKIP } from "./env";
 
 test.describe.configure({ mode: "serial" });
 
@@ -118,8 +118,15 @@ test("connector toggle hides the source filter and removes inactive variables fr
   }
 });
 
-test("variable creation, testing, promotion, and rule availability work end to end", async ({ page }) => {
+test("variable creation, testing, promotion, and rule availability work end to end", async ({ page, request }) => {
+  // Promotes a variable to PROD in the target workspace, and a production decision evaluates
+  // every variable in it -- this one reads payload["summary"], which real payloads lack, so while
+  // it exists every live decision errors to review. It did exactly that to a running soak for
+  // 3.5 minutes on 2026-09-24. Gated, and retired in `finally` when it does run.
+  test.skip(!ALLOW_DESTRUCTIVE, `promotes a variable to prod in the shared workspace: ${DESTRUCTIVE_SKIP}`);
   const variableName = `Income Multiplier ${Date.now()}`;
+  const variableId = variableName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  try {
 
   await page.goto("/variables");
   await page.getByTestId("env-dev").click();
@@ -143,7 +150,6 @@ test("variable creation, testing, promotion, and rule availability work end to e
   await page.getByTestId("variable-save").click();
   await expect(page.getByTestId("app-notice")).toContainText("Variable saved.");
 
-  const variableId = variableName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
   await expect(page.getByTestId(`variable-list-item-${variableId}`)).toBeVisible();
   await page.getByTestId(`variable-list-item-${variableId}`).click();
   await expect(page.getByTestId("variable-name")).toHaveValue(variableName);
@@ -173,11 +179,24 @@ test("variable creation, testing, promotion, and rule availability work end to e
   await page.getByTestId("rule-add-condition").click();
   const firstCondition = page.locator('select[data-testid^="rule-condition-variable-"]').first();
   await expect(firstCondition).toContainText(variableName);
+  } finally {
+    // Only a DEV variable can be deleted, so demote first -- the product's own path, audited.
+    const url = `${API_BASE_URL}/api/v1/variables/${variableId}`;
+    const existing = await request.get(url);
+    if (existing.status() === 200) {
+      const v = await existing.json();
+      await request.put(url, { data: { name: v.name, category: v.category, source_id: v.source_id,
+                                        code: v.code, description: v.description, status: "dev" } });
+      await request.delete(url);
+    }
+  }
 });
 
-test("multi-source rule flow saves, tests, and promotes correctly", async ({ page }) => {
+test("multi-source rule flow saves, tests, and promotes correctly", async ({ page, request }) => {
   page.on("dialog", (dialog) => dialog.accept());
   const ruleName = `Composite Source Gate ${Date.now()}`;
+  const ruleId = ruleName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  try {
 
   await page.goto("/rules");
   await page.getByTestId("env-dev").click();
@@ -232,6 +251,18 @@ test("multi-source rule flow saves, tests, and promotes correctly", async ({ pag
 
   await page.getByTestId("env-uat").click();
   await expect(page.getByText(ruleName)).toBeVisible();
+  } finally {
+    // Left behind, the promoted rule sorts FIRST (`composite_...`), so every fixture that builds on
+    // `rules[0]` -- workflow-builder's among them -- starts using a test artifact. Only a DEV rule
+    // can be deleted: demote first.
+    const url = `${API_BASE_URL}/api/v1/rules/${ruleId}`;
+    const existing = await request.get(url);
+    if (existing.status() === 200) {
+      const r = await existing.json();
+      await request.put(url, { data: { name: r.name, nodes: r.nodes ?? [], tree: r.tree ?? null, status: "dev" } });
+      await request.delete(url);
+    }
+  }
 });
 
 test("scorecard calculation, policy execution, and export/import round-trip work", async ({ page }, testInfo) => {

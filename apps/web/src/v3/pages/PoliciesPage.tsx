@@ -214,7 +214,10 @@ export function PoliciesPage(props: { data: BootstrapPayload; refresh: () => voi
       ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "280px 1fr", gap: 12 }}>
-        <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 12, display: "grid", gap: 10 }}>
+        {/* alignContent start: this card stretches to the pipeline's height, and a grid with spare
+            height stretches its rows -- a loaded policy grew the picker and name field to ~180px.
+            minmax(0, 1fr): the implicit column sized to the longest option and overflowed 280px. */}
+        <div style={{ background: theme.card, border: "1px solid " + theme.border, borderRadius: 12, padding: 12, display: "grid", gap: 10, alignContent: "start", gridTemplateColumns: "minmax(0, 1fr)" }}>
           <InlineSelect value={selectedId ?? ""} onChange={(event) => setSelectedId(event.target.value || null)} data-testid="policy-select">
             <option value="">New policy</option>
             {environmentPolicies.map((policy) => (

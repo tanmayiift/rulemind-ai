@@ -44,7 +44,11 @@ async function ensureVariable(
   name: string
 ): Promise<void> {
   const res = await request.post(`${API_BASE_URL}/api/v1/variables`, {
-    data: { id, name, source_id: "bureau", category: "bureau", code: "value = 0" },
+    // A VALID variable. `value = 0` defines no function, so every production decision in the
+    // workspace computed it, errored, and went to review while it existed -- and nothing deleted
+    // it. On 2026-09-24 that sent a running soak's decisions to review until it was removed.
+    data: { id, name, source_id: "bureau", category: "bureau",
+            code: "@variable\ndef v(payload, variables):\n    return 0\n" },
   });
   if (res.status() !== 200) {
     // A duplicate is fine -- anything else is a broken fixture and must not be hidden.
@@ -58,6 +62,13 @@ async function ensureVariable(
 test.beforeAll(async ({ request }) => {
   await ensureVariable(request, SCORE_VAR, "ZZ Sweep Score");
   await ensureVariable(request, TIER_VAR, "ZZ Sweep Tier");
+});
+
+test.afterAll(async ({ request }) => {
+  // Dev variables, so deletable. Left behind, they sit in every decision the workspace makes.
+  for (const id of [SCORE_VAR, TIER_VAR]) {
+    await request.delete(`${API_BASE_URL}/api/v1/variables/${id}`).catch(() => undefined);
+  }
 });
 
 /**

@@ -20,6 +20,15 @@ const TINY_MODEL = fs.readFileSync(path.join(__dirname, "fixtures", "tiny-model.
 
 const auth = { "x-api-key": API_KEY };
 
+// What these tests create, removed afterwards: against a deployment they persisted (e2e/env.ts).
+const created = { models: [] as string[], modelSets: [] as string[], predictors: [] as string[] };
+
+test.afterAll(async ({ request }) => {
+  for (const id of created.modelSets) await request.delete(`${API_BASE_URL}/api/v1/model-sets/${id}`, { headers: auth }).catch(() => undefined);
+  for (const id of created.predictors) await request.delete(`${API_BASE_URL}/api/v1/predictors/${id}`, { headers: auth }).catch(() => undefined);
+  for (const id of created.models) await request.delete(`${API_BASE_URL}/api/v1/models/${id}`, { headers: auth }).catch(() => undefined);
+});
+
 test("the sidebar links to Model Sets and Predictors, and both routes resolve", async ({ page }) => {
   await page.goto(`${WEB_BASE_URL}/`);
   // The regression this guards: a nav entry pointing at a route that does not exist.
@@ -55,7 +64,9 @@ test("a model set can be created from the page and compared on one input", async
     }
   });
   expect(model.ok(), `model upload should succeed, got ${model.status()}`).toBeTruthy();
-  const modelName = (await model.json()).name;
+  const uploaded = await model.json();
+  const modelName = uploaded.name;
+  created.models.push(uploaded.id);
 
   await page.goto(`${WEB_BASE_URL}/model-sets`);
   const setName = `e2e-set-${Date.now()}`;
@@ -67,7 +78,9 @@ test("a model set can be created from the page and compared on one input", async
   await expect(page.getByTestId("ms-status")).toContainText(setName, { timeout: 15000 });
   // Created through the UI means the API really has it — not just that a toast appeared.
   const listed = await request.get(`${API_BASE_URL}/api/v1/model-sets`, { headers: auth });
-  expect((await listed.json()).some((s: { name: string }) => s.name === setName)).toBeTruthy();
+  const set = (await listed.json()).find((s: { name: string }) => s.name === setName);
+  expect(set).toBeTruthy();
+  created.modelSets.push(set.id);
 
   const card = page.locator('[data-testid^="ms-card-"]').filter({ hasText: setName });
   await card.getByRole("button", { name: /Compare/ }).click();
@@ -88,10 +101,11 @@ test("a predictor can be created, and its drift report renders with the windows 
 
   await expect(page.getByTestId("pr-status")).toContainText(name, { timeout: 15000 });
   const listed = await request.get(`${API_BASE_URL}/api/v1/predictors`, { headers: auth });
-  const created = (await listed.json()).find((p: { name: string }) => p.name === name);
-  expect(created, "the predictor the page reported creating must exist in the API").toBeTruthy();
+  const predictor = (await listed.json()).find((p: { name: string }) => p.name === name);
+  expect(predictor, "the predictor the page reported creating must exist in the API").toBeTruthy();
+  created.predictors.push(predictor.id);
 
-  await page.getByTestId(`pr-drift-${created.id}`).click();
+  await page.getByTestId(`pr-drift-${predictor.id}`).click();
   const panel = page.getByTestId("pr-drift-panel");
   await expect(panel).toBeVisible({ timeout: 20000 });
   // A brand-new predictor is forward-only and therefore empty. Showing "insufficient_data" with
