@@ -51,6 +51,16 @@ class DataResidencyTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"RULEMIND_DATA_REGION": "in-mumbai-1"}):
             self.assertEqual(self._report()["install_region"], "in-mumbai-1")
 
+    def test_the_report_says_how_workspaces_are_kept_apart(self):
+        """A report that only listed destinations would let a SQLite install -- or a Postgres one
+        whose database user bypasses row security -- read as protected by the database."""
+        isolation = self._report()["tenant_isolation"]
+        if self.storage.engine.dialect.name == "postgresql":
+            self.assertTrue(isolation["row_level_security"], isolation["detail"])
+        else:
+            self.assertFalse(isolation["row_level_security"])
+            self.assertIn("SQLite", isolation["detail"])
+
     def test_connectors_and_their_token_endpoints_are_listed(self):
         self.storage.create_connector({"id": "bureau_x", "name": "B", "schema_paths": [], "sample_payload": {},
                                        "config": {"auth_type": "oauth2", "base_url": "https://api.bureau.example/v1",

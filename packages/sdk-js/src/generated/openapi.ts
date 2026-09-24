@@ -6241,6 +6241,7 @@ export interface components {
             install_region: string | null;
             /** Statement */
             statement: string;
+            tenant_isolation: components["schemas"]["TenantIsolation"];
         } & {
             [key: string]: unknown;
         };
@@ -6977,6 +6978,18 @@ export interface components {
              * @default standard
              */
             plan: string;
+        };
+        /** TenantIsolation */
+        TenantIsolation: {
+            /** Detail */
+            detail: string;
+            /**
+             * Row Level Security
+             * @description True when PostgreSQL itself keeps workspaces apart; false means the application's tenant checks alone do.
+             */
+            row_level_security: boolean;
+        } & {
+            [key: string]: unknown;
         };
         /** TenantUpdateRequest */
         TenantUpdateRequest: {

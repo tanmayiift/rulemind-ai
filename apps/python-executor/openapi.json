@@ -4037,6 +4037,9 @@
           "statement": {
             "title": "Statement",
             "type": "string"
+          },
+          "tenant_isolation": {
+            "$ref": "#/components/schemas/TenantIsolation"
           }
         },
         "required": [
@@ -4044,6 +4047,7 @@
           "statement",
           "database",
           "encryption_at_rest",
+          "tenant_isolation",
           "egress",
           "data_subject_endpoints"
         ],
@@ -6037,6 +6041,26 @@
           "name"
         ],
         "title": "TenantCreateRequest",
+        "type": "object"
+      },
+      "TenantIsolation": {
+        "additionalProperties": true,
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "row_level_security": {
+            "description": "True when PostgreSQL itself keeps workspaces apart; false means the application's tenant checks alone do.",
+            "title": "Row Level Security",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "row_level_security",
+          "detail"
+        ],
+        "title": "TenantIsolation",
         "type": "object"
       },
       "TenantUpdateRequest": {

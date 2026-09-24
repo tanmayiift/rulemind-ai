@@ -314,9 +314,10 @@ route runs, so a browser can tell "not signed in" and "rate limited" from "the A
 ## Data residency and data subjects
 
 - `GET /api/v1/data-residency` — the install's declared region (`RULEMIND_DATA_REGION`), the
-  database engine and host (never its credentials), encryption at rest, and every configured egress
-  destination: connector hosts and token endpoints, webhook receivers, AI providers, archive sink,
-  Kafka, tracing.
+  database engine and host (never its credentials), encryption at rest, whether PostgreSQL
+  row-level security keeps workspaces apart (`tenant_isolation`, read from the database at startup),
+  and every configured egress destination: connector hosts and token endpoints, webhook receivers,
+  AI providers, archive sink, Kafka, tracing.
 - `GET /api/v1/data-subjects/{subject_id}` — every decision about one subject, in full. Admin only.
 - `POST /api/v1/data-subjects/{subject_id}/erase` with `{reason}` — redacts that subject's personal
   data in one transaction, keeping each decision's outcome, policy version and adverse-action reason

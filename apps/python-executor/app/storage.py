@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from sqlalchemy import case, delete, desc, func, inspect, or_, select, update
+from sqlalchemy import case, delete, desc, event, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
 from .archiver import normalize_retention_months, retention_window_days
@@ -37,7 +37,7 @@ from .auth import (
     otp_code_hash,
     session_token_hash,
 )
-from . import env
+from . import env, rls
 from .context import get_current_api_key_id, get_current_tenant_id
 from .db import engine_for, session_factory
 from .logic import generate_rule_expression_definition, json_dumps, now_iso
@@ -595,6 +595,7 @@ class Storage:
         self.SessionLocal = session_factory(path, force_sqlite=force_sqlite)
         self._create_schema()
         self._reconcile_sqlite_columns()
+        self._scope_transactions_to_the_tenant()
         self.default_tenant_id: Optional[str] = None
         # None = not yet counted. See _only_tenant: falling back to the first tenant is
         # correct on a single-tenant install and a cross-tenant disclosure on any other.
@@ -974,6 +975,7 @@ class Storage:
             with self.engine.begin() as conn:
                 conn.exec_driver_sql("SELECT pg_advisory_xact_lock(%s)", (lock_id,))
                 Base.metadata.create_all(conn)
+                self._install_row_security(conn)
             return
         except (IntegrityError, ProgrammingError, OperationalError) as error:
             # A concurrent creator won, or advisory locks are unavailable (pgbouncer
@@ -983,6 +985,37 @@ class Storage:
                 raise
             LOGGER.warning("schema creation raced with another process; schema is present (%s)",
                            str(error).splitlines()[0][:160])
+
+    @staticmethod
+    def _install_row_security(conn: Any) -> None:
+        """Row-level security on every tenant table (app/rls.py). In its own savepoint: a
+        connecting role that does not own the tables cannot ALTER them, and that must not stop
+        the schema from existing. Migration 0036 is the authoritative path, run by the owner,
+        and it does fail the deploy; this is the fresh-database convenience path."""
+        try:
+            with conn.begin_nested():
+                rls.install(conn, rls.tenant_tables(Base.metadata))
+        except Exception as error:  # noqa: BLE001 - reported loudly; the predicates still apply
+            LOGGER.error("row-level security could not be installed; tenant isolation rests on the "
+                         "application's predicates alone: %s", str(error).splitlines()[0][:200])
+
+    def _scope_transactions_to_the_tenant(self) -> None:
+        """Every transaction opened for a workspace is bound to it in Postgres (app/rls.py): the
+        database then returns only that workspace's rows and refuses to write anyone else's,
+        whatever the query says. A transaction with no tenant context is system scope."""
+        self._rls_switch_role = False
+        with self.engine.connect() as conn:
+            self.row_security = rls.enforcement(conn, rls.tenant_tables(Base.metadata))
+            if self.engine.dialect.name != "postgresql":
+                return
+            self._rls_switch_role = rls.needs_role_switch(conn)
+        if not self.row_security["row_level_security"]:
+            LOGGER.error("row-level security is NOT enforced on this database: %s",
+                         self.row_security["detail"])
+
+        @event.listens_for(self.SessionLocal, "after_begin")
+        def _bind(session: Session, transaction: Any, connection: Any) -> None:
+            rls.scope_transaction(connection, get_current_tenant_id(), self._rls_switch_role)
 
     def _schema_present(self) -> bool:
         try:

@@ -365,6 +365,12 @@ class EgressDestination(ApiModel):
     region: Optional[str] = None
 
 
+class TenantIsolation(ApiModel):
+    row_level_security: bool = Field(description="True when PostgreSQL itself keeps workspaces apart; "
+                                                 "false means the application's tenant checks alone do.")
+    detail: str
+
+
 class SubjectEndpoints(ApiModel):
     access: str
     erasure: str
@@ -375,6 +381,7 @@ class ResidencyReport(ApiModel):
     statement: str
     database: ResidencyDatabase
     encryption_at_rest: EncryptionAtRest
+    tenant_isolation: TenantIsolation
     egress: List[EgressDestination]
     data_subject_endpoints: SubjectEndpoints
 
