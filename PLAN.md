@@ -2377,8 +2377,10 @@ calls it.
   comment saying it must match the other — and in pool mode it is **one** trip to the sandbox for
   the whole catalog (`sandbox.execute_variable_group`). Measured, three agreeing rounds: variables
   **5.6 → 0.34 ms**, `POST /decide` p50 **12.6 → 6.8 ms**. Throughput at 8 concurrent in-process
-  clients did not move (88 vs 90/s) and the reason is stated rather than hidden: that harness is
-  bound by the API process's CPU, and the old trips were mostly GIL-releasing waits.
+  clients did not move (88 vs 90/s), and this entry first said the change buys latency, not
+  throughput. **Corrected by R10.38**: deployed (uvicorn worker processes, Postgres, HTTP) it is
+  **+22% at concurrency 8** — the in-process harness was one GIL-bound process, which the real
+  topology is not.
   * **Every per-variable guarantee the process boundary gave for free is rebuilt, and each is a
     test against the real pool**: order and accumulation; isolation (a variable appending to a
     list or its payload could not affect the next under per-call pickling, so each gets its own
@@ -2429,6 +2431,27 @@ calls it.
   `tests/test_legacy_rule_fields.py` **fails on the sunset date** while the fields remain: a
   deprecation with no enforced end is permanent. Mutations caught: fields missing from the fast
   path (and the path-parity test with it), originals mutated, sunset passed.
+
+- [x] **R10.38 THE SOAK STACK RUNS THE NEW CODE; MEASURED WHERE IT IS DEPLOYED.**
+  * **Rebuilt without paging anyone.** `RuleMindApiDown` waits 1 minute, so: images built while the
+    old API served; migrations applied under it (the live schema was at **0031**, so 0032–0036
+    ran on live data — all additive or idempotent, and the old code works with RLS installed);
+    then api/worker/web swapped. **Measured downtime 12.2 s.** Afterwards: ready, row-level
+    security reported enforced on 38 tables via `rulemind_tenant`, 4,166 soak decisions in the
+    next 3 minutes, no ERROR/Traceback/permission lines in api or worker logs, Prometheus `up`,
+    only `Watchdog` active in Alertmanager.
+  * **The demo-key fix, proven on the built image** against an instance configured like
+    production (its own workspace key): anonymous `POST /api/mobile/v1/auth/demo` → 403, key
+    absent from the body, key still valid for its owner. The live soak stack uses the published
+    dev key in development mode, where answering is correct and discloses nothing.
+  * **Performance, deployed** (full tables in `docs/PERFORMANCE.md`): one trip vs per call, both
+    containers live at once with interleaved requests so the soak's load hit both equally —
+    1 client p50 **28.6 → 18.5 ms**, p95 **45.5 → 29.3 ms**; 8 clients **68 → 83 rps**. As shipped
+    **83–91 rps at concurrency 8 vs the Round 5 baseline's 60.3** (that one with the soak stopped,
+    these at its peak); tuned (both flags, 4 workers) **114 rps**, p50 52.6 ms.
+  * **The first A/B was discarded, not reported**: run sequentially (A, B, A) during the soak's
+    peak, the two A runs disagreed with each other (67 vs 58 rps) by more than either differed from
+    B. Running both modes simultaneously is what made the comparison mean something.
 
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
