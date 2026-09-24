@@ -1657,6 +1657,81 @@ calls it.
   That is not an optimisation, it is a different security posture. Closed, with the measurement
   as the reason.
 
+- [x] **R10.17 A PRODUCTION INSTALL SHIPPED NO API CONTRACT, AND THE ONE DOCUMENT IT DID SHIP
+  WAS WRONG ABOUT 13 OF THE 17 ENDPOINTS IT NAMED.** `/openapi.json`, `/docs` and `/redoc` are
+  all disabled when `RULEMIND_ENV=production` (`main._docs_enabled` — correctly, they were
+  served **unauthenticated**, handing the complete endpoint map to anyone) and the Helm chart
+  sets exactly that. So the machine-readable contract was unreachable and `API.md` was the only
+  thing a self-hosted customer got.
+
+  Measured against the route table: **278 endpoints exist, `API.md` documented 17, and 13 of
+  those 17 did not exist.** Coverage of real endpoints: **4 of 278, about 1%.** And it was not
+  merely thin — it was wrong about *paths*: `GET`/`POST /api/v1/api-keys` (really
+  `/api/v1/access/keys`), `/api/v1/approvals` and `/approvals/:id/approve|reject` (really
+  `/api/v1/reviews` and `/reviews/{task_id}/decide`), `POST /api/v1/rules/validate` and
+  `/rules/:id/evaluate` (really `POST /api/v1/rules/{rule_id}/test`),
+  `GET /api/v1/dashboard/summary` (never existed), four collections that do not exist
+  (`segments`, `ab-tests`, `exports`, `outcome-imports`), and `/docs/json` as the spec's
+  location, which it has never been. An integration team following the shipped documentation
+  gets 404s on nine concrete endpoints.
+
+  **`GET /api/v1/openapi.json`, authenticated.** Removing the spec was the right fix for the
+  wrong reason: the problem was that it was *public*, not that it existed. This route is not in
+  `EXEMPT_PATHS`, so it needs an API key like every other `/api/v1/` route — the customer's
+  integration team can generate a client, an unauthenticated scanner still gets nothing.
+  Verified in a production-mode app: `/openapi.json` → 404, `/api/v1/openapi.json` → 401
+  without a key, **200 with one, 211 paths / 279 operations**. Its own limitation is stated in
+  the docstring rather than left to be discovered: every operation is `-> Dict[str, Any]`, so
+  there are **279 operations and zero typed 2xx schemas** (plan item 5.1).
+
+  `API.md` rewritten to be true, and `scripts/check_api_docs.py` is the gate — the fourth in
+  the `check_parity` / `verify_chart` / `check_config_surface` family, all derived from source.
+  It checks verb+path claims *and* bare collection paths, because the four phantom collections
+  were named without a verb and a verb-only check would have passed the document with them in
+  it. Corrections about the old wrong paths live in **blockquotes**, which the gate treats as
+  notes rather than claims — otherwise the gate fails on the correction itself, and deleting
+  the note would throw away the part that helps someone already integrated against the wrong
+  path. Mutations: a phantom endpoint, a phantom collection, and a wrong verb on a real path
+  — each caught.
+
+- [x] **R10.18 ONE ERROR ENVELOPE.** Three incompatible shapes: `middleware.py` returned
+  `{"error", "detail"}` and sometimes only `{"error"}` — with a *human sentence* in the `error`
+  field; every route handler raised `HTTPException`, which FastAPI renders as `{"detail"}` with
+  no `error` at all; and request-body validation produced `{"detail": [ …list… ]}`. On top of
+  that `detail` is a string at 187 call sites and a **dict** at 3. A client had to sniff which
+  field was present, then sniff the type of `detail`.
+
+  **The fix is additive, and that is the whole design.** The obvious "normalise `detail` to a
+  string" destroys the three structured errors — and those three are the *good* ones:
+  `invalid_input` carries per-field `issues`, the most useful error this product produces, and
+  `idempotency_key_reused` carries the clashing key. Seven existing tests and any integrator
+  depend on that shape. So `error` is guaranteed present and guaranteed a string — the field to
+  switch on — and `detail` keeps whatever shape the handler chose, as context. A structured
+  detail that already names its own code keeps it, so the envelope never disagrees with the
+  body it wraps.
+
+  Registered on **Starlette's** `HTTPException`, not FastAPI's subclass: 404 for an unmatched
+  route and 405 for a wrong method are raised by the router and never reach the subclass, so
+  the subclass registration would have left exactly the errors a client hits first without an
+  `error` field. The envelope lives in a new `app/errors.py` because both `main.py` and
+  `middleware.py` must produce it and main imports middleware — a helper in either is a cycle
+  or a duplicate, and a duplicate is how the shapes diverged to begin with.
+
+  **The first version of the envelope was wrong for mTLS, and the mTLS suite caught it.** Its
+  refusal reasons are already codes — `client_cert_missing`, `client_cert_expired`,
+  `client_cert_not_allowed`, `client_cert_unparseable`, `proxy_verify_failed` — and v1 put the
+  generic `unauthorized` in `error` with the code in `detail`, which made a missing certificate
+  indistinguishable from a missing API key for a client switching on `error`. Now passed as a
+  structured detail so the specific code survives, with the five reasons pinned by a test.
+
+  11 tests. One of them found a live defect while being written: the 401 returned
+  `{"error": "Missing API key"}` — a sentence where the machine-readable code belongs, and no
+  `detail` at all. All 11 middleware responses now go through the envelope. Three mutations,
+  each failing named tests: drop the handler (3), put a sentence back in `error` (1), let a
+  structured detail lose its own code (1). Plus a test asserting every 4xx/5xx status the
+  routers actually raise has a name in the vocabulary, so a new status cannot silently degrade
+  to the generic `"error"`.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

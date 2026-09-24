@@ -21,6 +21,7 @@ from .context import (
     set_current_tenant_id,
 )
 from .env import env_int, env_str
+from .errors import error_body
 from .mtls import MtlsSettings, evaluate_client_cert
 from .rbac import is_allowed
 from .runtime import is_local_dev
@@ -164,11 +165,8 @@ def check_pre_auth_rate_limit(request: Request, path: str) -> Optional[JSONRespo
     return JSONResponse(
         status_code=429,
         headers=decision.headers(),
-        content={
-            "error": "Rate limit exceeded",
-            "detail": "Too many requests to {0} from this address. Retry in {1}s.".format(
-                path, max(1, decision.retry_after)),
-        },
+        content=error_body(429, "Too many requests to {0} from this address. Retry in {1}s.".format(
+            path, max(1, decision.retry_after))),
     )
 
 
@@ -502,9 +500,19 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if mtls.guards(path):
             ok, reason, identity = evaluate_client_cert(request.headers, mtls)
             if not ok:
+                # `reason` is already a CODE (client_cert_missing, client_cert_expired,
+                # client_cert_not_allowed, client_cert_unparseable, proxy_verify_failed), not a
+                # sentence -- so it belongs in `error`, where a client switches on it. Passing
+                # it as a structured detail is how error_body learns that: a detail that names
+                # its own `error` keeps it instead of being overwritten with the generic
+                # `unauthorized`. Losing "which certificate problem" would make this 401
+                # indistinguishable from a missing API key.
                 return JSONResponse(
                     status_code=401,
-                    content={"error": "Client certificate required", "detail": reason},
+                    content=error_body(401, {
+                        "error": reason,
+                        "message": "Client certificate check failed: {0}.".format(reason),
+                    }),
                 )
             request.state.mtls_fingerprint = identity.get("fingerprint")
             request.state.mtls_subject = identity.get("subject")
@@ -523,7 +531,8 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         # matching double-submit token. Header/API-key auth (machines, mobile SDK) is exempt —
         # it isn't cookie-driven, so it isn't CSRF-exposed.
         if request.method in CSRF_PROTECTED_METHODS and authenticated_via_cookie(request) and not csrf_valid(request):
-            return JSONResponse(status_code=403, content={"error": "CSRF token missing or invalid"})
+            return JSONResponse(status_code=403,
+                                content=error_body(403, "CSRF token missing or invalid."))
 
         storage = self.storage() if callable(self.storage) else self.storage
 
@@ -537,24 +546,25 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if api_key:
             resolved = storage.get_tenant_by_api_key(api_key)
             if not resolved:
-                return JSONResponse(status_code=401, content={"error": "Invalid API key"})
+                return JSONResponse(status_code=401, content=error_body(401, "Invalid API key."))
             tenant = resolved["tenant"]
             role = resolved["api_key"].get("role", "owner")
             api_key_id = resolved["api_key"]["id"]
         elif session_token:
             resolved = storage.resolve_member_session(session_token)
             if not resolved:
-                return JSONResponse(status_code=401, content={"error": "Invalid or expired session"})
+                return JSONResponse(status_code=401,
+                                    content=error_body(401, "Invalid or expired session."))
             tenant = resolved["tenant"]
             role = resolved.get("role", "viewer")
             actor_kind = "member"
             session_id = resolved.get("session_id")
             api_key_id = "member:{0}".format(resolved.get("member", {}).get("id", ""))
         else:
-            return JSONResponse(status_code=401, content={"error": "Missing API key"})
+            return JSONResponse(status_code=401, content=error_body(401, "Missing API key."))
 
         if not tenant.get("is_active", True):
-            return JSONResponse(status_code=403, content={"error": "Tenant is inactive"})
+            return JSONResponse(status_code=403, content=error_body(403, "Tenant is inactive."))
 
         # Limits come from app/rate_limit.py. check_request draws from TWO buckets: the one
         # for this request's resource class (decision / read / write / ai / export / admin,
@@ -574,23 +584,19 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=429,
                 headers=limit_decision.headers(),
-                content={
-                    "error": "Rate limit exceeded",
-                    # Naming the budget is the difference between an actionable 429 and a
-                    # mystery: "you are out of AI calls" tells a client to back off on ONE
-                    # surface, where "you are rate limited" reads as a total outage.
-                    "detail": "Limit is {0} requests/minute on the '{1}' budget for this tenant. Retry in {2}s.".format(
+                # Naming the budget is the difference between an actionable 429 and a
+                # mystery: "you are out of AI calls" tells a client to back off on ONE
+                # surface, where "you are rate limited" reads as a total outage.
+                content=error_body(429,
+                    "Limit is {0} requests/minute on the '{1}' budget for this tenant. Retry in {2}s.".format(
                         limit_decision.limit, limit_decision.scope or rate_limit.TENANT,
-                        max(1, limit_decision.retry_after)),
-                },
+                        max(1, limit_decision.retry_after))),
             )
 
         # RBAC: the caller's role must hold the capability this request needs.
         if not is_allowed(role, request.method, path):
-            return JSONResponse(status_code=403, content={
-                "error": "Forbidden",
-                "detail": "Role '{0}' is not permitted to {1} {2}.".format(role, request.method, path),
-            })
+            return JSONResponse(status_code=403, content=error_body(
+                403, "Role '{0}' is not permitted to {1} {2}.".format(role, request.method, path)))
 
         request.state.tenant_id = tenant["id"]
         request.state.api_key_id = api_key_id
@@ -680,18 +686,16 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                             media_type="application/json",
                             headers={"Idempotent-Replay": "true"})
         if claim["action"] == "in_flight":
-            return JSONResponse(status_code=409, content={
-                "detail": {
-                    "error": "idempotency_key_in_flight",
-                    "message": "A request with this Idempotency-Key is still being processed.",
-                }})
+            return JSONResponse(status_code=409, content=error_body(409, {
+                "error": "idempotency_key_in_flight",
+                "message": "A request with this Idempotency-Key is still being processed.",
+            }))
         if claim["action"] == "mismatch":
-            return JSONResponse(status_code=422, content={
-                "detail": {
-                    "error": "idempotency_key_reused",
-                    "message": ("This Idempotency-Key was already used for a different request. "
-                                "Generate a new key per operation."),
-                }})
+            return JSONResponse(status_code=422, content=error_body(422, {
+                "error": "idempotency_key_reused",
+                "message": ("This Idempotency-Key was already used for a different request. "
+                            "Generate a new key per operation."),
+            }))
 
         try:
             response = await call_next(request)
