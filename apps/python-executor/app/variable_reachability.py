@@ -26,7 +26,7 @@ positive costs one sandbox call; a false negative changes the decision.
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, Mapping, Optional, Set
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Set
 
 __all__ = ["needed_variable_ids", "collect_condition_variable_ids", "collect_step_variable_ids",
            "compute_only_used_vars"]
@@ -213,8 +213,14 @@ def needed_variable_ids(
     collect_step_variable_ids(policy.get("steps", []) or [], rules, scorecards, decision_tables,
                               by_id, direct, get_policy, set())
 
+    return dependency_closure(direct, by_id)
+
+
+def dependency_closure(seed: Iterable[str], by_id: Dict[str, Any]) -> Set[str]:
+    """`seed` plus every variable those read, transitively (substring match on the code,
+    over-inclusive on purpose -- see the module docstring)."""
     needed: Set[str] = set()
-    stack = list(direct)
+    stack = list(seed)
     while stack:
         vid = stack.pop()
         if vid in needed or vid not in by_id:
@@ -225,6 +231,27 @@ def needed_variable_ids(
             if other != vid and other not in needed and other in code:
                 stack.append(other)
     return needed
+
+
+def promoted_or_reached(variables: Iterable[Dict[str, Any]], reached: Iterable[str],
+                        by_id: Dict[str, Any]) -> Set[str]:
+    """What a decision computes when it computes "everything": every PROMOTED variable, every
+    variable the policy reaches whatever its status, and whatever those read.
+
+    An unpromoted draft that no policy step can reach is not part of a decision. It used to be:
+    compute-everything meant the whole catalog, so a half-written DEV variable -- one an author
+    saved a minute ago, used by nothing -- was evaluated on every production decision, and when
+    it errored `_fail_closed_on_variable_errors` sent every decision to review. On 2026-09-24 two
+    leftover test variables did exactly that to a running soak. The promotion flow exists so
+    that drafts do not touch production; this is where decisions honour it.
+
+    It changes what is recorded -- `computed_variables` no longer carries unused drafts -- and
+    that is the intended trade: what a production decision records is what production runs.
+    A draft the policy DOES read is still computed, so a policy under test in DEV or UAT sees
+    its own drafts. A variable with no status is treated as promoted (callers that hand-roll a
+    catalog keep the old behaviour)."""
+    seed = {v["id"] for v in variables if str(v.get("status") or "prod") == "prod"} | set(reached)
+    return dependency_closure(seed, by_id)
 
 
 # The per-tenant key, in `engine_config` alongside timeout_ms / memory_mb / evaluation_budget_ms.
@@ -243,8 +270,8 @@ def compute_only_used_vars(engine_config: Optional[Mapping[str, Any]] = None) ->
     PER TENANT FIRST, ENVIRONMENT AS THE DEFAULT, and that ordering is the point of the
     setting. This flag is worth the entire measured +82% on the decision path -- and it is off
     by default not for performance reasons but because it CHANGES WHAT IS RECORDED: with it on,
-    a decision's `computed_variables` holds what the policy read rather than the tenant's whole
-    catalog. That is a decision about your audit surface. A regulated lender that reconstructs
+    a decision's `computed_variables` holds what the policy read rather than every promoted
+    variable. That is a decision about your audit surface. A regulated lender that reconstructs
     declines from the recorded variable set wants everything; a high-volume tenant scoring
     thin-file applicants wants the latency. Those are different answers for different tenants
     of the same install, which a process-wide environment variable cannot express.
