@@ -54,7 +54,13 @@ RUN corepack enable
 # should resolve the API base at RUNTIME (same-origin by default, overridable),
 # not from process.env.NEXT_PUBLIC_API_BASE_URL. That file is outside this change.
 # ---------------------------------------------------------------------------
-ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
+# EMPTY by default, so the bundle falls through to store.ts's same-origin resolution and one
+# published image works in every cluster. It used to default to http://localhost:8080, which
+# NEXT_PUBLIC_* substitution baked into the bundle at build time -- so anyone who pulled this
+# image got a dashboard hard-wired to their own laptop, with no runtime override possible.
+# Pass --build-arg NEXT_PUBLIC_API_BASE_URL=https://api.example.com only when the API is on a
+# DIFFERENT origin from the dashboard (and then configure CORS_ORIGINS to match).
+ARG NEXT_PUBLIC_API_BASE_URL=
 ARG NEXT_PUBLIC_RULEMIND_DEV_API_KEY=
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_RULEMIND_DEV_API_KEY=$NEXT_PUBLIC_RULEMIND_DEV_API_KEY

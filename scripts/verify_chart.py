@@ -325,6 +325,54 @@ def check_production_env(docs, problems):
                     "and cookies ship without Secure".format(kind, name, container.get("name", "?")))
 
 
+def check_self_serve_signup_is_off(docs, problems):
+    """A cluster install must not publish an unauthenticated tenant-and-API-key faucet.
+
+    `app/routers/onboarding.py:50` reads `env_bool("RULEMIND_SELF_SERVE_SIGNUP", True)` -- ON by
+    default -- and `app/middleware.py:486` puts `/api/v1/onboarding/signup` in EXEMPT_PATHS, so
+    it returns before the auth check. The Ingress routes `/api` to the API Service, so anyone who
+    can reach the host can create a tenant and mint an API key, throttled only by a 20 req/min
+    per-IP budget.
+
+    That default is right for `docker compose up` on a laptop and wrong for the shape this chart
+    exists for -- an internal install at a company that provisions tenants out of band -- and the
+    variable appeared in no chart or manifest at all, so it took the code default everywhere.
+
+    Checked as present rather than as a particular value: an operator who genuinely wants public
+    signup sets it to "1" deliberately, which is a decision; taking the code default by omission
+    is not.
+    """
+    sources = _env_sources(docs)
+    examined = 0
+    for kind, name, pod in workloads(docs):
+        if kind in ("Job", "CronJob"):
+            continue
+        for container in containers(pod):
+            env = _provided_env(container, sources)
+            # Backend processes only: the route lives in the API app and the web container
+            # cannot serve it. DB_POOL_SIZE is the discriminator rather than a name match, so a
+            # renamed deployment does not silently drop out of this check.
+            #
+            # The first version keyed on DATABASE_URL and examined NOTHING. `_provided_env`
+            # omits blank values, this script renders the chart with no --set, and the Secret
+            # therefore carries databaseUrl: "" -- so the discriminator never matched and the
+            # check passed on every input including the broken one. A check that reports success
+            # without executing its assertion, written to catch checks that report success
+            # without executing their assertion. Hence the counter below.
+            if "DB_POOL_SIZE" not in env:
+                continue
+            examined += 1
+            if "RULEMIND_SELF_SERVE_SIGNUP" not in env:
+                problems.append(
+                    "{0}/{1}:{2}: RULEMIND_SELF_SERVE_SIGNUP is unset, so it takes the code "
+                    "default (ON) and this install publishes unauthenticated tenant creation"
+                    .format(kind, name, container.get("name", "?")))
+    if not examined:
+        problems.append(
+            "check_self_serve_signup_is_off examined no backend container -- its discriminator "
+            "no longer matches anything, so it is passing vacuously rather than verifying")
+
+
 def check_ingress_routes_the_api(docs, problems):
     """The browser must be able to reach the API it is told to call.
 
@@ -389,6 +437,7 @@ CHECKS = (
     check_security_context,
     check_no_blank_env,
     check_production_env,
+    check_self_serve_signup_is_off,
     check_ingress_routes_the_api,
     check_migrate_job_is_upgrade_safe,
 )

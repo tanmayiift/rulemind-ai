@@ -58,6 +58,11 @@ data:
   # restart. entrypoint.sh wipes it once in the master before the fork.
   PROMETHEUS_MULTIPROC_DIR: /tmp/prom-multiproc
 
+  # Unauthenticated tenant creation, reachable through the Ingress. The code defaults it ON
+  # (onboarding.py:50) and this chart set it nowhere, so every install shipped a public signup
+  # endpoint. See the note in values.yaml.
+  RULEMIND_SELF_SERVE_SIGNUP: {{ .Values.env.selfServeSignup | quote }}
+
   # Was never rendered at all, so the API fell back to the localhost default in
   # app/main.py and rejected every browser request from the real ingress host.
   CORS_ORIGINS: {{ include "rulemind.corsOrigins" . | quote }}
