@@ -8,7 +8,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,6 +35,7 @@ from .logic import (
     nodes_to_tree,
     slugify,
 )
+from .errors import error_body as _error_body
 from .middleware import (
     IdempotencyMiddleware,
     RequestIdMiddleware,
@@ -151,6 +155,58 @@ app.add_middleware(RequestIdMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 
+@app.exception_handler(StarletteHTTPException)
+def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Every HTTPException gets the envelope. Registered for STARLETTE's exception rather than
+    FastAPI's subclass, because 404s for an unmatched route and 405s for a wrong method are
+    raised by the router itself and never pass through FastAPI's -- so registering the subclass
+    would leave exactly the errors a client hits first without an `error` field."""
+    return JSONResponse(status_code=exc.status_code,
+                        content=_error_body(exc.status_code, exc.detail),
+                        headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(RequestValidationError)
+def _validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Request-body validation. FastAPI renders this as `{"detail": [ ...list... ]}` -- a third
+    shape, and the one an integrator meets on their very first malformed request. `detail` is
+    left as that list (it is genuinely useful and pydantic's own format), with the envelope's
+    `error` making it parseable alongside every other failure."""
+    return JSONResponse(status_code=422,
+                        content={"error": "validation_error", "detail": jsonable_encoder(exc.errors())})
+
+
+@app.get("/api/v1/openapi.json")
+def authenticated_openapi(request: Request) -> Dict[str, Any]:
+    """The machine-readable API contract, behind the ordinary API-key check.
+
+    THE GAP THIS CLOSES. `/openapi.json`, `/docs` and `/redoc` are all disabled when
+    RULEMIND_ENV is production (see `_docs_enabled` -- correctly, they were served
+    unauthenticated and handed the complete endpoint map to anyone who asked), and the Helm
+    chart sets exactly that. So **a Helm install published no API contract at all**, and the
+    human fallback is `API.md`, which documented 17 of 278 endpoints and got 13 of the 17
+    wrong -- naming `/api/v1/api-keys` (really `/api/v1/access/keys`), `/api/v1/approvals`
+    (really `/api/v1/reviews`), `POST /api/v1/rules/validate` (does not exist) and
+    `/api/v1/dashboard/summary` (does not exist). An integration team following the shipped
+    documentation gets 404s.
+
+    Removing the spec was the right fix for the wrong reason: the problem was that it was
+    PUBLIC, not that it existed. This path is not in `middleware.EXEMPT_PATHS`, so it requires
+    a valid API key like every other `/api/v1/` route -- the customer's own integration team
+    can generate a typed client, and an unauthenticated scanner still gets nothing.
+
+    Served regardless of RULEMIND_ENV, deliberately: production is exactly where a self-hosted
+    customer needs it, and `RULEMIND_ENABLE_DOCS` stays the separate switch for the PUBLIC
+    Swagger UI.
+
+    Note the spec's own limitation, rather than letting the caller discover it: every operation
+    is annotated `-> Dict[str, Any]`, so there are **278 operations and zero typed 2xx response
+    schemas**. Paths, methods and request bodies are accurate; responses are not described.
+    That is plan item 5.1 and it is why all five SDKs are hand-written.
+    """
+    return app.openapi()
+
+
 @app.exception_handler(EvaluationBudgetExceeded)
 def _evaluation_budget_handler(request: Request, exc: EvaluationBudgetExceeded) -> JSONResponse:
     """504, not 500 -- the request is retryable and nothing is wrong with it.
@@ -159,11 +215,13 @@ def _evaluation_budget_handler(request: Request, exc: EvaluationBudgetExceeded) 
     (/decide, /decide/batch, the console execute, simulations) funnels through the same
     executor, and a budget that only one of them honoured would be worse than none.
     """
+    # `error` first and `detail` second, matching _error_body's envelope. The extra fields are
+    # additive and documented in API.md; a client that only knows the envelope still parses it.
     return JSONResponse(
         status_code=504,
         content={
-            "detail": str(exc),
             "error": "evaluation_budget_exceeded",
+            "detail": str(exc),
             "budget_ms": exc.budget_ms,
             "elapsed_ms": exc.elapsed_ms,
             "stage": exc.stage,

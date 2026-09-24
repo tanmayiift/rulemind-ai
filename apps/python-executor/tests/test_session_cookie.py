@@ -93,7 +93,10 @@ class SessionCookieTests(unittest.TestCase):
             json={"email": "x@acme.com", "name": "X", "role": "viewer", "password": "pw-123456"},
         )
         self.assertEqual(r.status_code, 403)
-        self.assertIn("CSRF", r.json().get("error", ""))
+        # `error` is the stable code; the CSRF sentence moved to `detail`. Asserting on the
+        # code AND the reason keeps both halves of the envelope honest.
+        self.assertEqual(r.json().get("error"), "forbidden")
+        self.assertIn("CSRF", str(r.json().get("detail", "")))
 
     def test_cookie_mutation_with_csrf_passes(self):
         csrf = self._login().json()["csrf_token"]

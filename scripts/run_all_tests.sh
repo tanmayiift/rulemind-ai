@@ -554,8 +554,12 @@ if has contracts; then
   # and written down. It was added after a measurement found 84 of 111 settable by nothing --
   # encryption at rest and LOG_LEVEL among them. Same family as the two gates beside it: derived
   # from source, so it cannot be satisfied by editing a list.
+  # check_api_docs.py: API.md is the only contract a production Helm install ships, because
+  # /openapi.json is disabled there. It documented 17 of 278 endpoints and 13 of the 17 did not
+  # exist. There is now an authenticated GET /api/v1/openapi.json as well; this gate keeps the
+  # prose from drifting back into naming routes that 404.
   for gate in "docs/parity/check_parity.py" "scripts/verify_chart.py" "scripts/check_audit_ignores.py" \
-              "scripts/check_config_surface.py" \
+              "scripts/check_config_surface.py" "scripts/check_api_docs.py" \
               "apps/python-executor/scripts/openapi_gate.py"; do
     env -u DATABASE_URL "$VENV" "$ROOT/$gate" > "$OUT/$(basename "$gate").log" 2>&1
     gate_rc=$?

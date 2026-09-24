@@ -186,7 +186,15 @@ class MtlsMiddlewareTests(unittest.TestCase):
         # No client cert -> blocked by mTLS before the API-key check even runs.
         blocked = client.get("/sdk/v1/health", headers={"x-api-key": api_key})
         self.assertEqual(blocked.status_code, 401)
-        self.assertEqual(blocked.json().get("error"), "Client certificate required")
+        # The envelope: `error` is the stable machine-readable code, `detail` the context.
+        # This used to assert `error == "Client certificate required"` -- a human sentence in
+        # the field a client switches on. The mTLS reasons are already codes
+        # (client_cert_missing / _expired / _not_allowed / _unparseable, proxy_verify_failed),
+        # so the SPECIFIC one surfaces as `error`, not a generic "unauthorized": a client has
+        # to be able to tell a missing certificate from a missing API key.
+        body = blocked.json()
+        self.assertEqual(body.get("error"), "client_cert_missing")
+        self.assertIn("certificate", str(body.get("detail", {}).get("message", "")).lower())
 
         # Valid, allow-listed cert + API key -> passes mTLS and auth.
         allowed = client.get(

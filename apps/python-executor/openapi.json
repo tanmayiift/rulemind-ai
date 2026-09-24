@@ -17,6 +17,7 @@
           "anthropic": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -50,6 +51,7 @@
           "gemini": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -61,6 +63,7 @@
           "openai": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -275,12 +278,14 @@
       "ActionTestRequest": {
         "properties": {
           "action": {
+            "additionalProperties": true,
             "title": "Action",
             "type": "object"
           },
           "context": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -330,6 +335,7 @@
         "properties": {
           "payloads": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Payloads",
@@ -369,6 +375,7 @@
       "CompareRequest": {
         "properties": {
           "features": {
+            "additionalProperties": true,
             "default": {},
             "title": "Features",
             "type": "object"
@@ -391,6 +398,7 @@
             "title": "Color"
           },
           "config": {
+            "additionalProperties": true,
             "title": "Config",
             "type": "object"
           },
@@ -437,6 +445,7 @@
             "type": "string"
           },
           "sample_payload": {
+            "additionalProperties": true,
             "title": "Sample Payload",
             "type": "object"
           },
@@ -470,6 +479,7 @@
           "config": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -525,6 +535,7 @@
           "sample_payload": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -564,14 +575,17 @@
             "type": "string"
           },
           "base": {
+            "additionalProperties": true,
             "title": "Base",
             "type": "object"
           },
           "edit_a": {
+            "additionalProperties": true,
             "title": "Edit A",
             "type": "object"
           },
           "edit_b": {
+            "additionalProperties": true,
             "title": "Edit B",
             "type": "object"
           },
@@ -639,6 +653,7 @@
       "DecideRequest": {
         "properties": {
           "payload": {
+            "additionalProperties": true,
             "title": "Payload",
             "type": "object"
           },
@@ -670,6 +685,7 @@
           "default_row": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -686,6 +702,7 @@
           "inputs": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Inputs",
@@ -694,6 +711,7 @@
           "outputs": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Outputs",
@@ -702,6 +720,7 @@
           "rows": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Rows",
@@ -714,6 +733,7 @@
       "DecisionTableEvaluateRequest": {
         "properties": {
           "variable_values": {
+            "additionalProperties": true,
             "default": {},
             "title": "Variable Values",
             "type": "object"
@@ -810,6 +830,7 @@
           },
           "rows": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Rows",
@@ -829,6 +850,7 @@
           "default_row": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -856,6 +878,7 @@
           "inputs": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Inputs",
@@ -868,6 +891,7 @@
           "outputs": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Outputs",
@@ -876,6 +900,7 @@
           "rows": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Rows",
@@ -1041,6 +1066,7 @@
         "description": "Evaluate an already-scored dataset. `rows` carry score/label (+ optional segment/date/\ntreatment) columns named in `config`. Rows are used to compute metrics then discarded.",
         "properties": {
           "config": {
+            "additionalProperties": true,
             "title": "Config",
             "type": "object"
           },
@@ -1061,6 +1087,7 @@
           },
           "rows": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Rows",
@@ -1177,6 +1204,7 @@
           },
           "variants": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Variants",
@@ -1223,6 +1251,7 @@
         "properties": {
           "connectors": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Connectors",
@@ -1230,6 +1259,7 @@
           },
           "policies": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Policies",
@@ -1237,6 +1267,7 @@
           },
           "rules": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Rules",
@@ -1244,17 +1275,20 @@
           },
           "scorecards": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Scorecards",
             "type": "array"
           },
           "settings": {
+            "additionalProperties": true,
             "title": "Settings",
             "type": "object"
           },
           "variables": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Variables",
@@ -1325,6 +1359,7 @@
             "anyOf": [
               {
                 "items": {
+                  "additionalProperties": true,
                   "type": "object"
                 },
                 "type": "array"
@@ -1415,6 +1450,7 @@
           "screens": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Screens",
@@ -1565,6 +1601,7 @@
             "title": "Over"
           },
           "payload": {
+            "additionalProperties": true,
             "default": {},
             "title": "Payload",
             "type": "object"
@@ -1572,6 +1609,7 @@
           "steps": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Steps",
@@ -1580,6 +1618,7 @@
           "variable_values": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -1766,6 +1805,7 @@
           "input_schema": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -1777,6 +1817,7 @@
           "metrics": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -1801,6 +1842,7 @@
           "output_schema": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -1828,6 +1870,7 @@
           "config": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -1865,6 +1908,7 @@
           },
           "rows": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Rows",
@@ -1906,6 +1950,7 @@
             "title": "Features"
           },
           "input_data": {
+            "additionalProperties": true,
             "title": "Input Data",
             "type": "object"
           }
@@ -1944,6 +1989,7 @@
             "anyOf": [
               {
                 "items": {
+                  "additionalProperties": true,
                   "type": "object"
                 },
                 "type": "array"
@@ -2000,6 +2046,7 @@
           },
           "members": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Members",
@@ -2140,6 +2187,7 @@
           "config": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -2257,6 +2305,7 @@
           "trigger": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -2470,12 +2519,14 @@
           "columns": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Columns",
             "type": "array"
           },
           "filters": {
+            "additionalProperties": true,
             "default": {},
             "title": "Filters",
             "type": "object"
@@ -2494,6 +2545,7 @@
           "columns": {
             "default": [],
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Columns",
@@ -2511,6 +2563,7 @@
             "title": "Description"
           },
           "filters": {
+            "additionalProperties": true,
             "default": {},
             "title": "Filters",
             "type": "object"
@@ -2522,6 +2575,7 @@
           "schedule": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -2549,6 +2603,7 @@
             "type": "string"
           },
           "response": {
+            "additionalProperties": true,
             "title": "Response",
             "type": "object"
           },
@@ -2698,6 +2753,7 @@
           "tree": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -2716,6 +2772,7 @@
       "ScheduleUpsertRequest": {
         "properties": {
           "config": {
+            "additionalProperties": true,
             "title": "Config",
             "type": "object"
           },
@@ -2729,6 +2786,7 @@
             "type": "boolean"
           },
           "payload_source": {
+            "additionalProperties": true,
             "title": "Payload Source",
             "type": "object"
           },
@@ -2911,6 +2969,7 @@
       "SdkDecideRequest": {
         "properties": {
           "payload": {
+            "additionalProperties": true,
             "title": "Payload",
             "type": "object"
           },
@@ -2963,6 +3022,7 @@
         "properties": {
           "decisions": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Decisions",
@@ -2976,6 +3036,7 @@
         "properties": {
           "events": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Events",
@@ -2989,6 +3050,7 @@
         "properties": {
           "actionResults": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Actionresults",
@@ -3042,11 +3104,13 @@
             "type": "string"
           },
           "payload": {
+            "additionalProperties": true,
             "title": "Payload",
             "type": "object"
           },
           "pendingOperations": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Pendingoperations",
@@ -3070,6 +3134,7 @@
           "reviewTask": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3080,12 +3145,14 @@
           },
           "ruleResults": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Ruleresults",
             "type": "array"
           },
           "scorecardResults": {
+            "additionalProperties": true,
             "title": "Scorecardresults",
             "type": "object"
           },
@@ -3123,6 +3190,7 @@
           },
           "trace": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Trace",
@@ -3140,6 +3208,7 @@
             "title": "Userid"
           },
           "variables": {
+            "additionalProperties": true,
             "title": "Variables",
             "type": "object"
           }
@@ -3165,6 +3234,7 @@
             "title": "Decision"
           },
           "response": {
+            "additionalProperties": true,
             "title": "Response",
             "type": "object"
           },
@@ -3186,6 +3256,7 @@
       "SeedRequest": {
         "properties": {
           "initial": {
+            "additionalProperties": true,
             "default": {},
             "title": "Initial",
             "type": "object"
@@ -3232,6 +3303,7 @@
           "auth_config": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3243,6 +3315,7 @@
           "branding": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3254,6 +3327,7 @@
           "engine_config": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3265,6 +3339,7 @@
           "source_defaults": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3616,6 +3691,7 @@
       "StartRequest": {
         "properties": {
           "payload": {
+            "additionalProperties": true,
             "default": {},
             "title": "Payload",
             "type": "object"
@@ -3651,6 +3727,7 @@
             "anyOf": [
               {
                 "items": {
+                  "additionalProperties": true,
                   "type": "object"
                 },
                 "type": "array"
@@ -3733,6 +3810,7 @@
             "anyOf": [
               {
                 "items": {
+                  "additionalProperties": true,
                   "type": "object"
                 },
                 "type": "array"
@@ -3790,6 +3868,7 @@
       "TenantCreateRequest": {
         "properties": {
           "config": {
+            "additionalProperties": true,
             "title": "Config",
             "type": "object"
           },
@@ -3819,6 +3898,7 @@
           "config": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3867,6 +3947,7 @@
       "TestPayloadRequest": {
         "properties": {
           "payload": {
+            "additionalProperties": true,
             "title": "Payload",
             "type": "object"
           }
@@ -3914,6 +3995,7 @@
             "type": "string"
           },
           "payload": {
+            "additionalProperties": true,
             "title": "Payload",
             "type": "object"
           },
@@ -4003,6 +4085,7 @@
             "type": "boolean"
           },
           "payload_mapping": {
+            "additionalProperties": true,
             "title": "Payload Mapping",
             "type": "object"
           },
@@ -4048,6 +4131,7 @@
           },
           "kpis": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "title": "Kpis",
@@ -4111,6 +4195,7 @@
       "WorkflowCallbackRequest": {
         "properties": {
           "data": {
+            "additionalProperties": true,
             "title": "Data",
             "type": "object"
           },
@@ -4151,6 +4236,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Admin Login Api Admin V1 Auth Login Post",
                   "type": "object"
                 }
@@ -4220,6 +4306,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Admin Me Api Admin V1 Auth Me Get",
                   "type": "object"
                 }
@@ -4268,6 +4355,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Admin List Tenants Api Admin V1 Tenants Get",
@@ -4325,6 +4413,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Admin Create Tenant Api Admin V1 Tenants Post",
                   "type": "object"
                 }
@@ -4381,6 +4470,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Admin Get Tenant Api Admin V1 Tenants  Tenant Id  Get",
                   "type": "object"
                 }
@@ -4445,6 +4535,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Admin Update Tenant Api Admin V1 Tenants  Tenant Id  Patch",
                   "type": "object"
                 }
@@ -4502,6 +4593,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Admin List Tenant Keys Api Admin V1 Tenants  Tenant Id  Keys Get",
@@ -4558,6 +4650,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Admin Create Tenant Key Api Admin V1 Tenants  Tenant Id  Keys Post",
                   "type": "object"
                 }
@@ -4655,6 +4748,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Mobile Demo Access Api Mobile V1 Auth Demo Post",
                   "type": "object"
                 }
@@ -4684,6 +4778,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Mobile Admin Login Api Mobile V1 Auth Login Post",
                   "type": "object"
                 }
@@ -4713,6 +4808,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Mobile Admin Me Api Mobile V1 Auth Me Get",
                   "type": "object"
                 }
@@ -4743,6 +4839,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Mobile Switch Tenant Api Mobile V1 Tenants  Tenant Id  Session Post",
                   "type": "object"
                 }
@@ -4774,6 +4871,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Access List Keys Api V1 Access Keys Get",
@@ -4804,6 +4902,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Create Key Api V1 Access Keys Post",
                   "type": "object"
                 }
@@ -4845,6 +4944,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Revoke Key Api V1 Access Keys  Kid  Delete",
                   "type": "object"
                 }
@@ -4896,6 +4996,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Update Key Role Api V1 Access Keys  Kid  Role Patch",
                   "type": "object"
                 }
@@ -4926,6 +5027,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Me Api V1 Access Me Get",
                   "type": "object"
                 }
@@ -4947,6 +5049,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Access List Members Api V1 Access Members Get",
@@ -4977,6 +5080,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Create Member Api V1 Access Members Post",
                   "type": "object"
                 }
@@ -5018,6 +5122,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Deactivate Member Api V1 Access Members  Member Id  Delete",
                   "type": "object"
                 }
@@ -5067,6 +5172,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Update Member Api V1 Access Members  Member Id  Patch",
                   "type": "object"
                 }
@@ -5097,6 +5203,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Roles Api V1 Access Roles Get",
                   "type": "object"
                 }
@@ -5117,6 +5224,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Get Sso Api V1 Access Sso Get",
                   "type": "object"
                 }
@@ -5145,6 +5253,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Access Set Sso Api V1 Access Sso Put",
                   "type": "object"
                 }
@@ -5185,6 +5294,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ai Analyze Experiment Api V1 Ai Analyze Experiment Post",
                   "type": "object"
                 }
@@ -5225,6 +5335,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ai Analyze Rejections Api V1 Ai Analyze Rejections Post",
                   "type": "object"
                 }
@@ -5265,6 +5376,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Set Ai Budget Api V1 Ai Budget Put",
                   "type": "object"
                 }
@@ -5295,6 +5407,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Ai Config Api V1 Ai Config Get",
                   "type": "object"
                 }
@@ -5322,6 +5435,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Put Ai Config Api V1 Ai Config Put",
                   "type": "object"
                 }
@@ -5362,6 +5476,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ai Explain Decision Api V1 Ai Explain Decision Post",
                   "type": "object"
                 }
@@ -5402,6 +5517,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ai Generate Policy Api V1 Ai Generate Policy Post",
                   "type": "object"
                 }
@@ -5442,6 +5558,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ai Generate Predictor Api V1 Ai Generate Predictor Post",
                   "type": "object"
                 }
@@ -5482,6 +5599,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ai Generate Rule Api V1 Ai Generate Rule Post",
                   "type": "object"
                 }
@@ -5505,7 +5623,7 @@
     },
     "/api/v1/ai/models": {
       "get": {
-        "description": "Selectable models for a provider. Live-fetches from the provider's /models\nAPI when a key is configured (so new model launches appear automatically),\nelse returns the curated list.",
+        "description": "Selectable models for a provider. Live-fetches from the provider's /models\nAPI when a key is configured (so new model launches appear automatically),\nelse returns the curated list.\n\nWITH NO `provider`, USE THE WORKSPACE'S CONFIGURED DEFAULT. This used to default to the\nliteral \"anthropic\", so a workspace whose default_provider is openai -- with an OpenAI key\nconfigured and no Anthropic key -- got the ANTHROPIC CURATED LIST back, `live: false`, and\nno error. The caller sees five stale model names and a hint saying \"add a key to fetch the\nlive list\" while a key is configured and working.\n\nThe failure is silent in both directions: nothing errors, and the response is a\nwell-formed list of real models -- just the wrong provider's. Found by a live test asserting\n`live: true` against a backend where the AI Copilot page was demonstrably working.",
         "operationId": "list_ai_models_api_v1_ai_models_get",
         "parameters": [
           {
@@ -5513,7 +5631,7 @@
             "name": "provider",
             "required": false,
             "schema": {
-              "default": "anthropic",
+              "default": "",
               "title": "Provider",
               "type": "string"
             }
@@ -5524,6 +5642,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Ai Models Api V1 Ai Models Get",
                   "type": "object"
                 }
@@ -5563,6 +5682,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ai Test Api V1 Ai Test Post",
                   "type": "object"
                 }
@@ -5593,6 +5713,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Ai Usage Api V1 Ai Usage Get",
                   "type": "object"
                 }
@@ -5613,6 +5734,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Reset Ai Usage Api V1 Ai Usage Reset Post",
                   "type": "object"
                 }
@@ -5632,6 +5754,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Analytics Decisions Api V1 Analytics Decisions Get",
                   "type": "object"
                 }
@@ -5662,6 +5785,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Experiment Results Api V1 Analytics Experiments  Experiment Id  Get",
                   "type": "object"
                 }
@@ -5691,6 +5815,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Analytics Latency Api V1 Analytics Latency Get",
                   "type": "object"
                 }
@@ -5704,7 +5829,7 @@
     },
     "/api/v1/analytics/rejection-drivers": {
       "post": {
-        "description": "Which predictor/condition drives the most rejections \u2014 pure compute over the\ndecision log (no LLM, no key). Optionally scoped to one policy.",
+        "description": "Which predictor/condition drives the most rejections \u2014 pure compute over the\ndecision log (no LLM, no key). Optionally scoped to one policy.\n\nTenant passed explicitly. See `audit_events` below: without it this resolved through\n`Storage._tenant_id`'s fallback chain to `default_tenant_id`, the FIRST tenant in the\ntable \u2014 so on a multi-tenant install this analytic was computed over someone else's\ndecisions and returned as the caller's.",
         "operationId": "analytics_rejection_drivers_api_v1_analytics_rejection_drivers_post",
         "requestBody": {
           "content": {
@@ -5721,6 +5846,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Analytics Rejection Drivers Api V1 Analytics Rejection Drivers Post",
                   "type": "object"
                 }
@@ -5750,6 +5876,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Analytics Sdk Api V1 Analytics Sdk Get",
                   "type": "object"
                 }
@@ -5763,7 +5890,7 @@
     },
     "/api/v1/audit": {
       "get": {
-        "description": "The authoring audit trail: who changed which rule/variable/scorecard/policy, when.\n\nThis route did not exist. Events were written -- and after the entity-CRUD wiring, written\nfor every authoring entity -- but nothing read them back over HTTP, so the compliance\nartifact this product exists to produce could only be reached by opening the database. An\nauditor asking \"show me every change to this rule\" had no answer.\n\nTenant is passed explicitly rather than relying on the storage layer's fallback chain\n(`tenant_id or contextvar or default_tenant_id`). On an authenticated request the contextvar\nis set by the middleware and resolves correctly either way -- but the last link in that\nchain is the FIRST tenant, and an audit read reaching it would serve one tenant's change\nhistory to another. Cheap to not depend on.",
+        "description": "The authoring audit trail: who changed which rule/variable/scorecard/policy, when.\n\nThis route did not exist. Events were written -- and after the entity-CRUD wiring, written\nfor every authoring entity -- but nothing read them back over HTTP, so the compliance\nartifact this product exists to produce could only be reached by opening the database. An\nauditor asking \"show me every change to this rule\" had no answer.\n\nlimit/offset use the Annotated form so the PYTHON default is a real int. Written as\n`limit: int = Query(default=200, ...)` the default value is a `Query` object, which FastAPI\nunwraps but a direct call does not -- so any test or internal caller invoking the handler as\na plain function got a `Query` where an int was promised and failed inside SQLAlchemy with\n`'<' not supported between instances of 'int' and 'Query'`. Same validation, no trap.\n\nlimit/offset are BOUNDED HERE, not in storage. `list_audit_events` deliberately applies them\nraw -- its internal callers pass limit=None to mean \"every matching event\" -- so this route is\nthe only place that can reject a nonsense page. Untyped, `?limit=-1` reached Postgres as\n`LIMIT -1` and answered 500 (`InvalidRowCountInLimitClause`) on the one endpoint an auditor's\ntooling drives; on SQLite the same request was quieter and worse, because `LIMIT -1` means NO\nlimit there and the unbounded fetch this signature exists to prevent came back silently.\n\nTenant is passed explicitly rather than relying on the storage layer's fallback chain\n(`tenant_id or contextvar or default_tenant_id`). On an authenticated request the contextvar\nis set by the middleware and resolves correctly either way -- but the last link in that\nchain is the FIRST tenant, and an audit read reaching it would serve one tenant's change\nhistory to another. Cheap to not depend on.",
         "operationId": "audit_events_api_v1_audit_get",
         "parameters": [
           {
@@ -5772,6 +5899,8 @@
             "required": false,
             "schema": {
               "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -5782,6 +5911,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "minimum": 0,
               "title": "Offset",
               "type": "integer"
             }
@@ -5841,6 +5971,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Audit Events Api V1 Audit Get",
@@ -5866,6 +5997,7 @@
     },
     "/api/v1/audit/decisions": {
       "get": {
+        "description": "Decision history, filterable by case, subject, policy, outcome AND DATE.\n\n`created_from` / `created_to` are ISO-8601 and half-open, [from, to). Without them \"show me\neverything in Q1\" was not expressible at any layer: the only ordering is `created_at DESC`,\nso an eight-month-old decision was reachable only by paging every row written since. The\nDecision Explorer did not even do that \u2014 it fetched the default 200 and filtered in the\nbrowser, so the screen a regulator question lands on could see the most recent 200 decisions\nand nothing older.\n\nTenant is passed explicitly, for the reason spelled out on `audit_events` above: the storage\nfallback chain ends at the FIRST tenant, and a decision read reaching it would serve one\ncustomer's decisions to another. This route and `audit_errors` below were the two immediate\nneighbours of that comment and neither passed it.\n\nlimit/offset are bounded here rather than in storage, matching `audit_events` \u2014 untyped,\n`?limit=-1` reaches Postgres as `LIMIT -1` and 500s, and on SQLite means NO limit, which is\nthe unbounded fetch pagination exists to prevent.",
         "operationId": "audit_decisions_api_v1_audit_decisions_get",
         "parameters": [
           {
@@ -5874,6 +6006,8 @@
             "required": false,
             "schema": {
               "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -5884,6 +6018,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "minimum": 0,
               "title": "Offset",
               "type": "integer"
             }
@@ -5951,6 +6086,38 @@
               ],
               "title": "User Id"
             }
+          },
+          {
+            "in": "query",
+            "name": "created_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "created_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created To"
+            }
           }
         ],
         "responses": {
@@ -5959,6 +6126,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Audit Decisions Api V1 Audit Decisions Get",
@@ -5984,6 +6152,7 @@
     },
     "/api/v1/audit/decisions/count": {
       "get": {
+        "description": "Tenant passed explicitly \u2014 the count the Decision Explorer paginates against. Without\none it counted the FIRST tenant's decisions, so a tenant with no traffic could be shown a\nnon-zero total (and one with traffic, the wrong one).",
         "operationId": "audit_decisions_count_api_v1_audit_decisions_count_get",
         "responses": {
           "200": {
@@ -6024,6 +6193,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Audit Decision Api V1 Audit Decisions  Decision Id  Get",
                   "type": "object"
                 }
@@ -6047,6 +6217,7 @@
     },
     "/api/v1/audit/errors": {
       "get": {
+        "description": "Tenant passed explicitly \u2014 see `audit_events` above. This route sat directly beneath a\ncomment explaining that the storage fallback chain ends at the FIRST tenant, and did not\npass one.",
         "operationId": "audit_errors_api_v1_audit_errors_get",
         "parameters": [
           {
@@ -6055,6 +6226,8 @@
             "required": false,
             "schema": {
               "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -6065,6 +6238,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "minimum": 0,
               "title": "Offset",
               "type": "integer"
             }
@@ -6076,6 +6250,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Audit Errors Api V1 Audit Errors Get",
@@ -6101,6 +6276,7 @@
     },
     "/api/v1/audit/promotions": {
       "get": {
+        "description": "Tenant passed explicitly. The promotion ledger is the maker/checker record \u2014 who moved\nwhat to prod \u2014 so a fallback to the first tenant here shows one customer's release history\nto another.",
         "operationId": "audit_promotions_api_v1_audit_promotions_get",
         "responses": {
           "200": {
@@ -6108,6 +6284,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Audit Promotions Api V1 Audit Promotions Get",
@@ -6150,6 +6327,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Verify Audit Chain Api V1 Audit Verify Get",
                   "type": "object"
                 }
@@ -6190,6 +6368,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Member Login Api V1 Auth Login Post",
                   "type": "object"
                 }
@@ -6220,6 +6399,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Member Logout Api V1 Auth Logout Post",
                   "type": "object"
                 }
@@ -6250,6 +6430,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Member Otp Request Api V1 Auth Otp Request Post",
                   "type": "object"
                 }
@@ -6290,6 +6471,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Member Otp Verify Api V1 Auth Otp Verify Post",
                   "type": "object"
                 }
@@ -6320,6 +6502,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Member Session Api V1 Auth Session Get",
                   "type": "object"
                 }
@@ -6358,6 +6541,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sso Available Api V1 Auth Sso Available Get",
                   "type": "object"
                 }
@@ -6398,6 +6582,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sso Oidc Callback Api V1 Auth Sso Oidc Callback Post",
                   "type": "object"
                 }
@@ -6428,6 +6613,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sso Saml Acs Api V1 Auth Sso Saml Acs Post",
                   "type": "object"
                 }
@@ -6466,6 +6652,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sso Start Api V1 Auth Sso Start Get",
                   "type": "object"
                 }
@@ -6495,6 +6682,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Bootstrap Api V1 Bootstrap Get",
                   "type": "object"
                 }
@@ -6516,6 +6704,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Bundle Versions Api V1 Bundles Versions Get",
@@ -6548,6 +6737,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Crdt Merge Endpoint Api V1 Collab Merge Post",
                   "type": "object"
                 }
@@ -6598,6 +6788,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get As Of Api V1 Collab  Doc Id  As Of  Version  Get",
                   "type": "object"
                 }
@@ -6639,6 +6830,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get History Api V1 Collab  Doc Id  History Get",
                   "type": "object"
                 }
@@ -6690,6 +6882,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Seed Document Api V1 Collab  Doc Id  Seed Post",
                   "type": "object"
                 }
@@ -6730,6 +6923,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get State Api V1 Collab  Doc Id  State Get",
                   "type": "object"
                 }
@@ -6760,6 +6954,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Connectors Api V1 Connectors Get",
@@ -6789,6 +6984,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Connector Api V1 Connectors Post",
                   "type": "object"
                 }
@@ -6829,6 +7025,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Connector Api V1 Connectors  Connector Id  Delete",
                   "type": "object"
                 }
@@ -6867,6 +7064,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Connector Api V1 Connectors  Connector Id  Get",
                   "type": "object"
                 }
@@ -6915,6 +7113,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Connector Api V1 Connectors  Connector Id  Put",
                   "type": "object"
                 }
@@ -6956,6 +7155,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Connector Api V1 Connectors  Connector Id  Test Post",
                   "type": "object"
                 }
@@ -6996,6 +7196,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Start Session Api V1 Debug Sessions Post",
                   "type": "object"
                 }
@@ -7036,6 +7237,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response End Session Api V1 Debug Sessions  Session Id  Delete",
                   "type": "object"
                 }
@@ -7074,6 +7276,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Session Api V1 Debug Sessions  Session Id  Get",
                   "type": "object"
                 }
@@ -7115,6 +7318,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Run Session Api V1 Debug Sessions  Session Id  Run Post",
                   "type": "object"
                 }
@@ -7156,6 +7360,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Step Session Api V1 Debug Sessions  Session Id  Step Post",
                   "type": "object"
                 }
@@ -7196,6 +7401,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Decide Api V1 Decide Post",
                   "type": "object"
                 }
@@ -7236,6 +7442,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Batch Decide Api V1 Decide Batch Post",
                   "type": "object"
                 }
@@ -7283,6 +7490,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Decision Tables Api V1 Decision Tables Get",
@@ -7312,6 +7520,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Decision Table Api V1 Decision Tables Post",
                   "type": "object"
                 }
@@ -7352,6 +7561,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Analyze Decision Table Draft Api V1 Decision Tables Analyze Post",
                   "type": "object"
                 }
@@ -7392,6 +7602,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Import Decision Table Api V1 Decision Tables Import Post",
                   "type": "object"
                 }
@@ -7432,6 +7643,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Decision Table Api V1 Decision Tables  Table Id  Delete",
                   "type": "object"
                 }
@@ -7470,6 +7682,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Decision Table Api V1 Decision Tables  Table Id  Get",
                   "type": "object"
                 }
@@ -7518,6 +7731,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Decision Table Api V1 Decision Tables  Table Id  Put",
                   "type": "object"
                 }
@@ -7558,6 +7772,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Analyze Saved Decision Table Api V1 Decision Tables  Table Id  Analyze Post",
                   "type": "object"
                 }
@@ -7608,6 +7823,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Evaluate Saved Decision Table Api V1 Decision Tables  Table Id  Evaluate Post",
                   "type": "object"
                 }
@@ -7678,6 +7894,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Decision Reason Codes Api V1 Decisions  Decision Id  Reason Codes Get",
                   "type": "object"
                 }
@@ -7735,6 +7952,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Replay Decision Api V1 Decisions  Decision Id  Replay Post",
                   "type": "object"
                 }
@@ -7758,6 +7976,7 @@
     },
     "/api/v1/deploy/promote": {
       "post": {
+        "description": "Promote a batch of assets one stage each. All-or-nothing as far as preflight can see \u2014\nsee `_preflight_promotion` for why a half-applied batch is worse than a rejected one.",
         "operationId": "deploy_promote_api_v1_deploy_promote_post",
         "requestBody": {
           "content": {
@@ -7774,6 +7993,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Deploy Promote Api V1 Deploy Promote Post",
                   "type": "object"
                 }
@@ -7803,6 +8023,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Deploy Status Api V1 Deploy Status Get",
                   "type": "object"
                 }
@@ -7823,6 +8044,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Evaluations Api V1 Evaluations Get",
@@ -7852,6 +8074,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Evaluation Api V1 Evaluations Post",
                   "type": "object"
                 }
@@ -7892,6 +8115,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Backtest Evaluation Api V1 Evaluations Backtest Post",
                   "type": "object"
                 }
@@ -7943,6 +8167,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Evaluate Hosted Model Api V1 Evaluations From Model  Model Id  Post",
                   "type": "object"
                 }
@@ -7983,6 +8208,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Evaluation Api V1 Evaluations  Evaluation Id  Delete",
                   "type": "object"
                 }
@@ -8021,6 +8247,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Evaluation Api V1 Evaluations  Evaluation Id  Get",
                   "type": "object"
                 }
@@ -8051,6 +8278,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Excel Functions Api V1 Excel Functions Get",
                   "type": "object"
                 }
@@ -8081,6 +8309,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Execution Detail Api V1 Executions  Execution Id  Get",
                   "type": "object"
                 }
@@ -8121,6 +8350,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Resume Execution Api V1 Executions  Execution Id  Resume Post",
                   "type": "object"
                 }
@@ -8151,6 +8381,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Experiments Api V1 Experiments Get",
@@ -8180,6 +8411,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Experiment Api V1 Experiments Post",
                   "type": "object"
                 }
@@ -8261,6 +8493,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Experiment Api V1 Experiments  Experiment Id  Get",
                   "type": "object"
                 }
@@ -8309,6 +8542,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Experiment Api V1 Experiments  Experiment Id  Put",
                   "type": "object"
                 }
@@ -8360,6 +8594,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Promote Experiment Api V1 Experiments  Experiment Id  Promote Post",
                   "type": "object"
                 }
@@ -8400,6 +8635,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Experiment Results Api V1 Experiments  Experiment Id  Results Get",
                   "type": "object"
                 }
@@ -8450,6 +8686,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Experiment Status Api V1 Experiments  Experiment Id  Status Patch",
                   "type": "object"
                 }
@@ -8518,6 +8755,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Health Api V1 Health Get",
                   "type": "object"
                 }
@@ -8548,6 +8786,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Import Config Api V1 Import Post",
                   "type": "object"
                 }
@@ -8588,6 +8827,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Validate Import Api V1 Import Validate Post",
                   "type": "object"
                 }
@@ -8618,6 +8858,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Journeys Api V1 Journeys Get",
@@ -8647,6 +8888,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Journey Api V1 Journeys Post",
                   "type": "object"
                 }
@@ -8687,6 +8929,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Journey Api V1 Journeys  Journey Id  Delete",
                   "type": "object"
                 }
@@ -8725,6 +8968,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Journey Api V1 Journeys  Journey Id  Get",
                   "type": "object"
                 }
@@ -8773,6 +9017,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Journey Api V1 Journeys  Journey Id  Put",
                   "type": "object"
                 }
@@ -8824,6 +9069,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Duplicate Journey Api V1 Journeys  Journey Id  Duplicate Post",
                   "type": "object"
                 }
@@ -8864,6 +9110,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Lock Journey Api V1 Journeys  Journey Id  Lock Post",
                   "type": "object"
                 }
@@ -8904,6 +9151,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Unlock Journey Api V1 Journeys  Journey Id  Unlock Post",
                   "type": "object"
                 }
@@ -8934,6 +9182,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Model Sets Api V1 Model Sets Get",
@@ -8963,6 +9212,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Model Set Api V1 Model Sets Post",
                   "type": "object"
                 }
@@ -9003,6 +9253,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Model Set Api V1 Model Sets  Set Id  Delete",
                   "type": "object"
                 }
@@ -9041,6 +9292,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Model Set Api V1 Model Sets  Set Id  Get",
                   "type": "object"
                 }
@@ -9089,6 +9341,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Model Set Api V1 Model Sets  Set Id  Patch",
                   "type": "object"
                 }
@@ -9129,10 +9382,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CompareRequest",
-                "default": {
-                  "features": {}
-                }
+                "$ref": "#/components/schemas/CompareRequest"
               }
             }
           }
@@ -9142,6 +9392,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Compare Model Set Api V1 Model Sets  Set Id  Compare Post",
                   "type": "object"
                 }
@@ -9183,6 +9434,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Model Set Drift Api V1 Model Sets  Set Id  Drift Get",
                   "type": "object"
                 }
@@ -9213,6 +9465,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Models Api V1 Models Get",
@@ -9242,6 +9495,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Model Api V1 Models Post",
                   "type": "object"
                 }
@@ -9282,6 +9536,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Model Api V1 Models  Model Id  Delete",
                   "type": "object"
                 }
@@ -9320,6 +9575,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Model Api V1 Models  Model Id  Get",
                   "type": "object"
                 }
@@ -9370,6 +9626,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Predict Model Api V1 Models  Model Id  Predict Post",
                   "type": "object"
                 }
@@ -9420,6 +9677,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Model Api V1 Models  Model Id  Test Post",
                   "type": "object"
                 }
@@ -9450,6 +9708,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Onboarding Activation Api V1 Onboarding Activation Get",
                   "type": "object"
                 }
@@ -9480,6 +9739,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Onboarding Ai Api V1 Onboarding Ai Post",
                   "type": "object"
                 }
@@ -9510,6 +9770,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Onboarding Load Samples Api V1 Onboarding Load Samples Post",
                   "type": "object"
                 }
@@ -9530,6 +9791,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Onboarding Request Prod Api V1 Onboarding Request Prod Post",
                   "type": "object"
                 }
@@ -9560,6 +9822,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Onboarding Signup Api V1 Onboarding Signup Post",
                   "type": "object"
                 }
@@ -9589,6 +9852,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Onboarding Status Api V1 Onboarding Status Get",
                   "type": "object"
                 }
@@ -9609,6 +9873,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Onboarding Verify Api V1 Onboarding Verify Post",
                   "type": "object"
                 }
@@ -9618,6 +9883,27 @@
           }
         },
         "summary": "Onboarding Verify"
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "description": "The machine-readable API contract, behind the ordinary API-key check.\n\nTHE GAP THIS CLOSES. `/openapi.json`, `/docs` and `/redoc` are all disabled when\nRULEMIND_ENV is production (see `_docs_enabled` -- correctly, they were served\nunauthenticated and handed the complete endpoint map to anyone who asked), and the Helm\nchart sets exactly that. So **a Helm install published no API contract at all**, and the\nhuman fallback is `API.md`, which documented 17 of 278 endpoints and got 13 of the 17\nwrong -- naming `/api/v1/api-keys` (really `/api/v1/access/keys`), `/api/v1/approvals`\n(really `/api/v1/reviews`), `POST /api/v1/rules/validate` (does not exist) and\n`/api/v1/dashboard/summary` (does not exist). An integration team following the shipped\ndocumentation gets 404s.\n\nRemoving the spec was the right fix for the wrong reason: the problem was that it was\nPUBLIC, not that it existed. This path is not in `middleware.EXEMPT_PATHS`, so it requires\na valid API key like every other `/api/v1/` route -- the customer's own integration team\ncan generate a typed client, and an unauthenticated scanner still gets nothing.\n\nServed regardless of RULEMIND_ENV, deliberately: production is exactly where a self-hosted\ncustomer needs it, and `RULEMIND_ENABLE_DOCS` stays the separate switch for the PUBLIC\nSwagger UI.\n\nNote the spec's own limitation, rather than letting the caller discover it: every operation\nis annotated `-> Dict[str, Any]`, so there are **278 operations and zero typed 2xx response\nschemas**. Paths, methods and request bodies are accurate; responses are not described.\nThat is plan item 5.1 and it is why all five SDKs are hand-written.",
+        "operationId": "authenticated_openapi_api_v1_openapi_json_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Authenticated Openapi Api V1 Openapi Json Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Authenticated Openapi"
       }
     },
     "/api/v1/policies": {
@@ -9647,6 +9933,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Policies Api V1 Policies Get",
@@ -9686,6 +9973,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Policy Api V1 Policies Post",
                   "type": "object"
                 }
@@ -9726,6 +10014,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Policy Api V1 Policies  Policy Id  Delete",
                   "type": "object"
                 }
@@ -9764,6 +10053,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Policy Api V1 Policies  Policy Id  Get",
                   "type": "object"
                 }
@@ -9812,6 +10102,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Policy Api V1 Policies  Policy Id  Put",
                   "type": "object"
                 }
@@ -9854,6 +10145,7 @@
               "schema": {
                 "anyOf": [
                   {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   {
@@ -9870,6 +10162,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Analyze Policy Mece Api V1 Policies  Policy Id  Analyze Mece Post",
                   "type": "object"
                 }
@@ -9949,6 +10242,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Backtest Policy Endpoint Api V1 Policies  Policy Id  Backtest Post",
                   "type": "object"
                 }
@@ -9990,6 +10284,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Policy Promotion Diff Api V1 Policies  Policy Id  Diff Get",
                   "type": "object"
                 }
@@ -10042,6 +10337,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Execute Policy Endpoint Api V1 Policies  Policy Id  Execute Post",
                   "type": "object"
                 }
@@ -10083,6 +10379,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Policy Input Schema Api V1 Policies  Policy Id  Input Schema Get",
                   "type": "object"
                 }
@@ -10123,6 +10420,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Policy Lifecycle Api V1 Policies  Policy Id  Lifecycle Get",
                   "type": "object"
                 }
@@ -10172,6 +10470,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Transition Policy Lifecycle Api V1 Policies  Policy Id  Lifecycle Post",
                   "type": "object"
                 }
@@ -10235,6 +10534,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Promote Policy Api V1 Policies  Policy Id  Promote Post",
                   "type": "object"
                 }
@@ -10276,6 +10576,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Releases Endpoint Api V1 Policies  Policy Id  Releases Get",
                   "type": "object"
                 }
@@ -10327,6 +10628,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Rollback Endpoint Api V1 Policies  Policy Id  Rollback Post",
                   "type": "object"
                 }
@@ -10367,6 +10669,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Unregister Shadow Endpoint Api V1 Policies  Policy Id  Shadow Delete",
                   "type": "object"
                 }
@@ -10406,6 +10709,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Shadow Report Endpoint Api V1 Policies  Policy Id  Shadow Get",
                   "type": "object"
                 }
@@ -10455,6 +10759,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Register Shadow Endpoint Api V1 Policies  Policy Id  Shadow Post",
                   "type": "object"
                 }
@@ -10506,6 +10811,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Whatif Endpoint Api V1 Policies  Policy Id  Whatif Post",
                   "type": "object"
                 }
@@ -10536,6 +10842,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Predictors Api V1 Predictors Get",
@@ -10565,6 +10872,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Predictor Api V1 Predictors Post",
                   "type": "object"
                 }
@@ -10594,6 +10902,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Source Types Api V1 Predictors Source Types Get",
                   "type": "object"
                 }
@@ -10624,6 +10933,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Predictor Api V1 Predictors  Predictor Id  Delete",
                   "type": "object"
                 }
@@ -10662,6 +10972,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Predictor Api V1 Predictors  Predictor Id  Get",
                   "type": "object"
                 }
@@ -10710,6 +11021,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Predictor Api V1 Predictors  Predictor Id  Patch",
                   "type": "object"
                 }
@@ -10750,10 +11062,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BackfillRequest",
-                "default": {
-                  "limit": 1000
-                }
+                "$ref": "#/components/schemas/BackfillRequest"
               }
             }
           }
@@ -10763,6 +11072,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Backfill Predictor Api V1 Predictors  Predictor Id  Backfill Post",
                   "type": "object"
                 }
@@ -10836,6 +11146,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Predictor Drift Api V1 Predictors  Predictor Id  Drift Get",
                   "type": "object"
                 }
@@ -10885,6 +11196,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Provider Templates Api V1 Providers Get",
@@ -10927,6 +11239,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Provider Template Api V1 Providers  Provider Id  Get",
                   "type": "object"
                 }
@@ -10957,6 +11270,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Reports Api V1 Reports Get",
@@ -10986,6 +11300,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Report Api V1 Reports Post",
                   "type": "object"
                 }
@@ -11015,6 +11330,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Report Column Suggestions Api V1 Reports Column Suggestions Get",
                   "type": "object"
                 }
@@ -11034,6 +11350,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Report Email Config Api V1 Reports Email Config Get",
                   "type": "object"
                 }
@@ -11061,6 +11378,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Put Report Email Config Api V1 Reports Email Config Put",
                   "type": "object"
                 }
@@ -11100,6 +11418,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Preview Report Api V1 Reports Preview Post",
                   "type": "object"
                 }
@@ -11140,6 +11459,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Report Api V1 Reports  Report Id  Delete",
                   "type": "object"
                 }
@@ -11178,6 +11498,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Report Api V1 Reports  Report Id  Get",
                   "type": "object"
                 }
@@ -11226,6 +11547,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Report Api V1 Reports  Report Id  Put",
                   "type": "object"
                 }
@@ -11303,6 +11625,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Run Report Api V1 Reports  Report Id  Run Post",
                   "type": "object"
                 }
@@ -11344,6 +11667,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Send Report Now Api V1 Reports  Report Id  Send Post",
                   "type": "object"
                 }
@@ -11408,6 +11732,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Reviews Api V1 Reviews Get",
@@ -11439,6 +11764,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Review Stats Api V1 Reviews Stats Get",
                   "type": "object"
                 }
@@ -11469,6 +11795,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Review Api V1 Reviews  Task Id  Get",
                   "type": "object"
                 }
@@ -11519,6 +11846,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Decide Review Api V1 Reviews  Task Id  Decide Post",
                   "type": "object"
                 }
@@ -11569,6 +11897,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Escalate Review Api V1 Reviews  Task Id  Escalate Post",
                   "type": "object"
                 }
@@ -11617,6 +11946,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Rules Api V1 Rules Get",
@@ -11656,6 +11986,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Rule Api V1 Rules Post",
                   "type": "object"
                 }
@@ -11696,6 +12027,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Rule Api V1 Rules  Rule Id  Delete",
                   "type": "object"
                 }
@@ -11734,6 +12066,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Rule Api V1 Rules  Rule Id  Get",
                   "type": "object"
                 }
@@ -11782,6 +12115,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Rule Api V1 Rules  Rule Id  Put",
                   "type": "object"
                 }
@@ -11835,6 +12169,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Promote Rule Api V1 Rules  Rule Id  Promote Post",
                   "type": "object"
                 }
@@ -11887,6 +12222,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Rule Api V1 Rules  Rule Id  Test Post",
                   "type": "object"
                 }
@@ -11917,6 +12253,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Schedules Api V1 Schedules Get",
@@ -11946,6 +12283,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Schedule Api V1 Schedules Post",
                   "type": "object"
                 }
@@ -12027,6 +12365,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Schedule Api V1 Schedules  Schedule Id  Get",
                   "type": "object"
                 }
@@ -12075,6 +12414,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Schedule Api V1 Schedules  Schedule Id  Put",
                   "type": "object"
                 }
@@ -12116,6 +12456,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Schedule History Api V1 Schedules  Schedule Id  History Get",
@@ -12158,6 +12499,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Run Schedule Now Api V1 Schedules  Schedule Id  Run Now Post",
                   "type": "object"
                 }
@@ -12206,6 +12548,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Scorecards Api V1 Scorecards Get",
@@ -12245,6 +12588,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Scorecard Api V1 Scorecards Post",
                   "type": "object"
                 }
@@ -12285,6 +12629,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Scorecard Api V1 Scorecards  Scorecard Id  Delete",
                   "type": "object"
                 }
@@ -12323,6 +12668,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Scorecard Api V1 Scorecards  Scorecard Id  Get",
                   "type": "object"
                 }
@@ -12371,6 +12717,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Scorecard Api V1 Scorecards  Scorecard Id  Put",
                   "type": "object"
                 }
@@ -12424,6 +12771,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Promote Scorecard Api V1 Scorecards  Scorecard Id  Promote Post",
                   "type": "object"
                 }
@@ -12476,6 +12824,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Scorecard Api V1 Scorecards  Scorecard Id  Test Post",
                   "type": "object"
                 }
@@ -12505,6 +12854,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Settings Api V1 Settings Get",
                   "type": "object"
                 }
@@ -12516,6 +12866,7 @@
         "summary": "Get Settings"
       },
       "put": {
+        "description": "Patch the workspace settings.\n\n`engine_config` is MERGED, not replaced. Every field on SettingsRequest is Optional and\nstorage drops the None ones, so the request already reads as a patch -- but `update_settings`\nmerges only at the top level, which meant a patch naming `engine_config` swapped the entire\nblob. That blob is where the governance settings live: `require_dual_control`,\n`pii_redact_keys`, the `slo` objective and the shadow registry, each owned by its own\nendpoint. Saving the generic Settings page from a stale load therefore turned two-person\ncontrol off as a side effect -- no audit event, no diff, and the governance page reads `false`\nafterwards as though it had never been armed. One field on a request behaving as replace while\nevery sibling behaves as patch is the whole bug; merging makes the shape consistent.\n\nA true replace is still available where it is meant: `/api/v1/import` goes through\n`storage.replace_all`, which is a wholesale swap by definition.",
         "operationId": "update_settings_api_v1_settings_put",
         "requestBody": {
           "content": {
@@ -12532,6 +12883,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Settings Api V1 Settings Put",
                   "type": "object"
                 }
@@ -12562,6 +12914,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Data Protection Api V1 Settings Data Protection Get",
                   "type": "object"
                 }
@@ -12590,6 +12943,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Data Protection Api V1 Settings Data Protection Put",
                   "type": "object"
                 }
@@ -12620,6 +12974,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Governance Api V1 Settings Governance Get",
                   "type": "object"
                 }
@@ -12648,6 +13003,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Governance Api V1 Settings Governance Put",
                   "type": "object"
                 }
@@ -12678,6 +13034,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Slo Config Api V1 Settings Slo Get",
                   "type": "object"
                 }
@@ -12706,6 +13063,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Slo Config Api V1 Settings Slo Put",
                   "type": "object"
                 }
@@ -12736,6 +13094,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Slo Status Api V1 Slo Status Get",
                   "type": "object"
                 }
@@ -12766,6 +13125,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Action Api V1 Test Action Post",
                   "type": "object"
                 }
@@ -12805,6 +13165,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Batch Simulation Api V1 Test Batch Post",
                   "type": "object"
                 }
@@ -12857,6 +13218,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Execute Policy Endpoint Api V1 Test Policy  Policy Id  Post",
                   "type": "object"
                 }
@@ -12909,6 +13271,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Rule Api V1 Test Rule  Rule Id  Post",
                   "type": "object"
                 }
@@ -12950,6 +13313,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Batch Test Variables Api V1 Test Variables Post",
                   "type": "object"
                 }
@@ -12980,6 +13344,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Usage Summary Api V1 Usage Get",
                   "type": "object"
                 }
@@ -13014,6 +13379,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Usage History Api V1 Usage History Get",
                   "type": "object"
                 }
@@ -13094,6 +13460,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Variables Api V1 Variables Get",
@@ -13133,6 +13500,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Variable Api V1 Variables Post",
                   "type": "object"
                 }
@@ -13162,6 +13530,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Variable Graph Api V1 Variables Graph Get",
                   "type": "object"
                 }
@@ -13192,6 +13561,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Lint Variable Draft Api V1 Variables Lint Post",
                   "type": "object"
                 }
@@ -13231,6 +13601,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Variable Draft Api V1 Variables Test Draft Post",
                   "type": "object"
                 }
@@ -13271,6 +13642,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Variable Api V1 Variables  Variable Id  Delete",
                   "type": "object"
                 }
@@ -13309,6 +13681,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Variable Api V1 Variables  Variable Id  Get",
                   "type": "object"
                 }
@@ -13357,6 +13730,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Variable Api V1 Variables  Variable Id  Put",
                   "type": "object"
                 }
@@ -13398,6 +13772,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response Variable History Api V1 Variables  Variable Id  History Get",
@@ -13453,6 +13828,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Promote Variable Api V1 Variables  Variable Id  Promote Post",
                   "type": "object"
                 }
@@ -13505,6 +13881,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Variable Api V1 Variables  Variable Id  Test Post",
                   "type": "object"
                 }
@@ -13535,6 +13912,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Subscriptions Api V1 Webhook Subscriptions Get",
@@ -13564,6 +13942,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Subscription Api V1 Webhook Subscriptions Post",
                   "type": "object"
                 }
@@ -13594,6 +13973,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Event Types Api V1 Webhook Subscriptions Event Types Get",
                   "type": "object"
                 }
@@ -13624,6 +14004,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete Subscription Api V1 Webhook Subscriptions  Subscription Id  Delete",
                   "type": "object"
                 }
@@ -13662,6 +14043,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Subscription Api V1 Webhook Subscriptions  Subscription Id  Get",
                   "type": "object"
                 }
@@ -13710,6 +14092,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Subscription Api V1 Webhook Subscriptions  Subscription Id  Patch",
                   "type": "object"
                 }
@@ -13751,6 +14134,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Test Subscription Api V1 Webhook Subscriptions  Subscription Id  Test Post",
                   "type": "object"
                 }
@@ -13781,6 +14165,7 @@
               "application/json": {
                 "schema": {
                   "items": {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   "title": "Response List Webhooks Api V1 Webhooks Get",
@@ -13810,6 +14195,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Webhook Api V1 Webhooks Post",
                   "type": "object"
                 }
@@ -13891,6 +14277,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Webhook Api V1 Webhooks  Webhook Id  Get",
                   "type": "object"
                 }
@@ -13929,6 +14316,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Webhook Trigger Api V1 Webhooks  Webhook Id  Post",
                   "type": "object"
                 }
@@ -13977,6 +14365,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Webhook Api V1 Webhooks  Webhook Id  Put",
                   "type": "object"
                 }
@@ -14059,6 +14448,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Workflow Loop Debug Api V1 Workflows Loop Debug Post",
                   "type": "object"
                 }
@@ -14110,6 +14500,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Workflow Callback Api V1 Workflows  Execution Id  Callback Post",
                   "type": "object"
                 }
@@ -14140,6 +14531,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Health Health Get",
                   "type": "object"
                 }
@@ -14160,6 +14552,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ready Health Ready Get",
                   "type": "object"
                 }
@@ -14196,6 +14589,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Ready Ready Get",
                   "type": "object"
                 }
@@ -14328,6 +14722,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Payload",
                 "type": "object"
               }
@@ -14448,6 +14843,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Payload",
                 "type": "object"
               }
@@ -14494,6 +14890,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Payload",
                 "type": "object"
               }
@@ -14596,6 +14993,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sdk Decide Sdk V1 Decide Post",
                   "type": "object"
                 }
@@ -14636,6 +15034,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sdk Decisions Batch Sdk V1 Decisions Post",
                   "type": "object"
                 }
@@ -14717,6 +15116,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sdk Sync Execution Sdk V1 Executions Sync Post",
                   "type": "object"
                 }
@@ -14757,6 +15157,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sdk Get Execution Sdk V1 Executions  Execution Id  Get",
                   "type": "object"
                 }
@@ -14807,6 +15208,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sdk Resume Execution Sdk V1 Executions  Execution Id  Resume Post",
                   "type": "object"
                 }
@@ -14836,6 +15238,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sdk Experience Manifest Sdk V1 Experience Manifest Get",
                   "type": "object"
                 }
@@ -14855,6 +15258,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sdk Health Sdk V1 Health Get",
                   "type": "object"
                 }
@@ -14875,6 +15279,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Sdk Signing Key Sdk V1 Signing Key Get",
                   "type": "object"
                 }
