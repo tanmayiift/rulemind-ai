@@ -1153,6 +1153,22 @@ every rejected decision, under a heading reading "Adverse-action reason codes". 
 deterministic implementation exists at `governance.py:213` → `logic.py:841-897` and the UI never
 calls it.
 
+- [x] **R10.1 THE COMPLIANCE FABRICATION IS GONE.** `decision-explorer/page.tsx:36-42` returned
+  `["AA05 · Debt-to-income too high", "AA12 · Insufficient credit history"]` for **every**
+  rejected decision and `["MR02 · Manual verification required"]` for every review, rendered
+  under a heading reading "Adverse-action reason codes" — the codes a lender puts in an
+  FCRA-style decline notice. The real deterministic implementation had existed the whole time
+  and was called by nothing: `GET /api/v1/decisions/{id}/reason-codes` →
+  `logic.adverse_reason_codes()`, which ranks failing conditions by relative miss magnitude.
+  Now wired, with the fetch error surfaced rather than swallowed (an empty list and a failed
+  fetch mean different things, and only one of them is "declined for no stated reason").
+  **Verified in the browser**, two rejected decisions:
+  `RC-LOAN-BUREAU-SCORE-LT / RC-LOAN-PAN-VERIFIED-FLAG-LT / RC-LOAN-LIVENESS-SCORE-LT` versus
+  `RC-TRAVEL-PASSPORT-MONTHS-VALID-LT / RC-TRAVEL-SUPPORT-MATRIX-READY-LT / RC-TRAVEL-VISA-READY-LT`.
+  8 tests pin the property the fabrication violated — two decisions failing different conditions
+  must produce different codes — plus a source guard, because no Python test could have caught a
+  frontend literal. Both mutations fail the named test.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.
