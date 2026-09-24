@@ -314,6 +314,11 @@ config:
   # MODEL_POOL_SIZE processes are forked PER UVICORN WORKER. See the process budget below.
   MODEL_POOL_SIZE: "2"
   # MODEL_TIMEOUT_MS: "5000"
+  # Batch scoring for model evaluations: one worker call per 2,000 rows.
+  # MODEL_BATCH_TIMEOUT_MS: "60000"
+  # "0" refuses pickled models at upload and scoring -- the only format whose load runs code.
+  # ONNX, PMML, XGBoost JSON and LightGBM files are unaffected. Existing pickles stop scoring.
+  # MODEL_ALLOW_PICKLE: "1"
   # SIM_MAX_WORKERS: "32"
   # SIMULATION_JSONL_MAX: "50000"
   # REPORT_MAX_ROWS: "100000"

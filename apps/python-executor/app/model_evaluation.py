@@ -597,20 +597,22 @@ def run_evaluation(rows: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[s
 
 def score_rows_with_model(model_blob: bytes, rows: List[Dict[str, Any]], features: List[str], label_col: str) -> List[Dict[str, Any]]:
     """Run a hosted model over feature rows → [{score, label}] for binary evaluation.
-    Uses the same executor as the /models predict path."""
-    from .model_executor import execute_model  # lazy: keeps app boot free of the ML stack
 
+    One batch through the isolated worker (model_executor.execute_model_batch), chunked there.
+    This used to call execute_model once PER ROW -- a process round trip and a full model
+    deserialize for every account -- so an evaluation over a real portfolio could not finish."""
+    from .model_executor import execute_model_batch  # lazy: keeps app boot free of the ML stack
+
+    batch = execute_model_batch(model_blob, [{f: r.get(f) for f in features} for r in rows], features=features)
+    if batch.get("error"):
+        raise ValueError(f"model scoring failed: {batch['error']}")
     scored: List[Dict[str, Any]] = []
-    for r in rows:
-        result = execute_model(model_blob, {f: r.get(f) for f in features}, features=features)
-        if result.get("error"):
-            raise ValueError(f"model scoring failed: {result['error']}")
-        prob = result.get("probabilities")
+    for r, prediction, prob in zip(rows, batch["predictions"], batch["probabilities"], strict=True):
         if isinstance(prob, (list, tuple)) and prob:
             score = float(prob[-1])          # positive-class probability (last column)
         elif prob is not None and not isinstance(prob, (list, tuple)):
             score = float(prob)
         else:
-            score = float(result.get("prediction"))  # type: ignore[arg-type]  # raw-prediction fallback
+            score = float(prediction)        # raw-prediction fallback
         scored.append({"score": score, "label": float(r[label_col])})
     return scored

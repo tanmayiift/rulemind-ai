@@ -211,6 +211,20 @@ Beyond CRUD:
 - `POST /api/v1/policies/{policy_id}/backtest`, `POST /api/v1/policies/{policy_id}/execute`
 - `GET /api/v1/variables/graph`, `GET /api/v1/variables/{variable_id}/history`
 
+## Hosted models and evaluation
+
+- `POST /api/v1/models` with `{name, model_base64, input_schema?}` hosts a model. The format is
+  detected from the file's bytes, never from a declared type: **ONNX**, **PMML** (`Scorecard`,
+  `RegressionModel`, `TreeModel`; anything else is `422` naming the element), **XGBoost JSON**,
+  **LightGBM** model text, or a **pickle**. The response carries `model_format`. With
+  `MODEL_ALLOW_PICKLE=0`, pickles are refused at upload and at scoring.
+- `POST /api/v1/models/{id}/predict` with `{input_data, features?, allow_missing?}`. Named-feature
+  models (XGBoost/LightGBM boosters that carry names, PMML) are scored **by name**, whatever order
+  the caller lists features in. A missing or non-numeric feature is a `422`.
+- `POST /api/v1/evaluations/from-model/{id}` scores every row in one batch — one model load per
+  2,000 rows in the isolated worker, not one per row — then computes Gini/AUC/KS and the gate.
+  The dashboard accepts the dataset as a `.csv`, `.xlsx`, `.json` or `.jsonl` upload.
+
 ## Human review
 
 - `GET /api/v1/reviews` — the queue. `GET /api/v1/reviews/stats`,

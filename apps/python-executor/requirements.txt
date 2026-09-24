@@ -101,6 +101,13 @@ scikit-learn==1.9.1
 joblib==1.6.0
 xgboost==2.1.3
 lightgbm==4.7.0
+# ONNX model hosting (plan 6.3). 1.30.0 ships cp311 manylinux_2_28 wheels for x86_64 and aarch64,
+# both of the image's architectures. It was already in the dev venv only as magika's dependency,
+# which the image never installs -- so it has to be named here.
+onnxruntime==1.30.0
+# PMML is customer-supplied XML: parsed with defusedxml so entity expansion (billion laughs) and
+# external entities (XXE) are refused. Pure Python.
+defusedxml==0.7.1
 
 # Observability (optional at runtime; tracing activates when OTEL_EXPORTER_OTLP_ENDPOINT is set)
 opentelemetry-sdk>=1.27.0

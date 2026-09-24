@@ -1,11 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { LineChart, Trash2, Play } from "lucide-react";
+import { LineChart, Trash2, Play, Upload, X } from "lucide-react";
 import { apiJson } from "../../src/lib/api";
 import { useRuleMindStore } from "../../src/lib/store";
 import { Button, Card, Field, Input, Select, Textarea, Badge, EmptyState, PageHeader, SectionTitle, Stat } from "../../src/v3/ui";
-import { parseRows } from "../../src/lib/csv";
+import { datasetColumns, parseDatasetFile, parseRows } from "../../src/lib/csv";
 
 type EvalSummary = { id: string; name: string; task: string; gate_status: string; model_id?: string | null; created_at?: string };
 type EvalDetail = EvalSummary & {
@@ -38,6 +38,42 @@ export default function EvaluationsPage() {
   const [modelId, setModelId] = React.useState("");
   const [features, setFeatures] = React.useState("");
   const [rowsText, setRowsText] = React.useState('[\n  {"score": 0.92, "label": 1},\n  {"score": 0.11, "label": 0}\n]');
+  // An uploaded dataset is held as rows, never written into the textarea: a 50k-row CSV as a
+  // controlled textarea value is megabytes re-rendered on every keystroke.
+  const [fileRows, setFileRows] = React.useState<Record<string, unknown>[] | null>(null);
+  const [fileName, setFileName] = React.useState("");
+  const fileInput = React.useRef<HTMLInputElement>(null);
+  const columns = React.useMemo(() => (fileRows ? datasetColumns(fileRows) : []), [fileRows]);
+
+  async function ingestFile(file: File) {
+    setError(null);
+    try {
+      const rows = await parseDatasetFile(file);
+      setFileRows(rows);
+      setFileName(file.name);
+    } catch (e) {
+      setFileRows(null);
+      setFileName("");
+      setError(e instanceof Error ? e.message : "Could not read the file.");
+    } finally {
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
+
+  function clearFile() {
+    setFileRows(null);
+    setFileName("");
+  }
+
+  /** Columns the run will read, checked against the file BEFORE the request -- a typo'd label
+   *  column is the user's to fix, not a server error to decode. */
+  function missingColumns(): string[] {
+    if (!fileRows) return [];
+    const wanted = mode === "model"
+      ? [labelCol, ...features.split(",").map((f) => f.trim()).filter(Boolean)]
+      : [scoreCol, labelCol, segmentCol, dateCol].filter(Boolean);
+    return wanted.filter((c) => !columns.includes(c));
+  }
 
   const load = React.useCallback(async () => {
     try {
@@ -61,8 +97,12 @@ export default function EvaluationsPage() {
     setError(null);
     setStatus(null);
     try {
-      const rows = parseRows(rowsText);
-      if (!rows.length) throw new Error("Provide at least one data row (JSON array or CSV).");
+      const rows = fileRows ?? parseRows(rowsText);
+      if (!rows.length) throw new Error("Provide at least one data row: upload a file, or paste a JSON array or CSV.");
+      const missing = missingColumns();
+      if (missing.length) {
+        throw new Error(`Not in ${fileName}: ${missing.join(", ")}. Its columns are: ${columns.join(", ")}.`);
+      }
       let result: EvalDetail;
       if (mode === "model") {
         result = await apiJson<EvalDetail>(
@@ -153,10 +193,10 @@ export default function EvaluationsPage() {
                   <option value="uplift">Uplift (cross-sell)</option>
                 </Select>
               </Field>
-              <Field label="Score column"><Input value={scoreCol} onChange={(e) => setScoreCol(e.target.value)} /></Field>
-              <Field label="Label column"><Input value={labelCol} onChange={(e) => setLabelCol(e.target.value)} /></Field>
-              <Field label="Segment column (optional)"><Input value={segmentCol} onChange={(e) => setSegmentCol(e.target.value)} /></Field>
-              <Field label="Date column (optional, backtest)"><Input value={dateCol} onChange={(e) => setDateCol(e.target.value)} /></Field>
+              <Field label="Score column"><Input value={scoreCol} list="eval-columns" onChange={(e) => setScoreCol(e.target.value)} /></Field>
+              <Field label="Label column"><Input value={labelCol} list="eval-columns" onChange={(e) => setLabelCol(e.target.value)} /></Field>
+              <Field label="Segment column (optional)"><Input value={segmentCol} list="eval-columns" onChange={(e) => setSegmentCol(e.target.value)} /></Field>
+              <Field label="Date column (optional, backtest)"><Input value={dateCol} list="eval-columns" onChange={(e) => setDateCol(e.target.value)} /></Field>
             </>
           ) : (
             <>
@@ -166,14 +206,41 @@ export default function EvaluationsPage() {
                   {models.map((mo) => <option key={mo.id} value={mo.id}>{mo.name}</option>)}
                 </Select>
               </Field>
-              <Field label="Features (comma-separated)"><Input value={features} onChange={(e) => setFeatures(e.target.value)} placeholder="feature_0, feature_1" /></Field>
-              <Field label="Label column"><Input value={labelCol} onChange={(e) => setLabelCol(e.target.value)} /></Field>
+              <Field label="Features (comma-separated)"><Input value={features} onChange={(e) => setFeatures(e.target.value)} placeholder={columns.length ? columns.filter((c) => c !== labelCol).join(", ") : "feature_0, feature_1"} /></Field>
+              <Field label="Label column"><Input value={labelCol} list="eval-columns" onChange={(e) => setLabelCol(e.target.value)} /></Field>
             </>
           )}
         </div>
-        <Field label="Data rows — JSON array or CSV (score/label + optional segment/date/feature columns)">
-          <Textarea mono value={rowsText} onChange={(e) => setRowsText(e.target.value)} rows={8} />
-        </Field>
+        <datalist id="eval-columns">{columns.map((c) => <option key={c} value={c} />)}</datalist>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <input
+            ref={fileInput}
+            id="eval-dataset-file"
+            type="file"
+            accept=".csv,.xls,.xlsx,.json,.jsonl,.ndjson"
+            className="rm-sr-only"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void ingestFile(f); }}
+          />
+          <Button variant="secondary" onClick={() => fileInput.current?.click()} aria-controls="eval-dataset-file">
+            <Upload size={16} /> Upload dataset
+          </Button>
+          {fileRows ? (
+            <span className="flex items-center gap-2" data-testid="eval-dataset-summary">
+              <Badge tone="accent">{fileName}</Badge>
+              <span>{fileRows.length.toLocaleString()} rows · {columns.length} columns</span>
+              <Button variant="ghost" onClick={clearFile} aria-label={`Remove ${fileName}`}><X size={14} /></Button>
+            </span>
+          ) : (
+            <span style={{ color: "var(--muted)" }}>.csv, .xlsx, .json or .jsonl — or paste rows below</span>
+          )}
+        </div>
+        {fileRows ? (
+          <div className="mt-2" style={{ color: "var(--muted)" }}>Columns: {columns.join(", ")}</div>
+        ) : (
+          <Field label="Data rows — JSON array or CSV (score/label + optional segment/date/feature columns)">
+            <Textarea mono value={rowsText} onChange={(e) => setRowsText(e.target.value)} rows={8} />
+          </Field>
+        )}
         <div className="mt-2">
           <Button onClick={run} disabled={busy}><Play size={16} /> {busy ? "Evaluating…" : "Run evaluation"}</Button>
         </div>

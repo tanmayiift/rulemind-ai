@@ -70,6 +70,44 @@ test.describe("evaluations surface", () => {
     expect(record.gate_status).toBe(shown);
   });
 
+  test("a 20,000-row CSV is uploaded and evaluated, never pasted into the textarea", async ({
+    page,
+    request
+  }) => {
+    // The plan's finding: a risk team scoring a real portfolio could not use this screen, because
+    // the only input was a <textarea>. A portfolio arrives as a file.
+    const rows = scoredRows(20_000);
+    const csv = ["score,label", ...rows.map((r) => `${r.score},${r.label}`)].join("\n");
+    await page.goto("/evaluations");
+    await page.getByPlaceholder("Q3 PD model").fill(EVAL_ID);
+    await page.locator("#eval-dataset-file").setInputFiles({
+      name: "portfolio.csv", mimeType: "text/csv", buffer: Buffer.from(csv)
+    });
+    await expect(page.getByTestId("eval-dataset-summary")).toContainText("20,000 rows · 2 columns");
+    await expect(page.locator("textarea"), "the file must not be dumped into a textarea").toHaveCount(0);
+
+    await page.getByRole("button", { name: /Run evaluation/i }).click();
+    await expect(page.getByText(/^Gate: (PASS|FAIL|UNKNOWN)$/)).toBeVisible({ timeout: 60_000 });
+    const listed = await request.get(`${API_BASE_URL}/api/v1/evaluations`);
+    const record = (await listed.json()).find((e: { name: string }) => e.name === EVAL_ID);
+    const detail = await (await request.get(`${API_BASE_URL}/api/v1/evaluations/${record.id}`)).json();
+    expect(detail.metrics.n, "every uploaded row was evaluated").toBe(20_000);
+  });
+
+  test("a column the file does not have is named before any request is sent", async ({ page }) => {
+    await page.goto("/evaluations");
+    await page.locator("#eval-dataset-file").setInputFiles({
+      name: "portfolio.csv", mimeType: "text/csv", buffer: Buffer.from("pd,default\n0.2,0\n0.8,1\n")
+    });
+    let posted = false;
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().includes("/api/v1/evaluations")) posted = true;
+    });
+    await page.getByRole("button", { name: /Run evaluation/i }).click();
+    await expect(page.getByText("Not in portfolio.csv: score, label. Its columns are: pd, default.")).toBeVisible();
+    expect(posted, "a doomed evaluation was sent to the server").toBe(false);
+  });
+
   test("every promotion-gate check on screen matches the API's value and threshold", async ({
     page,
     request
@@ -179,6 +217,35 @@ test.describe("models surface", () => {
         await expect(page.getByText(model.name, { exact: false }).first()).toBeVisible();
       }
     }
+  });
+});
+
+test.describe("model formats", () => {
+  const NAME = "zz_sweep_onnx_model";
+
+  test.afterEach(async ({ request }) => {
+    const listed = await request.get(`${API_BASE_URL}/api/v1/models`);
+    for (const model of (await listed.json()) as Array<{ id: string; name: string }>) {
+      if (model.name === NAME) await deleteQuietly(request, `/api/v1/models/${model.id}`);
+    }
+  });
+
+  test("an ONNX model uploads through the page and is labelled by its detected format", async ({
+    page,
+    request
+  }) => {
+    await page.goto("/models");
+    await page.getByPlaceholder("Risk classifier v2").fill(NAME);
+    await page.locator('input[type="file"]').setInputFiles(
+      "apps/python-executor/tests/fixtures/models/logistic.onnx");
+    await page.getByRole("button", { name: "Upload model" }).click();
+    await expect(page.getByText(`Uploaded “${NAME}”.`)).toBeVisible({ timeout: 20_000 });
+    const card = page.locator("div").filter({ hasText: NAME }).filter({ hasText: "ONNX" }).first();
+    await expect(card, "the model list must say ONNX, from the bytes, not a declared type").toBeVisible();
+
+    const listed = await request.get(`${API_BASE_URL}/api/v1/models`);
+    const model = ((await listed.json()) as Array<{ name: string; model_format: string }>).find((m) => m.name === NAME);
+    expect(model?.model_format).toBe("onnx");
   });
 });
 

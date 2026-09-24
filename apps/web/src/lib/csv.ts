@@ -61,3 +61,52 @@ export function parseRows(text: string): Record<string, unknown>[] {
   if (t.startsWith("[")) return JSON.parse(t) as Record<string, unknown>[];
   return parseCsv(t);
 }
+
+/** Parse a dataset FILE into rows: .csv, .json (an array), .jsonl/.ndjson, .xls/.xlsx.
+ *  One implementation for every upload in the app — it lived inline in the simulation page, and
+ *  the evaluations page had no file input at all (a risk team pasted its dataset into a textarea).
+ *  SheetJS is imported dynamically so it stays off the main bundle. */
+export async function parseDatasetFile(file: File): Promise<Record<string, unknown>[]> {
+  let parsed: Record<string, unknown>[];
+  if (/\.(jsonl|ndjson)$/i.test(file.name)) {
+    // One JSON object per line — blank lines skipped, a bad line stops with its number.
+    parsed = [];
+    const lines = (await file.text()).split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const obj = JSON.parse(line);
+        parsed.push(obj && typeof obj === "object" ? obj : { _value: obj });
+      } catch {
+        throw new Error(`Line ${i + 1} is not valid JSON.`);
+      }
+    }
+  } else if (/\.json$/i.test(file.name)) {
+    const value = JSON.parse(await file.text());
+    if (!Array.isArray(value)) throw new Error("A .json dataset must be an array of objects.");
+    parsed = value as Record<string, unknown>[];
+  } else if (/\.csv$/i.test(file.name)) {
+    parsed = parseCsv(await file.text());
+  } else if (/\.xlsx?$/i.test(file.name)) {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    parsed = (XLSX.utils.sheet_to_json(sheet, { defval: "" }) as Record<string, unknown>[]).map((r) => {
+      const o: Record<string, unknown> = {};
+      for (const k of Object.keys(r)) o[k] = coerce(r[k]);
+      return o;
+    });
+  } else {
+    throw new Error("Unsupported file — use .csv, .xls, .xlsx, .json or .jsonl.");
+  }
+  if (!parsed.length) throw new Error("No rows found in the file.");
+  return parsed;
+}
+
+/** Column names across the first rows of a dataset, in first-seen order. */
+export function datasetColumns(rows: Record<string, unknown>[], sample = 50): string[] {
+  const seen = new Set<string>();
+  rows.slice(0, sample).forEach((row) => Object.keys(row).forEach((k) => seen.add(k)));
+  return [...seen];
+}

@@ -34,7 +34,7 @@ Decision-time retrieval is opt-in per connector and **fails closed**: if a sourc
 - **Metric Computation** — configurable output metrics (discount %, loan amount, interest rate, custom formulas)
 - **Excel Functions** — 230+ Excel-compatible functions (Math, Statistical, Financial, Logical, Text, Lookup, Date, Info, Engineering, Database) available in variable sandbox and formulas
 - **Policies** — multi-step workflows chaining variables, rules, scorecards, actions, ML models, and human review gates
-- **ML Model Hosting** — upload, store, and execute Python .pkl models as policy steps with prediction and probability outputs
+- **ML Model Hosting** — host ONNX, PMML (scorecard, regression, tree), XGBoost JSON, LightGBM and pickled scikit-learn models as policy steps, with prediction and probability outputs
 - **CSV Export** — export full configuration as JSON or CSV with section-based layout
 - **Import Validation** — import with per-entity validation report highlighting which rules, variables, scorecards are valid vs invalid
 - **Environment Promotion** — dev > uat > prod with test-gating before promotion
@@ -386,7 +386,7 @@ Used by mobile and edge SDKs:
 | `/sdk/v1/experience-manifest` | GET | Get admin/studio metadata |
 
 | `/api/v1/excel-functions` | GET | List all 230+ available Excel functions |
-| `/api/v1/models` | GET, POST, DELETE | Manage hosted .pkl ML models |
+| `/api/v1/models` | GET, POST, DELETE | Manage hosted ML models (ONNX, PMML, XGBoost, LightGBM, pickle) |
 | `/api/v1/models/{id}/predict` | POST | Run prediction on a hosted model |
 | `/api/v1/models/{id}/test` | POST | Test model with sample data |
 | `/api/v1/import/validate` | POST | Validate import payload without importing |
@@ -737,19 +737,31 @@ Attach computed metrics to any scorecard:
 
 ## ML Model Hosting
 
-Upload and execute Python `.pkl` models as part of policy pipelines:
+Host models as steps in policy pipelines. The format is detected from the file's own bytes:
+
+| format | file | notes |
+|---|---|---|
+| ONNX | `.onnx` | one float tensor input `[N, features]`; skl2onnx ZipMap outputs are unwrapped |
+| PMML | `.pmml` / `.xml` | `Scorecard` (with ranked reason codes), `RegressionModel`, `TreeModel`; anything else is refused by name. Parsed with defusedxml, no JVM |
+| XGBoost | `.json` (`save_model`) | scored **by feature name** when the booster carries names |
+| LightGBM | `.txt` (`model_to_string`) | scored by feature name when the model carries names |
+| pickle | `.pkl` / `.joblib` | the only format whose load runs code; isolated worker, and `MODEL_ALLOW_PICKLE=0` refuses it |
+
+Every format is loaded and scored in the isolated model worker pool. `prediction` is what the
+format's own runtime calls its prediction (the class for scikit-learn/ONNX classifiers, the
+probability for a binary booster, the score for a PMML scorecard); `probabilities` is returned
+alongside when the model has them.
 
 ### Upload a Model
 
 ```bash
-# Base64-encode your pickle file and POST it
+# Base64-encode the model file and POST it
 curl -X POST http://localhost:8080/api/v1/models \
   -H "Content-Type: application/json" \
   -H "X-API-Key: rm_live_..." \
   -d '{
     "name": "Credit Risk Model v1",
-    "model_type": "sklearn",
-    "model_blob_base64": "<base64-encoded-pickle>",
+    "model_base64": "<base64-encoded-model-file>",
     "input_schema": {"features": ["bureau_score", "income", "age"]},
     "description": "Logistic regression credit risk model"
   }'
@@ -859,7 +871,7 @@ cd packages/sdk-android && ./gradlew :sample-app:connectedDebugAndroidTest
 | `apps/web/` | Next.js 14 dashboard with visual rule builder |
 | `apps/python-executor/` | FastAPI backend — all business logic, API, sandbox |
 | `apps/python-executor/app/excel_functions.py` | 230+ Excel-compatible functions (Python) |
-| `apps/python-executor/app/model_executor.py` | ML model hosting — pickle deserialization and prediction |
+| `apps/python-executor/app/model_executor.py` | ML model hosting — format detection, isolated loading and scoring (ONNX, PMML, XGBoost, LightGBM, pickle) |
 | `apps/python-executor/app/sandbox.py` | Isolated variable execution with Excel function builtins |
 | `apps/python-executor/app/logic.py` | Scorecard evaluation (points/WoE/formula), CSV export, metric computation |
 | `apps/python-executor/app/auth.py` | API key generation, JWT creation, HMAC signing, bcrypt hashing |

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PMML xmlns="http://www.dmg.org/PMML-4_4" version="4.4">
+  <Header description="RuleMind test fixture: logistic regression"/>
+  <DataDictionary numberOfFields="4">
+    <DataField name="bureau_score" optype="continuous" dataType="double"/>
+    <DataField name="dti" optype="continuous" dataType="double"/>
+    <DataField name="income_k" optype="continuous" dataType="double"/>
+    <DataField name="default" optype="categorical" dataType="string"><Value value="0"/><Value value="1"/></DataField>
+  </DataDictionary>
+  <RegressionModel functionName="classification" normalizationMethod="logit">
+    <MiningSchema>
+      <MiningField name="bureau_score"/>
+      <MiningField name="dti"/>
+      <MiningField name="income_k"/>
+      <MiningField name="default" usageType="target"/>
+    </MiningSchema>
+    <RegressionTable intercept="-18.630577087402344" targetCategory="1">
+        <NumericPredictor name="bureau_score" coefficient="0.0276930071413517"/>
+        <NumericPredictor name="dti" coefficient="-3.922060489654541"/>
+        <NumericPredictor name="income_k" coefficient="0.012684633955359459"/>
+    </RegressionTable>
+    <RegressionTable intercept="0" targetCategory="0"/>
+  </RegressionModel>
+</PMML>

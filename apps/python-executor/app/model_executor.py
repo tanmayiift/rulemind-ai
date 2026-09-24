@@ -1,8 +1,10 @@
 """
-Model executor for hosting and running pickle (.pkl) ML models.
+Model executor for hosted ML models: ONNX, PMML (Scorecard / RegressionModel / TreeModel),
+XGBoost JSON, LightGBM model files, and pickled scikit-learn-compatible models.
 
-Models are loaded and executed in the sandbox process pool for security.
-Supports scikit-learn compatible models (predict / predict_proba).
+Every model is loaded and scored in a dedicated, isolated process pool. The format is detected
+from the blob's own bytes (`detect_format`); only pickle executes code when loaded, and it can be
+switched off entirely with MODEL_ALLOW_PICKLE=0.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import env
 
@@ -106,7 +108,7 @@ def _recycle_model_pool(pool: ProcessPoolExecutor) -> None:
         _model_pool = None
 
 
-def _run_isolated(func_name: str, *args: Any) -> Dict[str, Any]:
+def _run_isolated(func_name: str, *args: Any, timeout_ms: Optional[int] = None) -> Dict[str, Any]:
     """Run execute_model/validate_model in the model pool.
 
     This is the actual fix for the pickle RCE. pickle.loads runs the payload's __reduce__ on
@@ -120,10 +122,11 @@ def _run_isolated(func_name: str, *args: Any) -> Dict[str, Any]:
     target = _ISOLATED_TARGETS[func_name]
     try:
         future: Any = pool.submit(target, *args)
-        return future.result(timeout=MODEL_TIMEOUT_MS / 1000.0)
+        return future.result(timeout=(timeout_ms or MODEL_TIMEOUT_MS) / 1000.0)
     except FuturesTimeoutError:
         _recycle_model_pool(pool)
-        return {"prediction": None, "valid": False, "error": "Model execution timed out.", "latency_ms": float(MODEL_TIMEOUT_MS)}
+        return {"prediction": None, "valid": False, "error": "Model execution timed out.",
+                "latency_ms": float(timeout_ms or MODEL_TIMEOUT_MS)}
     except BrokenProcessPool as exc:
         _recycle_model_pool(pool)
         return {"prediction": None, "valid": False, "error": "Model sandbox unavailable: {0}".format(exc), "latency_ms": 0.0}
@@ -191,144 +194,300 @@ def prepare_features(
     return {"values": [row], "features": ordered, "imputed_features": sorted(missing)}
 
 
+# ── formats ────────────────────────────────────────────────────────────────────────────────
+# The format is read from the file's own bytes, never from a declared type: a stored model is run
+# by the loader its bytes call for, so no metadata can route a blob to the wrong deserializer.
+# The markers are disjoint -- pickle protocol 2+ opens with 0x80, an ONNX ModelProto with field 1
+# (ir_version, varint) = 0x08, PMML with '<', XGBoost JSON with '{', a LightGBM model file with
+# "tree". Anything else is treated as a legacy (protocol 0/1) pickle, which is how every model
+# uploaded before these formats existed is still served.
+MODEL_FORMATS = ("pickle", "onnx", "pmml", "xgboost_json", "lightgbm_text")
+
+# Pickle is the one format whose LOAD executes code (see _run_isolated). The worker isolation is
+# the containment; this is the switch for an operator who would rather not host pickles at all.
+# On by default because existing deployments hold pickled models; a regulated install that
+# standardises on ONNX/PMML turns it off and every pickle is refused at upload and at scoring.
+ALLOW_PICKLE = env.env_bool("MODEL_ALLOW_PICKLE", True)
+
+# Batch scoring (evaluations): rows per worker call, and the wall clock one call may take. Split so
+# a 50k-row evaluation is 25 worker calls, not 50,000 -- and not one call that can outlive any
+# sane timeout.
+BATCH_CHUNK_ROWS = 2000
+MODEL_BATCH_TIMEOUT_MS = env.env_int("MODEL_BATCH_TIMEOUT_MS", 60000)
+
+
+def detect_format(model_blob: bytes) -> str:
+    if model_blob[:1] == b"\x80":
+        return "pickle"
+    if model_blob[:1] == b"\x08":
+        return "onnx"
+    head = model_blob[:512].lstrip(b"\xef\xbb\xbf \t\r\n")
+    if head.startswith(b"<"):
+        return "pmml"
+    if head.startswith(b"{"):
+        return "xgboost_json"
+    if head.startswith(b"tree"):
+        return "lightgbm_text"
+    return "pickle"
+
+
+def _pickle_refused(model_format: str) -> Optional[str]:
+    if model_format == "pickle" and not ALLOW_PICKLE:
+        return ("Pickle models are disabled on this installation (MODEL_ALLOW_PICKLE=0). "
+                "Export the model as ONNX, PMML, XGBoost JSON or a LightGBM model file.")
+    return None
+
+
+class _Loaded:
+    """A model loaded in the worker, behind one interface for every format."""
+
+    def __init__(self, model_format: str, model_type: str, score: "Callable[[List[Dict[str, Any]], List[str]], List[Tuple[Any, Any]]]",
+                 feature_names: Optional[List[str]] = None, classes: Optional[List[Any]] = None,
+                 importances: Optional[List[float]] = None, has_proba: bool = False,
+                 numeric: bool = True) -> None:
+        self.format = model_format
+        self.model_type = model_type
+        self.score = score
+        # Named-feature formats score BY NAME: the booster's own feature list decides the column
+        # order, so a caller listing features in a different order cannot silently shift every
+        # value into the wrong column -- the failure a positional model makes invisible.
+        self.feature_names = feature_names
+        self.classes = classes
+        self.importances = importances
+        self.has_proba = has_proba
+        # PMML takes the raw values (a scorecard bins categorical strings); every other format
+        # takes a float matrix.
+        self.numeric = numeric
+
+
+def _tolist(value: Any) -> Any:
+    return value.tolist() if hasattr(value, "tolist") else value
+
+
+def _load(model_blob: bytes, model_format: str) -> _Loaded:
+    """Deserialize in the WORKER. Only the pickle branch runs code on load."""
+    import numpy as np
+
+    if model_format == "onnx":
+        import onnxruntime as ort
+
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        session = ort.InferenceSession(model_blob, sess_options=options, providers=["CPUExecutionProvider"])
+        inputs = session.get_inputs()
+        if len(inputs) != 1:
+            raise ValueError("ONNX models with {0} inputs are not supported; export with one float tensor "
+                             "input of shape [N, features].".format(len(inputs)))
+        tensor = inputs[0]
+        width = tensor.shape[1] if len(tensor.shape) == 2 and isinstance(tensor.shape[1], int) else None
+        outputs = [o.name for o in session.get_outputs()]
+        classes_seen: Dict[str, Any] = {}
+
+        def score_onnx(rows: List[Dict[str, Any]], ordered: List[str]) -> List[Tuple[Any, Any]]:
+            matrix = np.array([[row[f] for f in ordered] for row in rows], dtype=np.float32)
+            if width is not None and matrix.shape[1] != width:
+                raise _InputError("The ONNX model takes {0} features; {1} were supplied.".format(width, matrix.shape[1]))
+            result = session.run(outputs, {tensor.name: matrix})
+            labels = _tolist(result[0])
+            probs: List[Any] = [None] * len(rows)
+            if len(result) > 1:
+                raw = result[1]
+                if isinstance(raw, list) and raw and isinstance(raw[0], dict):  # skl2onnx ZipMap
+                    keys = sorted(raw[0].keys(), key=lambda k: str(k))
+                    classes_seen["classes"] = keys
+                    probs = [[float(d[k]) for k in keys] for d in raw]
+                else:
+                    probs = _tolist(raw)
+            return [(_tolist(label), prob) for label, prob in zip(labels, probs, strict=True)]
+
+        meta = session.get_modelmeta()
+        loaded = _Loaded("onnx", "onnx:{0}".format(meta.producer_name or "model"), score_onnx,
+                         has_proba=len(outputs) > 1)
+        loaded.classes = classes_seen  # filled on first score; unwrapped by the caller
+        return loaded
+
+    if model_format == "pmml":
+        from .pmml import PMMLModel
+
+        pmml_model = PMMLModel(model_blob)
+
+        def score_pmml(rows: List[Dict[str, Any]], ordered: List[str]) -> List[Tuple[Any, Any]]:
+            out = []
+            for row in rows:
+                result = pmml_model.predict(row)
+                out.append((result["prediction"], result.get("probabilities")))
+            return out
+
+        return _Loaded("pmml", "pmml:{0}".format(pmml_model.kind), score_pmml,
+                       feature_names=list(pmml_model.inputs),
+                       has_proba=pmml_model.function == "classification", numeric=False)
+
+    if model_format == "xgboost_json":
+        import json
+
+        import xgboost as xgb
+
+        try:
+            config = json.loads(model_blob)
+        except ValueError as exc:
+            raise ValueError("Not an XGBoost JSON model: {0}".format(exc)) from exc
+        if not isinstance(config, dict) or "learner" not in config:
+            raise ValueError("A JSON model file must be an XGBoost model (a 'learner' object).")
+        booster = xgb.Booster()
+        booster.load_model(bytearray(model_blob))
+        objective = json.loads(booster.save_config())["learner"]["objective"]["name"]
+        names = list(booster.feature_names or []) or None
+        binary = objective.startswith("binary:")
+
+        def score_xgb(rows: List[Dict[str, Any]], ordered: List[str]) -> List[Tuple[Any, Any]]:
+            matrix = np.array([[row[f] for f in ordered] for row in rows], dtype=np.float32)
+            predictions = booster.predict(xgb.DMatrix(matrix, feature_names=names if names else None))
+            return [(float(p), [1.0 - float(p), float(p)] if binary else None) for p in _tolist(predictions)]
+
+        return _Loaded("xgboost_json", "xgboost:{0}".format(objective), score_xgb,
+                       feature_names=names, has_proba=binary)
+
+    if model_format == "lightgbm_text":
+        import lightgbm as lgb
+
+        booster = lgb.Booster(model_str=model_blob.decode("utf-8"))
+        objective = str(booster.dump_model().get("objective", "")).split(" ")[0]
+        names = list(booster.feature_name() or []) or None
+        # LightGBM names unnamed features Column_0..N; those are positions, not names.
+        if names and all(n.startswith("Column_") for n in names):
+            names = None
+        binary = objective in ("binary", "cross_entropy")
+
+        def score_lgb(rows: List[Dict[str, Any]], ordered: List[str]) -> List[Tuple[Any, Any]]:
+            matrix = np.array([[row[f] for f in ordered] for row in rows], dtype=np.float64)
+            predictions = booster.predict(matrix)
+            return [(float(p), [1.0 - float(p), float(p)] if binary else None) for p in _tolist(predictions)]
+
+        return _Loaded("lightgbm_text", "lightgbm:{0}".format(objective or "model"), score_lgb,
+                       feature_names=names, has_proba=binary)
+
+    import pickle  # noqa: S403
+
+    model = pickle.loads(model_blob)  # noqa: S301
+    if not hasattr(model, "predict"):
+        raise ValueError("Model does not have a predict() method")
+    has_proba = hasattr(model, "predict_proba")
+
+    def score_pickle(rows: List[Dict[str, Any]], ordered: List[str]) -> List[Tuple[Any, Any]]:
+        matrix = np.array([[row[f] for f in ordered] for row in rows], dtype=float)
+        predictions = _tolist(model.predict(matrix))
+        probabilities: List[Any] = [None] * len(rows)
+        if has_proba:
+            try:
+                probabilities = _tolist(model.predict_proba(matrix))
+            except Exception:
+                probabilities = [None] * len(rows)
+        return list(zip(predictions, probabilities, strict=True))
+
+    classes = _tolist(model.classes_) if hasattr(model, "classes_") else None
+    importances = _tolist(model.feature_importances_) if hasattr(model, "feature_importances_") else None
+    return _Loaded("pickle", type(model).__name__, score_pickle, classes=classes,
+                   importances=importances, has_proba=has_proba)
+
+
+class _InputError(ValueError):
+    """The caller's data, not the model or the server."""
+
+
+def _prepare_rows(loaded: _Loaded, rows: List[Dict[str, Any]], features: Optional[List[str]],
+                  allow_missing: bool) -> Tuple[List[Dict[str, Any]], List[str], List[List[str]]]:
+    """(rows ready to score, feature order, imputed features per row)."""
+    ordered = loaded.feature_names or (list(features) if features else list(rows[0].keys()))
+    if not loaded.numeric:
+        # PMML: values by name, as supplied -- the evaluator decides what a missing value means
+        # (a scorecard can bin it; a regression refuses it).
+        return [{name: row.get(name) for name in ordered} for row in rows], ordered, [[] for _ in rows]
+    prepared_rows, imputed_rows = [], []
+    for index, row in enumerate(rows):
+        prepared = prepare_features(row, ordered, allow_missing=allow_missing)
+        if prepared.get("error"):
+            prefix = "" if len(rows) == 1 else "Row {0}: ".format(index)
+            raise _InputError(prefix + prepared["error"])
+        prepared_rows.append(dict(zip(prepared["features"], prepared["values"][0], strict=True)))
+        imputed_rows.append(prepared["imputed_features"])
+    return prepared_rows, ordered, imputed_rows
+
+
 def _execute_model_worker(
     model_blob: bytes,
     input_data: Dict[str, Any],
     features: Optional[List[str]] = None,
     allow_missing: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Execute a pickle model with the given input data.
-
-    The model is deserialized in the current process. For production use,
-    this should be called inside a sandbox worker process.
-
-    Args:
-        model_blob: Raw bytes of the pickled model.
-        input_data: Dictionary of feature name -> value.
-        features: Optional ordered list of feature names.
-
-    Returns:
-        Dictionary with prediction results and metadata.
-    """
+    """Score one row. RUNS IN A POOL WORKER. `prediction` is what the format's own runtime calls
+    its prediction: the class for a scikit-learn or ONNX classifier, the probability for a binary
+    XGBoost/LightGBM booster, the score for a PMML scorecard."""
     started = time.perf_counter()
+    model_format = detect_format(model_blob)
     try:
-        import pickle  # noqa: S403
-
-        # Size guard
-        size_mb = len(model_blob) / (1024 * 1024)
-        if size_mb > MAX_MODEL_SIZE_MB:
-            return {
-                "prediction": None,
-                "error": f"Model size ({size_mb:.1f}MB) exceeds limit ({MAX_MODEL_SIZE_MB}MB)",
-                "latency_ms": _ms(started),
-            }
-
-        model = pickle.loads(model_blob)  # noqa: S301
-
-        prepared = prepare_features(input_data, features, allow_missing=allow_missing)
-        if prepared.get("error"):
-            prepared["prediction"] = None
-            prepared["latency_ms"] = _ms(started)
-            return prepared
-        values = prepared["values"]
-        features = prepared["features"]
-        imputed = prepared["imputed_features"]
-
-        try:
-            import numpy as np
-            values_array = np.array(values, dtype=float)
-        except ImportError:
-            values_array = values
-
-        # Predict
-        prediction = None
-        probabilities = None
-        prediction_raw = None
-
-        if hasattr(model, "predict"):
-            prediction_raw = model.predict(values_array)
-            if hasattr(prediction_raw, "tolist"):
-                prediction = prediction_raw.tolist()
-            else:
-                prediction = list(prediction_raw) if hasattr(prediction_raw, "__iter__") else [prediction_raw]
-
-        if hasattr(model, "predict_proba"):
-            try:
-                proba_raw = model.predict_proba(values_array)
-                if hasattr(proba_raw, "tolist"):
-                    probabilities = proba_raw.tolist()
-                else:
-                    probabilities = list(proba_raw) if hasattr(proba_raw, "__iter__") else [proba_raw]
-            except Exception:
-                probabilities = None
-
-        # Extract model metadata
-        model_type = type(model).__name__
-        model_classes = None
-        if hasattr(model, "classes_"):
-            classes = model.classes_
-            model_classes = classes.tolist() if hasattr(classes, "tolist") else list(classes)
-
-        feature_importances = None
-        if hasattr(model, "feature_importances_"):
-            fi = model.feature_importances_
-            feature_importances = fi.tolist() if hasattr(fi, "tolist") else list(fi)
-
+        loaded = _load(model_blob, model_format)
+        rows, ordered, imputed = _prepare_rows(loaded, [input_data], features, allow_missing)
+        prediction, probabilities = loaded.score(rows, ordered)[0]
+        classes = loaded.classes.get("classes") if isinstance(loaded.classes, dict) else loaded.classes
         return {
-            "prediction": prediction[0] if prediction and len(prediction) == 1 else prediction,
-            "probabilities": probabilities[0] if probabilities and len(probabilities) == 1 else probabilities,
-            "model_type": model_type,
-            "model_classes": model_classes,
-            "feature_importances": feature_importances,
-            "input_features": features or list(input_data.keys()),
-            "input_values": values[0],
+            "prediction": prediction,
+            "probabilities": probabilities,
+            "model_type": loaded.model_type,
+            "model_format": model_format,
+            "model_classes": classes,
+            "feature_importances": loaded.importances,
+            "input_features": ordered,
+            "input_values": [rows[0].get(name) for name in ordered],
             # Non-empty only when the caller opted into allow_missing, so an imputed
             # zero is never mistaken for a value the caller actually supplied.
-            "imputed_features": imputed,
+            "imputed_features": imputed[0],
             "latency_ms": _ms(started),
             "error": None,
         }
-
+    except _InputError as exc:
+        return {"prediction": None, "error": str(exc), "error_kind": INVALID_INPUT,
+                "model_format": model_format, "latency_ms": _ms(started)}
     except ImportError as exc:
-        return {
-            "prediction": None,
-            "error": f"Missing dependency: {exc}. Install scikit-learn/numpy to use model hosting.",
-            "latency_ms": _ms(started),
-        }
+        return {"prediction": None, "model_format": model_format, "latency_ms": _ms(started),
+                "error": "Missing dependency for {0} models: {1}.".format(model_format, exc)}
     except Exception as exc:
-        return {
-            "prediction": None,
-            "error": str(exc),
-            "latency_ms": _ms(started),
-        }
+        return {"prediction": None, "error": str(exc), "model_format": model_format, "latency_ms": _ms(started)}
+
+
+def _execute_batch_worker(
+    model_blob: bytes,
+    rows: List[Dict[str, Any]],
+    features: Optional[List[str]] = None,
+    allow_missing: bool = False,
+) -> Dict[str, Any]:
+    """Score many rows with ONE load and one vectorised predict. RUNS IN A POOL WORKER."""
+    started = time.perf_counter()
+    model_format = detect_format(model_blob)
+    try:
+        loaded = _load(model_blob, model_format)
+        prepared, ordered, _ = _prepare_rows(loaded, rows, features, allow_missing)
+        scored = loaded.score(prepared, ordered)
+        return {"predictions": [p for p, _ in scored], "probabilities": [q for _, q in scored],
+                "model_format": model_format, "model_type": loaded.model_type,
+                "input_features": ordered, "error": None, "latency_ms": _ms(started)}
+    except _InputError as exc:
+        return {"error": str(exc), "error_kind": INVALID_INPUT, "model_format": model_format}
+    except Exception as exc:
+        return {"error": str(exc), "model_format": model_format}
 
 
 def _validate_model_worker(model_blob: bytes) -> Dict[str, Any]:
-    """Validate a model blob. RUNS IN A POOL WORKER -- it calls pickle.loads."""
+    """Load a blob the way scoring will, and report what it is. RUNS IN A POOL WORKER."""
+    model_format = detect_format(model_blob)
     try:
-        import pickle  # noqa: S403
-        model = pickle.loads(model_blob)  # noqa: S301
-
-        has_predict = hasattr(model, "predict")
-        has_proba = hasattr(model, "predict_proba")
-        model_type = type(model).__name__
-
-        return {
-            "valid": has_predict,
-            "model_type": model_type,
-            "has_predict": has_predict,
-            "has_predict_proba": has_proba,
-            "error": None if has_predict else "Model does not have a predict() method",
-        }
+        loaded = _load(model_blob, model_format)
+        return {"valid": True, "model_type": loaded.model_type, "model_format": model_format,
+                "has_predict": True, "has_predict_proba": loaded.has_proba,
+                "input_features": loaded.feature_names, "error": None}
     except Exception as exc:
-        return {
-            "valid": False,
-            "model_type": None,
-            "has_predict": False,
-            "has_predict_proba": False,
-            "error": str(exc),
-        }
+        return {"valid": False, "model_type": None, "model_format": model_format,
+                "has_predict": False, "has_predict_proba": False, "error": str(exc)}
 
 
 def model_to_base64(model_blob: bytes) -> str:
@@ -352,13 +511,49 @@ def execute_model(
     oversize = _too_large(model_blob)
     if oversize:
         return {"prediction": None, "error": oversize["error"], "latency_ms": 0.0}
+    refused = _pickle_refused(detect_format(model_blob))
+    if refused:
+        return {"prediction": None, "error": refused, "latency_ms": 0.0}
     return _run_isolated("execute", model_blob, input_data, features, allow_missing)
+
+
+def execute_model_batch(
+    model_blob: bytes,
+    rows: List[Dict[str, Any]],
+    features: Optional[List[str]] = None,
+    allow_missing: bool = False,
+) -> Dict[str, Any]:
+    """Score many rows: one model load and one vectorised predict per chunk of BATCH_CHUNK_ROWS,
+    each chunk in the isolated worker. Scoring row by row cost a process round trip and a full
+    model deserialize PER ROW -- the reason an evaluation over a real portfolio could not finish."""
+    oversize = _too_large(model_blob)
+    if oversize:
+        return {"error": oversize["error"]}
+    refused = _pickle_refused(detect_format(model_blob))
+    if refused:
+        return {"error": refused}
+    if not rows:
+        return {"predictions": [], "probabilities": [], "error": None}
+    predictions: List[Any] = []
+    probabilities: List[Any] = []
+    last: Dict[str, Any] = {}
+    for start in range(0, len(rows), BATCH_CHUNK_ROWS):
+        chunk = rows[start:start + BATCH_CHUNK_ROWS]
+        last = _run_isolated("batch", model_blob, chunk, features, allow_missing,
+                             timeout_ms=MODEL_BATCH_TIMEOUT_MS)
+        if last.get("error"):
+            if start:
+                last["error"] = "Rows {0}-{1}: {2}".format(start, start + len(chunk) - 1, last["error"])
+            return last
+        predictions.extend(last["predictions"])
+        probabilities.extend(last["probabilities"])
+    return {**last, "predictions": predictions, "probabilities": probabilities}
 
 
 def validate_model(model_blob: bytes) -> Dict[str, Any]:
     """Validate an uploaded model in an ISOLATED worker. Public entry point.
 
-    The size guard is enforced HERE, before the blob is unpickled anywhere -- it used to live
+    The size guard is enforced HERE, before the blob is loaded anywhere -- it used to live
     only in execute_model, so validate_model (the upload path) would deserialize an arbitrarily
     large blob and could be used to OOM the process at upload time.
     """
@@ -366,13 +561,19 @@ def validate_model(model_blob: bytes) -> Dict[str, Any]:
     if oversize:
         return {"valid": False, "model_type": None, "has_predict": False,
                 "has_predict_proba": False, "error": oversize["error"]}
+    model_format = detect_format(model_blob)
+    refused = _pickle_refused(model_format)
+    if refused:
+        return {"valid": False, "model_type": None, "model_format": model_format, "has_predict": False,
+                "has_predict_proba": False, "error": refused}
     return _run_isolated("validate", model_blob)
 
 
-# Name -> worker function, resolved by _run_isolated. Both are module-level so ProcessPoolExecutor
-# can pickle the reference across to the spawned worker.
+# Name -> worker function, resolved by _run_isolated. Module-level so ProcessPoolExecutor can
+# pickle the reference across to the spawned worker.
 _ISOLATED_TARGETS: Dict[str, "Callable[..., Dict[str, Any]]"] = {
     "execute": _execute_model_worker,
+    "batch": _execute_batch_worker,
     "validate": _validate_model_worker,
 }
 
