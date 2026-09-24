@@ -504,11 +504,40 @@ of 2, 200 alternating samples per side, three rounds that agree to within 0.3 ms
 | `POST /api/v1/decide`, p95 | 14.6–15.2 ms | 7.8–9.3 ms | |
 | 8 concurrent clients, in-process | 88.0 decisions/s | 89.8 decisions/s | none |
 
-The by-parts estimate (0.35 ms, ~40%) held. **Throughput did not move, and that is not a
-contradiction:** at saturation this harness is bound by the API process's own CPU (~11 ms a
-decision under the GIL), and the per-call trips were mostly time spent *waiting* on IPC, which
-releases the GIL. The change buys latency at any load below saturation; it adds throughput only
-where the pool itself was the bottleneck.
+The by-parts estimate (0.35 ms, ~40%) held. The in-process row showed no throughput change, and
+I first wrote that the change "buys latency, not throughput". **That was wrong for the deployed
+topology**, and the deployed measurement below corrects it: the in-process harness is one process
+bound by its own GIL, while a real install runs uvicorn workers as separate processes, where the
+parent-side cost of 55 submits (pickling, queue hand-off, result handling) is CPU the worker
+cannot spend on the next request.
+
+**Deployed, 2026-09-24** — the built image, 2 uvicorn workers, Postgres 16, over HTTP, the
+compose stack up beside it *with the soak running at its peak* (so absolute numbers are
+conservative). Both modes ran as separate containers **at the same time**, requests interleaved
+at concurrency 1 and rounds alternated at concurrency 8, so the soak's contention landed on both
+equally. `policy_instant_personal_loan`, rate limiting off:
+
+| | one trip per variable | one trip per decision | change |
+|---|---:|---:|---:|
+| 1 client, p50 | 28.6 ms | 18.5 ms | **−35%** |
+| 1 client, p95 | 45.5 ms | 29.3 ms | **−36%** |
+| 8 clients, throughput (median of 4 rounds) | 68.1 rps | 83.3 rps | **+22%** |
+| 8 clients, p50 | 102.6 ms | 82.5 ms | −20% |
+
+And the same build as shipped against tuned (`FAST_DECIDE=1`, `COMPUTE_ONLY_USED_VARS=1`,
+4 workers, pool 10), measured the same way:
+
+| | as shipped | tuned |
+|---|---:|---:|
+| 1 client, p50 / p95 | 15.6 / 20.5 ms | 14.8 / 20.7 ms |
+| 8 clients, throughput (round range) | 91.2 rps (70–123) | 114.2 rps (82–126) |
+| 8 clients, p50 | 76.8 ms | 52.6 ms |
+
+Two readings. As shipped is now **83–91 rps at concurrency 8 against the Round 5 baseline of
+60.3** — and that baseline was taken with the soak stopped, these with it at peak. And with the
+variables down to 0.34 ms, `COMPUTE_ONLY_USED_VARS` no longer buys single-request latency; the
+tuned configuration's gain is concurrency, mostly the extra workers. The round-to-round range is
+the soak, which is why medians and ranges are reported, not a best round.
 
 How each constraint above was met, and where the prediction was wrong:
 
