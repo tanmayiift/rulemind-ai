@@ -46,7 +46,12 @@ on:
   workflow_dispatch:
     inputs:
       lanes:
-        description: 'Lanes to run (space-separated), or blank for all'
+        description: >-
+          Lanes to run, space-separated. Blank runs the 12 DEFAULT lanes -- not all 14:
+          `smoke` and `device` are opt-in and must be named explicitly. smoke wants
+          8080/3000/55432/6380 to itself so it cannot run beside python-pg; device needs
+          a physical phone or an emulator. This used to read "blank for all", which is
+          how two lanes went unnoticed.
         required: false
         default: ''
 
