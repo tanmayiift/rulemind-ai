@@ -48,7 +48,7 @@ const EXPECTED_REFUSALS: Record<string, RegExp> = {
 // route -> what it rendered. Filled by the per-route tests, read by the uniqueness tests at the
 // end. Safe because playwright.config.ts pins `workers: 1` and `fullyParallel: false`, so this
 // file runs in one process, in order.
-const RENDERED = new Map<string, { heading: string; body: string }>();
+const RENDERED = new Map<string, { heading: string; headingCount: number; body: string }>();
 
 async function visit(page: Page, route: string) {
   const consoleErrors: string[] = [];
@@ -58,18 +58,19 @@ async function visit(page: Page, route: string) {
   page.on("pageerror", (e) => pageErrors.push(String(e)));
   page.on("response", (r) => { if (r.status() >= 500) serverErrors.push(`${r.status()} ${r.url()}`); });
 
-  // `domcontentloaded`, then a BEST-EFFORT wait for the network to settle.
+  // `domcontentloaded`, then a BEST-EFFORT wait for the network to settle. Kept because a check
+  // about rendering should not be hostage to a dev server going quiet -- the listeners above are
+  // attached BEFORE the navigation, so console errors, uncaught errors and 5xx responses are
+  // captured whenever they happen, and the idle wait only decides how long the page gets to make
+  // its calls.
   //
-  // This was `waitUntil: "networkidle"`, which made the whole check hostage to a dev server
-  // going quiet. Under load, `/rules` -- the largest page in the app, 1400 lines plus the rule
-  // tree editor -- exceeded the 60s test timeout while Next.js was still compiling it on first
-  // visit, and the run failed with no assertion having been evaluated at all. The page was
-  // fine: probed directly it loads in ~11s with no console errors, no page errors and nothing
-  // pending. "The network went quiet" was never what this test is about.
-  //
-  // The listeners above are attached BEFORE the navigation, so console errors, uncaught errors
-  // and 5xx responses are captured whenever they happen -- the idle wait only decides how long
-  // to give the page to make its calls, and a timeout there is a slow machine, not a defect.
+  // A CORRECTION, recorded because the first account of this was wrong and was committed. This
+  // was changed while chasing a `/rules` timeout, attributed at the time to a `next dev`
+  // first-visit compile. That diagnosis was false. The timeout was caused by the heading capture
+  // added in the same change (see RENDERED below): `/rules` has no h1/h2 at all, and a locator's
+  // innerText() auto-waits for its element for the WHOLE test timeout -- `.catch` only fired after
+  // it. "Verified pre-existing by stashing every change" was invalid: the stash covered the app
+  // files and not this spec, which is where the offending line was.
   const response = await page.goto(WEB_BASE_URL + route, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
   return { response, consoleErrors, pageErrors, serverErrors };
@@ -77,12 +78,6 @@ async function visit(page: Page, route: string) {
 
 for (const route of ROUTES) {
   test(`route ${route} renders without errors`, async ({ page }) => {
-    // Triples the timeout. The webServer here is `next dev`, which compiles a route the first
-    // time it is visited -- so the first load of a large page is a COMPILE, not a page load.
-    // `/rules` is 1400 lines plus the rule tree editor and blew the 60s budget on a loaded
-    // machine while Next was still building it; probed on its own it loads in ~11s clean.
-    // Charging compilation to an assertion about rendering is measuring the wrong thing.
-    test.slow();
     const { response, consoleErrors, pageErrors, serverErrors } = await visit(page, route);
 
     expect(response?.status(), `${route} should not be an HTTP error`).toBeLessThan(400);
@@ -120,8 +115,13 @@ for (const route of ROUTES) {
     // What the route CALLS ITSELF. The shell paints this from PAGE_COPY keyed on the pathname,
     // so a route that renders another page's component still names itself here -- which is what
     // makes it a usable fingerprint below rather than just another shell assertion.
-    const heading = (await page.locator("h1, h2").first().innerText().catch(() => "")).trim();
-    RENDERED.set(route, { heading, body: text.slice(0, 400) });
+    // COUNT first. `.first().innerText()` auto-waits for the element for the entire test timeout
+    // when there is none, and `.catch` only runs after that -- which is exactly how this line hung
+    // `/rules` (no h1/h2 on the page) for three minutes and was misdiagnosed as a slow compile.
+    const headings = page.locator("h1, h2");
+    const headingCount = await headings.count();
+    const heading = headingCount ? (await headings.first().innerText()).trim() : "";
+    RENDERED.set(route, { heading, headingCount, body: text.slice(0, 400) });
   });
 }
 
@@ -140,6 +140,9 @@ for (const route of ROUTES) {
  * point: the list is the difference between "this is intentional" and "nobody noticed".
  */
 const DECLARED_ALIASES: Record<string, string> = {
+  // Build Studio was merged into Workflow Builder and /studio is now a real redirect, so it
+  // renders the canvas -- declared, because that is exactly the intent.
+  "/studio": "/workflow-builder",
   "/approvals": "/deploy",
   "/batch": "/test-console",
   "/segments": "/",
@@ -193,4 +196,13 @@ test("every declared alias is actually still an alias", async () => {
     })
     .map(([route, target]) => `${route} no longer renders the same page as ${target}`);
   expect(stale, "remove these from DECLARED_ALIASES -- they have their own page now").toEqual([]);
+});
+
+test("every route has a heading", async () => {
+  // Found by the bug above. `/rules` rendered with no h1 or h2 at all: to a screen reader the page
+  // has no outline and nothing to jump to, and it was the only route that had silently lost one.
+  // The two full-height canvases solved the same problem with a visually hidden h1 (.rm-sr-only).
+  // /login and /admin render outside the shell but still carry their own heading.
+  const missing = [...RENDERED].filter(([, r]) => r.headingCount === 0).map(([route]) => route);
+  expect(missing, "these routes render no h1 or h2 -- give each a heading (.rm-sr-only if space is tight)").toEqual([]);
 });

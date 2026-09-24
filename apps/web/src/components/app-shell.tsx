@@ -35,7 +35,10 @@ const NAVIGATION: ReadonlyArray<{
   {
     group: "Build",
     items: [
-      { href: "/studio" as Route, label: "Build Studio", icon: "policies" },
+      // The policy canvas. Was "Build Studio" (/studio), which has been merged into Workflow
+      // Builder; /studio now redirects here. Workflow Builder moved up to take its slot as the
+      // first thing under Build, and its old duplicate entry lower down is gone.
+      { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
       { href: "/connectors" as Route, label: "Connectors", icon: "connectors" },
       { href: "/variables" as Route, label: "Variables", icon: "variables" },
       { href: "/rules" as Route, label: "Rules", icon: "rules" },
@@ -52,7 +55,6 @@ const NAVIGATION: ReadonlyArray<{
       // policy is the thing that CHAINS connectors, variables, rules and scorecards into a
       // decision, the dashboard counts them on its front page, and nothing linked to them.
       { href: "/policies" as Route, label: "Policies", icon: "policies" },
-      { href: "/workflow-builder" as Route, label: "Workflow Builder", icon: "policies" },
       // In Build, not Operate: a journey is authored alongside the policy that decides it, and
       // the screens ARE part of the decision's input contract.
       { href: "/journeys" as Route, label: "Journeys", icon: "connectors" },
@@ -107,7 +109,6 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/rules": { title: "Rules", subtitle: "Simple and advanced rule authoring with nested logic and inline execution results." },
   "/scorecards": { title: "Scorecards", subtitle: "Points-based scoring with editable ranges and live factor breakdown." },
   "/policies": { title: "Policies", subtitle: "Execution pipelines across connectors, rules, scorecards, and final decisions." },
-  "/studio": { title: "Build Studio", subtitle: "One canvas to assemble a decision policy — drop nodes, edit rules inline, and wire connectors, decision tables, scorecards, branches, and outcomes into a flow." },
   "/test-console": { title: "Test Console", subtitle: "Single-run, batch simulation, and production API preview workflows." },
   "/api-console": { title: "API Console", subtitle: "Postman-style console for workflow action steps — resolve templates and send requests server-side." },
   "/review-queue": { title: "Review Queue", subtitle: "Pending human-in-the-loop reviews with decision context and queue state." },
@@ -119,7 +120,7 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
   "/branding": { title: "Branding", subtitle: "Admin-only white-label theming — CTA colour, backgrounds, brand name, and visible tabs." },
   "/access": { title: "Access & Roles", subtitle: "Issue role-scoped API keys (admin, policy maker, reviewer, viewer) and control what each teammate or integration can do." },
   "/reports": { title: "Reports", subtitle: "Build reports over your decisions — dynamic columns from inputs/outputs, filters, timezone, and scheduled email delivery." },
-  "/workflow-builder": { title: "Workflow Builder", subtitle: "Drag-and-drop canvas for policy steps — connectors, rules, branches, sub-workflows, monitors, and outcomes." },
+  "/workflow-builder": { title: "Workflow Builder", subtitle: "Build a decision policy on a canvas — create it, drag or reorder its steps, author rules inline, and wire every step type the engine runs." },
   "/models": { title: "ML Models", subtitle: "Upload, host, test, and run Python models (.pkl / joblib) as policy steps." },
   // Every route below was falling through to PAGE_COPY["/"], so the header showed
   // "RuleMind — Generic decisioning engine…" while you stood on Decision Explorer or Approvals.
