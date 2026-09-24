@@ -25,7 +25,7 @@ Roles (admin-assignable per key)
 """
 from __future__ import annotations
 
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 READ = "read"
 DECIDE = "decide"
@@ -47,7 +47,30 @@ ROLE_CAPABILITIES: Dict[str, Set[str]] = {
 # Admin-assignable roles, in descending privilege (owner is the bootstrap role and
 # is intentionally not offered in the UI — it is what seed/default keys carry).
 ASSIGNABLE_ROLES = ["admin", "policy_maker", "reviewer", "viewer"]
+
+# Two different questions, and conflating them was a fail-open.
+#
+# DEFAULT_ROLE answers "no role was recorded at all" -- a seed key, a bootstrap key, a row
+# written before the column existed. `owner` is deliberate there: those keys ARE the workspace
+# owner, and demoting them would lock a fresh install out of itself.
+#
+# UNKNOWN_ROLE answers "a role was recorded and it is not one we know". That is a typo, a
+# hand-edited row, a role renamed in a future release, or a value from a newer node during a
+# rolling deploy -- and it used to resolve to `owner` as well, so any of those granted FULL
+# ownership rather than the least privilege. `viewer` is the least-privileged defined role, the
+# same choice and the same reasoning as scim.py:37: nothing must be able to mint an owner by
+# getting a string wrong. The unknown-PATH default was made fail-closed long ago (see
+# required_capability below); this is the matching half for the unknown-ROLE case.
 DEFAULT_ROLE = "owner"
+UNKNOWN_ROLE = "viewer"
+
+
+def _resolve_role(role: Optional[str]) -> str:
+    """Role name to act on. Absent -> DEFAULT_ROLE; present-but-unrecognised -> UNKNOWN_ROLE."""
+    cleaned = (role or "").strip().lower()
+    if not cleaned:
+        return DEFAULT_ROLE
+    return cleaned if cleaned in ROLE_CAPABILITIES else UNKNOWN_ROLE
 
 ROLE_DESCRIPTIONS = {
     "owner": "Full access, including workspace ownership. The bootstrap role.",
@@ -176,7 +199,7 @@ def required_capability(method: str, path: str) -> str:
 
 
 def capabilities_for(role: str) -> Set[str]:
-    return ROLE_CAPABILITIES.get(role or DEFAULT_ROLE, ROLE_CAPABILITIES[DEFAULT_ROLE])
+    return set(ROLE_CAPABILITIES[_resolve_role(role)])
 
 
 def is_allowed(role: str, method: str, path: str) -> bool:
@@ -184,5 +207,4 @@ def is_allowed(role: str, method: str, path: str) -> bool:
 
 
 def normalize_role(role: str) -> str:
-    role = (role or "").strip().lower()
-    return role if role in ROLE_CAPABILITIES else DEFAULT_ROLE
+    return _resolve_role(role)

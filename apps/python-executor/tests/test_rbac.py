@@ -54,8 +54,44 @@ class RbacUnitTests(unittest.TestCase):
         self.assertNotIn(rbac.MANAGE_ACCESS, rbac.capabilities_for("policy_maker"))
         self.assertEqual(rbac.capabilities_for("admin"), rbac.ALL_CAPABILITIES)
 
-    def test_unknown_role_defaults_to_owner(self):
-        self.assertEqual(rbac.normalize_role("nonsense"), "owner")
+    def test_absent_role_is_the_bootstrap_owner(self):
+        """No role recorded at all means a seed or bootstrap key: those ARE the workspace
+        owner, and demoting them would lock a fresh install out of itself."""
+        self.assertEqual(rbac.normalize_role(None), "owner")
+        self.assertEqual(rbac.normalize_role(""), "owner")
+        self.assertEqual(rbac.normalize_role("   "), "owner")
+
+    def test_unrecognised_role_fails_CLOSED(self):
+        """This test used to assert the opposite -- `normalize_role("nonsense") == "owner"` --
+        and so encoded a fail-open as intended behaviour.
+
+        A role that is present but unrecognised is a typo, a hand-edited DB row, a role renamed
+        in a future release, or a value written by a newer node mid-rolling-deploy. Resolving
+        any of those to `owner` grants FULL ownership on a data-integrity error. It must resolve
+        to the least-privileged defined role instead -- the same choice, for the same reason, as
+        scim.py:37: nothing may mint an owner by getting a string wrong.
+
+        Note the asymmetry with the test above is the whole point: absent and unrecognised are
+        different questions and used to share one answer."""
+        # NB: "Owner " is NOT in this list -- it strips and lowercases to a real role, which is
+        # correct normalisation, not a fail-open. The first draft of this test had it here and
+        # the test caught the mistake.
+        for bogus in ("nonsense", "superuser", "ownerr", "root", "admin;--", "own er"):
+            self.assertEqual(rbac.normalize_role(bogus), "viewer", bogus)
+            self.assertEqual(rbac.capabilities_for(bogus), {rbac.READ}, bogus)
+            self.assertFalse(rbac.is_allowed(bogus, "POST", "/api/v1/rules"), bogus)
+            self.assertFalse(rbac.is_allowed(bogus, "DELETE", "/api/v1/access/keys"), bogus)
+
+    def test_known_roles_survive_casing_and_whitespace(self):
+        self.assertEqual(rbac.normalize_role("ADMIN"), "admin")
+        self.assertEqual(rbac.normalize_role("  Viewer  "), "viewer")
+
+    def test_capabilities_for_returns_a_copy(self):
+        """A caller mutating the returned set must not edit the capability table for every
+        request the process serves afterwards."""
+        got = rbac.capabilities_for("viewer")
+        got.add(rbac.MANAGE_ACCESS)
+        self.assertEqual(rbac.capabilities_for("viewer"), {rbac.READ})
 
 
 class RbacApiTests(unittest.TestCase):
