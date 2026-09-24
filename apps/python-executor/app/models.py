@@ -266,6 +266,12 @@ class Decision(Base):
     # ran against (so an offline decision made on an old bundle is traceable). Null for API decisions.
     device_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     bundle_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # WHICH VERSION of the policy decided this. Policies are mutated in place with `version`
+    # incrementing on the row, so policy_id alone cannot answer "what was live eight months
+    # ago" -- it had to be inferred from created_at against EntityHistory, by hand.
+    # Nullable: rows written before 20260924_0031 genuinely do not know, and backfilling a
+    # guess would put fabricated lineage into an attestable record.
+    policy_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # created_at is the DECISION time (device clock for on-device decisions — subject to drift);
     # received_at is the trustworthy SERVER receipt time, used for ordering/retention/analytics.
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)

@@ -83,6 +83,41 @@ def burst(n, conc):
     }
 
 
+# Step types the fast path cannot serve. Mirrors `_IO_STEP_TYPES` in
+# apps/python-executor/app/fast_decide.py -- duplicated here on purpose, because this harness
+# talks HTTP and must not import the server it is measuring.
+_IO_STEP_TYPES = {"action", "review_gate", "transform", "model",
+                  "loop", "branch", "workflow", "monitor"}
+
+
+def fast_path_shape(client, policy_id):
+    """Could this policy take the fast path, or will FAST_DECIDE fall through silently?
+
+    THE DEFECT THIS EXISTS FOR: RM_POLICY defaulted to `policy_instant_personal_loan`, whose
+    steps are `action, connector, outcome, review_gate, rule, scorecard`. `action` and
+    `review_gate` are both IO step types, so that policy is PERMANENTLY ineligible -- and
+    FAST_DECIDE=1 does not error on an ineligible policy, it quietly serves it from the full
+    executor. So every fast-path number this repository has ever produced through its own load
+    test was a slow-path number, measured with the flag on and the flag doing nothing.
+
+    That is the same failure as a test that passes without asserting: the harness reported
+    success at the thing it was not doing.
+
+    Returns (eligible, reason).
+    """
+    try:
+        response = client.get("/api/v1/policies/%s" % policy_id)
+        response.raise_for_status()
+        steps = response.json().get("steps") or []
+    except Exception as exc:                                  # pragma: no cover - diagnostic
+        return None, "could not read the policy: %s" % exc
+    types = [step.get("type") for step in steps]
+    blocking = sorted({t for t in types if t in _IO_STEP_TYPES})
+    if blocking:
+        return False, "contains %s" % ", ".join(blocking)
+    return True, "steps: %s" % ", ".join(sorted(set(types)))
+
+
 def main():
     print("target %s  policy=%s" % (BASE, POLICY))
     try:
@@ -91,6 +126,25 @@ def main():
     except Exception as exc:
         print("API not reachable: %s" % exc)
         return 2
+
+    # Assert the harness is exercising the path it claims to. A benchmark that silently
+    # measures the other branch is worse than no benchmark: it produces a number people quote.
+    with httpx.Client(base_url=BASE, headers=H, timeout=30) as probe:
+        eligible, reason = fast_path_shape(probe, POLICY)
+    if eligible is False:
+        print()
+        print("REFUSING TO RUN: policy '%s' can NEVER take the fast path -- it %s." % (POLICY, reason))
+        print("  FAST_DECIDE=1 does not fail on an ineligible policy; it falls through to the")
+        print("  full executor in silence. Measuring here would report a slow-path number and")
+        print("  label it fast. Set RM_POLICY to a policy with no I/O or human step, or accept")
+        print("  the slow path explicitly with RM_REQUIRE_FAST=0.")
+        if os.getenv("RM_REQUIRE_FAST", "1") != "0":
+            return 3
+        print("  RM_REQUIRE_FAST=0 -- continuing, and these are SLOW-PATH numbers.")
+    elif eligible:
+        print("fast-path eligible (%s)" % reason)
+    else:
+        print("fast-path eligibility UNKNOWN (%s) -- treat the numbers with that caveat" % reason)
 
     print()
     print("RAMP — looking for the knee (throughput stops rising while latency climbs)")

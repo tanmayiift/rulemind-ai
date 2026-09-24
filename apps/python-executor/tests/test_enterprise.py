@@ -21,6 +21,21 @@ from app.main import BatchSimulationRequest, ConnectorUpdateRequest, PromoteRequ
 from app.storage import Storage
 
 
+def _bare_request():
+    """A Request with no tenant on `state`, for handlers that now require one.
+
+    `audit_errors` and `audit_decisions` take a Request because they must scope to a tenant
+    explicitly -- without one they fell through Storage's resolution chain to
+    `default_tenant_id`, the FIRST tenant in the table, which is one customer's rows served to
+    another. These tests call handlers as plain functions, so `state.tenant_id` is unset and
+    `active_tenant_id` reads the contextvar setUp populates -- exactly what the middleware does.
+    """
+    from fastapi import Request
+
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": [],
+                    "client": ("127.0.0.1", 1234), "query_string": b""})
+
+
 class RuleMindEnterpriseTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -126,7 +141,11 @@ class RuleMindEnterpriseTests(unittest.TestCase):
         response = app_main.test_rule("r2", TestPayloadRequest(payload={}))
         self.assertFalse(response["result"]["passed"])
 
-        errors = app_main.audit_errors()
+        # audit_errors takes a Request now, because it must scope to a tenant explicitly --
+        # without one it fell through to Storage's default_tenant_id, the FIRST tenant in the
+        # table, which is a cross-tenant read on any multi-tenant install. Direct handler calls
+        # supply the tenant the way the middleware would.
+        errors = app_main.audit_errors(_bare_request())
         self.assertTrue(
             any(
                 error["scope"] == "rules"

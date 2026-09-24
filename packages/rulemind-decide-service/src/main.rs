@@ -336,6 +336,31 @@ mod tests {
         assert!(body.get("outcome").is_none(), "an error response carries no outcome");
     }
 
+    /// THE bug this service shipped with: a policy GATED by a `review_gate` answered
+    /// `approve`, HTTP 200, with the gate never executed.
+    ///
+    /// `CompiledBundle::steps` matched `rule` and `outcome` and sent nine other step types to
+    /// `_ => {}` -- no error, no signal, no trace entry. Nothing deploys this service today,
+    /// which is the only reason it was never an incident; it is also why nobody found it. The
+    /// core now refuses, and an evaluation error is already a 422 here, so the wrong answer
+    /// becomes a named refusal.
+    #[tokio::test]
+    async fn a_gated_policy_is_refused_rather_than_approved() {
+        let app = service(json!({
+            "rules": {},
+            "policy": { "id": "p", "steps": [
+                { "type": "review_gate", "ref_id": "manual" },
+                { "type": "outcome", "ref_id": "approve" }
+            ] }
+        }));
+        let (status, body) = post_decide(app, json!({ "variables": {} })).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY,
+                   "a review_gate policy answered {} -- the gate was skipped", body);
+        assert!(body["error"].as_str().unwrap().contains("review_gate"),
+                "the refusal must name the step so an operator can act on it: {}", body);
+        assert!(body.get("outcome").is_none(), "an error response carries no outcome");
+    }
+
     /// ...and the service keeps serving afterwards: a second request on the same process still
     /// gets a normal answer. This is what "not a crash" actually means.
     #[tokio::test]

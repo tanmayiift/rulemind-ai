@@ -203,6 +203,10 @@ def decide(request: DecideRequest) -> Dict[str, Any]:
         # The id of the Decision row this call just wrote — lets a caller fetch
         # /decisions/{id}/reason-codes or deep-link the case without a second lookup.
         "decision_id": outcome["result"].get("decision_id"),
+        # Which version of the policy decided. Policies mutate in place, so policy_id alone
+        # cannot answer it, and the fast path reports it -- so this path must too, or the
+        # response shape depends on FAST_DECIDE again in the opposite direction.
+        "policy_version": outcome["result"].get("policy_version"),
         "outcome": outcome["result"]["outcome"],
         "score": outcome["result"].get("scorecard_result", {}).get("score") if outcome["result"].get("scorecard_result") else None,
         "variables": outcome["values"],

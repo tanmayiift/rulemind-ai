@@ -5,7 +5,7 @@ Shared app state is read live off the ``app.main`` module at call time (see the 
 docstring). Tenant is resolved from ``request.state`` via ``main.active_tenant_id(request)``."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -28,12 +28,18 @@ class RejectionDriversRequest(BaseModel):
 
 # ── Analytics ──────────────────────────────────────────────────────────────
 @router.post("/api/v1/analytics/rejection-drivers")
-def analytics_rejection_drivers(body: RejectionDriversRequest) -> Dict[str, Any]:
+def analytics_rejection_drivers(request: Request, body: RejectionDriversRequest) -> Dict[str, Any]:
     """Which predictor/condition drives the most rejections — pure compute over the
-    decision log (no LLM, no key). Optionally scoped to one policy."""
+    decision log (no LLM, no key). Optionally scoped to one policy.
+
+    Tenant passed explicitly. See `audit_events` below: without it this resolved through
+    `Storage._tenant_id`'s fallback chain to `default_tenant_id`, the FIRST tenant in the
+    table — so on a multi-tenant install this analytic was computed over someone else's
+    decisions and returned as the caller's."""
     from ..analytics import rejection_drivers
 
-    decisions = main.storage.list_decisions(limit=max(1, min(body.limit, 1000)))
+    decisions = main.storage.list_decisions(tenant_id=main.active_tenant_id(request),
+                                            limit=max(1, min(body.limit, 1000)))
     if body.policy_id:
         decisions = [d for d in decisions if d.get("policy_id") == body.policy_id]
     return rejection_drivers(decisions)
@@ -66,8 +72,8 @@ def analytics_sdk(request: Request) -> Dict[str, Any]:
 # ── Audit trail ────────────────────────────────────────────────────────────
 @router.get("/api/v1/audit")
 def audit_events(request: Request,
-                 limit: int = Query(default=200, ge=1, le=1000),
-                 offset: int = Query(default=0, ge=0),
+                 limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+                 offset: Annotated[int, Query(ge=0)] = 0,
                  event_type: Optional[str] = None, entity_type: Optional[str] = None,
                  entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """The authoring audit trail: who changed which rule/variable/scorecard/policy, when.
@@ -76,6 +82,12 @@ def audit_events(request: Request,
     for every authoring entity -- but nothing read them back over HTTP, so the compliance
     artifact this product exists to produce could only be reached by opening the database. An
     auditor asking "show me every change to this rule" had no answer.
+
+    limit/offset use the Annotated form so the PYTHON default is a real int. Written as
+    `limit: int = Query(default=200, ...)` the default value is a `Query` object, which FastAPI
+    unwraps but a direct call does not -- so any test or internal caller invoking the handler as
+    a plain function got a `Query` where an int was promised and failed inside SQLAlchemy with
+    `'<' not supported between instances of 'int' and 'Query'`. Same validation, no trap.
 
     limit/offset are BOUNDED HERE, not in storage. `list_audit_events` deliberately applies them
     raw -- its internal callers pass limit=None to mean "every matching event" -- so this route is
@@ -96,22 +108,44 @@ def audit_events(request: Request,
 
 
 @router.get("/api/v1/audit/decisions")
-def audit_decisions(limit: int = 200, offset: int = 0, client_id: Optional[str] = None,
+def audit_decisions(request: Request,
+                    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+                    offset: Annotated[int, Query(ge=0)] = 0,
+                    client_id: Optional[str] = None,
                     policy_id: Optional[str] = None, outcome: Optional[str] = None,
-                    user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    # Paginated — the decisions table is unbounded in production; an unpaged fetch
-    # of tens of thousands of full-context rows would time out and exhaust memory.
-    # client_id/policy_id/outcome filter in SQL so "show me this customer's history"
-    # is one query rather than a full-table page-and-scan by the caller.
-    # user_id is the SUBJECT filter -- "this customer's history". client_id stays the device
-    # idempotency key, which is what an SDK-sync caller looks a decision up by.
-    return main.storage.list_decisions(limit=limit, offset=offset, client_id=client_id,
-                                       policy_id=policy_id, outcome=outcome, user_id=user_id)
+                    user_id: Optional[str] = None,
+                    created_from: Optional[str] = None,
+                    created_to: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Decision history, filterable by case, subject, policy, outcome AND DATE.
+
+    `created_from` / `created_to` are ISO-8601 and half-open, [from, to). Without them "show me
+    everything in Q1" was not expressible at any layer: the only ordering is `created_at DESC`,
+    so an eight-month-old decision was reachable only by paging every row written since. The
+    Decision Explorer did not even do that — it fetched the default 200 and filtered in the
+    browser, so the screen a regulator question lands on could see the most recent 200 decisions
+    and nothing older.
+
+    Tenant is passed explicitly, for the reason spelled out on `audit_events` above: the storage
+    fallback chain ends at the FIRST tenant, and a decision read reaching it would serve one
+    customer's decisions to another. This route and `audit_errors` below were the two immediate
+    neighbours of that comment and neither passed it.
+
+    limit/offset are bounded here rather than in storage, matching `audit_events` — untyped,
+    `?limit=-1` reaches Postgres as `LIMIT -1` and 500s, and on SQLite means NO limit, which is
+    the unbounded fetch pagination exists to prevent.
+    """
+    return main.storage.list_decisions(tenant_id=main.active_tenant_id(request),
+                                       limit=limit, offset=offset, client_id=client_id,
+                                       policy_id=policy_id, outcome=outcome, user_id=user_id,
+                                       created_from=created_from, created_to=created_to)
 
 
 @router.get("/api/v1/audit/decisions/count")
-def audit_decisions_count() -> Dict[str, int]:
-    return {"total": main.storage.count_decisions()}
+def audit_decisions_count(request: Request) -> Dict[str, int]:
+    """Tenant passed explicitly — the count the Decision Explorer paginates against. Without
+    one it counted the FIRST tenant's decisions, so a tenant with no traffic could be shown a
+    non-zero total (and one with traffic, the wrong one)."""
+    return {"total": main.storage.count_decisions(tenant_id=main.active_tenant_id(request))}
 
 
 @router.get("/api/v1/audit/decisions/{decision_id}")
@@ -133,10 +167,19 @@ def audit_decision(decision_id: str, request: Request) -> Dict[str, Any]:
 
 
 @router.get("/api/v1/audit/promotions")
-def audit_promotions() -> List[Dict[str, Any]]:
-    return main.storage.list_promotions()
+def audit_promotions(request: Request) -> List[Dict[str, Any]]:
+    """Tenant passed explicitly. The promotion ledger is the maker/checker record — who moved
+    what to prod — so a fallback to the first tenant here shows one customer's release history
+    to another."""
+    return main.storage.list_promotions(tenant_id=main.active_tenant_id(request))
 
 
 @router.get("/api/v1/audit/errors")
-def audit_errors(limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
-    return main.storage.list_error_events(limit=limit, offset=offset)
+def audit_errors(request: Request,
+                 limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+                 offset: Annotated[int, Query(ge=0)] = 0) -> List[Dict[str, Any]]:
+    """Tenant passed explicitly — see `audit_events` above. This route sat directly beneath a
+    comment explaining that the storage fallback chain ends at the FIRST tenant, and did not
+    pass one."""
+    return main.storage.list_error_events(tenant_id=main.active_tenant_id(request),
+                                          limit=limit, offset=offset)
