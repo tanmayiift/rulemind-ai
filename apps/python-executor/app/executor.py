@@ -1358,8 +1358,9 @@ class PolicyExecutor:
         self._decision_tables = {item["id"]: item for item in self.storage.list_decision_tables(tenant_id=tenant_id)}
         connectors = self._catalog_for(tenant_id)["connectors"]
 
-        # By default every tenant variable is computed (full parity + available for
-        # audit/downstream). Restricting computation to what the policy can transitively reach
+        # By default every PROMOTED variable is computed, plus whatever the policy reaches (full
+        # parity + available for audit/downstream); an unpromoted draft nothing uses is not part
+        # of a decision. Restricting computation to what the policy can transitively reach
         # is a real latency win -- the entire measured +82% -- but it changes WHAT IS RECORDED
         # in the decision's computed_variables, so it is an audit-surface choice and is settled
         # per tenant (`engine_config.compute_only_used_vars`) with COMPUTE_ONLY_USED_VARS as
@@ -1377,7 +1378,16 @@ class PolicyExecutor:
             if simulate or variable_reachability.compute_only_used_vars(engine_config):
                 needed = self._needed_variable_ids(policy, rules, scorecards, tenant_id)
             else:
-                needed = self._without_unreached_fetch_sources(policy, rules, scorecards, tenant_id)
+                # "Everything" is every promoted variable plus what the policy reaches -- never an
+                # unpromoted draft nothing uses (variable_reachability.promoted_or_reached) --
+                # less anything on a fetch source the policy does not reach.
+                variables = self._catalog_for(tenant_id)["variables"]
+                needed = variable_reachability.promoted_or_reached(
+                    variables, self._needed_variable_ids(policy, rules, scorecards, tenant_id),
+                    {v["id"]: v for v in variables})
+                fetch_scope = self._without_unreached_fetch_sources(policy, rules, scorecards, tenant_id)
+                if fetch_scope is not None:
+                    needed &= fetch_scope
             # Retrieve opted-in sources BEFORE the variables that read them. A connector step
             # runs after this point and so cannot supply data to a single variable; see the
             # block comment on _fetch_sources.

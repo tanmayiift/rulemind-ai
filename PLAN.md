@@ -2496,6 +2496,28 @@ calls it.
   stop letting an unused draft's error fail the decision (narrows a guard its author kept broad
   on purpose). Put to the owner rather than chosen silently.
 
+- [x] **R10.40 AN UNPROMOTED DRAFT NO POLICY USES IS NOT PART OF A PRODUCTION DECISION.** The
+  open item from R10.39, decided by the owner: *stop computing unused drafts*. Compute-everything
+  mode (the default) computed the workspace's whole catalog, drafts included, and any variable
+  error sent the decision to review — so saving a broken DEV variable that nothing used put every
+  live decision into review (what the leftover test variables did to the soak). Now a decision
+  computes **every promoted variable, every variable its policy reaches whatever its status, and
+  whatever those read** (`variable_reachability.promoted_or_reached`, closed over dependencies so a
+  promoted variable that reads a draft still gets it). One function, called by both paths — the
+  executor per decision, the fast path at bundle build — so they cannot disagree.
+  * **It changes what is recorded**, which is the intended trade: `computed_variables` no longer
+    carries drafts nothing reads. On the seeded workspace a decision records 28 variables instead
+    of 55 (53 for the underwriting policy, which reads many drafts). `COMPUTE_ONLY_USED_VARS` keeps
+    its meaning — only what the policy reads. `.env.example` and `values.yaml` say so.
+  * Tests: a broken unused draft changes nothing on either path; a draft only the policy reads is
+    still computed; an unused promoted variable is still recorded; a promoted variable brings the
+    draft it reads; both paths compute the same set; the flag is unchanged. **One mutation
+    survived first** — dropping "what the policy reaches" passed, because the fixture draft
+    (`avg_balance`) is also read by a promoted variable and arrived through the dependency
+    closure. Replaced with a draft only the policy reaches; all four mutations now fail named tests.
+
+  SQLite lane 2542 OK; Playwright 147.
+
 - [x] **R10.0** Restored the system I left mid-benchmark: soak restarted (one generator,
   contention window configured), stack returned to committed defaults, and the `FAST_DECIDE` /
   `COMPUTE_ONLY_USED_VARS` / `RULEMIND_WORKERS` wiring committed.

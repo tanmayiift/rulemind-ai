@@ -528,6 +528,10 @@ def _build_serving_bundle(storage: Any, tenant_id: str, policy: Dict[str, Any]) 
         "schema_paths": schema_paths,
         "core_bundle": core_bundle,
         "needed_variable_ids": needed,
+        # What compute-everything mode computes: promoted variables plus what the policy reaches,
+        # never an unused draft -- the same function the executor calls, so the paths agree.
+        "everything_variable_ids": variable_reachability.promoted_or_reached(
+            variables, needed, {v["id"]: v for v in variables}),
         # The tenant's engine_config, carried so the per-tenant compute_only_used_vars setting
         # is resolvable here. Cache-safe: the bundle is per tenant AND per policy, and a
         # settings write invalidates it like any other publish.
@@ -598,9 +602,11 @@ def _compute_variables(bundle: Dict[str, Any], payload: Dict[str, Any],
     # `.get`, not `[...]`, because "needed_variable_ids" is an OPTIONAL bundle key: tests and
     # callers hand-roll serving bundles (test_simulation_accuracy builds one with five keys),
     # and a missing key has to mean "compute everything", which is the unfiltered default.
+    # And "everything" is `everything_variable_ids` -- promoted variables plus what the policy
+    # reaches, the executor's rule -- or, for a hand-rolled bundle without it, the whole list.
     needed_ids = (bundle.get("needed_variable_ids")
                   if variable_reachability.compute_only_used_vars(bundle.get("engine_config"))
-                  else None)
+                  else bundle.get("everything_variable_ids"))
 
     # The loop lives in variable_runner, shared with PolicyExecutor, so the two cannot drift;
     # in pool mode it is one sandbox round trip for the whole group (plan 4.4).
