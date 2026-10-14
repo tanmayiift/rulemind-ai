@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -24,6 +25,13 @@ from app.storage import Storage  # noqa: E402
 
 
 class DecisionLogUnitTests(unittest.TestCase):
+    def setUp(self):
+        # These tests set and pop ASYNC_DECISION_LOG; restore whatever the lane started with (the
+        # test runner pins it to 0 -- see run_all_tests.sh -- and test_zzz_lane_intact checks).
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_async_by_default(self):
         os.environ.pop("ASYNC_DECISION_LOG", None)
         self.assertTrue(decision_log.is_async())
@@ -51,6 +59,9 @@ class DecisionLogUnitTests(unittest.TestCase):
 
 class DecisionLogApiTests(unittest.TestCase):
     def setUp(self):
+        patcher = mock.patch.dict(os.environ)  # restore the lane's ASYNC_DECISION_LOG afterwards
+        patcher.start()
+        self.addCleanup(patcher.stop)
         os.environ.pop("ASYNC_DECISION_LOG", None)  # default async
         self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._orig_storage = app_main.storage

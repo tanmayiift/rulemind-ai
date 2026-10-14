@@ -6,7 +6,7 @@ import os
 
 from . import env
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
@@ -213,12 +213,14 @@ def engine_for(path: Optional[str] = None, force_sqlite: bool = False) -> Engine
         from sqlalchemy.pool import NullPool
 
         engine = create_engine(url, future=True, poolclass=NullPool,
-                               connect_args={"options": "-csearch_path={0}".format(schema)})
+                               connect_args={"options": "-csearch_path={0}".format(schema),
+                                             **_libpq_connect_args(url)})
     else:
         # Tunable connection pool for the target QPS (defaults suit a single
         # replica; raise for higher concurrency, keeping total <= DB max_connections).
         engine = create_engine(
             url, future=True, pool_pre_ping=True,
+            connect_args=_libpq_connect_args(url),
             pool_size=env.env_int("DB_POOL_SIZE", 20),
             max_overflow=env.env_int("DB_MAX_OVERFLOW", 20),
             pool_recycle=env.env_int("DB_POOL_RECYCLE", 1800),
@@ -228,6 +230,23 @@ def engine_for(path: Optional[str] = None, force_sqlite: bool = False) -> Engine
         _bind_test_schema(engine, schema)
     _engine_cache[cache_key] = engine
     return engine
+
+
+def _libpq_connect_args(url: str) -> Dict[str, Any]:
+    """libpq connection options every Postgres engine gets: GSSAPI encryption OFF unless asked for.
+
+    libpq defaults to `gssencmode=prefer`, so every connect first tries to negotiate GSSAPI
+    (Kerberos) encryption -- initialising the krb5 library, reading its configuration and
+    environment -- before falling back. Nothing here uses Kerberos, so that is wasted work on
+    every connect and extra C code reading the process environment from whichever thread
+    connects. Added while chasing segfaults inside psycopg2.connect in the Linux Postgres lane;
+    the trace that settled it showed a TEST mutating os.environ (a glibc getenv/setenv race) --
+    see run_all_tests.sh -- so this is defensive rather than the fix. An operator who does use
+    Kerberos sets `gssencmode=` in DATABASE_URL or PGGSSENCMODE, and this steps aside.
+    """
+    if "gssencmode=" in url or os.environ.get("PGGSSENCMODE"):
+        return {}
+    return {"gssencmode": "disable"}
 
 
 def _bind_test_schema(engine: Engine, schema: str) -> None:

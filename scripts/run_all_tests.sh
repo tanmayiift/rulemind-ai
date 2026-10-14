@@ -33,6 +33,12 @@ export RULEMIND_TEST_REPORT=1
 export RULEMIND_CONFIG_KEY="${RULEMIND_CONFIG_KEY:-rulemind-test-key}"
 export MODEL_POOL_SIZE="${MODEL_POOL_SIZE:-1}"
 export SANDBOX_POOL_SIZE="${SANDBOX_POOL_SIZE:-2}"
+# Synchronous decision logging under test. With the async pool, a background thread connects to
+# Postgres (libpq reads the environment) while a test mutates os.environ (mock.patch.dict calls
+# setenv/unsetenv): glibc does not make those safe against each other, and the Linux Postgres lane
+# segfaulted inside psycopg2.connect with exactly that pair on two threads. The async path is
+# still tested, explicitly, by tests/test_decision_log*.py.
+export ASYNC_DECISION_LOG="${ASYNC_DECISION_LOG:-0}"
 
 # e2e IS in the default set. It was briefly opt-in out of caution about port conflicts, but
 # Playwright binds 8100/3100 while compose binds 8080/3000 -- they do not collide, and a test
