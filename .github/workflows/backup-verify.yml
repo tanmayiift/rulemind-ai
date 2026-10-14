@@ -2,12 +2,14 @@ name: backup-verify
 
 # The point of running this on a schedule is that the SCRIPT stays exercised. A backup
 # procedure first used during an incident is a procedure nobody knows is broken.
-# workflow_dispatch ONLY. This runs on a SELF-HOSTED runner -- the maintainer's own machine, as
-# their user. A `pull_request` trigger would execute code from any PR branch, and this repo has
-# 16 open bot-authored dependency PRs. Do not widen it without answering "whose code runs, and
-# who can change it".
+# GitHub-hosted, so the weekly schedule is back: a timer runs the default branch's code only.
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
 
 concurrency:
   group: backup-verify-${{ github.ref }}
@@ -15,72 +17,51 @@ concurrency:
 
 jobs:
   verify:
-    # SELF-HOSTED: GitHub-hosted runners are billing-blocked for this repo -- every job starts
-    # with 0 steps -- which is why this workflow has never had a green run.
-    runs-on: [self-hosted, rulemind]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # NO `services:` BLOCK: service containers are a Linux-runner feature and do not work on a
-    # self-hosted macOS runner. The repo's own compose Postgres is used instead (also
-    # postgres:16, so pg_dump/pg_restore still match the server major version).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rulemind
+          POSTGRES_PASSWORD: rulemind
+          POSTGRES_DB: rulemind
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U rulemind"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       DATABASE_URL: postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind
       RULEMIND_CONFIG_KEY: ci-backup-verify-key
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Start the database
-        run: |
-          set -eu
-          docker compose up -d db
-          for _ in $(seq 1 30); do
-            docker compose exec -T db pg_isready -U rulemind >/dev/null 2>&1 && break
-            sleep 2
-          done
-          # A clean schema each run. This database is SHARED with `make up` and with the Python
-          # test lane, and those use DIFFERENT RULEMIND_CONFIG_KEY values -- rows encrypted under
-          # one key fail to decrypt under another, and it surfaces as a DecryptionError that
-          # reads like a crypto bug rather than "wrong key". Seen for real on 2026-09-16.
-          docker compose exec -T db psql -U rulemind -d rulemind \
-            -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO rulemind;"
-
-      - name: Provision Python
-        run: |
-          set -eu
-          # Pinned to 3.11: bare `python3` on this runner is Homebrew 3.14, which has no
-          # psycopg2-binary wheel and falls back to a source build needing pg_config.
-          VENV="$HOME/.cache/rulemind-backup-venv"
-          PY=""
-          for c in python3.11 python3.12 "$HOME/.local/opt/python311/bin/python3"; do
-            if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then PY="$c"; break; fi
-          done
-          [ -n "$PY" ] || { echo "::error::no python3.11/3.12 found"; exit 1; }
-          [ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV"
-          "$VENV/bin/pip" install -q -r apps/python-executor/requirements.txt
-          echo "$VENV/bin" >> "$GITHUB_PATH"
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/python-executor/requirements.txt
+      - run: pip install -q -r apps/python-executor/requirements.txt
 
       # pg_dump/pg_restore must match the SERVER major version; a mismatch fails at RESTORE time,
-      # which is exactly the silent-until-the-incident failure this job exists to catch.
-      # THE CLIENT MAJOR MUST MATCH THE SERVER MAJOR, and this is the one job that proves it.
-      # Homebrew's `libpq` installs the LATEST client (18.x). A dump taken with 18 against this
-      # 16 server restores with:
-      #     ERROR: unrecognized configuration parameter "transaction_timeout"
-      # because pg_dump 18 emits `SET transaction_timeout = 0` and that parameter arrived in
-      # PostgreSQL 17. Caught for real on 2026-09-16 — which is exactly the failure mode this
-      # workflow's original comment predicted. So: postgresql@16, explicitly, and fail loudly
-      # rather than warn if the majors disagree.
-      - name: Put a matching postgres 16 client on PATH
+      # which is exactly the silent-until-the-incident failure this job exists to catch. pg_dump
+      # 18 against this 16 server restores with `unrecognized configuration parameter
+      # "transaction_timeout"` (caught for real on 2026-09-16). The ubuntu-24.04 image ships the
+      # 16 client; fail loudly if the majors ever disagree.
+      - name: Check the postgres client matches the server major
         run: |
           set -eu
-          for d in /opt/homebrew/opt/postgresql@16/bin /usr/local/opt/postgresql@16/bin; do
-            [ -x "$d/pg_dump" ] && { echo "$d" >> "$GITHUB_PATH"; export PATH="$d:$PATH"; break; }
-          done
-          command -v pg_dump >/dev/null 2>&1 || {
-            echo "::error::no pg_dump. Install with: brew install postgresql@16"; exit 1; }
+          d=/usr/lib/postgresql/16/bin
+          [ -x "$d/pg_dump" ] && { echo "$d" >> "$GITHUB_PATH"; export PATH="$d:$PATH"; }
           CLIENT=$(pg_dump --version | grep -oE '[0-9]+' | head -1)
-          SERVER=$(docker compose exec -T db psql --version | grep -oE '[0-9]+' | head -1)
+          SERVER=$(psql "$DATABASE_URL" -tAc "show server_version" | grep -oE '[0-9]+' | head -1)
           echo "client major=$CLIENT  server major=$SERVER"
           [ "$CLIENT" = "$SERVER" ] || {
-            echo "::error::pg_dump $CLIENT against a postgres $SERVER server — the restore will fail"
+            echo "::error::pg_dump $CLIENT against a postgres $SERVER server -- the restore will fail"
             exit 1; }
 
       - name: Create schema and seed a chained audit trail
