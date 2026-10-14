@@ -208,7 +208,7 @@ def probe() -> Dict[str, Any]:
             "def rulemind_readiness_probe(payload, variables):\n    return 1\n",
             {}, {}, timeout_ms=5000)
     except Exception as exc:  # noqa: BLE001 - a probe must report, never raise
-        return {"status": "error", "mode": mode, "detail": str(exc)}
+        return {"status": "error", "mode": mode, "detail": _error_text(exc)}
     if result.get("error"):
         return {"status": "error", "mode": mode, "detail": str(result["error"])}
     if result.get("value") != 1:
@@ -355,6 +355,18 @@ def resolve_callable(namespace: Dict[str, Any]):
     return fallbacks[0]
 
 
+def _error_text(exc: BaseException) -> str:
+    """The message a failed variable reports. Never empty.
+
+    `str(MemoryError())` is "" -- and an empty error string reads as "no error" to every
+    truthiness check downstream, so a variable that ran out of memory came back as a SUCCESSFUL
+    None. That only happens where the memory limit actually fires: RLIMIT_AS works on Linux and
+    darwin refuses it, so every developer machine took the timeout path (a non-empty message)
+    and only a Linux production box saw the empty one. Found by the first Linux CI run.
+    """
+    return str(exc) or type(exc).__name__
+
+
 def _execute_in_process(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any], timeout_ms: int, memory_mb: int) -> Dict[str, Any]:
     """Execute variable code in a pool worker process with sandboxing.
 
@@ -413,7 +425,7 @@ def _execute_in_process(code: str, payload: Dict[str, Any], variables_map: Dict[
         return {"value": result, "error": None, "latency_ms": latency_ms, "variable_name": function.__name__}
     except Exception as exc:
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
-        return {"value": None, "error": str(exc), "latency_ms": latency_ms, "variable_name": None}
+        return {"value": None, "error": _error_text(exc), "latency_ms": latency_ms, "variable_name": None}
 
 
 def _execute_inline(code: str, payload: Dict[str, Any], variables_map: Dict[str, Any]) -> Dict[str, Any]:
@@ -452,7 +464,7 @@ def _execute_inline(code: str, payload: Dict[str, Any], variables_map: Dict[str,
         return {"value": result, "error": None, "latency_ms": latency_ms, "variable_name": function.__name__}
     except Exception as exc:
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
-        return {"value": None, "error": str(exc), "latency_ms": latency_ms, "variable_name": None}
+        return {"value": None, "error": _error_text(exc), "latency_ms": latency_ms, "variable_name": None}
 
 
 def execute_variable(code: str, payload: Dict[str, Any], variables_map: Optional[Dict[str, Any]] = None, timeout_ms: int = MAX_EXECUTION_MS, memory_mb: int = MAX_MEMORY_MB) -> Dict[str, Any]:
