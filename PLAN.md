@@ -602,6 +602,7 @@ existing installs, so it gets its own round.
   - Hosted versions of security, load and backup.
   - Multi-arch release images on `ubuntu-24.04` and `-arm`: buildx, SBOM, cosign, dispatch-only.
   - Delete the self-hosted workflows.
+- [x] **0.2a** `fix(deps):` PyJWT 2.15.0 — two advisories the weekly audit had been failing on.
 - [ ] **0.3** `fix(scheduler):` `http_pull` goes through the egress guard.
   - Extract a pinned client from `webhook_dispatch.deliver:205-226`.
   - Use it in `scheduler.fetch_batch_items:418`.
