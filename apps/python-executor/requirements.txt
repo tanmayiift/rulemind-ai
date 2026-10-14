@@ -5,14 +5,14 @@
 #
 # A major dependency jump wearing a minor-version label. Lifting it means investigating the
 # starlette 1.x WebSocket change against app/routers/collab.py, which deserves its own PR.
-fastapi==0.115.6
-uvicorn==0.53.0
-pydantic==2.13.5
+fastapi==0.143.0
+uvicorn==0.54.0
+pydantic==2.14.1
 cryptography==46.0.7
-sqlalchemy==2.0.52
+sqlalchemy==2.1.4
 alembic==1.20.0
 bcrypt==4.2.1
-PyJWT==2.14.0
+PyJWT==2.15.1
 httpx==0.28.1
 APScheduler==3.11.3
 PyYAML==6.0.3
@@ -20,7 +20,7 @@ PyYAML==6.0.3
 # Loads a local .env for development (see app/__init__.py). Real environment
 # variables always win, so compose/k8s config is unaffected. Without this the
 # README's `cp .env.example .env` step is silently a no-op.
-python-dotenv==1.2.3
+python-dotenv==1.2.4
 
 # Enterprise SSO. OIDC needs only PyJWT + cryptography (already present); SAML 2.0
 # assertion-signature verification uses signxml (pure-Python XML-DSig over lxml).
@@ -36,7 +36,7 @@ psycopg2-binary==2.9.13
 # reliably. Import is LAZY everywhere it is used -- app/decision_outbox.py and
 # app/decision_consumer.py only reach for it when KAFKA_BOOTSTRAP_SERVERS is set -- so a
 # deployment without a broker neither needs the wheel at runtime nor pays its import cost.
-confluent-kafka==2.15.1
+confluent-kafka==2.16.0
 
 # JUnit XML for the Python suite. `python -m unittest` emits plain text only, so the largest
 # suite in the repo (1900+ tests) produced nothing a report could read -- Gradle's XML was the
@@ -57,7 +57,7 @@ unittest-xml-reporting==3.2.0
 # note in a doc. numpy 2.5.x requires Python >= 3.12; this project runs 3.11 (Dockerfile:
 # python:3.11-slim), where the newest installable release is 2.4.6.
 #
-# Written as markers because the failure it prevents is loud but misleading: a bare `numpy==2.5.3`
+# Written as markers because the failure it prevents is loud but misleading: a bare `numpy==2.5.4`
 # makes pip abort the ENTIRE install with "Could not find a version that satisfies the
 # requirement", which reads as a broken requirements file rather than "this pin needs a newer
 # interpreter". Dependabot has now proposed exactly that twice -- PR #170 and PR #171 -- and the
@@ -71,7 +71,7 @@ unittest-xml-reporting==3.2.0
 # the documented forward path, not a verified configuration -- whoever moves the runtime has to
 # re-check it, along with scikit-learn, which pins its own supported numpy range.
 numpy==2.4.6; python_version < "3.12"
-numpy==2.5.3; python_version >= "3.12"
+numpy==2.5.4; python_version >= "3.12"
 # scipy: ONE dimension, the Python version -- and getting that wrong cost a full regression run.
 #
 # This was four cells split on `sys_platform` AND `python_version`, with darwin < 3.12 pinned to
@@ -115,7 +115,7 @@ websockets==13.1
 
 # Dev tooling. `lint` and `typecheck` were both `py_compile app/*.py`,
 # which does not match app/routers/ or app/core/.
-ruff==0.16.7
+ruff==0.17.0
 # Real SMTP server for tests/test_mailer_live_smtp.py -- lets mailer._default_smtp
 # actually execute instead of being replaced by a fake transport.
 aiosmtpd==1.4.6
