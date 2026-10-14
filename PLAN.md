@@ -291,6 +291,73 @@ infra   postgres16 (rulemind, temporal, temporal_visibility) · temporal · [pro
   formatting, WhatsApp parameter mapping and India DLT template IDs.
 - **Inbound:** STOP/START messages update consent.
 
+**AI guardrails — BYOK and strict scope and safety (user requirement, 2026-10-15).**
+Every LLM, agent and MCP path is a platform tool, not a general chatbot: nobody can use it for
+dangerous, prohibited or sexual content, or for anything outside building and operating on
+RuleMind. Enforced in code, layered, fail-closed:
+1. **One gateway.** Every provider call goes through `app/llm/gateway.py` (today `ai.complete`).
+   A test fails the build if any other module calls a provider SDK or endpoint.
+2. **BYOK, hardened.**
+   - Keys are per tenant, encrypted at rest under `RULEMIND_CONFIG_KEY`, write-only (the API
+     returns only the last 4 characters), and validated on save.
+   - Configuring them is admin-only (step 0.4).
+   - Per-tenant budgets and rate limits.
+   - No platform default key unless the operator sets one.
+   - A local `openai_compatible` endpoint is allowed only on the operator's host allowlist.
+3. **Scope is an allowlist of purposes, not a denylist of topics.**
+   - Every entry point declares a purpose: `author.rule`, `author.policy`, `author.object_type`,
+     `author.process`, `author.message_template`, `explain.decision`, `analyze.data`,
+     `agent.run`, `mcp.tool`, `copilot.ask`.
+   - Each purpose fixes its system prompt and its output schema.
+   - There is no free-form chat mode. Output that does not parse into the purpose's schema is
+     rejected, which is itself a strong scope limit.
+4. **Input checks, before the model.** (a) Deterministic: length caps, encoded-payload and
+   known-jailbreak detection, and hard-block lists. (b) A safety and scope classifier, using the
+   first available of:
+   - the provider's moderation endpoint (OpenAI omni-moderation with an OpenAI key);
+   - an operator-hosted Llama Guard 4 / Prompt Guard 2 through `openai_compatible`;
+   - a short classification call on the tenant's own key.
+
+   **If no classifier is reachable, the request is refused.** An off-scope request gets a short,
+   helpful redirect to what the assistant can do.
+5. **Hard-blocked categories cannot be configured by a tenant**: sexual content (and absolutely
+   anything involving minors), weapons capable of mass harm, malware and intrusion, self-harm
+   instructions, violent extremism, illegal drug synthesis, hate and harassment. The operator
+   may only make thresholds stricter.
+6. **Output checks.**
+   - Schema validation.
+   - The same safety classifier on any generated free text: explanations, message templates
+     (mandatory, because these reach end customers), agent replies.
+   - PII and secret redaction.
+7. **Agents and MCP.**
+   - Tools come from an allowlist per agent; writes go only through typed actions; high-impact
+     actions need approval.
+   - Tool results are treated as data: delimited, never followed as instructions.
+   - Every run is capped on steps, tokens and time. There is no open web access, and calls go
+     through the egress guard.
+   - MCP specifically:
+     - only RuleMind tools, generated from the ontology (no third-party servers proxied);
+     - authorization per call and per scope, with no token passthrough;
+     - every free-text value written through it (properties, templates) passes the output
+       safety check.
+8. **Audit and abuse handling.**
+   - Every AI request records its purpose, the classifier verdicts, a prompt hash and its
+     tokens, with redaction applied.
+   - Repeated violations throttle, then lock, the member or key.
+   - A guardrail-events view for admins.
+9. **Tests.**
+   - A red-team corpus: jailbreaks, prompt injection through object data, off-scope requests,
+     each hard-blocked category in several languages and encodings (base64, leetspeak, split
+     tokens).
+   - A benign platform corpus that bounds over-refusal.
+   - CI runs the deterministic layers and a mocked classifier. The opt-in live lane
+     (`RULEMIND_AI_LIVE=1`) measures recall and the false-refusal rate on real providers.
+
+Research basis: OWASP Top 10 for LLM Applications 2025 (LLM01 prompt injection, LLM06 excessive
+agency); the OWASP MCP Security Cheat Sheet (tool poisoning, confused deputy, no token
+passthrough, least-privilege scopes); Llama Guard 4 / Prompt Guard 2 (Apache-2.0, self-hostable);
+layered input/output guardrail practice (NeMo Guardrails, Guardrails AI).
+
 **Agents, MCP and the copilot:**
 - `app/llm/` gateway:
   - tool calling for Anthropic, OpenAI and Gemini, plus `openai_compatible` (Ollama/vLLM);
@@ -603,6 +670,7 @@ existing installs, so it gets its own round.
   - Multi-arch release images on `ubuntu-24.04` and `-arm`: buildx, SBOM, cosign, dispatch-only.
   - Delete the self-hosted workflows.
 - [x] **0.2a** `fix(deps):` PyJWT 2.15.0 — two advisories the weekly audit had been failing on.
+- [x] **0.2b** `docs(plan):` AI guardrails — BYOK and strict scope and safety on every LLM, agent and MCP path.
 - [ ] **0.3** `fix(scheduler):` `http_pull` goes through the egress guard.
   - Extract a pinned client from `webhook_dispatch.deliver:205-226`.
   - Use it in `scheduler.fetch_batch_items:418`.
@@ -649,7 +717,10 @@ existing installs, so it gets its own round.
   `tenant_experience_manifest()` is used by both `main.py:1219` and `routers/sdk.py:63`.
 - [ ] **B6** AI explain works for any decision: use `storage.get_decision`, and analyse rejections
   with `iter_decisions_window`.
-- [ ] **B7** the AI scope filter is generic, not tied to lending vocabulary (`ai.is_in_scope`).
+- [ ] **B7** AI guardrails v1 on every existing AI endpoint (see "AI guardrails" above):
+  one gateway, BYOK hardening, purpose allowlist with fixed schemas, deterministic + classifier
+  input checks that fail closed, output checks, audit, the red-team and benign corpora. Replaces
+  the lending-only `ai.is_in_scope`.
 
 **Stage UX: design and shell**
 - [ ] **UX0** `docs:` write `DESIGN.md`.
@@ -751,7 +822,7 @@ existing installs, so it gets its own round.
   - [ ] C6 inbound callbacks, signatures, STOP handling;
   - [ ] C7 UI.
 - **AI:**
-  - [ ] G1 LLM gateway, including `openai_compatible`;
+  - [ ] G1 LLM gateway: tool calling + `openai_compatible`, every call through the B7 guardrails;
   - [ ] G2 ontology tool registry (impact gating, PII redaction);
   - [ ] G3 agent runs;
   - [ ] G4 AI process nodes (classify, extract, generate, with confidence branches);
