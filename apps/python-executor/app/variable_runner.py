@@ -39,8 +39,10 @@ def compute_variables(variables: Iterable[Dict[str, Any]], payloads: Dict[str, A
         values[variable["id"]] = execution.get("value")
         # A variable that errors becomes None; the error is kept so a None fed to a gate is never
         # mistaken for a real value (the decision then fails closed to review).
-        if execution.get("error"):
-            errors[variable["id"]] = str(execution.get("error"))
+        # `is not None`, not truthiness: an EMPTY error string is still a failure (a MemoryError's
+        # message is ""), and reading it as success let an out-of-memory variable decide as None.
+        if execution.get("error") is not None:
+            errors[variable["id"]] = str(execution.get("error")) or "variable failed without a message"
 
     resume_at = 0
     if selected and execute is sandbox.execute_variable and sandbox.batching_enabled():
