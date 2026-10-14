@@ -113,8 +113,9 @@ User decisions (2026-10-14/15):
 13. **No self-hosted CI remains.**
     - Every workflow moves to GitHub-hosted runners: PR gate, CodeQL, audits, and multi-arch
       release images.
-    - `scripts/check_workflow_triggers.py` fails the build on any `self-hosted` job that is not
-      dispatch-only, on any `pull_request_target`, and on any action not pinned by SHA.
+    - `tests/test_workflow_triggers.py` (extended, not duplicated) fails the build on any
+      `self-hosted` job an outsider can trigger, on any `pull_request_target`, and on any action
+      not pinned by SHA.
 
 ## Target architecture
 
@@ -589,12 +590,13 @@ existing installs, so it gets its own round.
 **Stage 0: security and CI**
 
 - [x] **0.0** `docs(plan):` this checklist replaces the finished Round 1–5 log (history stays in git).
-- [ ] **0.1** `ci:` the GitHub-hosted PR gate. The first `r6` PR.
+- [x] **0.1** `ci:` the GitHub-hosted PR gate. The first `r6` PR.
   - Triggers: `ci.yml` runs on `pull_request` with no branch filter, `merge_group` and dispatch.
   - Permissions: `contents: read`; no secrets; actions pinned by SHA.
   - Lanes: python-sqlite, python-pg, web, ts-parity, kotlin, flutter, contracts, migrations,
     image-build, e2e, and `ci-gate`.
-  - Plus `scripts/check_workflow_triggers.py`.
+  - Plus the existing `tests/test_workflow_triggers.py`, extended: `pull_request_target` banned,
+    actions SHA-pinned, the PR gate hosted and read-only.
 - [ ] **0.2** `ci:` remaining workflows to hosted runners.
   - CodeQL and dependency review.
   - Hosted versions of security, load and backup.
@@ -865,7 +867,7 @@ existing installs, so it gets its own round.
 
 **Stage gates:**
 - **Stage 0:**
-  - `check_workflow_triggers.py` passes.
+  - `tests/test_workflow_triggers.py` passes.
   - A dry run of the release lists amd64 and arm64.
   - The prod compose refuses to boot with default secrets.
   - The SSRF matrix passes: 169.254, 127.1, `::ffff:`, a 302 to metadata, DNS rebinding.

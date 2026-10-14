@@ -1,0 +1,178 @@
+# The pull-request gate, on GitHub-hosted runners.
+#
+# The repository is public, so standard GitHub-hosted runners are free and this can run on every
+# pull request -- including stacked PRs, which is why there is no branch filter. It runs the same
+# scripts/run_all_tests.sh a developer runs, one lane per job, and `ci-gate` is the single check
+# the branch ruleset requires.
+#
+# SAFETY. Nothing here runs on a self-hosted runner, no secrets are referenced, the token is
+# read-only, and every action is pinned to a commit SHA. apps/python-executor/tests/
+# test_workflow_triggers.py fails the build if any of that stops being true.
+
+name: ci
+
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lane:
+    name: ${{ matrix.lane }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two Python lanes are split four ways (RULEMIND_TEST_SHARD); everything else is
+        # one job.
+        include:
+          - {lane: python, shard: "1/4"}
+          - {lane: python, shard: "2/4"}
+          - {lane: python, shard: "3/4"}
+          - {lane: python, shard: "4/4"}
+          - {lane: python-pg, shard: "1/4"}
+          - {lane: python-pg, shard: "2/4"}
+          - {lane: python-pg, shard: "3/4"}
+          - {lane: python-pg, shard: "4/4"}
+          - {lane: web}
+          - {lane: rust}
+          - {lane: flutter}
+          - {lane: kotlin}
+          - {lane: e2e}
+          - {lane: contracts}
+          - {lane: lint}
+          - {lane: migrations}
+          - {lane: build}
+          - {lane: qa}
+    services:
+      # The Postgres the python-pg and migrations lanes expect (run_all_tests.sh defaults to
+      # rulemind:rulemind@127.0.0.1:55432 and creates its own rulemind_lane database there).
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rulemind
+          POSTGRES_PASSWORD: rulemind
+          POSTGRES_DB: rulemind
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U rulemind"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      LANE: ${{ matrix.lane }}
+      RULEMIND_TEST_SHARD: ${{ matrix.shard }}
+      # A crash in a C extension prints the Python stack of every thread -- the only way to name
+      # the test behind a "Segmentation fault" that otherwise ends the lane with no output.
+      PYTHONFAULTHANDLER: "1"
+      # A skipped lane fails here: CI provisions everything a lane needs, so a skip means the
+      # provisioning broke.
+      RULEMIND_REQUIRE_ALL_LANES: "1"
+      NEEDS_PY_DEPS: ${{ contains(fromJSON('["python","python-pg","e2e","contracts","lint","migrations","qa"]'), matrix.lane) }}
+      NEEDS_NODE: ${{ contains(fromJSON('["web","e2e","lint","contracts"]'), matrix.lane) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: ${{ env.NEEDS_PY_DEPS == 'true' && 'pip' || '' }}
+          cache-dependency-path: apps/python-executor/requirements.txt
+
+      # run_all_tests.sh uses .venv-rulemind/bin/python for every lane (the report renderer is
+      # stdlib-only, so lanes that need no Python packages get a bare venv).
+      - name: Python venv
+        run: |
+          set -eu
+          python -m venv .venv-rulemind
+          .venv-rulemind/bin/pip install -q --upgrade pip
+          if [ "$NEEDS_PY_DEPS" = "true" ]; then
+            .venv-rulemind/bin/pip install -q -r apps/python-executor/requirements.txt pip-audit
+          fi
+
+      - if: env.NEEDS_NODE == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 9.15.0
+          run_install: false
+      - if: env.NEEDS_NODE == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - if: env.NEEDS_NODE == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: matrix.lane == 'e2e'
+        run: npx playwright install --with-deps chromium
+
+      - if: matrix.lane == 'contracts'
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - if: matrix.lane == 'kotlin'
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - if: matrix.lane == 'flutter'
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          cache: true
+
+      - name: Run lane
+        run: bash scripts/run_all_tests.sh "$LANE"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## $LANE"
+            echo
+            cat TEST_RESULTS.md 2>/dev/null || echo "TEST_RESULTS.md was not generated."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-${{ matrix.lane }}-${{ strategy.job-index }}
+          path: |
+            TEST_RESULTS.md
+            test-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+      # Graded from the per-lane TSV (column 3 is the status), not only the script's exit code,
+      # so a lane that fails late still fails the job. awk rather than `grep -E '\t'`: GNU grep
+      # does not read \t as a tab in an ERE.
+      - name: Grade
+        if: always()
+        run: |
+          test -s test-results/summary.tsv || { echo "no lane result was recorded"; exit 1; }
+          bad=$(awk -F'\t' 'tolower($3) !~ /^pass/' test-results/summary.tsv)
+          if [ -n "$bad" ]; then echo "$bad"; exit 1; fi
+
+  # The one required check. Green only when every lane above succeeded.
+  ci-gate:
+    if: always()
+    needs: lane
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "lanes: ${{ needs.lane.result }}"
+          test "${{ needs.lane.result }}" = "success"

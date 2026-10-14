@@ -394,9 +394,24 @@ PYMK
   fi
 fi
 
+# RULEMIND_TEST_SHARD=k/n runs every n-th test module, starting with the k-th (1-based), so CI can
+# split each Python lane across jobs: the Postgres lane alone ran past 50 minutes on one hosted
+# runner. Unset runs every module. Modules are sorted, so test_zzz_lane_intact.py stays last in
+# whichever shard holds it.
+PY_TARGETS="discover -s tests"
+if [ -n "${RULEMIND_TEST_SHARD:-}" ]; then
+  PY_TARGETS="$(cd "$ROOT/apps/python-executor" && "$VENV" - "$RULEMIND_TEST_SHARD" <<'PYSHARD'
+import pathlib, sys
+k, n = (int(x) for x in sys.argv[1].split("/"))
+mods = sorted(p.stem for p in pathlib.Path("tests").glob("test_*.py"))
+print(" ".join("tests." + m for i, m in enumerate(mods) if i % n == k - 1))
+PYSHARD
+)"
+fi
+
 if has python; then
   run_lane python "Python — SQLite" bash -c \
-    "cd '$ROOT/apps/python-executor' && env -u DATABASE_URL '$VENV' -m xmlrunner discover -s tests -o '$OUT/python-junit'"
+    "cd '$ROOT/apps/python-executor' && env -u DATABASE_URL '$VENV' -m xmlrunner -o '$OUT/python-junit' $PY_TARGETS"
 fi
 
 if has python-pg; then
@@ -488,7 +503,7 @@ PYCHK
     run_lane python-pg "Python — PostgreSQL" bash -c \
       "cd '$ROOT/apps/python-executor' && RULEMIND_TEST_PG_SCHEMA_PER_PATH=1 \
        DATABASE_URL='${RULEMIND_TEST_PG_URL:-postgresql://rulemind:rulemind@127.0.0.1:55432/rulemind}' \
-       '$VENV' -m unittest discover -s tests -q"
+       '$VENV' -m unittest -q $PY_TARGETS"
     drop_leaked_test_schemas
   else
     record python-pg "Python — PostgreSQL" "skipped" "—" "0s"

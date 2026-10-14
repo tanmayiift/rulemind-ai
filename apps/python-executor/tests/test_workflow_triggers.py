@@ -17,10 +17,16 @@ finding in this codebase. So: checked.
 
 `schedule` is allowed -- security.yml has a weekly cron and nothing about a timer lets an
 outsider choose what runs. `workflow_call` is allowed for the same reason.
+
+Since the repository went public (2026-10), two more rules apply to EVERY workflow, hosted or not:
+`pull_request_target` is banned (it runs with this repository's token and secrets, and checking
+out the fork's head inside it hands both over), and every third-party action is pinned to a full
+commit SHA (a tag like `@v4` is a pointer whoever owns that action can move).
 """
 from __future__ import annotations
 
 import os
+import re
 import unittest
 
 import yaml
@@ -66,6 +72,18 @@ def _triggers(doc) -> set:
     return set()
 
 
+PINNED = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+
+
+def _uses(doc):
+    for job in (doc.get("jobs") or {}).values():
+        if isinstance(job.get("uses"), str):  # reusable workflow call
+            yield job["uses"]
+        for step in job.get("steps") or []:
+            if isinstance(step, dict) and isinstance(step.get("uses"), str):
+                yield step["uses"]
+
+
 def _runs_self_hosted(doc) -> bool:
     for job in (doc.get("jobs") or {}).values():
         runs_on = job.get("runs-on")
@@ -96,16 +114,28 @@ class WorkflowTriggerTest(unittest.TestCase):
             % "; ".join(offenders),
         )
 
-    def test_every_self_hosted_workflow_is_actually_self_hosted(self):
-        """The inverse mistake: a workflow moved to ubuntu-latest stops being covered by the rule
-        above, and also stops running, because this repository's Actions are billing-blocked."""
-        hosted = [name for name, doc in _workflows() if not _runs_self_hosted(doc)]
-        self.assertEqual(
-            hosted, [],
-            "workflow(s) %s do not run on the self-hosted runner, so they will never start on "
-            "this repository (GitHub-hosted jobs are billing-blocked) and will report as red "
-            "having executed nothing" % hosted,
-        )
+    def test_no_workflow_uses_pull_request_target(self):
+        offenders = [name for name, doc in _workflows() if "pull_request_target" in _triggers(doc)]
+        self.assertEqual(offenders, [], "pull_request_target runs fork code with this repository's "
+                         "token and secrets: %s" % offenders)
+
+    def test_every_action_is_pinned_to_a_commit_sha(self):
+        unpinned = ["%s: %s" % (name, ref) for name, doc in _workflows() for ref in _uses(doc)
+                    if not ref.startswith(("./", "docker://")) and not PINNED.match(ref)]
+        self.assertEqual(unpinned, [], "action(s) not pinned to a 40-char commit SHA: %s" % unpinned)
+
+    def test_the_pull_request_gate_is_hosted_and_read_only(self):
+        """It replaced "every workflow is self-hosted", which held only while hosted jobs were
+        billing-blocked. The PR gate runs code from any fork, so it must never move to the
+        self-hosted runner, never get a writable token, and never see a secret."""
+        docs = dict(_workflows())
+        self.assertIn("ci.yml", docs, "the pull-request gate is gone")
+        gate = docs["ci.yml"]
+        self.assertIn("pull_request", _triggers(gate))
+        self.assertFalse(_runs_self_hosted(gate))
+        self.assertEqual(gate.get("permissions"), {"contents": "read"})
+        with open(os.path.join(WORKFLOWS, "ci.yml"), encoding="utf-8") as fh:
+            self.assertNotIn("secrets.", fh.read())
 
     def test_every_job_has_a_timeout(self):
         """A hung job on a self-hosted runner holds the maintainer's machine for the 6-hour
