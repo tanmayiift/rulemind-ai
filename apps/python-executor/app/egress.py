@@ -148,6 +148,25 @@ def build_pinned_request(url: str) -> PinnedRequest:
     return PinnedRequest(url=pinned_url, host_header=host_header, sni_hostname=host, original_url=url)
 
 
+async def pinned_request(method: str, url: str, *, timeout_s: float,
+                         headers: Optional[dict] = None, json_body: object = None):
+    """One HTTP request through the egress policy: vetted, pinned to the vetted IP, no redirects.
+
+    For callers that fetch an author-supplied URL and have no reason to build the pinned request
+    themselves. Raises EgressBlocked before any connection is made; returns the httpx.Response
+    otherwise (a 3xx comes back as itself -- following it would bypass the check, since the
+    redirect target was never vetted).
+    """
+    import httpx
+
+    pinned = build_pinned_request(url)
+    request_headers = dict(headers or {})
+    request_headers["Host"] = pinned.host_header
+    async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=False) as client:
+        return await client.request(method, pinned.url, headers=request_headers, json=json_body,
+                                    extensions={"sni_hostname": pinned.sni_hostname})
+
+
 # Clamps for author-supplied action tunables. Unclamped, one action could be
 # timeoutMs=600000 x retries=10 -- a 100-minute request holding a worker.
 MAX_TIMEOUT_MS = env.env_int("RULEMIND_ACTION_MAX_TIMEOUT_MS", 30000)
