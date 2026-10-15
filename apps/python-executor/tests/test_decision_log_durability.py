@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,10 @@ if str(APP_ROOT) not in sys.path:
 
 class DecisionLogDurabilityTests(unittest.TestCase):
     def setUp(self):
+        # Restore the lane's values afterwards rather than popping them (test_zzz_lane_intact).
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         os.environ["ASYNC_DECISION_LOG"] = "1"
         os.environ["DECISION_LOG_MAX_QUEUE"] = "4"
         os.environ["DECISION_LOG_WORKERS"] = "1"
@@ -32,8 +37,6 @@ class DecisionLogDurabilityTests(unittest.TestCase):
 
     def tearDown(self):
         self.dl.shutdown()
-        for key in ("DECISION_LOG_MAX_QUEUE", "DECISION_LOG_WORKERS", "ASYNC_DECISION_LOG"):
-            os.environ.pop(key, None)
 
     def test_no_drop_and_bounded_under_backpressure(self):
         # 1 worker + a queue cap of 4. Worker-thread writes block on a gate to hold the queue full;

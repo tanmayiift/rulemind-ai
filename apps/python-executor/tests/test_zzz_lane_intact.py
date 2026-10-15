@@ -24,7 +24,11 @@ if str(APP_ROOT) not in sys.path:
 
 # The sandbox pair too: a leaked SANDBOX_MODE=inline would quietly turn every later test of the
 # pool -- the one-trip variable group included -- into a test of the inline path.
-LANE_VARIABLES = ("DATABASE_URL", "RULEMIND_TEST_PG_SCHEMA_PER_PATH", "SANDBOX_MODE", "SANDBOX_BATCH")
+LANE_VARIABLES = ("DATABASE_URL", "RULEMIND_TEST_PG_SCHEMA_PER_PATH", "SANDBOX_MODE", "SANDBOX_BATCH",
+                  # The runner pins this to 0 (run_all_tests.sh): a background decision-log thread
+                  # connecting to Postgres while a test mutates os.environ is a glibc
+                  # getenv/setenv race that segfaults the process.
+                  "ASYNC_DECISION_LOG")
 AT_START = {name: os.environ.get(name) for name in LANE_VARIABLES}
 
 

@@ -224,6 +224,10 @@ env:
 # reads is missing from this file.
 config:
 
+  # libpq GSSAPI encryption. Unset = RuleMind disables it (gssencmode=disable) on every connect;
+  # set only if your Postgres uses Kerberos. A `gssencmode=` in DATABASE_URL also overrides.
+  # PGGSSENCMODE: ""
+
   # ── Data protection ──────────────────────────────────────────────────────────────────────
   # Set explicitly rather than inherited, because "on by default" is not something a compliance
   # reviewer can read off a cluster. Both encrypt with RULEMIND_CONFIG_KEY (Fernet).
