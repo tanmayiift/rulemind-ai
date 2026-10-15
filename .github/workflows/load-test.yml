@@ -27,51 +27,32 @@ concurrency:
 
 jobs:
   k6:
-    # SELF-HOSTED, like every other workflow here. This was `ubuntu-latest` long after the others
-    # were ported, which meant it could not run AT ALL: GitHub-hosted jobs for this repository are
-    # blocked and execute `steps: 0`. A workflow that cannot start is worse than a missing one --
-    # it appears in the Actions tab and looks like coverage.
-    #
-    # It also makes the thresholds meaningful again. The comment at the top of this file says a
-    # 2-core GitHub runner will not hold p(95)<500; this runner is the machine the numbers in
-    # docs/PERFORMANCE.md were measured on, so the result is comparable to them.
-    runs-on: [self-hosted, rulemind]
+    # GitHub-hosted (the repo is public). The thresholds below are set for this runner, not for
+    # the machine docs/PERFORMANCE.md was measured on; compare trends, not absolutes.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # NO actions/setup-python. The host provides 3.11 and the venv is provisioned the same way
-      # self-hosted-tests.yml does it -- outside the workspace, so it survives between runs while
-      # the checkout stays clean. Bare `python3` on this host is Homebrew 3.14, which has no
-      # psycopg2-binary wheel; that mistake cost a CI run earlier and is why the interpreter is
-      # pinned explicitly rather than assumed.
-      #
-      # This also retires Dependabot #158 (actions/setup-python 5 -> 7): the action is gone.
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/python-executor/requirements.txt
+      # NOT `|| true`: a swallowed install failure means the load test runs against whatever
+      # happened to be in the venv already.
       - name: Provision the Python venv
         run: |
           set -eu
-          VENV="$HOME/.cache/rulemind-ci-venv"
-          PY=""
-          for c in python3.11 python3.12 "$HOME/.local/opt/python311/bin/python3"; do
-            if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then PY="$c"; break; fi
-          done
-          if [ -z "$PY" ]; then
-            echo "::error::no python3.11/3.12 found. Bare python3 is $(python3 -V 2>&1)."
-            exit 1
-          fi
-          if [ ! -x "$VENV/bin/python" ]; then "$PY" -m venv "$VENV"; fi
-          "$VENV/bin/pip" install -q --upgrade pip
-          # NOT `|| true`: a swallowed install failure means the load test runs against whatever
-          # happened to be in the venv already.
-          "$VENV/bin/pip" install -q -r apps/python-executor/requirements.txt
-          ln -sfn "$VENV" .venv-rulemind
-          .venv-rulemind/bin/python -V
+          python -m venv .venv-rulemind
+          .venv-rulemind/bin/pip install -q --upgrade pip
+          .venv-rulemind/bin/pip install -q -r apps/python-executor/requirements.txt
+      - uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
 
       # ITS OWN PORT, like the QA lane. This workflow starts a throwaway backend and then grades
-      # whatever answers on the port -- so if the developer's compose stack is up on 8080 (this
-      # is a self-hosted runner, so "the developer's machine" IS the runner), `start_fastapi.sh`
-      # fails to bind and every k6 request grades the compose API instead. The numbers would look
-      # plausible and measure the wrong server.
+      # whatever answers on the port; a port of its own means it can never grade a different
+      # server that happens to be listening on 8080.
       #
       # 8124, one above the QA lane's 8123, so the two can never collide either.
       - name: Start FastAPI backend
@@ -98,9 +79,8 @@ jobs:
           # The limiter has its own coverage (tests/test_rate_limit*.py, and saturation.k6.js
           # treats 429 as correct load-shedding). This lane measures decision throughput.
           RATE_LIMIT_ENABLED: "0"
-          # start_fastapi.sh otherwise resolves bare `python3` (Homebrew 3.14, no uvicorn) and
-          # fails as "timed out waiting for backend health" -- a message that points at the
-          # wrong thing entirely.
+          # start_fastapi.sh otherwise resolves bare `python3`, which has no uvicorn, and fails
+          # as "timed out waiting for backend health" -- a message that points at the wrong thing.
           RULEMIND_PYTHON_BIN: ${{ github.workspace }}/.venv-rulemind/bin/python
         run: |
           bash qa/mobile_e2e/start_fastapi.sh
@@ -123,8 +103,6 @@ jobs:
           RM_BASE: http://127.0.0.1:8124
           RM_KEY: rm_live_devlocaltenantkey000000000000
 
-      # k6 comes from the host (Homebrew) rather than grafana/setup-k6-action, which downloads a
-      # linux build. Checked, not assumed: `k6 v2.2.0 ... darwin/arm64` is on PATH here.
       - name: Check k6 is available
         run: k6 version
 
@@ -150,7 +128,7 @@ jobs:
       # test/load/saturation.k6.js had never been executed by any workflow. It answers a
       # different question from evaluate.k6.js: not "is p95 acceptable at 50 VUs" but "where
       # does this fall over, and does it shed load or collapse". That is the number the the deployed instance
-      # sizing depends on. Same runner, same server, so it is nearly free to add here -- and
+      # sizing depends on. Same job, same server, so it is nearly free to add here -- and
       # this workflow is workflow_dispatch only, so it costs nothing per PR.
       # ARM THE SWEEP BEFORE RUNNING IT. Without this it measures a healthy server, and its
       # assertion -- "a decision must not be derived from a variable that failed" -- never

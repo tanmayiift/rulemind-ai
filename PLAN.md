@@ -597,7 +597,7 @@ existing installs, so it gets its own round.
     image-build, e2e, and `ci-gate`.
   - Plus the existing `tests/test_workflow_triggers.py`, extended: `pull_request_target` banned,
     actions SHA-pinned, the PR gate hosted and read-only.
-- [ ] **0.2** `ci:` remaining workflows to hosted runners.
+- [x] **0.2** `ci:` remaining workflows to hosted runners.
   - CodeQL and dependency review.
   - Hosted versions of security, load and backup.
   - Multi-arch release images on `ubuntu-24.04` and `-arm`: buildx, SBOM, cosign, dispatch-only.
