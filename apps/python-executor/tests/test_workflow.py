@@ -92,6 +92,12 @@ class _FakeSchedulerClient:
         self.calls.append({"method": "POST", "url": url, "json": json, "headers": headers})
         return _FakeHttpResponse(200, '{"items":[{"id":"p1"},{"id":"p2"}]}')
 
+    async def request(self, method: str, url: str, headers=None, json=None, **kwargs):
+        # egress.pinned_request calls the generic form.
+        if method == "POST":
+            return await self.post(url, json=json, headers=headers, **kwargs)
+        return await self.get(url, headers=headers, **kwargs)
+
 
 class RuleMindWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -293,6 +299,8 @@ class RuleMindWorkflowTests(unittest.TestCase):
         self.assertIn("***REDACTED***", request_body["nested"]["header"])
 
     def test_http_pull_schedule_supports_get_and_post(self) -> None:
+        # The source URL goes through the egress policy at save time and at fetch time; setUp's
+        # _egress_patch already answers DNS with a public address.
         policy = app_main.create_policy(
             PolicyUpsertRequest(
                 name="Cron Policy",
@@ -331,7 +339,7 @@ class RuleMindWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(post_schedule.status_code, 200)
 
-        with patch("app.scheduler.httpx.AsyncClient", _FakeSchedulerClient):
+        with patch("httpx.AsyncClient", _FakeSchedulerClient):
             get_run = self.client.post(f"/api/v1/schedules/{get_schedule.json()['id']}/run-now", headers=self.headers)
             post_run = self.client.post(f"/api/v1/schedules/{post_schedule.json()['id']}/run-now", headers=self.headers)
 

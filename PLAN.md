@@ -671,7 +671,7 @@ existing installs, so it gets its own round.
   - Delete the self-hosted workflows.
 - [x] **0.2a** `fix(deps):` PyJWT 2.15.0 — two advisories the weekly audit had been failing on.
 - [x] **0.2b** `docs(plan):` AI guardrails — BYOK and strict scope and safety on every LLM, agent and MCP path.
-- [ ] **0.3** `fix(scheduler):` `http_pull` goes through the egress guard.
+- [x] **0.3** `fix(scheduler):` `http_pull` goes through the egress guard.
   - Extract a pinned client from `webhook_dispatch.deliver:205-226`.
   - Use it in `scheduler.fetch_batch_items:418`.
   - Check URLs with `vet_url` on schedule create and update.

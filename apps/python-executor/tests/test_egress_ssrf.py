@@ -142,3 +142,102 @@ class ActionPathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScheduledPullTest(unittest.TestCase):
+    """The scheduler's http_pull source fetched whatever URL a schedule named, with a plain httpx
+    client: the one author-supplied URL in the codebase the egress policy never saw. A schedule
+    pointed at the metadata service read the instance's credentials into a batch run."""
+
+    def _pull(self, url, transport=None, resolve_to="93.184.216.34"):
+        import asyncio
+
+        import httpx
+
+        from app import scheduler
+
+        real_client = httpx.AsyncClient
+        seen = {}
+
+        def client_factory(*args, **kwargs):
+            seen.update(kwargs)
+            if transport is not None:
+                kwargs["transport"] = transport
+            return real_client(*args, **kwargs)
+
+        with mock.patch.object(egress.socket, "getaddrinfo",
+                               return_value=[(2, 1, 6, "", (resolve_to, 443))]), \
+                mock.patch("httpx.AsyncClient", side_effect=client_factory):
+            result = asyncio.run(scheduler.fetch_batch_items({"type": "http_pull", "url": url}, "t"))
+        return result, seen
+
+    def test_internal_targets_are_refused_before_any_connection(self):
+        for url in ("http://169.254.169.254/latest/meta-data/", "http://127.1/",
+                    "http://[::ffff:169.254.169.254]/"):
+            with self.subTest(url=url), self.assertRaises(egress.EgressBlocked):
+                self._pull(url, resolve_to="169.254.169.254")
+
+    def test_a_public_name_resolving_inside_is_refused(self):
+        """DNS rebinding's first half: the author's own name, answering with an internal IP."""
+        with self.assertRaises(egress.EgressBlocked):
+            self._pull("https://batch.attacker.example/items", resolve_to="10.1.2.3")
+
+    def test_the_connection_goes_to_the_vetted_ip_and_redirects_are_not_followed(self):
+        import httpx
+
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(302, headers={"location": "http://169.254.169.254/"})
+
+        with self.assertRaises(httpx.HTTPStatusError):
+            self._pull("https://data.example.com/items", transport=httpx.MockTransport(handler))
+        self.assertEqual(len(requests), 1, "the redirect to the metadata service was followed")
+        self.assertEqual(requests[0].url.host, "93.184.216.34", "not pinned to the vetted IP")
+        self.assertEqual(requests[0].headers["host"], "data.example.com")
+
+    def test_a_public_source_still_returns_its_items(self):
+        import httpx
+
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"items": [{"id": 1}, 2]}))
+        items, seen = self._pull("https://data.example.com/items", transport=transport)
+        self.assertEqual(items, [{"id": 1}])
+        self.assertIs(seen.get("follow_redirects"), False)
+
+
+class ScheduleRouteTest(unittest.TestCase):
+    """Saving a schedule whose source the policy blocks fails at save time, not at 3am."""
+
+    def setUp(self):
+        import tempfile
+
+        from fastapi.testclient import TestClient
+
+        import app.main as app_main
+        from app.storage import Storage
+        from tests._storage_global import preserve_storage_global
+
+        self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tempdir.cleanup)
+        preserve_storage_global(self)
+        app_main.storage = Storage(path=os.path.join(self.tempdir.name, "schedules.db"))
+        self.client = TestClient(app_main.app)
+        self.addCleanup(self.client.close)
+        self.headers = {"x-api-key": app_main.storage.default_api_key or ""}
+
+    def _body(self, url):
+        return {"policy_id": "p", "cron_expression": "0 3 * * *",
+                "payload_source": {"type": "http_pull", "url": url}}
+
+    def test_create_and_update_refuse_a_blocked_source(self):
+        response = self.client.post("/api/v1/schedules", headers=self.headers,
+                                    json=self._body("http://169.254.169.254/latest/meta-data/"))
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("egress", response.json()["detail"].lower())
+        ok = self.client.post("/api/v1/schedules", headers=self.headers,
+                              json={"policy_id": "p", "cron_expression": "0 3 * * *"})
+        self.assertEqual(ok.status_code, 200, ok.text)
+        updated = self.client.put("/api/v1/schedules/{0}".format(ok.json()["id"]), headers=self.headers,
+                                  json=self._body("http://127.0.0.1:8080/admin"))
+        self.assertEqual(updated.status_code, 422, updated.text)

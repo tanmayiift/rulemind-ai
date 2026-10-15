@@ -8,13 +8,12 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
-import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .executor import PolicyExecutor
 from .storage import Storage
-from . import env
+from . import egress, env
 
 logger = logging.getLogger("rulemind.scheduler")
 
@@ -421,21 +420,26 @@ async def fetch_batch_items(payload_source: Dict[str, Any], tenant_id: str) -> L
         items = (payload_source or {}).get("items", [])
         return [copy.deepcopy(item) for item in items if isinstance(item, dict)]
     if source_type == "http_pull":
+        # Through the egress policy, like every other author-supplied URL: this fetched whatever
+        # the schedule named, so a schedule pointed at 169.254.169.254 read the instance's cloud
+        # credentials into a batch run. EgressBlocked propagates -- a blocked source is a
+        # configuration error, not an empty batch.
         config = payload_source or {}
-        async with httpx.AsyncClient(timeout=float(config.get("timeout", 5))) as client:
-            method = str(config.get("method", "GET")).upper()
-            headers = config.get("headers", {})
-            if method == "POST":
-                response = await client.post(str(config.get("url")), json=config.get("body", {}), headers=headers)
-            else:
-                response = await client.get(str(config.get("url")), headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            if isinstance(data, list):
-                return [item for item in data if isinstance(item, dict)]
-            if isinstance(data, dict) and isinstance(data.get("items"), list):
-                return [item for item in data.get("items", []) if isinstance(item, dict)]
-            return []
+        method = "POST" if str(config.get("method", "GET")).upper() == "POST" else "GET"
+        try:
+            timeout_ms = float(config.get("timeout", 5)) * 1000
+        except (TypeError, ValueError):
+            timeout_ms = 5000
+        response = await egress.pinned_request(
+            method, str(config.get("url") or ""), timeout_s=egress.clamp_timeout_ms(timeout_ms) / 1000,
+            headers=config.get("headers") or {}, json_body=config.get("body", {}) if method == "POST" else None)
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            return [item for item in data.get("items", []) if isinstance(item, dict)]
+        return []
     return []
 
 

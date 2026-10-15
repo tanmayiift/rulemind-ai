@@ -16,6 +16,7 @@ from ..main import (
     ScheduleUpsertRequest,
     WebhookUpsertRequest,
 )
+from ..egress import EgressBlocked, vet_url
 from ..reviews import submit_review_decision
 from ..scheduler import execute_cron_policy
 from ..webhooks import WebhookAuthenticationError
@@ -147,13 +148,26 @@ def get_schedule(schedule_id: str) -> Dict[str, Any]:
     return schedule
 
 
+def _check_payload_source(payload_source: Dict[str, Any]) -> None:
+    """Refuse an http_pull source the egress policy would block, when it is saved rather than
+    when it first runs at 3am. The scheduler checks again at fetch time (DNS can change)."""
+    if (payload_source or {}).get("type") != "http_pull":
+        return
+    try:
+        vet_url(str(payload_source.get("url") or ""))
+    except EgressBlocked as blocked:
+        raise HTTPException(status_code=422, detail="Blocked by egress policy: {0}".format(blocked)) from blocked
+
+
 @router.post("/api/v1/schedules")
 def create_schedule(request: ScheduleUpsertRequest) -> Dict[str, Any]:
+    _check_payload_source(request.payload_source)
     return main.storage.create_schedule(request.model_dump())
 
 
 @router.put("/api/v1/schedules/{schedule_id}")
 def update_schedule(schedule_id: str, request: ScheduleUpsertRequest) -> Dict[str, Any]:
+    _check_payload_source(request.payload_source)
     updated = main.storage.update_schedule(schedule_id, request.model_dump())
     if not updated:
         raise HTTPException(status_code=404, detail="Schedule not found.")
@@ -173,7 +187,10 @@ def run_schedule_now(schedule_id: str) -> Dict[str, Any]:
     schedule = main.storage.get_schedule(schedule_id)
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found.")
-    result = asyncio.run(execute_cron_policy(main.storage, schedule))
+    try:
+        result = asyncio.run(execute_cron_policy(main.storage, schedule))
+    except EgressBlocked as blocked:
+        raise HTTPException(status_code=422, detail="Blocked by egress policy: {0}".format(blocked)) from blocked
     return result
 
 
