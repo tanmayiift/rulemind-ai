@@ -249,6 +249,14 @@ class _Base(unittest.TestCase):
         engine_config["evaluation_budget_ms"] = ms
         app_main.storage.update_settings({"engine_config": engine_config}, tenant_id=self.tenant)
         fast_decide_module.invalidate()
+        # Rebuild the serving bundle NOW, outside the request being measured. The budget clock
+        # starts before fast_decide fetches its bundle, and invalidate() above means the next
+        # request would rebuild it -- dozens of catalog queries, which on a slow Postgres runner
+        # spent the whole 500ms before the first variable, so the budget tests saw "no variable
+        # ran". They exist to measure how the budget meters VARIABLES, not a cold cache.
+        policy = getattr(self, "policy", None)
+        if policy is not None:
+            fast_decide_module._serving_bundle(app_main.storage, self.tenant, policy)
 
     def decide_http(self, payload, fast, policy_id="pol_bank_fast"):
         env = dict(os.environ)
